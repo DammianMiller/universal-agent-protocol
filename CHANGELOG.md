@@ -1,8 +1,17 @@
 # Changelog
 
+## v1.224.2 (2026-09-02)
+
+- docs: UAP vs other agent harnesses and tooling — comparison reference
+
+
 ## v1.224.1 (2026-09-02)
 
 - docs: comprehensive refresh of all documentation to v1.224.0
+
+
+## v1.224.0 (2026-09-01)
+
 - feat(deliver): harden the delivery pipeline — scoped rollback, declared gates, polyglot execution, config routing, liveness, signed overrides (#777)
 - feat(quality): quality-metrics gate — CLI, enforcer, ratchet baseline, expert-review fusion (#776)
 - feat(verify): visual gate grades only servable entry pages (#775)

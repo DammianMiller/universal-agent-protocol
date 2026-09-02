@@ -1,6 +1,6 @@
 {
   "name": "@miller-tech/uap",
-  "version": "1.224.1",
+  "version": "1.224.2",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
@@ -37,9 +37,7 @@
     "version:major": "bash scripts/version-bump.sh major",
     "update-uap": "bash scripts/maintenance/update-uap-compliance.sh",
     "verify-uap": "bash scripts/maintenance/verify-compliance.sh",
-    "check-claude": "bash scripts/maintenance/verify-compliance.sh",
-    "quality": "node dist/bin/cli.js quality check",
-    "quality:mutate": "node dist/bin/cli.js quality mutate --changed"
+    "check-claude": "bash scripts/maintenance/verify-compliance.sh"
   },
   "keywords": [
     "claude",
