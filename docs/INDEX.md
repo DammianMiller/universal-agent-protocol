@@ -82,6 +82,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | Doc | What it covers |
 |---|---|
 | [CLI](reference/CLI.md) | Every `uap` command and flag |
+| [Comparison](reference/COMPARISON.md) | UAP vs other agent harnesses and adjacent tooling (memory, orchestration, spec-driven, review/policy) — positioning, honest trade-offs, sources |
 | [API](reference/API.md) | Programmatic API surface |
 | [Features](reference/FEATURES.md) | Full feature catalog, mapped to the pipeline stages |
 | [Patterns](reference/PATTERNS.md) | The 23 Terminal-Bench patterns |
