@@ -5,12 +5,16 @@ and `automation.md`. It maps each rule to the test that asserts it, the test fil
 level (unit / integration / manual). Where a rule has no verifying test, that is called
 out explicitly.
 
-Test inventory: **210 vitest (`test/*.test.ts`)** + **30 Python
-(`tools/agents/tests/test_*.py`)**. The TS suite runs on every PR via
-`.github/workflows/deploy-verify.yml` (`npm test`). The 30 Python tests run in no CI
-workflow — see the CI-gate section below; this is the most important gap, because the
-entire runtime enforcement plane (self-protect, delivery-enforcement, sandbox tool-strip,
-path containment) is Python and can regress silently.
+Test inventory: **459 vitest (`test/**/*.test.ts`)** + **75 Python
+(`tools/agents/tests/test_*.py`)**. Both suites run on every PR via
+`.github/workflows/deploy-verify.yml`: `Build & Test` (`npm run test:ci`) and
+`Policy Enforcers (Python)` (`npm run test:enforcers`). The Python suite is
+invoked as an explicit module list, not discovery — `python -m unittest`
+silently collects nothing from non-`TestCase` modules, so new enforcer tests
+must be added to the `test:enforcers` script to run in CI. One module is
+deliberately not wired in: `test_uap_compliance.py` performs live-DB schema
+checks against the operator's own databases and fails in a clean CI
+environment.
 
 ## Coverage table
 
@@ -97,59 +101,28 @@ would hide):**
 - *`.uap-deliver self-gate is protected`* — unit: model write to `.uap-deliver/verify.sh`
   is rejected by PROTECTED_SEGMENTS.
 
-## Recommended CI gate
+## CI gate
 
-`deploy-verify.yml` runs build + typecheck + `npm test` on `pull_request`. Two changes make
-it a real green-before-merge gate for the **security** layer:
-
-1. **Add the Python enforcer/proxy suite to CI** (it currently runs nowhere). Suggested
-   job:
-
-```yaml
-# .github/workflows/deploy-verify.yml  →  add alongside "Build & Test"
-  enforcers:
-    name: Policy Enforcers (Python)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - name: Run enforcer + proxy tests
-        run: python -m unittest discover -s tools/agents/tests -p 'test_*.py' -v
-```
-
-2. **Use `vitest run` in CI**, not bare `vitest` (watch mode). Either change the `test`
-   script to `vitest run` or add `test:ci`:
-
-```json
-"scripts": { "test:ci": "vitest run" }
-```
-
-and call `npm run test:ci` in the workflow.
-
-3. **Branch protection on `main`:** require the `Build & Test` **and** the new
-   `Policy Enforcers (Python)` status checks to pass before merge. Settings →
-   Branches → add rule for `main` → *Require status checks to pass* → select both jobs.
+`deploy-verify.yml` is a green-before-merge gate for the **security** layer: on every
+`pull_request` it runs build + typecheck + `npm test` (`Build & Test`) and the Python
+enforcer/proxy suite (`Policy Enforcers (Python)`, via `npm run test:enforcers` — an
+explicit module list; see the note above about adding new modules).
 
 Guarded-live coverage (a real llama backend, cloud passthrough, or a running dashboard
 socket) stays opt-in and never blocks the default PR run.
 
 ## Gap ranking (by exposure)
 
-1. **Python enforcer suite is in no CI gate.** All 30 tests — the entire runtime
-   enforcement plane — can regress and merge green. *Exposes:* silent loss of self-protect,
-   delivery-enforcement, workdir-scope, sandbox tool-strip. Highest priority (CI change
-   above).
-2. **No end-to-end test that a registered policy actually runs via the hook.** Logic and
+1. **No end-to-end test that a registered policy actually runs via the hook.** Logic and
    registration are tested in isolation; the join is not. *Exposes:* a future refactor of
    the hook SQL/dispatch silently disabling all enforcement.
-3. **Dashboard policy-mutation has no authz test.** *Exposes:* the token guard regressing
+2. **Dashboard policy-mutation has no authz test.** *Exposes:* the token guard regressing
    unnoticed, re-opening unauthenticated disable of security controls via CSRF or LAN.
-4. **Proxy passthrough credential handling is unit-untested.** *Exposes:* an
+3. **Proxy passthrough credential handling is unit-untested.** *Exposes:* an
    unauthenticated peer using the operator's cloud key / billing.
-5. **Secret-strip regex completeness untested.** *Exposes:* a malicious gate/test script
+4. **Secret-strip regex completeness untested.** *Exposes:* a malicious gate/test script
    exfiltrating `AWS_*`/`DATABASE_URL`/`SSH_AUTH_SOCK` that survive the strip.
-6. **`.uap-deliver/` self-gate writability, sandbox over-broad-workdir guard, run_bash
+5. **`.uap-deliver/` self-gate writability, sandbox over-broad-workdir guard, run_bash
    restore** — small, each a one-test fix.
 
 ## Related documents

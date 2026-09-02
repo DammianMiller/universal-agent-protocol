@@ -62,6 +62,8 @@ Two things run the length of the whole line: **policy gates** (the rules are *ex
 
 **What UAP puts here:**
 - **[`uap deliver`](DELIVER.md)** — a convergence loop that keeps iterating a model against your real gates until the work is actually built.
+- **Your gates, including the ones you declare** — build/test/lint are discovered from `package.json`, and anything extra (a migration check, a codegen diff, a contract test) can be declared in `delivery.gates[]` in `.uap.json` and joins the same ladder.
+- **A polyglot execution gate** — not everything is `node`: Python packages get a venv-aware import smoke test, native binaries are actually executed, and a binary that can't run on this host is an honest *skip*, never fabricated pass-evidence.
 - **Serving-layer recipes** — Fusion / Confidence / Ratings / ReMoM run behind the proxy to raise output quality, *escalating to a stronger, distinct judge* when it counts. (A same-model judge — qwen grading qwen — was measured to add nothing, so recipes only spend that budget when a genuinely stronger judge is wired.)
 - **[Local-model handling](LOCAL_MODELS.md)** — the proxy's guardrails (loop-breaker, recon-convergence, the no-tool empty-output guard, path normalization) keep a cheap local model on the rails so it produces real modules, not scaffolding.
 
@@ -74,8 +76,10 @@ Two things run the length of the whole line: **policy gates** (the rules are *ex
 **What UAP puts here:**
 - **Completion gates** — build, tests, lint, type-check must be green before anything can claim "done."
 - **Execution / runtime verify** (`uap verify`) — the generated code is actually *run* (headless browser, vm-dom, or child process) to prove it works, not just that it parses.
+- **The quality-metrics gate** (`uap quality check`) — ten code-quality budgets (complexity, coverage, CRAP, surviving mutants, dead code, duplicates, `any` types…) enforced deterministically, with a ratchet baseline so existing debt is frozen but the floor can only rise. Reviewers adjudicate the numbers; they can't outvote them.
 - **The acceptance judge** — an independent check that the behaviour matches the spec.
 - **Generator ≠ evaluator** — the thing that grades the work is deliberately *not* the thing that wrote it.
+- **Scoped rollback** — when a turn makes things worse, keep-best restores *only the files that run actually wrote* (tracked per-write plus a shell sweep), never the whole tree — so a rollback on a shared floor can't eat another agent's work.
 
 **Delivered:** "done" you can trust, because a different checker signed off.
 
@@ -98,6 +102,7 @@ Two things run the length of the whole line: **policy gates** (the rules are *ex
 - **Worktree → PR flow** with completion and version gates, so merges are clean and versioned.
 - **CI feedback watcher** — when CI goes red after a push, the loop re-converges instead of walking away.
 - **Never-regress + git-safety** — destructive git operations are guarded; passing work stays passing.
+- **Policy liveness + operator overrides** — the gates themselves are watched: a liveness registry tracks whether each liveness-declaring policy's compliant path (its tools, dirs, skills) is still satisfiable, and emergency bypasses live in a root-owned, expiring `.uap/operator-overrides.json` — so an agent can neither quietly let a gate rot nor mint its own exemption.
 
 **Delivered:** changes reach `main` clean, versioned, and CI-verified.
 

@@ -1,6 +1,6 @@
 # Policies
 
-> Applies to UAP v1.163
+> Applies to UAP v1.224.0
 
 > **🏭 Where this fits:** CROSS-CUTTING — the executable rules bolted to every station of the [delivery pipeline](./DELIVERY_PIPELINE.md). In a normal agentic workflow the "rules" live in a prose prompt the model is free to ignore; that's how work escapes isolation, skips tests, or ships without review. **What it delivers:** each rule is a Python enforcer that actually inspects an operation and can *block* it before it runs — worktree isolation, test deltas, expert review, schema diffs, artifact hygiene, and more — so the guardrails hold instead of merely being suggested.
 
@@ -62,10 +62,13 @@ Each enforcer guards a specific station of the pipeline. The enforcers in
 | Enforcer | What it gates |
 |----------|---------------|
 | `worktree_required` | Edit/Write/MultiEdit must target a `.worktrees/` path |
+| `workdir_scope` | File-mutating tool calls must stay within the project working directory |
 | `task_required` | A UAP task must be `in_progress` before mutating work |
 | `coord_overlap` | Checks for in-flight agent path reservations (parallel-agent overlap) |
 | `branch_freshness` | Worktree edits blocked once the branch drifts too far from the integration branch (warn 50, block 200) |
 | `delivery_enforcement` | Route substantive coding through `uap deliver` |
+| `commitment_reserve` | Blocks all-in, no-way-back moves that exhaust the commitment reserve |
+| `adr_guard` | Generic ADR-driven tool-call gate |
 
 ### Plan discipline
 
@@ -73,7 +76,7 @@ Each enforcer guards a specific station of the pipeline. The enforcers in
 |----------|---------------|
 | `memory_before_plan` | Plans require a recent `uap memory query` |
 | `codebase_read_before_plan` | Plans require prior reads of the target paths |
-| `validate_plan_before_build` | A plan must be validated before building |
+| `validate_plan_on_change` | A plan must be validated before building (fires before the build, not on the write) |
 
 ### Quality & review gates
 
@@ -83,6 +86,11 @@ Each enforcer guards a specific station of the pipeline. The enforcers in
 | `schema_diff_gate` | Schema/pool changes must pass `uap schema-diff` |
 | `expert_review_required` | A parallel expert review must precede ship |
 | `architecture_review` | Merge / PR-ready operations need an architecture review when the diff warrants it |
+| `quality_metrics_gate` | Edits must not introduce NEW or WORSENED metric debt (complexity, coverage, duplication, `any` types) against the ratchet baseline |
+| `design_token_gate` | UI edits must stay on the project's DESIGN.md token system |
+| `visual_verification` | Under MAX fidelity, a commit that changes UI files requires visual verification |
+| `local_build_before_push` | Branches with C++ API source changes need a local Docker `--target builder` compile before `git push` / `gh pr create` / `gh pr merge` |
+| `ship_loop_gate` | A task may only transition to `completed` with evidence it was merged, deployed, monitored, and verified |
 
 ### Hygiene & artifacts
 
@@ -105,7 +113,16 @@ Each enforcer guards a specific station of the pipeline. The enforcers in
 | Enforcer | What it gates |
 |----------|---------------|
 | `iac_parity` | Live-state changes must have a matching infrastructure-as-code diff |
+| `iac_plan_destruction_check` | Destructive IaC plan operations are blocked |
 | `cluster_routing` | Cluster tooling context must match the component domain |
+
+### Enforcement protection
+
+| Enforcer | What it gates |
+|----------|---------------|
+| `enforcement_self_protect` | The model must not be able to disable the enforcement layer |
+| `enforcement_infra_protect` | The model must not kill or displace the inference stack (the Anthropic proxy, llama-server, their ports) |
+| `bearer_lockdown` | ADR-0007 cookie-only frontend gate — blocks bearer-token auth in the frontend |
 
 > The `architecture_review` enforcer file is stored with a policy-ID prefix
 > (`<uuid>_architecture_review.py`) because it is attached to a specific

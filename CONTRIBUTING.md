@@ -1,6 +1,6 @@
 # Contributing to UAP
 
-`v1.40.0`
+`v1.224.0`
 
 Thanks for contributing to the Universal Agent Protocol. This guide covers the
 development setup, the worktree workflow, the completion gates every change must
@@ -24,7 +24,7 @@ cd universal-agent-protocol
 
 npm install        # install dependencies
 npm run build      # compile TypeScript (tsc) → dist/
-npm test           # run the test suite (117 suites, vitest)
+npm test           # run the test suite (459 vitest test files)
 ```
 
 Common scripts (from `package.json`):
@@ -33,12 +33,19 @@ Common scripts (from `package.json`):
 |--------|--------------|
 | `npm run build` | `tsc` — compile to `dist/` |
 | `npm run dev` | `tsc --watch` — incremental rebuilds |
-| `npm test` | `vitest` — run all 117 test suites |
+| `npm test` | `vitest` — run all 459 vitest test files |
+| `npm run test:ci` | `vitest run` — non-watch test run for CI |
+| `npm run test:enforcers` | Python enforcer/proxy suite (~74 modules under `tools/agents/tests/`, ~1200 tests) |
 | `npm run test:coverage` | tests with V8 coverage |
 | `npm run bench` | benchmark suite (`vitest.bench.config.ts`) |
 | `npm run lint` | `eslint src --ext .ts` |
 | `npm run lint:fix` | ESLint with autofix |
 | `npm run format` | Prettier over `src/**/*.ts` |
+| `npm run install:web` | install the web dashboard (`scripts/setup/install-web.sh`) |
+| `npm run install:desktop` | install the desktop app (`scripts/setup/install-desktop.sh`) |
+| `npm run install:cloakbrowser` | install the cloak browser (`scripts/setup/install-cloakbrowser.ts`) |
+| `npm run update-uap` | update UAP compliance artifacts (`scripts/maintenance/update-uap-compliance.sh`) |
+| `npm run verify-uap` | verify UAP compliance (`scripts/maintenance/verify-compliance.sh`) |
 | `npm run version:patch \| :minor \| :major` | bump version via `scripts/version-bump.sh` |
 
 Type-checking is part of the build (`tsc`); for a check without emit use
@@ -141,9 +148,16 @@ docs(architecture): rewrite protocol spec
 ## Project layout
 
 ```
-src/           18 subsystems, 168 modules (see docs/architecture/OVERVIEW.md)
-test/          117 vitest suites
+src/           26 subsystems, 367 TypeScript modules (see docs/architecture/OVERVIEW.md)
+test/          459 vitest test files
 docs/          architecture, integrations, getting-started, reference
+web/           web dashboard
+tools/         agent tooling, including the Python enforcer/proxy tests
+benchmarks/    benchmark suites and results
+policies/      built-in policy markdown files
+skills/        project skills
+infra/         infrastructure-as-code
+deploy/        deployment artifacts
 templates/     hook scripts installed by `uap hooks install`
 scripts/       setup, version-bump, maintenance
 config/        model profiles and defaults

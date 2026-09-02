@@ -5,16 +5,16 @@ harness (Claude Code, Factory, Cursor, OpenCode, oh-my-pi) and mediates its work
 memory injection, policy enforcement, verification gates, and tool-output compression —
 "a station at every point where the line usually breaks."
 
-**What UAP is (implementation):** a TypeScript/Node CLI (`uap`, `src/bin/cli.ts`, ~40
-top-level commands) plus a Python FastAPI model proxy, wired into harnesses via shell
+**What UAP is (implementation):** a TypeScript/Node CLI (`uap`, `src/bin/cli.ts`, ~43
+top-level commands, 60 registrations including subcommands) plus a Python FastAPI model proxy, wired into harnesses via shell
 hooks, four SQLite databases, an optional Docker Qdrant vector store, and a bubblewrap
-kernel sandbox. Version: **v1.163**.
+kernel sandbox. Version: **v1.224.0**.
 
 ## Stack
 
 | Layer | Technology | Where |
 |---|---|---|
-| CLI + subsystems | TypeScript (Node ≥18), ~220 modules in 18 `src/` subsystems | `src/` |
+| CLI + subsystems | TypeScript (Node ≥18), 367 modules in 26 `src/` subsystems | `src/` |
 | Model proxy | Python FastAPI/uvicorn, ~10.6k lines | `tools/agents/scripts/anthropic_proxy.py` |
 | Policy enforcers | Python scripts (exit 0=allow / 2=block) | `src/policies/enforcers/*.py` → materialized to `.policy-tools/` |
 | Harness integration | Shell hook scripts installed into per-platform `settings.local.json` | `templates/hooks/`, `src/cli/hooks.ts` |
@@ -98,8 +98,12 @@ local tool. Identity boundaries are process/trust-tier based (see `permissions.m
 
 ## Notable intent-vs-implementation deltas
 
-- **Self-protect enforcement is inert** (documented as active; never registered) and the
-  active delivery enforcer exempts the policy directories — see `permissions.md` §Findings.
+- **Self-protect enforcement** (`enforcement_self_protect.py`) is registered in the gate
+  hook (v1.224): it guards `policies.db`, the hook scripts, and the trust anchors
+  (`.uap/operator-overrides.json`, `.uap/policy-liveness.json`) against tampering —
+  including interpreter-mediated writes (`python3 -c 'open(...,"w")'`) that text scans
+  can't see. The delivery enforcer still exempts the policy directories — see
+  `permissions.md` §Findings.
 - Of 50 active policy rows, only **17 enforce at runtime**; the rest are markdown-keyword
   (Plane B) advisories that never see native Edit/Write/Bash.
 - The agentic executor enforces protected paths, snapshot-restore, and a context budget.

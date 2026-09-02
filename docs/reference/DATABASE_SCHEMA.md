@@ -1,6 +1,6 @@
 # Database Schema Reference
 
-> Universal Agent Protocol (UAP) v1.93.1
+> Universal Agent Protocol (UAP) v1.224.0
 
 > **🏭 Where this fits:** Cross-cutting — the shop's records and shift log.
 > **What it delivers:** the durable memory of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
