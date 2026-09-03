@@ -1360,6 +1360,13 @@ export function detectNonNpmRungs(projectRoot: string, timeoutMs: number = DEFAU
       args: ['-m', 'pytest', '-q'],
       required: true,
       timeoutMs,
+      // Name-matched test files can still collect ZERO tests — the real-gate
+      // suites ship plain-script gates (test_foo.py with a __main__ block, no
+      // test functions), where `pytest -q` exits 5 forever and the loop can
+      // never go green (measured on py-parse-duration, 2026-09-02: stuck at
+      // 50% of gates for 46 turns on a verify-passing workdir). Same policy
+      // as the polyglot pytest rung above: exit 5 is a vacuous pass.
+      passExitCodes: [0, 5],
     });
   }
 

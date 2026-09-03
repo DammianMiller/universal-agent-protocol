@@ -17,7 +17,7 @@
  * browser paths skipped (rung non-blocking) rather than failing delivery on an
  * environment gap — but the skip is loud in the report and the judge note.
  */
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 // SECURITY: every spawn below that runs project/model code must use
@@ -324,33 +324,84 @@ export function jsonContains(actual: unknown, expected: unknown): boolean {
   );
 }
 
+/**
+ * Model-authored journeys assume `python`; plenty of minimal boxes ship only
+ * `python3`. A verbatim spawn ENOENTs and the journey used to surface an
+ * opaque `exit=null` — an unsatisfiable gate the agent could not diagnose.
+ * Fall back `python` → `python3` on ENOENT (the journey's intent is "run this
+ * Python check"; the alias is an environment detail); any other spawn failure
+ * is returned as-is for the caller to report explicitly.
+ */
+function spawnJourneyStep(
+  argv: string[],
+  ctx: RunContext,
+  run: { timeoutMs?: number; stdin?: string },
+): SpawnSyncReturns<string> {
+  const opts = {
+    cwd: ctx.projectRoot,
+    env: sanitizedEnv(),
+    timeout: Math.min(run.timeoutMs ?? ctx.timeoutMs, 120_000),
+    input: run.stdin,
+    encoding: 'utf8' as const,
+    shell: false as const,
+  };
+  const [cmd, ...rest] = argv;
+  const r = spawnSync(cmd, rest, opts);
+  if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT' && cmd === 'python') {
+    const alt = spawnSync('python3', rest, opts);
+    if (!alt.error) return alt;
+  }
+  return r;
+}
+
 function runCliPath(path: UserPath, ctx: RunContext): PathResult {
   const steps: StepResult[] = [];
   let failed = false;
   let lastExit: number | null = null;
   let lastStdout = '';
   let lastStderr = '';
+  let lastArgv: string[] = [];
   for (const step of path.steps) {
     if (failed) break;
     const label = stepLabel(step);
     try {
       if (step.run !== undefined) {
-        const [cmd, ...rest] = step.run.argv;
-        const r = spawnSync(cmd, rest, {
-          cwd: ctx.projectRoot,
-          env: sanitizedEnv(),
-          timeout: Math.min(step.run.timeoutMs ?? ctx.timeoutMs, 120_000),
-          input: step.run.stdin,
-          encoding: 'utf8',
-          shell: false,
-        });
+        lastArgv = step.run.argv;
+        const r = spawnJourneyStep(step.run.argv, ctx, step.run);
+        if (r.error) {
+          // A spawn failure (ENOENT interpreter, ETIMEDOUT) used to surface
+          // as an opaque `exit=null` at the NEXT step — an unsatisfiable gate
+          // the agent could not diagnose. Measured on py-parse-duration
+          // (2026-09-02): all three manifest journeys FAIL'd for 46 turns /
+          // 38 min on a workdir whose hidden verifier passed, because the
+          // box has python3 but no `python`. Name the failure at the step
+          // where it happened, with the fix.
+          steps.push({
+            step: label,
+            ok: false,
+            observed:
+              `spawn failed: ${r.error.message} (argv[0]='${step.run.argv[0]}' — ` +
+              `if ENOENT, that interpreter does not exist on this box; fix the manifest)`.slice(0, 300),
+          });
+          failed = true;
+          break;
+        }
         lastExit = r.status;
         lastStdout = r.stdout ?? '';
         lastStderr = r.stderr ?? '';
         steps.push({ step: label, ok: true, observed: `exit=${String(lastExit)} stdout=${lastStdout.slice(0, 120)}` });
       } else if (step.expect_exit !== undefined) {
         const ok = lastExit === step.expect_exit;
-        steps.push({ step: label, ok, observed: `exit=${String(lastExit)}` });
+        // pytest exit 5 = "no tests collected". Against a plain-script
+        // in-repo gate (the real-gate suites' convention) a
+        // `pytest file.py` journey can NEVER pass — say so, so the agent
+        // rewrites the manifest to run the file directly instead of
+        // fighting collection for dozens of turns.
+        const noTestsHint =
+          !ok && lastExit === 5 && lastArgv.includes('pytest')
+            ? ' (pytest collected no tests — if the target is a plain script, run it directly: ["python3", "file.py"])'
+            : '';
+        steps.push({ step: label, ok, observed: `exit=${String(lastExit)}${noTestsHint}` });
         failed = !ok;
       } else if (step.expect_stdout_matches !== undefined) {
         // 'm' flag: ^/$ anchor per LINE. CLI stdout virtually always ends in a

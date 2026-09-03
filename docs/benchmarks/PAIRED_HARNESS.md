@@ -107,6 +107,22 @@ and **pass** once the task is correctly solved.
 | `mock` | none (deterministic simulation) | exercises the pipeline offline; **not** a source of real claims |
 | `opencode` | `opencode run --model <m> <instruction>` | tokens, cost, steps, tool-calls (best-effort JSON) |
 | `claude` | `claude -p <instruction> --output-format json --model <m>` | tokens, cost, turns |
+| `raw` | one chat completion per cell; UAP arm loops it against the visible gate | tokens, turns, latency |
+| `mini` | `mini -y -m <m> -t <instruction>` (mini-SWE-agent) | external comparability anchor |
+| `deliver` | real `uap deliver` CLI per cell (baseline arm runs one bare turn) | verdict + turns from the JSON result |
 
 New agents are a few lines: implement `AgentAdapter` (or configure a
 `SubprocessAdapter` with a `parseUsage` function) in `src/benchmarks/paired/adapter.ts`.
+
+### Time budgets on slow local models
+
+A `deliver` cell's budget is `agentTimeoutSec × UAP_BENCH_DELIVER_TIMEOUT_MULT`
+(default 6, raised from 3 in 2026-09). The ×3 era was calibrated on fast hosted
+models; a full convergence mission on a slow local model (plan + self-gate +
+N turns + acceptance judge, each model call costing minutes) blew through it
+and the harness killed missions whose workdir already passed verification —
+paired-qwen38-e4 lost 21/25 treatment cells that way, manufacturing a -8pp
+"regression" out of pure budget starvation. Raise the multiplier (never
+disable it — an unbounded cell is a wedged overnight run) when the backing
+model is slow, and read a `timeout`-errored cell as *harness budget*, not a
+model failure.
