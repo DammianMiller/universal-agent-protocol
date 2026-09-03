@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.224.6 (2026-09-04)
+
+- test(delivery): retry the manifest-server port handoff under suite load
+- test(delivery): ephemeral ports in user-validation spawn tests
+- fix(deliver): accommodate slow local models — scaled bench cell budget, python→python3 journey fallback, pytest exit-5 vacuous pass
+
 ## v1.224.5 (2026-09-03)
 
 - docs(benchmarks): Qwen3.8-27B × UAP v1.224.x paired replication results
@@ -13,7 +19,7 @@
 - docs: plan K3 UAP uplift validation on Terminal-Bench 2.1 with Factory Droid harness
 - docs: UAP vs other agent harnesses and tooling — comparison reference (#779)
 - docs: comprehensive refresh of all documentation to v1.224.0 (#778)
-- feat(deliver): harden the delivery pipeline — scoped rollback, declared gates, polyglot execution, config routing, liveness, signed overrides (#777)
+- feat(deliver): harden the delivery pipeline — scoped rollback, declared gates, polyglot execution, config routing, liveness, operator overrides (#777)
 - feat(quality): quality-metrics gate — CLI, enforcer, ratchet baseline, expert-review fusion (#776)
 - feat(verify): visual gate grades only servable entry pages (#775)
 - feat(verify): page exclusion for the visual gate via .uap/visual-targets.json (#774)
