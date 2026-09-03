@@ -101,11 +101,24 @@ describe('run-state store', () => {
 });
 
 describe('convergence loop checkpoint + resume', () => {
+  // projectRoot must be a private temp dir, NOT '/tmp': the loop's
+  // change-fingerprint rail stats files under projectRoot, and a shared /tmp
+  // makes turns race other tests' temp files (observed 2026-09-02: this suite
+  // flaked '4 vs 3' history lengths under full-suite parallel load while
+  // passing 15/15 in isolation).
+  let loopDir: string;
+  beforeEach(() => {
+    loopDir = mkdtempSync(join(tmpdir(), 'uap-loop-'));
+  });
+  afterEach(() => {
+    rmSync(loopDir, { recursive: true, force: true });
+  });
+
   it('emits a serializable checkpoint after every failed turn', async () => {
     const checkpoints: LoopCheckpoint[] = [];
     const loop = new ConvergenceLoop(
       {
-        projectRoot: '/tmp',
+        projectRoot: loopDir,
         maxTurns: 2,
         rungs: [RUNG],
         baselineCheck: false,
@@ -142,7 +155,7 @@ describe('convergence loop checkpoint + resume', () => {
     };
     const loop = new ConvergenceLoop(
       {
-        projectRoot: '/tmp',
+        projectRoot: loopDir,
         maxTurns: 2,
         rungs: [RUNG],
         baselineCheck: false,
@@ -181,7 +194,7 @@ describe('convergence loop checkpoint + resume', () => {
     let liveTurns = 0;
     const loop = new ConvergenceLoop(
       {
-        projectRoot: '/tmp',
+        projectRoot: loopDir,
         maxTurns: 5,
         maxTurnsCeiling: 6,
         untilDelivered: true,
@@ -209,7 +222,7 @@ describe('convergence loop checkpoint + resume', () => {
     let executorCalls = 0;
     const loop = new ConvergenceLoop(
       {
-        projectRoot: '/tmp',
+        projectRoot: loopDir,
         maxTurns: 2,
         rungs: [RUNG],
         baselineCheck: false,
@@ -241,7 +254,7 @@ describe('convergence loop checkpoint + resume', () => {
     const strong = async (): Promise<string> => '```file:a.txt\nx\n```';
     const loop1 = new ConvergenceLoop(
       {
-        projectRoot: '/tmp',
+        projectRoot: loopDir,
         maxTurns: 2,
         rungs: [RUNG],
         baselineCheck: false,
@@ -268,7 +281,7 @@ describe('convergence loop checkpoint + resume', () => {
     const checkpoints2: LoopCheckpoint[] = [];
     const loop2 = new ConvergenceLoop(
       {
-        projectRoot: '/tmp',
+        projectRoot: loopDir,
         maxTurns: 1,
         rungs: [RUNG],
         baselineCheck: false,

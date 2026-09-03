@@ -15,6 +15,7 @@
  * assertion while breaking every real user path.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -24,6 +25,24 @@ import { USER_PATHS_FILE, type UserPathsManifest } from '../../src/delivery/user
 
 const SECRET_VAR = 'UAP_TEST_OPENAI_API_KEY';
 const SECRET_VALUE = 'sk-must-never-reach-a-child-process';
+
+/**
+ * Hardcoded ports collide with unrelated local services (2026-09-02: a host
+ * service holding even ports 39470-39478 failed 'startManifestServer: a
+ * declared server env var still reaches the child' with EADDRINUSE while CI
+ * stayed green). Grab an ephemeral port per test instead.
+ */
+function freePort(): Promise<number> {
+  return new Promise((resolvePort, reject) => {
+    const srv = createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      srv.close(() => (port ? resolvePort(port) : reject(new Error('no port'))));
+    });
+  });
+}
 
 function writeManifest(dir: string, manifest: UserPathsManifest): void {
   mkdirSync(join(dir, '.uap'), { recursive: true });
@@ -79,7 +98,7 @@ describe('user-validation spawns get a secret-stripped environment', () => {
   });
 
   it('startManifestServer: the server cannot see a credential, but keeps a benign var', async () => {
-    const port = 39473;
+    const port = await freePort();
     writeFileSync(join(dir, 'ok.txt'), 'ok');
     writeManifest(dir, {
       version: 1,
@@ -115,7 +134,7 @@ describe('user-validation spawns get a secret-stripped environment', () => {
     // sanitizedEnv(srv.env) must merge the DECLARED vars last. If the argument
     // were dropped, or applied first, a manifest could no longer configure its
     // own server -- a silent break of every project that declares server env.
-    const port = 39474;
+    const port = await freePort();
     writeFileSync(join(dir, 'ok.txt'), 'ok');
     writeManifest(dir, {
       version: 1,
