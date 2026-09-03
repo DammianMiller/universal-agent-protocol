@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.224.5 (2026-09-03)
+
+- docs(benchmarks): Qwen3.8-27B × UAP v1.224.x paired replication results
+
 ## v1.224.4 (2026-09-02)
 
 - docs: plan Qwen3.8-27B re-test of the paired benchmark matrix on UAP v1.224.x
