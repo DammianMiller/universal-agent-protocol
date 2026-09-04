@@ -97,7 +97,12 @@ describe('user-validation spawns get a secret-stripped environment', () => {
     expect(JSON.stringify(report)).not.toContain(SECRET_VALUE);
   });
 
-  it('startManifestServer: the server cannot see a credential, but keeps a benign var', async () => {
+  // retry: the ephemeral port from freePort() is released before the child
+  // re-binds it — a TOCTOU window the full suite (hundreds of concurrent
+  // binds) occasionally wins (observed 2026-09-03: 'server failed to become
+  // ready' under load, 3/3 green in isolation). The assertion itself is not
+  // flaky; only the port handoff is.
+  it('startManifestServer: the server cannot see a credential, but keeps a benign var', { retry: 2 }, async () => {
     const port = await freePort();
     writeFileSync(join(dir, 'ok.txt'), 'ok');
     writeManifest(dir, {
@@ -130,7 +135,7 @@ describe('user-validation spawns get a secret-stripped environment', () => {
     expect(JSON.stringify(report)).not.toContain(SECRET_VALUE);
   });
 
-  it('startManifestServer: a declared server env var still reaches the child', async () => {
+  it('startManifestServer: a declared server env var still reaches the child', { retry: 2 }, async () => {
     // sanitizedEnv(srv.env) must merge the DECLARED vars last. If the argument
     // were dropped, or applied first, a manifest could no longer configure its
     // own server -- a silent break of every project that declares server env.

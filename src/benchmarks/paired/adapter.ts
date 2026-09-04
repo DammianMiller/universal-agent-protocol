@@ -735,6 +735,33 @@ export class RawCompletionAdapter implements AgentAdapter {
  * --max-turns 1 --no-lazy (one bare loop turn), so both arms share the same
  * executor plumbing and only the UAP machinery toggles.
  */
+/**
+ * Cell budget for one deliver mission. The historical `agentTimeoutSec * 3`
+ * was calibrated when the driving models were fast hosted APIs. A full
+ * convergence mission on a slow LOCAL model (27B on a single GPU — plan,
+ * self-gate, N turns, acceptance judge, each model call costing minutes)
+ * routinely exceeds it, and the harness then kills a mission whose workdir
+ * already passes verification: paired-qwen38-e4 (2026-09-02) killed 21/25
+ * treatment cells at the 21-min cap, 15 of them verify-passing, manufacturing
+ * a -8pp "regression" out of pure budget starvation. Default raised to 6 and
+ * overridable via UAP_BENCH_DELIVER_TIMEOUT_MULT; invalid values fall back to
+ * the default rather than disabling the cap (an unbounded cell is how you get
+ * a wedged overnight run).
+ */
+export const DEFAULT_DELIVER_TIMEOUT_MULT = 6;
+
+export function deliverCellTimeoutMs(
+  agentTimeoutSec: number,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = Number(env.UAP_BENCH_DELIVER_TIMEOUT_MULT);
+  const mult =
+    env.UAP_BENCH_DELIVER_TIMEOUT_MULT !== undefined && Number.isFinite(raw) && raw > 0
+      ? raw
+      : DEFAULT_DELIVER_TIMEOUT_MULT;
+  return Math.round(agentTimeoutSec * 1000 * mult);
+}
+
 export class DeliverCliAdapter implements AgentAdapter {
   readonly id = 'deliver';
   private readonly cliPath: string;
@@ -770,7 +797,7 @@ export class DeliverCliAdapter implements AgentAdapter {
       UAP_DELIVER_NO_DETACH: '1',
     };
     if (ctx.condition.lazy) env.UAP_DELIVER_LAZY = '1';
-    const timeoutMs = ctx.task.agentTimeoutSec * 1000 * 3;
+    const timeoutMs = deliverCellTimeoutMs(ctx.task.agentTimeoutSec);
     return new Promise((resolvePromise) => {
       execFile(process.execPath, args, { cwd: ctx.workdir, env, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
         let turns = 1;

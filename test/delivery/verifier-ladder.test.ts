@@ -123,6 +123,19 @@ describe('verifier-ladder', () => {
     });
   });
 
+  it('fallback pytest rung treats exit 5 as a vacuous pass (plain-script gates)', () => {
+    // The real-gate benchmark suites ship a script-style in-repo gate:
+    // test_duration.py matches the test-file name heuristic but contains
+    // zero pytest tests, so `pytest -q` exits 5 FOREVER. Without
+    // passExitCodes the rung could never go green — measured live
+    // (py-parse-duration, 2026-09-02): the mission pinned at 50% of gates
+    // for 46 turns / 38 min on a workdir whose hidden verifier passed.
+    writeFileSync(join(dir, 'test_duration.py'), 'print("ok")\n');
+    const rung = detectRungs(dir).find((r) => r.id === 'pytest');
+    expect(rung, 'expected the fallback pytest rung for a test-named file').toBeDefined();
+    expect(rung?.passExitCodes).toEqual([0, 5]);
+  });
+
   describe('demoteBaselineFailures (baseline-delta gating)', () => {
     it('demotes a baseline-red required rung to optional with the annotation', () => {
       const red = rung('red', 'bash', ['-c', 'echo broken >&2; exit 1']);
