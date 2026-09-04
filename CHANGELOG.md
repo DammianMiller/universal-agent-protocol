@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.224.4 (2026-09-02)
+
+- docs: plan Qwen3.8-27B re-test of the paired benchmark matrix on UAP v1.224.x
+
 ## v1.224.3 (2026-09-02)
 
 - docs: plan K3 UAP uplift validation on Terminal-Bench 2.1 with Factory Droid harness
