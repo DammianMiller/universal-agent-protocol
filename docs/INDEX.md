@@ -64,6 +64,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Local Models](guides/LOCAL_MODELS.md) | Running agents against local llama.cpp / Qwen models |
 | [Inference Proxy](guides/PROXY.md) | The Anthropic↔local gateway: `uap proxy` lifecycle, reliability guardrails, security, serving recipes |
 | [Qwen3.6 on llama.cpp by VRAM](guides/QWEN36_LLAMACPP.md) | Tiered 8/12/16/24/32 GB setup; how `uap deliver` uplifts small local models |
+| [Qwen3.8-27B on exllamav3 (EXL3)](guides/QWEN38_EXL3.md) | The production serving stack since 2026-09-04: EXL3 3.5bpw + DFlash2 draft on a 3090, the sm_86 adaptations, local kit patches, rollback to llama.cpp |
 | [**LLM Self-Tuning**](guides/SELF_TUNING.md) | `uap tune` — raise a small model toward Opus by tuning UAP's flag surface with a benchmark-validated LLM/GP-BO loop; quality scoring, model profiles, auto-on real-time adaptation ⭐ |
 
 ## Architecture
