@@ -23,6 +23,11 @@ productive station on your [delivery pipeline](./DELIVERY_PIPELINE.md).
 > [Qwen3.6 35B-A3B on llama.cpp, by VRAM tier](QWEN36_LLAMACPP.md) for
 > copy-paste launch commands for 8 / 12 / 16 / 24 / 32 GB GPUs, and how
 > `uap deliver` uplifts a small local model to *verified* results.
+>
+> **Production note (2026-09-04):** the reference box now serves Qwen3.8-27B
+> via **exllamav3/EXL3** (~1.5x faster decode at the same 131k context) —
+> see [Qwen3.8-27B on exllamav3 (EXL3)](QWEN38_EXL3.md). The llama.cpp path
+> below remains fully supported and is the rollback stack there.
 
 There are two endpoint shapes involved, and it matters which client speaks
 which protocol:

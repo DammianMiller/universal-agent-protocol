@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.224.7 (2026-09-04)
+
+- docs: Qwen3.8-27B on exllamav3 (EXL3) serving-stack guide + reference env profile; llama.cpp DFlash2 profile marked as the rollback path
+
 ## v1.224.6 (2026-09-04)
 
 - test(delivery): retry the manifest-server port handoff under suite load
