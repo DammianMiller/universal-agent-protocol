@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.224.3 (2026-09-02)
+
+- docs: plan K3 UAP uplift validation on Terminal-Bench 2.1 with Factory Droid harness
+- docs: UAP vs other agent harnesses and tooling — comparison reference (#779)
+- docs: comprehensive refresh of all documentation to v1.224.0 (#778)
+- feat(deliver): harden the delivery pipeline — scoped rollback, declared gates, polyglot execution, config routing, liveness, signed overrides (#777)
+- feat(quality): quality-metrics gate — CLI, enforcer, ratchet baseline, expert-review fusion (#776)
+- feat(verify): visual gate grades only servable entry pages (#775)
+- feat(verify): page exclusion for the visual gate via .uap/visual-targets.json (#774)
+- fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
+- fix(proxy): a tools-stripped turn must actually end in prose (#772)
+- fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
+- feature/267 rtk docker proxy (#770)
+
+
 ## v1.224.2 (2026-09-02)
 
 - docs: UAP vs other agent harnesses and tooling — comparison reference
