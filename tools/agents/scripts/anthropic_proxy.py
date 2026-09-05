@@ -1172,6 +1172,23 @@ PROXY_DISABLE_THINKING_ON_TOOL_TURNS = os.environ.get(
     "off",
     "no",
 }
+# Stream upstream `reasoning_content` deltas to the client as Anthropic
+# `thinking` blocks on the TRUE streaming path. Default off: reasoning is
+# chain-of-thought and the standing policy is not to leak it unless the
+# client opted in. Enable for clients whose stream watchdog disconnects on
+# silence (Factory Droid ~300 s): a slow-thinking model otherwise produces
+# zero client-visible events for minutes, the client aborts and retries, and
+# each retry regenerates the turn from scratch (observed 2026-09-05 with
+# Qwen3.8-27B on exllamav3: >4-min reasoning runs on tool turns, one
+# watchdog kill + full retry per long turn).
+PROXY_STREAM_THINKING_DELTAS = os.environ.get(
+    "PROXY_STREAM_THINKING_DELTAS", "off"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
 # Disable thinking on EVERY turn (not just tool turns). For models like Gemma 4
 # that emit ~100 thinking tokens for trivial replies, this halves output cost.
 PROXY_DISABLE_THINKING_ALWAYS = os.environ.get(
@@ -11976,11 +11993,24 @@ async def stream_anthropic_response(
         f"data: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': _client_input_tokens(monitor), 'output_tokens': 0}}})}\n\n"
     )
 
-    # content_block_start for text (index 0)
-    yield (
-        f"event: content_block_start\n"
-        f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-    )
+    # Block bookkeeping. Two layouts:
+    #  - legacy (PROXY_STREAM_THINKING_DELTAS off): text block pre-opened at
+    #    index 0, tool blocks from 1. Reasoning deltas are collected but never
+    #    streamed, so a slow-thinking model is client-silent for minutes.
+    #  - lazy (flag on): blocks open in arrival order. A leading reasoning run
+    #    opens a `thinking` block and streams thinking_deltas, so the client
+    #    sees continuous activity instead of a silence its watchdog will kill.
+    stream_thinking = PROXY_STREAM_THINKING_DELTAS
+    next_block_index = 0  # lazy layout only; legacy uses fixed 0/1+
+    open_block: int | None = None  # currently open block (lazy layout)
+    text_block_index: int | None = None  # lazy layout; legacy hardcodes 0
+
+    if not stream_thinking:
+        # content_block_start for text (index 0)
+        yield (
+            f"event: content_block_start\n"
+            f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+        )
 
     yield 'event: ping\ndata: {"type": "ping"}\n\n'
 
@@ -11989,7 +12019,7 @@ async def stream_anthropic_response(
 
     # Track tool call state for streaming tool_calls
     tool_calls_by_index: dict[int, dict] = {}
-    tool_block_index = 1  # anthropic block index (0 = text)
+    tool_block_index = 1  # anthropic block index (0 = text) — legacy layout
     text_chunks: list[str] = []  # accumulate text for logging
     reasoning_chunks: list[str] = []  # accumulate reasoning for fallback
 
@@ -12030,14 +12060,55 @@ async def stream_anthropic_response(
             reasoning = delta.get("reasoning_content", "")
             if reasoning:
                 reasoning_chunks.append(reasoning)
+                # Stream leading reasoning as a thinking block so the client's
+                # stream watchdog sees activity during long thinking runs.
+                # Only when it LEADS the turn (no text/tool output yet): late
+                # interleaved reasoning keeps the legacy collect-only path
+                # rather than churning block open/close per chunk.
+                thinking_open = (
+                    stream_thinking
+                    and text_block_index is None
+                    and not tool_calls_by_index
+                )
+                if thinking_open and open_block is None:
+                    open_block = next_block_index
+                    next_block_index += 1
+                    yield (
+                        f"event: content_block_start\n"
+                        f"data: {json.dumps({'type': 'content_block_start', 'index': open_block, 'content_block': {'type': 'thinking', 'thinking': '', 'signature': ''}})}\n\n"
+                    )
+                if thinking_open and open_block is not None:
+                    yield (
+                        f"event: content_block_delta\n"
+                        f"data: {json.dumps({'type': 'content_block_delta', 'index': open_block, 'delta': {'type': 'thinking_delta', 'thinking': reasoning}})}\n\n"
+                    )
 
             # Handle text content deltas
             if delta.get("content"):
                 output_tokens += 1  # rough token estimate
                 text_chunks.append(delta["content"])
+                text_idx = 0
+                if stream_thinking:
+                    # Close a leading thinking block before the text block.
+                    if open_block is not None and open_block != text_block_index:
+                        yield (
+                            f"event: content_block_stop\n"
+                            f"data: {json.dumps({'type': 'content_block_stop', 'index': open_block})}\n\n"
+                        )
+                        open_block = None
+                    if text_block_index is None:
+                        text_block_index = next_block_index
+                        next_block_index += 1
+                    if open_block is None:
+                        open_block = text_block_index
+                        yield (
+                            f"event: content_block_start\n"
+                            f"data: {json.dumps({'type': 'content_block_start', 'index': text_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                        )
+                    text_idx = text_block_index
                 yield (
                     f"event: content_block_delta\n"
-                    f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': delta['content']}})}\n\n"
+                    f"data: {json.dumps({'type': 'content_block_delta', 'index': text_idx, 'delta': {'type': 'text_delta', 'text': delta['content']}})}\n\n"
                 )
 
                 # Degenerate-repetition guard: stop a runaway while it is still
@@ -12077,15 +12148,28 @@ async def stream_anthropic_response(
                         tc_id = tc_delta.get("id", f"toolu_{uuid.uuid4().hex[:12]}")
                         fn = tc_delta.get("function", {})
                         initial_args = fn.get("arguments", "")
+                        if stream_thinking:
+                            this_block_index = next_block_index
+                            next_block_index += 1
+                        else:
+                            this_block_index = tool_block_index
                         tool_calls_by_index[tc_idx] = {
                             "id": tc_id,
                             "name": _restore_tool_name(fn.get("name", "")),
                             "arguments": initial_args,
-                            "block_index": tool_block_index,
+                            "block_index": this_block_index,
                         }
 
-                        # Close text block before first tool block
-                        if tool_block_index == 1:
+                        # Close the open text/thinking block before the first
+                        # tool block.
+                        if stream_thinking:
+                            if open_block is not None:
+                                yield (
+                                    f"event: content_block_stop\n"
+                                    f"data: {json.dumps({'type': 'content_block_stop', 'index': open_block})}\n\n"
+                                )
+                                open_block = None
+                        elif tool_block_index == 1:
                             yield (
                                 f"event: content_block_stop\n"
                                 f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
@@ -12094,7 +12178,7 @@ async def stream_anthropic_response(
                         # Emit content_block_start for this tool_use
                         yield (
                             f"event: content_block_start\n"
-                            f"data: {json.dumps({'type': 'content_block_start', 'index': tool_block_index, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': fn.get('name', '')}})}\n\n"
+                            f"data: {json.dumps({'type': 'content_block_start', 'index': this_block_index, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': fn.get('name', '')}})}\n\n"
                         )
 
                         # Emit initial arguments fragment (e.g. "{") that
@@ -12105,7 +12189,7 @@ async def stream_anthropic_response(
                         if initial_args:
                             yield (
                                 f"event: content_block_delta\n"
-                                f"data: {json.dumps({'type': 'content_block_delta', 'index': tool_block_index, 'delta': {'type': 'input_json_delta', 'partial_json': initial_args}})}\n\n"
+                                f"data: {json.dumps({'type': 'content_block_delta', 'index': this_block_index, 'delta': {'type': 'input_json_delta', 'partial_json': initial_args}})}\n\n"
                             )
 
                         tool_block_index += 1
@@ -12199,9 +12283,29 @@ async def stream_anthropic_response(
                     PROXY_STREAM_REASONING_FALLBACK,
                 )
                 text_chunks.append(fallback_text)
+                fallback_idx = 0
+                if stream_thinking:
+                    # The thinking block (if any) is still open: close it and
+                    # open the text block the fallback lands in.
+                    if open_block is not None and open_block != text_block_index:
+                        yield (
+                            f"event: content_block_stop\n"
+                            f"data: {json.dumps({'type': 'content_block_stop', 'index': open_block})}\n\n"
+                        )
+                        open_block = None
+                    if text_block_index is None:
+                        text_block_index = next_block_index
+                        next_block_index += 1
+                    if open_block is None:
+                        open_block = text_block_index
+                        yield (
+                            f"event: content_block_start\n"
+                            f"data: {json.dumps({'type': 'content_block_start', 'index': text_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                        )
+                    fallback_idx = text_block_index
                 yield (
                     f"event: content_block_delta\n"
-                    f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': fallback_text}})}\n\n"
+                    f"data: {json.dumps({'type': 'content_block_delta', 'index': fallback_idx, 'delta': {'type': 'text_delta', 'text': fallback_text}})}\n\n"
                 )
             else:
                 logger.warning(
@@ -12210,10 +12314,30 @@ async def stream_anthropic_response(
                     PROXY_STREAM_REASONING_FALLBACK,
                 )
 
-        yield (
-            f"event: content_block_stop\n"
-            f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
-        )
+        if stream_thinking:
+            if open_block is not None:
+                yield (
+                    f"event: content_block_stop\n"
+                    f"data: {json.dumps({'type': 'content_block_stop', 'index': open_block})}\n\n"
+                )
+                open_block = None
+            elif text_block_index is None and next_block_index == 0:
+                # Completely empty turn: keep the legacy guarantee of at least
+                # one (empty) text block so clients always see a well-formed
+                # message body.
+                yield (
+                    f"event: content_block_start\n"
+                    f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                )
+                yield (
+                    f"event: content_block_stop\n"
+                    f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                )
+        else:
+            yield (
+                f"event: content_block_stop\n"
+                f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+            )
 
     # Log response summary
     accumulated_text = "".join(text_chunks)
@@ -12267,11 +12391,21 @@ async def stream_anthropic_response(
             # We already streamed the text as-is.  We cannot un-stream it,
             # but we CAN close the text block, emit the recovered tool_use
             # blocks, and fix the finish_reason so Claude Code sees them.
-            yield (
-                f"event: content_block_stop\n"
-                f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
-            )
-            for idx, xtc in enumerate(xml_extracted, start=1):
+            if stream_thinking:
+                if open_block is not None:
+                    yield (
+                        f"event: content_block_stop\n"
+                        f"data: {json.dumps({'type': 'content_block_stop', 'index': open_block})}\n\n"
+                    )
+                    open_block = None
+                xml_base = next_block_index
+            else:
+                yield (
+                    f"event: content_block_stop\n"
+                    f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                )
+                xml_base = 1
+            for idx, xtc in enumerate(xml_extracted, start=xml_base):
                 fn = xtc.get("function", {})
                 tc_id = xtc.get("id", f"toolu_{uuid.uuid4().hex[:12]}")
                 tc_name = _restore_tool_name(fn.get("name", ""))
