@@ -4,6 +4,10 @@
 > September 2026; vendor-reported numbers are flagged as such, and claims we
 > could not verify are marked or omitted. UAP's own claims in this document
 > were verified against the code.
+>
+> Companion: [Market Position & Competitive Analysis](../analysis/MARKET_POSITION.md)
+> (2026-09) — the dated, strategy-level read (market structure, moats, risks,
+> options) above this feature-level comparison.
 
 UAP is frequently miscast as "another agent harness." It isn't one — it's the
 **discipline layer that sits underneath the harness you're already using**, and

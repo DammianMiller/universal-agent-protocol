@@ -112,6 +112,15 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Accuracy Analysis](benchmarks/ACCURACY_ANALYSIS.md) | Success-rate and error analysis |
 | [Comprehensive Benchmarks](benchmarks/COMPREHENSIVE_BENCHMARKS.md) | Extended measurements |
 
+## Analysis
+
+Dated, strategy-level reads of the market UAP operates in. For the evergreen
+feature-level comparison, see [Comparison](reference/COMPARISON.md).
+
+| Doc | What it covers |
+|---|---|
+| [Market Position & Competitive Analysis (2026-09)](analysis/MARKET_POSITION.md) | The 2026 agentic-delivery market, UAP's category (agent discipline layer), competitive dynamics per adjacent category, moats, honest weaknesses, and strategic options |
+
 ## Plans & post-mortems
 
 Working documents that explain *why* the code looks the way it does — kept as
