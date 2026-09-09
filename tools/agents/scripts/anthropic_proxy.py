@@ -1189,6 +1189,23 @@ PROXY_STREAM_THINKING_DELTAS = os.environ.get(
     "off",
     "no",
 }
+# Emit a one-space thinking_delta every N seconds while the upstream stream
+# has produced no content yet (prompt prefill) or is idle before the first
+# text/tool block. Motivation (2026-09-09, Qwen3.8-Flash-Next 125B-A6B on a
+# single RTX 3090): a 64k-token session turn prefills at ~160-390 tok/s =
+# 170-400 s, past the Factory Droid ~242 s stream watchdog, and message_start
+# / ping events do NOT reset that watchdog — only content deltas do (verified
+# 2026-09-05). Each kill landed mid-prefill and the retry started from token
+# 0: a livelock. The space-only deltas keep the client alive without altering
+# visible output; the thinking block they open is the same block any real
+# leading reasoning then streams into. Requires PROXY_STREAM_THINKING_DELTAS
+# (the lazy block layout); 0 disables.
+try:
+    PROXY_PREFILL_HEARTBEAT_SECS = float(
+        os.environ.get("PROXY_PREFILL_HEARTBEAT_SECS", "0")
+    )
+except (TypeError, ValueError):
+    PROXY_PREFILL_HEARTBEAT_SECS = 0.0
 # Disable thinking on EVERY turn (not just tool turns). For models like Gemma 4
 # that emit ~100 thinking tokens for trivial replies, this halves output cost.
 PROXY_DISABLE_THINKING_ALWAYS = os.environ.get(
@@ -12037,8 +12054,42 @@ async def stream_anthropic_response(
     # upstream truth for telemetry and the session monitor.
     upstream_usage: dict = {}
 
+    # Heartbeat during upstream silence (prefill). aiter_lines() blocks with
+    # no idle callback, so each line read is a persistent Task raced against
+    # asyncio.wait — NOT wait_for, which cancels the inner read on timeout and
+    # would destroy the line iterator's state mid-stream. On timeout, emit a
+    # one-space thinking_delta (the only event class verified to reset the
+    # Droid stream watchdog) in the leading phase, else a ping.
+    _hb_secs = PROXY_PREFILL_HEARTBEAT_SECS if stream_thinking else 0.0
+    _line_iter = openai_stream.aiter_lines()
+    _pending_line: asyncio.Task | None = None
     try:
-        async for line in openai_stream.aiter_lines():
+        while True:
+            if _pending_line is None:
+                _pending_line = asyncio.ensure_future(_line_iter.__anext__())
+            if _hb_secs > 0:
+                _ready, _ = await asyncio.wait({_pending_line}, timeout=_hb_secs)
+                if not _ready:
+                    if text_block_index is None and not tool_calls_by_index:
+                        if open_block is None:
+                            open_block = next_block_index
+                            next_block_index += 1
+                            yield (
+                                f"event: content_block_start\n"
+                                f"data: {json.dumps({'type': 'content_block_start', 'index': open_block, 'content_block': {'type': 'thinking', 'thinking': '', 'signature': ''}})}\n\n"
+                            )
+                        yield (
+                            f"event: content_block_delta\n"
+                            f"data: {json.dumps({'type': 'content_block_delta', 'index': open_block, 'delta': {'type': 'thinking_delta', 'thinking': ' '}})}\n\n"
+                        )
+                    else:
+                        yield 'event: ping\ndata: {"type": "ping"}\n\n'
+                    continue
+            try:
+                line = await _pending_line
+            except StopAsyncIteration:
+                break
+            _pending_line = None
             if not line.startswith("data: "):
                 continue
             data = line[6:].strip()
@@ -12228,6 +12279,8 @@ async def stream_anthropic_response(
         logger.error("Unexpected stream error: %s: %s", type(exc).__name__, exc)
         finish_reason = "end_turn"
     finally:
+        if _pending_line is not None and not _pending_line.done():
+            _pending_line.cancel()
         if _sr_client is not None:
             _inflight_dec(_sr_client)
         # Detached close: a bare 'await aclose()' here is itself cancellable
