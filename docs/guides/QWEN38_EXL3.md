@@ -115,9 +115,10 @@ for VRAM and port 8080 on boot.
 
 ## What's next: Qwen3.8-Flash-Next as the 27B replacement (2026-09-09)
 
-Status: **evaluation in progress** — downloads and the llama.cpp-path bench
-are done; the EXL3-path bench and quality gates are pending. This section is
-the running analysis and updates as measurements land.
+Status: **evaluation in progress** — both serving paths are now benched at
+2.05bpw/3bpw class and the tool-call smoke test passes; the 4.05bpw quant is
+downloaded but its bench is on hold. This section is the running analysis
+and updates as measurements land.
 
 ### The model
 
@@ -155,10 +156,10 @@ metadata) is a hybrid linear-attention MoE, a generation ahead of the dense
 | Artifact | Path | Size | Status |
 |---|---|---|---|
 | GGUF UD-IQ3_XXS (~3bpw) + MTP sidecars | `~/models/flash-next/` | 82 GB + MTP | benched (below) |
-| EXL3 2.05bpw_h4_ng4 (turboderp) | `~/models/flash-next-exl3/2.05bpw/` | 62.5 GB (26.2 GB is the PLE table) | load-tested only |
-| EXL3 4.05bpw_h6_ng6 (turboderp) | `~/models/flash-next-exl3/4.05bpw/` | ~95 GB expected | downloading |
+| EXL3 2.05bpw_h4_ng4 (turboderp) | `~/models/flash-next-exl3/2.05bpw/` | 62.5 GB (26.2 GB is the PLE table) | benched + tool-call smoke test passed |
+| EXL3 4.05bpw_h6_ng6 (turboderp) | `~/models/flash-next-exl3/4.05bpw/` | 101 GB | downloaded; bench on hold |
 | Bench harness (`bench.py`, `bench_exl3.py`) | `~/dev/flash-next-bench/` | — | working |
-| Serving kit (EXL3 copy) | `~/Qwen3.8-FlashNext-EXL3-kit/` | — | staged, not yet configured |
+| Serving kit (EXL3 copy) | `~/Qwen3.8-FlashNext-EXL3-kit/` | — | configured + patched (below) |
 
 ### Measured: GGUF path (buun-llama-cpp 40262a4, VBR KV, MTP drafting)
 
@@ -177,33 +178,83 @@ resident + 16.5 GB MoE expert cache on the card, 77.5 GB host RAM — this is
 a **CPU-offload model on a 24 GB card**; the 5950X's 124 GB RAM is the
 second tier. MoE cache hit rate 80%.
 
+### Measured: EXL3 path (exllamav3 1.4.8+cu128/torch 2.10, 2.05bpw, MTP)
+
+Kit config: `--moe_cpu_split 288` (tail 288 of 512 experts per layer in
+RAM), `--moe_cpu_threads 32`, `--ngram_ram` (the 26 GB PLE table streams
+from disk per token without it), `--cache_quant 4`, 131072 ctx. Exact prompt
+counts come from a local `serve_openai.py` patch that emits the OpenAI
+`stream_options.include_usage` chunk (the streaming path previously dropped
+`stream_options` and never sent usage).
+
+| prompt depth | prompt tokens | prefill t/s | decode t/s |
+|---|---|---|---|
+| ~2k | 2514 | 641 | 18.1 |
+| ~32k | 38808 | 1091 | 19.0 |
+| ~92k | 108877 | 1036 | 18.2 |
+
+(prompt sizes overshoot the targets — `bench_exl3.py` estimates ~4
+chars/token without a tokenize endpoint, so read these as 2.5k/38.8k/108.9k.
+Decode is flat across depths: with the hybrid arch only 12 layers hold KV,
+and the CPU expert GEMM dominates at a constant per-token cost. A second
+back-to-back run showed no warm-up effect — 14–19 t/s — unlike the GGUF
+MoE heat cache.)
+
+**Tool-calling smoke test (2.05bpw): passed** — `tool_choice: auto` produced
+a well-formed `get_weather(city="Tokyo")` call with `finish_reason:
+"tool_calls"`, consistent with the thread's resolution that the 2bpw
+tool-call failures were template parsing, not the quant.
+
 ### The honest comparison vs the 27B EXL3 stack
 
-- **Decode: comparable.** 51–64 t/s warm at short ctx (27B: ~82), 54 t/s at
-  32k (27B: ~41–51 deep), 35 t/s at 92k. For agent loops Flash Next is
-  roughly at parity, with a much newer, much larger model behind it — plus
-  vision.
-- **Prefill: the gap.** ~180–280 t/s against the dense, fully GPU-resident
-  27B. A 64k-token session turn is **4–7 minutes of prefill**, which is
-  exactly why the proxy grew thinking deltas (#785) and the guarded/prefill
-  heartbeats (#787, #788) — those rails are load-bearing for this model,
-  not optional.
+- **Decode: GGUF wins.** Warm GGUF runs 51–64 t/s at short ctx, 54 at 32k,
+  35 at 92k; EXL3 2.05bpw is flat ~17–19 t/s. The buun fork's persistent MoE
+  heat cache (80% hit) is the difference; EXL3's dynamic placement did not
+  warm up on this workload.
+- **Prefill: EXL3 wins, and it flips the deployment story.** 641–1091 t/s vs
+  GGUF's 180–280 — a 64k-token session turn prefills in **~60–75 s on EXL3**
+  vs 4–7 minutes on GGUF. The proxy heartbeat rails (#785, #787, #788) are
+  still required for the GGUF path; EXL3 keeps long turns comfortably inside
+  the ~242 s watchdog.
+- **vs the 27B:** Flash Next decode on EXL3 (~18 t/s) is well under the 27B
+  EXL3 stack (~82 t/s warm, 41–51 deep); GGUF closes most of that gap when
+  warm. Flash Next's case is capability (newer, larger, vision), not speed.
 - **Memory economics flip.** The 27B is ~21 GB VRAM and negligible RAM;
-  Flash Next is ~8 GB VRAM + ~78 GB RAM. Combined they exceed the card, so
-  this is a **replacement, not a side-by-side** — the 27B EXL3 service stays
-  down while Flash Next is under test.
+  Flash Next is ~8 GB VRAM + ~78 GB RAM (GGUF) or GPU/CPU expert split
+  (EXL3). Combined they exceed the card, so this is a **replacement, not a
+  side-by-side** — the 27B EXL3 service stays down while Flash Next is under
+  test.
+
+### Kit deltas (FlashNext kit, outside the repo — reapply if re-cloned)
+
+1. `start.sh`: passes `--moe_cpu_split $MOE_CPU_SPLIT`,
+   `--moe_cpu_threads $MOE_CPU_THREADS`, `--ngram_ram` from `.env` through
+   to `serve_openai.py` (long forms only — argparse eats `-mcs 288` as
+   `-m cs`). Without `--moe_cpu_split` the autosplit dies with
+   `Insufficient VRAM in split for model and cache`; the 101 GB 4.05bpw
+   quant needs ~400 (vs 288 for 2.05bpw).
+2. `tools/serve_openai.py`: emits the `stream_options.include_usage` final
+   chunk with real token counts, `parse_request` now carries
+   `stream_options`, and `/v1/models` reports the checkpoint dir name
+   instead of a hardcoded 27B id.
+3. `.env`: `CACHE_QUANT=4`, `MOE_CPU_SPLIT=288`, `MOE_CPU_THREADS=32`,
+   `NGRAM_RAM=1`, 131072 ctx, port 8080. The venv is upstream exllamav3
+   1.4.8+cu128 on torch 2.10 (not the 27B kit's MiaAI fork 1.4.2 / cu124
+   stack) — no triton shim needed here.
 
 ### Plan
 
-1. Finish the 4.05bpw download, then configure the FlashNext-EXL3-kit. The
-   3090 adaptations above carry over unchanged (`CACHE_QUANT=4`, cu124 torch
-   pin, triton 3.3.1 + `torch.compile` shim); the kit already demonstrated
-   CPU split-expert offload (experts 224–512 of 512 per layer on CPU, avx2,
-   32 threads) on the 2.05bpw load test.
-2. Re-run `bench_exl3.py` at 2k/32k/92k on 4.05bpw; compare against the
-   GGUF rows above and the 27B table at the top.
-3. Quality gate before any switch: tool-call suite plus a real `uap deliver`
-   session — per the KLD caveat, top-token-flip behavior on code is the
-   deciding metric, not averages.
-4. The 27B EXL3 stack stays production until (2) and (3) pass; rollback
-   stays as documented above.
+1. ~~Download 4.05bpw; configure the FlashNext-EXL3-kit~~ — done
+   (2026-09-09), including the CPU-split offload wiring the 2.05bpw bench
+   needed. 4.05bpw bench is **on hold**; when it resumes it needs
+   `MOE_CPU_SPLIT≈400` (GPU-resident expert share scales with bpw).
+2. ~~Bench 2.05bpw EXL3 at 2k/32k/92k~~ — done (table above); tool-call
+   smoke test passed.
+3. Quality gate before any switch: the full tool-call suite plus a real
+   `uap deliver` session — per the KLD caveat, top-token-flip behavior on
+   code is the deciding metric, not averages. Open question for the serving
+   decision: GGUF's warm decode (51–64 t/s) vs EXL3's prefill (4–5x
+   faster) — the right answer may be workload-dependent (long-prefill agent
+   loops favor EXL3; long-generation favors GGUF).
+4. The 27B EXL3 stack stays production until (3) passes; rollback stays as
+   documented above.
