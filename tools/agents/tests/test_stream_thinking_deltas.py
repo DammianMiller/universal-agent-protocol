@@ -54,7 +54,25 @@ class _FakeUpstreamStream:
         self.closed = True
 
 
-def _drain(upstream, stream_thinking=True):
+class _SlowUpstreamStream(_FakeUpstreamStream):
+    """_FakeUpstreamStream with real async delays before each delta, so the
+    relay's prefill-heartbeat wait (asyncio.wait timeout) actually elapses."""
+
+    def __init__(self, deltas, finish_reason="stop", delay=0.2):
+        super().__init__(deltas, finish_reason)
+        self._delay = delay
+
+    async def aiter_lines(self):
+        for delta in self._deltas:
+            await asyncio.sleep(self._delay)
+            yield "data: " + json.dumps({"choices": [{"delta": delta, "index": 0}]})
+        yield "data: " + json.dumps(
+            {"choices": [{"delta": {}, "finish_reason": self._finish_reason}]}
+        )
+        yield "data: [DONE]"
+
+
+def _drain(upstream, stream_thinking=True, heartbeat_secs=0.0):
     monitor = proxy.SessionMonitor(context_window=131072)
     body = {
         "messages": [{"role": "user", "content": "go"}],
@@ -67,6 +85,8 @@ def _drain(upstream, stream_thinking=True):
         out = []
         with mock.patch.object(
             proxy, "PROXY_STREAM_THINKING_DELTAS", stream_thinking
+        ), mock.patch.object(
+            proxy, "PROXY_PREFILL_HEARTBEAT_SECS", heartbeat_secs
         ):
             async for frame in proxy.stream_anthropic_response(
                 upstream, "test-model", monitor, body
@@ -235,6 +255,55 @@ class TestStreamThinkingDeltas(unittest.TestCase):
         # Well-formed stream ends with message_delta then message_stop.
         self.assertEqual(events[-2]["type"], "message_delta")
         self.assertEqual(events[-1]["type"], "message_stop")
+
+
+class TestPrefillHeartbeat(unittest.TestCase):
+    """PROXY_PREFILL_HEARTBEAT_SECS: one-space thinking_deltas while the
+    upstream stream is silent in the leading phase (prompt prefill).
+
+    Regression cover for the 2026-09-09 livelock: Qwen3.8-Flash-Next on a
+    single RTX 3090 prefills a 64k-token session turn in 170-400 s, past the
+    Factory Droid ~242 s stream watchdog. message_start and ping events do
+    not reset that watchdog; each kill landed mid-prefill and the retry
+    re-prefilled from token 0. The heartbeat keeps content deltas flowing
+    without changing visible output.
+    """
+
+    def test_heartbeat_streams_thinking_spaces_before_text(self):
+        upstream = _SlowUpstreamStream([{"content": "answer"}], delay=0.22)
+        events = _assert_block_discipline(
+            self, _events(_drain(upstream, heartbeat_secs=0.05))
+        )
+
+        self.assertEqual(_block_kinds(events), ["thinking", "text"])
+        thinking = _deltas_of(events, "thinking_delta")
+        self.assertGreaterEqual(len(thinking), 2)
+        self.assertTrue(all(t == " " for t in thinking))
+        self.assertEqual(_deltas_of(events, "text_delta"), ["answer"])
+
+    def test_heartbeat_shares_block_with_real_reasoning(self):
+        upstream = _SlowUpstreamStream(
+            [{"reasoning_content": "real thought"}, {"content": "answer"}],
+            delay=0.12,
+        )
+        events = _assert_block_discipline(
+            self, _events(_drain(upstream, heartbeat_secs=0.05))
+        )
+
+        self.assertEqual(_block_kinds(events), ["thinking", "text"])
+        thinking = _deltas_of(events, "thinking_delta")
+        # Heartbeat spaces and the real reasoning share ONE thinking block.
+        self.assertEqual(thinking.count("real thought"), 1)
+        self.assertGreaterEqual(len(thinking), 3)
+        self.assertTrue(all(t in (" ", "real thought") for t in thinking))
+
+    def test_heartbeat_off_by_default_keeps_plain_text_layout(self):
+        upstream = _SlowUpstreamStream([{"content": "answer"}], delay=0.2)
+        events = _assert_block_discipline(self, _events(_drain(upstream)))
+
+        self.assertEqual(_block_kinds(events), ["text"])
+        self.assertEqual(_deltas_of(events, "thinking_delta"), [])
+        self.assertEqual(_deltas_of(events, "text_delta"), ["answer"])
 
 
 if __name__ == "__main__":
