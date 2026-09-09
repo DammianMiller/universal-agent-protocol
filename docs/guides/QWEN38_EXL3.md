@@ -238,8 +238,11 @@ stack.
 as benched, gave **1763 MiB free at 92k ctx** (vs 141 MiB stock), zero OOM
 across the full 2k/32k/92k ladder, prefill unchanged (199–287 t/s).
 
-Live config — **systemd, not manual** (both units enabled,
-`WantedBy=default.target`):
+Live config — **systemd, not manual**. Enablement follows the chosen
+boot backend (2026-09-09: `uap-exl3-server` + proxy enabled for boot —
+the pre-Flash-Next behavior — while Flash Next keeps running until the
+next switch/reboot; `~/.config/uap/model-switch.sh flash|exl3|status` is
+the switcher and re-aligns enablement):
 
 - `uap-flashnext-server.service` — the GGUF server on `:8080`. Its
   `ExecStart` is the source of truth; key deltas from the bench config:
