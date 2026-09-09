@@ -11849,6 +11849,16 @@ async def _heartbeat_then_buffered(produce_coro, model: str, input_tokens: int =
     a Starlette ``Response`` (the guarded path's error returns). Since the stream
     has already committed to HTTP 200, an error Response is re-emitted as an SSE
     ``error`` event rather than an HTTP status.
+
+    When PROXY_STREAM_THINKING_DELTAS and PROXY_PREFILL_HEARTBEAT_SECS are both
+    on, the keep-alive is a ``thinking`` block at index 0 fed with one-space
+    thinking_deltas instead of bare pings: pings and message_start do NOT reset
+    the Factory Droid ~242 s stream watchdog, only content deltas do
+    (2026-09-09: no-tool turns like session summarization — 51k-token prefill
+    plus up to 8000 buffered output tokens ≈ 470 s — livelocked on this path
+    while tool turns on the streaming relay stayed alive). The heartbeat block
+    is closed before the buffered content streams, which is then re-indexed
+    +1 via ``stream_anthropic_message(index_offset=1)``.
     """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     yield (
@@ -11856,6 +11866,8 @@ async def _heartbeat_then_buffered(produce_coro, model: str, input_tokens: int =
         f"data: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': input_tokens, 'output_tokens': 0}}})}\n\n"
     )
     interval = PROXY_STREAM_HEARTBEAT_SECS if PROXY_STREAM_HEARTBEAT_SECS > 0 else 15.0
+    thinking_heartbeat = PROXY_STREAM_THINKING_DELTAS and PROXY_PREFILL_HEARTBEAT_SECS > 0
+    hb_thinking_open = False
     task = asyncio.ensure_future(produce_coro)
     try:
         while True:
@@ -11865,7 +11877,19 @@ async def _heartbeat_then_buffered(produce_coro, model: str, input_tokens: int =
                 produced = await asyncio.wait_for(asyncio.shield(task), timeout=interval)
                 break
             except asyncio.TimeoutError:
-                yield 'event: ping\ndata: {"type": "ping"}\n\n'
+                if thinking_heartbeat:
+                    if not hb_thinking_open:
+                        hb_thinking_open = True
+                        yield (
+                            f"event: content_block_start\n"
+                            f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'thinking', 'thinking': '', 'signature': ''}})}\n\n"
+                        )
+                    yield (
+                        f"event: content_block_delta\n"
+                        f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'thinking_delta', 'thinking': ' '}})}\n\n"
+                    )
+                else:
+                    yield 'event: ping\ndata: {"type": "ping"}\n\n'
     except asyncio.CancelledError:
         # Client disconnected — cancel the in-flight produce AND await its
         # cleanup so httpx returns/closes the upstream connection before we
@@ -11887,6 +11911,14 @@ async def _heartbeat_then_buffered(produce_coro, model: str, input_tokens: int =
         )
         return
 
+    # Close the heartbeat thinking block (if opened) before any terminal
+    # event so the stream stays well-formed.
+    if hb_thinking_open:
+        yield (
+            f"event: content_block_stop\n"
+            f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+        )
+
     if isinstance(produced, Response):
         # Guarded path returned an error Response; re-emit as an SSE error event.
         try:
@@ -11900,16 +11932,23 @@ async def _heartbeat_then_buffered(produce_coro, model: str, input_tokens: int =
         return
 
     # produced is the finalized Anthropic response dict — stream its content
-    # without a second message_start (already sent above).
-    async for chunk in stream_anthropic_message(produced, emit_message_start=False):
+    # without a second message_start (already sent above). Blocks shift +1
+    # when the heartbeat thinking block occupies index 0.
+    async for chunk in stream_anthropic_message(
+        produced, emit_message_start=False, index_offset=1 if hb_thinking_open else 0
+    ):
         yield chunk
 
 
-async def stream_anthropic_message(anthropic_resp: dict, emit_message_start: bool = True):
+async def stream_anthropic_message(
+    anthropic_resp: dict, emit_message_start: bool = True, index_offset: int = 0
+):
     """Stream a finalized Anthropic message as SSE events.
 
     emit_message_start=False skips the leading message_start event for callers
     (the heartbeat wrapper) that have already emitted one to start the stream.
+    index_offset shifts every content block index — used when the caller has
+    already occupied index 0 (the prefill-heartbeat thinking block).
     """
     if emit_message_start:
         message = {
@@ -11931,7 +11970,7 @@ async def stream_anthropic_message(anthropic_resp: dict, emit_message_start: boo
         yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': message})}\n\n"
 
     content_blocks = anthropic_resp.get("content", []) or [{"type": "text", "text": ""}]
-    block_index = 0
+    block_index = index_offset
     for block in content_blocks:
         btype = block.get("type", "text")
         if btype == "tool_use":

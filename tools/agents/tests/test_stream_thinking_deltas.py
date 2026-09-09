@@ -306,5 +306,100 @@ class TestPrefillHeartbeat(unittest.TestCase):
         self.assertEqual(_deltas_of(events, "text_delta"), ["answer"])
 
 
+def _drain_guarded(produced, delay=0.2, prefill_hb_secs=0.05):
+    """Drive _heartbeat_then_buffered with a produce coroutine that resolves
+    after `delay` seconds; ping/timer interval shrunk to match."""
+
+    async def run():
+        async def produce():
+            await asyncio.sleep(delay)
+            return produced
+
+        out = []
+        with mock.patch.object(
+            proxy, "PROXY_STREAM_THINKING_DELTAS", True
+        ), mock.patch.object(
+            proxy, "PROXY_PREFILL_HEARTBEAT_SECS", prefill_hb_secs
+        ), mock.patch.object(
+            proxy, "PROXY_STREAM_HEARTBEAT_SECS", 0.05
+        ):
+            async for frame in proxy._heartbeat_then_buffered(
+                produce(), "test-model", 100
+            ):
+                out.append(frame)
+        return out
+
+    return asyncio.run(run())
+
+
+def _text_response(text):
+    return {
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": "test-model",
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 100, "output_tokens": 5},
+    }
+
+
+class TestGuardedPathHeartbeat(unittest.TestCase):
+    """The guarded non-stream path buffers the whole upstream generation; its
+    ping-only keep-alive did not reset the Droid ~242 s stream watchdog, so
+    long no-tool turns (e.g. session summarization, ~470 s total) livelocked
+    on 2026-09-09. With PROXY_PREFILL_HEARTBEAT_SECS on, the keep-alive is a
+    thinking block of one-space deltas and the buffered content re-indexes +1.
+    """
+
+    def test_guarded_heartbeat_thinking_then_text_reindexed(self):
+        events = _assert_block_discipline(
+            self, _events(_drain_guarded(_text_response("summary"), delay=0.22))
+        )
+
+        self.assertEqual(_block_kinds(events), ["thinking", "text"])
+        thinking = _deltas_of(events, "thinking_delta")
+        self.assertGreaterEqual(len(thinking), 2)
+        self.assertTrue(all(t == " " for t in thinking))
+        self.assertEqual(_deltas_of(events, "text_delta"), ["summary"])
+        starts = [ev for ev in events if ev.get("type") == "content_block_start"]
+        self.assertEqual(
+            [(s["index"], s["content_block"]["type"]) for s in starts],
+            [(0, "thinking"), (1, "text")],
+        )
+
+    def test_guarded_heartbeat_off_keeps_pings_and_text_at_zero(self):
+        events = _assert_block_discipline(
+            self,
+            _events(_drain_guarded(_text_response("summary"), prefill_hb_secs=0.0)),
+        )
+
+        self.assertEqual(_block_kinds(events), ["text"])
+        self.assertEqual(_deltas_of(events, "thinking_delta"), [])
+        starts = [ev for ev in events if ev.get("type") == "content_block_start"]
+        self.assertEqual(starts[0]["index"], 0)
+        pings = [ev for ev in events if ev.get("type") == "ping"]
+        self.assertGreaterEqual(len(pings), 2)
+
+    def test_guarded_heartbeat_error_response_closes_thinking_block(self):
+        err = proxy.Response(
+            content=json.dumps(
+                {"error": {"code": 500, "message": "boom", "type": "server_error"}}
+            ),
+            status_code=500,
+            media_type="application/json",
+        )
+        frames = _drain_guarded(err, delay=0.22)
+        events = _assert_block_discipline(self, _events(frames))
+
+        self.assertEqual(_block_kinds(events), ["thinking"])
+        # Thinking block closed before the terminal SSE error frame.
+        stop_at = next(
+            i for i, f in enumerate(frames) if "content_block_stop" in f
+        )
+        error_at = next(i for i, f in enumerate(frames) if "event: error" in f)
+        self.assertLess(stop_at, error_at)
+
+
 if __name__ == "__main__":
     unittest.main()
