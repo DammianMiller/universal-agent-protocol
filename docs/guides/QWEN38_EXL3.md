@@ -118,8 +118,9 @@ for VRAM and port 8080 on boot.
 Status: **evaluation in progress** — both serving paths are now benched at
 2.05bpw/3bpw class and the tool-call smoke test passes; the 4.05bpw quant is
 downloaded but its bench is on hold. The GGUF stack is the live server on
-`:8080` in the tuned config below (≥1 GB VRAM freed). This section is the
-running analysis and updates as measurements land.
+`:8080` in the original config (the ≥1 GB VRAM tuning below was tried and
+reverted — decode cost not worth the headroom). This section is the running
+analysis and updates as measurements land.
 
 ### The model
 
@@ -226,26 +227,28 @@ tool-call failures were template parsing, not the quant.
   side-by-side** — the 27B EXL3 service stays down while Flash Next is under
   test.
 
-### Tuned GGUF serving config (2026-09-09, ≥1 GB VRAM freed)
+### Tuned GGUF serving config (2026-09-09, ≥1 GB VRAM freed — REVERTED)
 
-The GGUF server now runs with one explicit tuning change:
+**Reverted same day:** the decode cost (~27–37 t/s under churn vs the
+51–64 peak) was not worth the headroom; the live server runs the original
+config below. Kept as a record of the only safe way to free VRAM on this
+stack.
+
 `GGML_CUDA_MOE_CACHE_RESERVE_MB=3072` + `--no-logits-all`, everything else
-as benched:
+as benched, gave **1763 MiB free at 92k ctx** (vs 141 MiB stock), zero OOM
+across the full 2k/32k/92k ladder, prefill unchanged (199–287 t/s).
+
+Live (original) config:
 
 ```bash
-GGML_CUDA_MOE_CACHE_RESERVE_MB=3072 llama-server \
+llama-server \
   --model .../UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
   --model-draft .../MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
   --host 0.0.0.0 --port 8080 \
   -cmoe -c 131072 -ub 512 -fa on \
   --vbr-entry t8 --spec-type draft-mtp \
-  --no-logits-all -t 16 --jinja --metrics
+  -t 16 --jinja --metrics
 ```
-
-Result: **1763 MiB free at 92k ctx** (was 141 MiB), zero OOM across the
-full 2k/32k/92k ladder, prefill unchanged (199–287 t/s). Decode costs some
-warm ceiling (the cache holds ~1.6 GB fewer hot experts): ~27–37 t/s during
-churn vs 35–64 before; it re-warms with short-context traffic.
 
 **Lesson (two failed attempts before this worked):** do **not** cap the
 MoE cache with `--moe-cache N` / `on` — explicit budgets are non-evictive,
