@@ -238,17 +238,28 @@ stack.
 as benched, gave **1763 MiB free at 92k ctx** (vs 141 MiB stock), zero OOM
 across the full 2k/32k/92k ladder, prefill unchanged (199–287 t/s).
 
-Live (original) config:
+Live config — **systemd, not manual** (both units enabled,
+`WantedBy=default.target`):
 
-```bash
-llama-server \
-  --model .../UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
-  --model-draft .../MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
-  --host 0.0.0.0 --port 8080 \
-  -cmoe -c 131072 -ub 512 -fa on \
-  --vbr-entry t8 --spec-type draft-mtp \
-  -t 16 --jinja --metrics
-```
+- `uap-flashnext-server.service` — the GGUF server on `:8080`. Its
+  `ExecStart` is the source of truth; key deltas from the bench config:
+  `-ub 2048 --fit-target 4096 --fit on --alias qwen38-flash-next
+  --reasoning-format auto`. The `-ub 2048` roughly doubles prefill
+  (**627 t/s measured at 2k** — a 64k-token turn is ~105 s, inside the
+  ~242 s client watchdog that the ub-512 config livelocked against) and
+  `--fit-target 4096` holds 4 GiB back from the MoE cache so the larger
+  prefill compute buffers fit. `Conflicts=` with `uap-exl3-server` /
+  `uap-llama-server` enforces backend mutual exclusion.
+- `uap-anthropic-proxy.service` — the Anthropic-protocol proxy on `:4000`
+  (upstream `http://127.0.0.1:8080/v1`, env in
+  `~/.config/uap/anthropic-proxy.env`, local-only routing pin intact).
+  End-to-end verified 2026-09-09: `POST :4000/v1/messages` →
+  `qwen38-flash-next` → correct response + usage.
+
+Bench reconstruction note: the earlier bench runs used `-ub 512` without
+`--fit-target`; that config's prefill (180–280 t/s) is why the proxy
+heartbeat rails (#785, #787, #788) were load-bearing. With the unit's
+`-ub 2048` they become belt-and-braces rather than required.
 
 **Lesson (two failed attempts before this worked):** do **not** cap the
 MoE cache with `--moe-cache N` / `on` — explicit budgets are non-evictive,
