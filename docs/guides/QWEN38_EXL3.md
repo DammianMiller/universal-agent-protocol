@@ -307,3 +307,44 @@ reserve handles it.
    loops favor EXL3; long-generation favors GGUF).
 4. The 27B EXL3 stack stays production until (3) passes; rollback stays as
    documented above.
+
+## Signal 3.8 27B — staged third backend (2026-09-10)
+
+[@laurent_zw's announcement](https://x.com/laurent_zw/status/2097813032671858809)
+(AgentionAI): **Signal 3.8 27B**, a self-distillation of Qwen3.8-27B trained
+on the base model's own answers under a "be direct" instruction. Claimed and
+card-measured: **−57% answer tokens, −52% thinking tokens, <half the
+wall-clock**, GSM8K parity (98.3% = base; thinking 95.0% vs 92.5%), MTP draft
+acceptance up (prose 39→47%, JSON 72→94%). GGUF-only release
+(`agentionai/Signal-3.8-27B-GGUF`, Apache-2.0) — no safetensors, so **no EXL3
+path**; adopting it means llama.cpp, not exllamav3.
+
+Verified from file headers/source: dense `qwen35` arch, **262144 native ctx**
+(131072 is native, not stretched), MTP head embedded in the GGUF (the buun
+fork's `--spec-type draft-mtp` detects native MTP layers — no sidecar),
+vision encoder untouched (base `mmproj-BF16.gguf` shipped alongside).
+
+**Fit vs the EXL3 27B stack:** raw decode likely loses (EXL3 ~82 t/s warm vs
+est. ~60–75 with MTP on llama.cpp), but per-task wall-clock should win —
+output volume roughly halves, which dominates. VRAM at 131k: IQ4_XS 13.27 GiB
++ q4 KV ~4.3 + compute ~1.5 ≈ **19 GiB** (comfortable). Risks: day-old,
+self-reported benchmarks, single-author tune, GGUF lock-in.
+
+**Staged (not active):**
+
+- Download: `AP-IQ4_XS` (13.27 GiB, max-headroom tier) + `mmproj-BF16.gguf`
+  → `~/models/signal-27b/`
+- `uap-signal-server.service` — created, **disabled/inactive** on purpose.
+  Same buun-fork binary and `-ub 2048 --fit-target 4096 --fit on` pattern as
+  `uap-flashnext-server`, plus `-ctk q4_0 -ctv q4_0` (131k KV at f16 would
+  cost ~17 GiB), `--spec-type draft-mtp`, card sampling defaults
+  (0.7/0.95/20/0), `Conflicts=` with all three other :8080 backends.
+- `~/.config/uap/model-switch.sh` extended: `signal` target + `status` now
+  covers all three model units. Activation when Flash Next work is done:
+  `model-switch.sh signal` (stops the others, enables signal for boot).
+- Boot default unchanged: `uap-exl3-server` + proxy.
+
+**Activation checklist (when the operator says go):** start → confirm
+`draft-mtp` attaches in the log (drop the flag if "no native MTP layers"
+warns) → tool-call smoke test → decode/prefill probe vs the EXL3 numbers →
+only then consider it for the boot default.
