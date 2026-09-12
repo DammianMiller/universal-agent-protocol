@@ -69,6 +69,37 @@ for pattern in "${EXEMPT_PATTERNS[@]}"; do
   fi
 done
 
+# Worktree enforcement is opt-out (setup wizard "Worktree isolation" off →
+# .uap.json worktrees.enforce=false). When disabled this hook is a no-op;
+# unreadable/missing config keeps the historical behavior (enforce). Mirrors
+# the config-authoritative delivery-enforcement read in uap-policy-gate.sh.
+# UAP_NO_WORKTREE=1 remains the per-run escape hatch and always wins.
+# The config lives at the MAIN checkout root and is typically gitignored, so
+# worktree checkouts don't carry it: resolve the main root via
+# git-common-dir. Probed only for in-repo, non-exempt paths.
+if [ "${UAP_NO_WORKTREE:-0}" = "1" ]; then
+  exit 0
+fi
+_WT_COMMON="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+_WT_MAIN=""
+if [ -n "$_WT_COMMON" ]; then
+  _WT_MAIN="$(dirname "$_WT_COMMON" 2>/dev/null || true)"
+fi
+if [ -z "$_WT_MAIN" ] || [ ! -d "$_WT_MAIN" ]; then
+  _WT_MAIN="$REPO_ROOT"
+fi
+_WT_ENFORCE="$(python3 -c '
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+    print("off" if (cfg.get("worktrees") or {}).get("enforce") is False else "on")
+except Exception:
+    print("on")
+' "$_WT_MAIN/.uap.json" 2>/dev/null || echo on)"
+if [ "$_WT_ENFORCE" = "off" ]; then
+  exit 0
+fi
+
 # Allow if path is inside a worktree (substring match, handles nested worktrees).
 # Before allowing a real source edit, announce it to the SHARED coordination DB
 # and check for a live overlap so independently-launched agents coordinate and

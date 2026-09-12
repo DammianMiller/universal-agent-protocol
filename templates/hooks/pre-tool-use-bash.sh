@@ -22,6 +22,49 @@ if [ -z "$CMD" ]; then
   exit 0
 fi
 
+# ─── Worktree Enforcement Opt-Out ───────────────────────────────
+# The worktree guards below (direct master commit/push, destructive git
+# outside worktrees) only apply when the project mandates worktrees. Setup
+# wizard "Worktree isolation" off → .uap.json worktrees.enforce=false and the
+# guards stand down. Unreadable/missing config = enforce (backward
+# compatible). UAP_NO_WORKTREE=1 is the per-run escape hatch for the
+# commit/push guards (the destructive-git guard keys on the config only — it
+# is data-loss prevention, not a workflow mandate).
+# (The protocol-tag, infra-protect, IaC, force-push, and version-edit guards
+# above/below are independent of the worktree workflow and stay on.)
+#
+# The config lives at the MAIN checkout root and is typically gitignored, so
+# worktree checkouts don't carry it: resolve the main root via git-common-dir
+# (a linked worktree's toplevel would miss the file and silently re-arm).
+# Probe only for git commands — non-git payloads skip the python3 spawn.
+_WT_ENFORCE="on"
+_WT_CFG="on"
+if echo "$CMD" | grep -qE '\bgit\b'; then
+  _WT_CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)
+  _WT_COMMON="$(git -C "${_WT_CWD:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  _WT_ROOT=""
+  if [ -n "$_WT_COMMON" ]; then
+    _WT_ROOT="$(dirname "$_WT_COMMON" 2>/dev/null || true)"
+  fi
+  if [ -z "$_WT_ROOT" ] || [ ! -d "$_WT_ROOT" ]; then
+    _WT_ROOT="$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd || true)"
+  fi
+  if [ -n "$_WT_ROOT" ]; then
+    _WT_CFG="$(python3 -c '
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+    print("off" if (cfg.get("worktrees") or {}).get("enforce") is False else "on")
+except Exception:
+    print("on")
+' "$_WT_ROOT/.uap.json" 2>/dev/null || echo on)"
+    _WT_ENFORCE="$_WT_CFG"
+  fi
+fi
+if [ "${UAP_NO_WORKTREE:-0}" = "1" ]; then
+  _WT_ENFORCE="off"
+fi
+
 # ─── Protocol Tag Injection Guard ────────────────────────────────
 # Reject Bash payloads that still contain standalone protocol tag lines.
 # These fragments can appear after malformed tool-call rendering and must
@@ -78,7 +121,8 @@ fi
 
 # ─── Direct Master/Main Commit Protection ───────────────────────
 # Block git commit when on master/main AND not inside a worktree
-if echo "$CMD" | grep -qE '\bgit\s+commit\b'; then
+# (skipped when the project opted out of worktree enforcement)
+if [ "$_WT_ENFORCE" != "off" ] && echo "$CMD" | grep -qE '\bgit\s+commit\b'; then
   PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
   CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)
   CHECK_DIR="${CWD:-$PROJECT_DIR}"
@@ -99,7 +143,8 @@ fi
 
 # ─── Direct Push to Master/Main Protection ──────────────────────
 # Block git push targeting main/master directly (not through PR)
-if echo "$CMD" | grep -qE '\bgit\s+push\b'; then
+# (skipped when the project opted out of worktree enforcement)
+if [ "$_WT_ENFORCE" != "off" ] && echo "$CMD" | grep -qE '\bgit\s+push\b'; then
   # Block explicit pushes to main/master
   if echo "$CMD" | grep -qE '\bgit\s+push\s+(origin\s+)?(main|master)\b'; then
     # Allow push after version bump (git push && git push --tags pattern)
@@ -113,7 +158,9 @@ fi
 
 # ─── Destructive Git Operations ─────────────────────────────────
 # Block git reset --hard and git clean -f outside worktrees
-if echo "$CMD" | grep -qE '\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[a-z]*f'; then
+# (keys on the project config only — data-loss prevention, not a per-run
+# workflow choice, so UAP_NO_WORKTREE does not stand it down)
+if [ "$_WT_CFG" != "off" ] && echo "$CMD" | grep -qE '\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[a-z]*f'; then
   CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)
   if ! echo "${CWD:-.}" | grep -q '\.worktrees/'; then
     echo "BLOCKED [git-safety]: Destructive git operations (reset --hard, clean -f) are prohibited outside worktrees. These can destroy uncommitted work in the project root." >&2

@@ -151,6 +151,9 @@ export const WorktreeSchema = z.object({
   directory: z.string().default('.worktrees'),
   branchPrefix: z.string().default('feature/'),
   autoCleanup: z.boolean().default(true),
+  // Hard-block edits outside worktrees (hooks + worktree-required policy).
+  // Separate from `enabled`: a project may support worktrees without mandating them.
+  enforce: z.boolean().default(true),
 });
 
 export const DroidSchema = z.object({

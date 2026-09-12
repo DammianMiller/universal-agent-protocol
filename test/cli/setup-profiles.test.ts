@@ -130,3 +130,46 @@ describe('applyWizardConfig persists the Maximum bundle to .uap.json', () => {
     expect(cfg.proxy?.autostart).toBe(false);
   });
 });
+
+describe('applyWizardConfig — worktree enforcement flag (worktrees.enforce)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-wtcfg-'));
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1' }));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('worktreeIsolation ON → worktrees.enforce true, worktreeWorkflow section not disabled', async () => {
+    const s = maxSelections({ platforms: ['claude'], localModel: 'http://localhost:8080/v1', hasDocker: true });
+    expect(s.multiAgent.worktreeIsolation).toBe(true);
+    await applyWizardConfig(dir, s);
+    const cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf8'));
+    expect(cfg.worktrees).toMatchObject({ enabled: true, enforce: true });
+    expect(cfg.template?.sections?.worktreeWorkflow).not.toBe(false);
+  });
+
+  it('worktreeIsolation OFF → worktrees stay supported but enforce=false + worktreeWorkflow section false', async () => {
+    const s = maxSelections({ platforms: ['claude'], localModel: 'http://localhost:8080/v1', hasDocker: true });
+    s.multiAgent.worktreeIsolation = false;
+    await applyWizardConfig(dir, s);
+    const cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf8'));
+    // supported, not enforced: hooks + worktree-required policy stand down
+    expect(cfg.worktrees).toMatchObject({ enabled: true, enforce: false });
+    expect(cfg.template?.sections?.worktreeWorkflow).toBe(false);
+  });
+
+  it('re-running the wizard OFF→ON restores enforce=true and the worktreeWorkflow section', async () => {
+    const off = maxSelections({ platforms: ['claude'], localModel: 'http://localhost:8080/v1', hasDocker: true });
+    off.multiAgent.worktreeIsolation = false;
+    await applyWizardConfig(dir, off);
+    let cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf8'));
+    expect(cfg.worktrees?.enforce).toBe(false);
+    expect(cfg.template?.sections?.worktreeWorkflow).toBe(false);
+
+    const on = maxSelections({ platforms: ['claude'], localModel: 'http://localhost:8080/v1', hasDocker: true });
+    await applyWizardConfig(dir, on);
+    cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf8'));
+    expect(cfg.worktrees?.enforce).toBe(true);
+    expect(cfg.template?.sections?.worktreeWorkflow).toBe(true);
+  });
+});

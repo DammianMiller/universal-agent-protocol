@@ -194,6 +194,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
           directory: existingConfig.worktrees?.directory || '.worktrees',
           branchPrefix: existingConfig.worktrees?.branchPrefix || 'feature/',
           autoCleanup: existingConfig.worktrees?.autoCleanup ?? true,
+          // Non-interactive init keeps the historical behavior: enforce on.
+          // The guided wizard is where projects opt out (worktrees.enforce).
+          enforce: existingConfig.worktrees?.enforce ?? true,
         }
       : existingConfig.worktrees,
     droids: existingConfig.droids || [],
