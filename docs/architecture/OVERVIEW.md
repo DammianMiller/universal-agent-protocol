@@ -251,8 +251,8 @@ tokens (`design_token_gate.py`), visual verification (`visual_verification.py`),
 branch freshness (`branch_freshness.py`), self-protection
 (`enforcement_self_protect.py` — guards the policy DB, hook scripts, and trust
 anchors like `.uap/operator-overrides.json` against tampering, including
-interpreter-mediated writes), memory-before-plan, MCP-router-first, RTK
-wrapping, and more. Levels: **REQUIRED** blocks, **RECOMMENDED** logs,
+interpreter-mediated writes), memory-before-plan, MCP-router-first,
+and more. Levels: **REQUIRED** blocks, **RECOMMENDED** logs,
 **OPTIONAL** informs.
 
 Two trust anchors sit above the policies themselves (v1.224): the
@@ -504,5 +504,4 @@ ceiling (default 30, hard cap 50), and stops once progress stalls.
 - [PROTOCOL.md](PROTOCOL.md) — the harness↔UAP contract and agent loop
 - [../guides/DELIVERY_PIPELINE.md](../guides/DELIVERY_PIPELINE.md) — the end-to-end delivery-pipeline walkthrough
 - [../integrations/MCP_ROUTER.md](../integrations/MCP_ROUTER.md) — MCP Router setup
-- [../integrations/RTK.md](../integrations/RTK.md) — RTK (Rust Token Killer)
 - [../../CONTRIBUTING.md](../../CONTRIBUTING.md) — development workflow

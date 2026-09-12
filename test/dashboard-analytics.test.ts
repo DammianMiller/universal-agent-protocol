@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { getSavingsByInfluence, __setRtkRunnerForTest } from '../src/dashboard/savings.js';
+import { getSavingsByInfluence } from '../src/dashboard/savings.js';
 import { getOrchestrationTree } from '../src/dashboard/orchestration-tree.js';
 import { dashboardBundle } from './helpers/dashboard-bundle.js';
 
@@ -19,7 +19,7 @@ describe('getSavingsByInfluence', () => {
 
   it('is fail-soft with no sources and returns influence rows + totals', () => {
     const sv = getSavingsByInfluence(dir);
-    expect(sv.influences.length).toBeGreaterThanOrEqual(3);
+    expect(sv.influences.length).toBeGreaterThanOrEqual(2);
     expect(typeof sv.totalTokensSaved).toBe('number');
     const routing = sv.influences.find((i) => i.influence.startsWith('Model routing'))!;
     expect(routing.quality).toBe('unmeasured');
@@ -117,38 +117,19 @@ describe('dashboard savings table — explicit idle state', () => {
   });
 });
 
-describe('rtk savings cache (perf)', () => {
+describe('savings report without RTK (rtk integration removed)', () => {
   let dir: string;
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'uap-rtk-')); });
-  afterEach(() => { __setRtkRunnerForTest(null); rmSync(dir, { recursive: true, force: true }); });
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'uap-sav-nortk-')); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('runs `rtk gain` at most once across rapid dashboard refreshes (cached)', () => {
-    let calls = 0;
-    __setRtkRunnerForTest(() => { calls += 1; return JSON.stringify({ summary: { total_saved: 1000, avg_savings_pct: 60, total_commands: 42 } }); });
-    const a = getSavingsByInfluence(dir);
-    getSavingsByInfluence(dir);
-    getSavingsByInfluence(dir);
-    expect(calls).toBe(1); // 3 reads, one subprocess (was 3 * ~1.9s -> ~1.9s once/TTL)
-    const rtk = a.influences.find((i) => i.influence.startsWith('RTK'))!;
-    expect(rtk.quality).toBe('measured');
-    expect(rtk.tokensSaved).toBe(1000);
+  it('contains no RTK influence row', () => {
+    const sv = getSavingsByInfluence(dir);
+    expect(sv.influences.find((i) => i.influence.startsWith('RTK'))).toBeUndefined();
   });
 
-  it('clears the cache when the runner is swapped (fresh value)', () => {
-    let calls = 0;
-    __setRtkRunnerForTest(() => { calls += 1; return JSON.stringify({ summary: { total_saved: 5 } }); });
-    expect(getSavingsByInfluence(dir).influences.find((i) => i.influence.startsWith('RTK'))!.tokensSaved).toBe(5);
-    __setRtkRunnerForTest(() => { calls += 1; return JSON.stringify({ summary: { total_saved: 9 } }); });
-    expect(getSavingsByInfluence(dir).influences.find((i) => i.influence.startsWith('RTK'))!.tokensSaved).toBe(9);
-    expect(calls).toBe(2);
-  });
-
-  it('caches failures too (a broken rtk does not re-run every refresh)', () => {
-    let calls = 0;
-    __setRtkRunnerForTest(() => { calls += 1; throw new Error('rtk missing'); });
-    const a = getSavingsByInfluence(dir).influences.find((i) => i.influence.startsWith('RTK'))!;
-    getSavingsByInfluence(dir);
-    expect(calls).toBe(1);
-    expect(a.quality).toBe('unmeasured');
+  it('still measures the remaining influences (routing + compression)', () => {
+    const names = getSavingsByInfluence(dir).influences.map((i) => i.influence);
+    expect(names.some((n) => n.startsWith('Model routing'))).toBe(true);
+    expect(names.some((n) => n.startsWith('Context compression'))).toBe(true);
   });
 });

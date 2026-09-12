@@ -137,7 +137,6 @@ mode (Assist = intake/routing context; Enforce = a station gate):
 | completion gate | stop | Enforce |
 | HALO analyze | session-end | Assist |
 | deploy flush | on deliver success | Enforce |
-| rtk token-opt | pre-tool (bash) | Enforce (already) |
 | ideate | on-demand only (router suggests when stuck) | Assist |
 
 ## 5. Per-harness wiring

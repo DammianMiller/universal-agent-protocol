@@ -63,6 +63,9 @@ GH_API_SHIP_RE = re.compile(
 )
 GIT_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
 WRAPPER_VERBS = frozenset({
+    # "rtk" stays even though UAP no longer integrates the rtk CLI: the binary
+    # can still exist on operator machines, and without the unwrap, forms like
+    # `rtk git -C /repo push` would slip past the ship gate (fail-open).
     "rtk", "env", "nohup", "sudo", "time", "command", "timeout", "stdbuf",
 })
 _SEGMENT_SPLIT = re.compile(r"(?:\|\||&&|[;\n|&])")

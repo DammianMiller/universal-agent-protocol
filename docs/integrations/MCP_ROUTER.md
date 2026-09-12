@@ -151,6 +151,3 @@ router's view, not deleted) and re-run `uap mcp-setup`.
 - The 98% / 75k→700 figures are the documented design target for tool hiding;
   per-output FTS5 savings are computed live for each call and reported by
   `uap mcp-router stats`.
-- Pair the router with **RTK** for CLI-output savings — see
-  [RTK.md](RTK.md). The two are complementary (tool definitions + CLI output),
-  and together they keep the whole belt clear of context clutter.
