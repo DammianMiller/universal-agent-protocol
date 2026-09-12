@@ -315,10 +315,14 @@ reserve handles it.
 (+ proxy); `uap-exl3-server` and `uap-flashnext-server` are disabled.
 
 **Measured on this box** (AP-IQ4_XS, buun fork, `-ub 2048 --fit-target 4096`,
-q4 KV, 131k ctx; tuned 2026-09-12 with `--ctx-checkpoints 64 --cache-ram
-16384 -t 16` from the proven dflash2 profile — prompt-cache reuse across
-agent-loop turns, verified live at 43.5–44.4 t/s warm decode / 833–877 t/s
-prefill):
+q4 KV, 131k ctx; tuned 2026-09-12 with `--cache-ram 16384 -t 16` from the
+proven dflash2 profile — prompt-cache reuse across agent-loop turns —
+plus `--ctx-checkpoints 2`: each checkpoint pins ~150 MiB of VRAM on this
+dense model, so the old profile's 64 is not viable here. Server footprint
+is a steady ~22.0 GiB; remaining "free VRAM" variance (150–900 MiB) is the
+desktop session (gnome-shell/firefox/warp ≈ 1.4–2 GiB), not the server.
+Bigger structural levers if ever needed: `-c 65536` (−3.5 GiB), drop
+`--mmproj` (−0.9 GiB), `-ngl` trim (−0.2 GiB/layer)):
 
 | config | 2k prefill/decode | 32k | 92k | VRAM @92k |
 | --- | --- | --- | --- | --- |
