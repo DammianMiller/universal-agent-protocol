@@ -58,12 +58,14 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Configure NPM
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
-          chmod 600 ~/.npmrc
-
+      # NOTE: no separate ~/.npmrc step. setup-node's registry-url writes
+      # $NPM_CONFIG_USERCONFIG (an npmrc referencing $NODE_AUTH_TOKEN) and
+      # exports it job-wide, so a ~/.npmrc token is never read — the publish
+      # then authenticates with an unset/placeholder NODE_AUTH_TOKEN and npm
+      # answers E404. Supply NODE_AUTH_TOKEN on the publish step instead.
       - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           echo "Publishing with force=${{ github.event.inputs.force }}"
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
