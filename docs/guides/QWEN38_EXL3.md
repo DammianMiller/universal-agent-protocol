@@ -308,7 +308,33 @@ reserve handles it.
 4. The 27B EXL3 stack stays production until (3) passes; rollback stays as
    documented above.
 
-## Signal 3.8 27B — staged third backend (2026-09-10)
+## Signal 3.8 27B — ACTIVE backend since 2026-09-12
+
+**Activated 2026-09-12** (operator confirmed Flash Next work done) via
+`model-switch.sh signal`: `uap-signal-server` is now the enabled boot backend
+(+ proxy); `uap-exl3-server` and `uap-flashnext-server` are disabled.
+
+**Measured on this box** (AP-IQ4_XS, buun fork, `-ub 2048 --fit-target 4096`,
+q4 KV, 131k ctx):
+
+| config | 2k prefill/decode | 32k | 92k | VRAM @92k |
+| --- | --- | --- | --- | --- |
+| `--spec-type draft-mtp` (native head) | 780 / 36.3 | 727 / 20.1 | 557 / 13.3 | 21.2 GiB |
+| **`--spec-type draft-dflash` (DFlash2 draft)** | **871 / 45.6** | **731 / 31.3** | **597 / 30.0** | 22.7 GiB |
+
+DFlash2 (the draft trained for base Qwen3.8-27B) transfers fine to Signal
+(acceptance 0.60–0.80) and beats the native MTP head at every depth — 2.3x
+at 92k — so the unit runs draft-dflash. Tool-call smoke test passed
+(`get_weather(city="Tokyo")`), proxy end-to-end verified on :4000.
+
+**Honest verdict vs the EXL3 27B stack:** raw decode still loses (45.6 vs ~82
+warm; 30 vs 41–51 deep). But Signal's −57% output tokens flip the wall-clock:
+median general answer ≈ 104 tok @ 45.6 = **2.3 s** vs 243 tok @ 82 = 3.0 s;
+at depth 104 @ 30 = **3.5 s** vs 243 @ 46 ≈ 5.3 s. Less proxy pressure and
+smaller context footprint come free. Risks stand: day-one model,
+self-reported quality numbers, GGUF-only.
+
+### Signal background (staged 2026-09-10)
 
 [@laurent_zw's announcement](https://x.com/laurent_zw/status/2097813032671858809)
 (AgentionAI): **Signal 3.8 27B**, a self-distillation of Qwen3.8-27B trained
@@ -340,11 +366,10 @@ self-reported benchmarks, single-author tune, GGUF lock-in.
   cost ~17 GiB), `--spec-type draft-mtp`, card sampling defaults
   (0.7/0.95/20/0), `Conflicts=` with all three other :8080 backends.
 - `~/.config/uap/model-switch.sh` extended: `signal` target + `status` now
-  covers all three model units. Activation when Flash Next work is done:
+  covers all three model units. Activation (done 2026-09-12):
   `model-switch.sh signal` (stops the others, enables signal for boot).
-- Boot default unchanged: `uap-exl3-server` + proxy.
 
-**Activation checklist (when the operator says go):** start → confirm
-`draft-mtp` attaches in the log (drop the flag if "no native MTP layers"
-warns) → tool-call smoke test → decode/prefill probe vs the EXL3 numbers →
-only then consider it for the boot default.
+**Activation checklist (all passed 2026-09-12):** draft attach confirmed —
+and upgraded: draft-mtp worked but draft-dflash measured faster, so the unit
+switched drafts; tool-call smoke test ✓; proxy end-to-end ✓; 2k/32k/92k
+bench ladder ✓ (table above).
