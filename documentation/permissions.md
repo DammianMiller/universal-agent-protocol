@@ -37,7 +37,7 @@ therefore enforce:
 `cluster-routing, iac-parity, worktree-required, schema-diff-gate, parallel-reads,
 mcp-router-first, memory-before-plan, test-gate, doc-live-over-report, artifact-hygiene,
 coord-overlap, session-memory-write, codebase-read-before-plan, validate-plan-before-build,
-rtk-wrap, delivery-enforcement, workdir-scope`.
+delivery-enforcement, workdir-scope`.
 
 ### Plane B — TypeScript PolicyGate (mcp-router path only)
 `src/policies/policy-gate.ts` keyword/anti-pattern matches a tool operation against

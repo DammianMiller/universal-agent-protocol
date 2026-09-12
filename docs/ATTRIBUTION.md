@@ -30,7 +30,6 @@ because UAP embeds, vendors, or builds core workflows around them:
 - **Qwen** (Alibaba) — the local models UAP's local-first delivery pipeline is tuned for and benchmarked with.
 - **[Qdrant](https://qdrant.tech/)** + **nomic-embed-text** — the semantic long-term memory store and its embeddings.
 - **[uPlot](https://github.com/leeoniya/uPlot)** (MIT) — vendored (with license) in `web/vendor/` for the dashboard's charts.
-- **[RTK — Rust Token Killer](https://github.com/rtk-rs)** — the token-optimized CLI proxy the hook layer routes shell commands through.
 - **commander**, **@clack/prompts**, **vitest**, **better-sqlite3**, **zod** — the CLI, wizard, test, storage, and schema backbones.
 
 ## Conventions

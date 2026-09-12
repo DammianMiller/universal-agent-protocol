@@ -19,8 +19,6 @@ compatibility: CLAUDE.md v2.3.0+
 # Adversarial Thinking
 
 > **Integration**: Load via `@Skill:adversarial.md` in DECISION LOOP step 5  
-> **RTK Integration**: Supports `@hooks-session-start.md`, `@PreCompact.md`
-
 ## Overview
 
 Adversarial thinking for security research, vulnerability assessment, and bypass testing. Requires attacker mindset while maintaining defensive best practices.

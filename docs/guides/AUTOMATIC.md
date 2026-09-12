@@ -137,7 +137,6 @@ automatically on every operation. No manual code reviews for common issues.
 
 | Gate | What it checks | When it fires |
 |---|---|---|
-| rtk_wrap | Token optimization | Every CLI command |
 | iac_parity | Infrastructure-as-Code safety | kubectl, helm, aws, gcloud, doctl |
 | delivery_enforcement | Verified output | Every source file edit |
 
@@ -233,18 +232,6 @@ changes are batched together and deployed as a single atomic unit.
 
 ---
 
-### rtk — 60–90% Token Savings
-
-**Benefit:** Massive token savings on every CLI command. rtk intercepts commands,
-optimizes them, and proxies through a token-efficient layer.
-
-**When it kicks in:** On every CLI command. rtk rewrites commands to use
-optimized paths and caches results.
-
-**You get:** Dramatically lower API costs and faster command execution.
-
----
-
 ### HALO — Human Oversight
 
 **Benefit:** Critical operations require human approval before execution.
@@ -288,7 +275,6 @@ VRAM-tiered configurations.
 | Schema-diff | API contract safety | Schema edits |
 | Completion gates | Verify "done" is done | Agent claims done |
 | Deploy batching | Atomic multi-change deploys | Deployable changes |
-| rtk | 60–90% token savings | Every CLI command |
 | HALO | Human oversight for critical ops | Critical actions |
 
 **Install UAP. Use your coding agent normally. Everything else is automatic.**

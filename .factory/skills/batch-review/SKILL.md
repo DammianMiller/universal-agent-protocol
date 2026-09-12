@@ -15,8 +15,6 @@ compatibility: CLAUDE.md v2.3.0+
 # Batch Review (claude-batch-toolkit)
 
 > **Integration**: Load via `@Skill:batch-review.md` in DECISION LOOP step 5  
-> **RTK Integration**: Supports `@hooks-session-start.md`, `@PreCompact.md`
-
 ## Overview
 
 Send non-urgent analysis to Anthropic's Batch API at **50% cost reduction**. Ideal for code reviews, documentation, security audits, and architecture analysis that can wait ~1 hour.

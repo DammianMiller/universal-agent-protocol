@@ -105,7 +105,6 @@ Each enforcer guards a specific station of the pipeline. The enforcers in
 | Enforcer | What it gates |
 |----------|---------------|
 | `mcp_router_first` | MCP tools must be loaded on demand |
-| `rtk_wrap` | Heavy CLIs must be invoked via `rtk` |
 | `parallel_reads` | Nudge when serial read fan-out is detected |
 
 ### Infrastructure

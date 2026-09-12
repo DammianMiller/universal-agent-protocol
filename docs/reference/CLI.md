@@ -68,7 +68,6 @@ runs, keeping `--help` fast.
 | [`mcp-router`](#mcp-router) | Hierarchical MCP router for 98%+ token reduction |
 | [`hooks`](#hooks) | Manage session hooks across platforms |
 | [`tool-calls`](#tool-calls) | Manage Qwen3.5 tool call fixes and chat templates |
-| [`rtk`](#rtk) | Manage RTK (Rust Token Killer) integration |
 | [`mcp-setup`](#mcp-setup) | Configure MCP Router for all AI harnesses |
 | [`schema-diff`](#schema-diff) | Detect breaking schema changes between branches |
 | [`policy`](#policy) | UAP policy management |
@@ -1012,18 +1011,6 @@ Manage Qwen3.5 tool call fixes and chat templates.
 | `test` | `--verbose` | Run the reliability test suite |
 | `status` | — | Check current configuration |
 | `fix` | — | Apply template fixes to existing templates |
-
----
-
-## `rtk`
-
-Manage RTK (Rust Token Killer) integration for token optimization.
-
-| Subcommand | Key flags | Purpose |
-|------------|-----------|---------|
-| `install` | `--force`, `--method` (npm/cargo/binary) | Install the RTK CLI proxy for 60-90% token savings |
-| `status` | — | Check RTK installation and token savings |
-| `help` | — | Show RTK usage information |
 
 ---
 

@@ -186,7 +186,7 @@ this machinery:
   per-node status and the agents working each node, plus the active build
   ledger's progress.
 - **Token Savings by Influence** — real tokens/cost saved, attributed per
-  mechanism (RTK, model routing, context compression), with honest
+  mechanism (model routing, context compression), with honest
   *measured / estimated* labels.
 
 ---

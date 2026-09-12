@@ -153,7 +153,7 @@ DB-driven policy enforcement engine.
 | Policy memory (`policy-memory.ts`) | Persists policies (`policies.db`). |
 | Enforced tool router (`enforced-tool-router.ts`) | Routes tool calls through the gate. |
 | CLAUDE.md conversion (`convert-policy-to-claude.ts`) | Renders policies into CLAUDE.md. |
-| Enforcers (`enforcers/`) | ~20 Python enforcers (worktree_required, test_gate, schema_diff_gate, memory_before_plan, coord_overlap, mcp_router_first, rtk_wrap, iac_parity, expert_review_required, etc.). |
+| Enforcers (`enforcers/`) | ~20 Python enforcers (worktree_required, test_gate, schema_diff_gate, memory_before_plan, coord_overlap, mcp_router_first, iac_parity, expert_review_required, etc.). |
 
 ## Delivery (`src/delivery/`) — Build & QC / Verify
 
@@ -284,5 +284,5 @@ The `uap` CLI is the single door into the whole factory (top-level commands):
 `handsfree` (`hf`), `challenge`, `sandbox`, `react`, `ideate`, `coord`, `agent`,
 `deploy`, `task`, `compliance`, `coordination`, `skill`, `update`,
 `dashboard` (alias `dash`), `model`, `mcp-router`, `hooks`, `tool-calls`,
-`rtk`, `mcp-setup`, `schema-diff`, `policy`, `uap-omp`. See
+`mcp-setup`, `schema-diff`, `policy`, `uap-omp`. See
 [CLI reference](CLI.md) for every command and flag.

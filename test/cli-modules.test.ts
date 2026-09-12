@@ -133,9 +133,10 @@ describe('CLI MCP Router Module', () => {
   });
 });
 
-describe('CLI RTK Module', () => {
-  it('should export rtk module', async () => {
-    const module = await import('../src/cli/rtk.js');
-    expect(module).toBeDefined();
+describe('CLI RTK Module (removed)', () => {
+  it('is not registered in the CLI lazy-loader map', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'bin', 'cli.ts'), 'utf-8');
+    expect(src).not.toMatch(/import\('\.\.\/cli\/rtk\.js'\)/);
+    expect(src).not.toMatch(/new Command\('rtk'\)/);
   });
 });
