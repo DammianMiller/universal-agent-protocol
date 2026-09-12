@@ -309,15 +309,25 @@ export async function applyWizardConfig(
       deployBatching: selections.multiAgent.deployBatching,
       agentMessaging: selections.multiAgent.agentMessaging,
     };
-    if (selections.multiAgent.worktreeIsolation) {
-      config.worktrees = {
-        enabled: true,
-        directory: '.worktrees',
-        branchPrefix: 'feature/',
-        autoCleanup: true,
-        ...((config.worktrees as Record<string, unknown>) || {}),
-      };
-    }
+    // Worktrees stay *supported* either way; the wizard answer owns whether
+    // edits outside a worktree are hard-blocked (`enforce`) and whether the
+    // MANDATORY worktree section renders in generated CLAUDE.md files.
+    config.worktrees = {
+      enabled: true,
+      directory: '.worktrees',
+      branchPrefix: 'feature/',
+      autoCleanup: true,
+      ...((config.worktrees as Record<string, unknown>) || {}),
+      enforce: selections.multiAgent.worktreeIsolation,
+    };
+    // Written both ways so re-running the wizard is symmetric: opting back in
+    // restores the section instead of leaving a stale `false` behind.
+    const tpl = (config.template as Record<string, unknown>) || {};
+    const sections = (tpl.sections as Record<string, unknown>) || {};
+    config.template = {
+      ...tpl,
+      sections: { ...sections, worktreeWorkflow: selections.multiAgent.worktreeIsolation },
+    };
 
     // ── Patterns ────────────────────────────────────────────────────────
     if (selections.patterns.patternRag) {

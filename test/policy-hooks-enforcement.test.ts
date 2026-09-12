@@ -229,6 +229,257 @@ describe('Policy Enforcement Hooks', () => {
     });
   });
 
+  // ─── Worktree Enforcement Opt-Out (worktrees.enforce) ─────────
+  // Setup wizard "Worktree isolation" off → .uap.json worktrees.enforce=false
+  // → the hardcoded hooks stand down. Unreadable/missing config keeps the
+  // historical default (enforce on). Behavioural coverage against the
+  // installed .claude/hooks copies (which mirror templates/hooks).
+  describe('worktree enforcement opt-out via .uap.json', () => {
+    // Same isolated-repo rationale + defenses as the worktree file guard
+    // behavioural tests above (git -C anchoring, GIT_* env scrub).
+    const setupTempRepo = (): string => {
+      const tmpRoot = mkdtempSync(join(tmpdir(), 'uap-hook-test-'));
+      const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+      delete cleanEnv.GIT_DIR;
+      delete cleanEnv.GIT_WORK_TREE;
+      delete cleanEnv.GIT_INDEX_FILE;
+      execSync(`git -C "${tmpRoot}" init -q`, { env: cleanEnv });
+      execSync(`git -C "${tmpRoot}" config user.email test@test`, { env: cleanEnv });
+      execSync(`git -C "${tmpRoot}" config user.name test`, { env: cleanEnv });
+      execSync(`git -C "${tmpRoot}" commit -q --allow-empty -m init`, { env: cleanEnv });
+      // Normalize the default branch name — CI images differ (master vs main).
+      execSync(`git -C "${tmpRoot}" branch -m master`, { env: cleanEnv });
+      return realpathSync(tmpRoot);
+    };
+
+    const cleanGitEnv = (): NodeJS.ProcessEnv => {
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      delete env.GIT_DIR;
+      delete env.GIT_WORK_TREE;
+      delete env.GIT_INDEX_FILE;
+      return env;
+    };
+
+    it('edit-write hook allows a repo-root edit when worktrees.enforce is false', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-edit-write.sh');
+      const tmpRepo = setupTempRepo();
+      writeFileSync(
+        join(tmpRepo, '.uap.json'),
+        JSON.stringify({ worktrees: { enabled: true, enforce: false } }),
+      );
+      const input = JSON.stringify({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(tmpRepo, 'src/index.ts') },
+      });
+
+      const result = execSync(`echo '${input}' | bash "${hookPath}"`, {
+        encoding: 'utf-8',
+        cwd: tmpRepo,
+        env: { ...cleanGitEnv(), CLAUDE_PROJECT_DIR: tmpRepo },
+      });
+      expect(result).toBeDefined(); // exit 0 = allowed
+    });
+
+    it('edit-write hook still blocks a repo-root edit when worktrees.enforce is true', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-edit-write.sh');
+      const tmpRepo = setupTempRepo();
+      writeFileSync(
+        join(tmpRepo, '.uap.json'),
+        JSON.stringify({ worktrees: { enabled: true, enforce: true } }),
+      );
+      const input = JSON.stringify({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(tmpRepo, 'src/index.ts') },
+      });
+
+      try {
+        execSync(`echo '${input}' | bash "${hookPath}"`, {
+          encoding: 'utf-8',
+          cwd: tmpRepo,
+          env: { ...cleanGitEnv(), CLAUDE_PROJECT_DIR: tmpRepo },
+        });
+        expect.unreachable('Hook should have blocked this edit');
+      } catch (err: unknown) {
+        const error = err as { status: number; stderr: string };
+        expect(error.status).toBe(2);
+        expect(error.stderr).toContain('WORKTREE POLICY VIOLATION');
+      }
+    });
+
+    it('bash hook allows direct push to master when worktrees.enforce is false', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-bash.sh');
+      const tmpRepo = setupTempRepo();
+      writeFileSync(
+        join(tmpRepo, '.uap.json'),
+        JSON.stringify({ worktrees: { enabled: true, enforce: false } }),
+      );
+      const input = JSON.stringify({
+        tool_name: 'Bash',
+        cwd: tmpRepo,
+        tool_input: { command: 'git push origin master' },
+      });
+
+      const result = execSync(`echo '${input}' | bash "${hookPath}"`, {
+        encoding: 'utf-8',
+        cwd: tmpRepo,
+        env: { ...cleanGitEnv(), CLAUDE_PROJECT_DIR: tmpRepo },
+      });
+      expect(result).toBeDefined(); // exit 0 = allowed
+    });
+
+    it('bash hook still blocks direct push to master when worktrees.enforce is true', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-bash.sh');
+      const tmpRepo = setupTempRepo();
+      writeFileSync(
+        join(tmpRepo, '.uap.json'),
+        JSON.stringify({ worktrees: { enabled: true, enforce: true } }),
+      );
+      const input = JSON.stringify({
+        tool_name: 'Bash',
+        cwd: tmpRepo,
+        tool_input: { command: 'git push origin master' },
+      });
+
+      try {
+        execSync(`echo '${input}' | bash "${hookPath}"`, {
+          encoding: 'utf-8',
+          cwd: tmpRepo,
+          env: { ...cleanGitEnv(), CLAUDE_PROJECT_DIR: tmpRepo },
+        });
+        expect.unreachable('Hook should have blocked push to master');
+      } catch (err: unknown) {
+        const error = err as { status: number; stderr: string };
+        expect(error.status).toBe(2);
+        expect(error.stderr).toContain('worktree-enforcement');
+      }
+    });
+
+    it('edit-write hook fails closed (blocks) on a malformed .uap.json', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-edit-write.sh');
+      const tmpRepo = setupTempRepo();
+      writeFileSync(join(tmpRepo, '.uap.json'), '{ not json');
+      const input = JSON.stringify({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(tmpRepo, 'src/index.ts') },
+      });
+
+      try {
+        execSync(`echo '${input}' | bash "${hookPath}"`, {
+          encoding: 'utf-8',
+          cwd: tmpRepo,
+          env: { ...cleanGitEnv(), CLAUDE_PROJECT_DIR: tmpRepo },
+        });
+        expect.unreachable('Hook should fail closed on unreadable config');
+      } catch (err: unknown) {
+        const error = err as { status: number; stderr: string };
+        expect(error.status).toBe(2);
+        expect(error.stderr).toContain('WORKTREE POLICY VIOLATION');
+      }
+    });
+
+    it('UAP_NO_WORKTREE=1 wins over an explicit worktrees.enforce=true', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-edit-write.sh');
+      const tmpRepo = setupTempRepo();
+      writeFileSync(
+        join(tmpRepo, '.uap.json'),
+        JSON.stringify({ worktrees: { enabled: true, enforce: true } }),
+      );
+      const input = JSON.stringify({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(tmpRepo, 'src/index.ts') },
+      });
+
+      const result = execSync(`echo '${input}' | bash "${hookPath}"`, {
+        encoding: 'utf-8',
+        cwd: tmpRepo,
+        env: { ...cleanGitEnv(), CLAUDE_PROJECT_DIR: tmpRepo, UAP_NO_WORKTREE: '1' },
+      });
+      expect(result).toBeDefined(); // exit 0 = allowed
+    });
+
+    // Regression guard for main-root resolution: .uap.json is commonly
+    // gitignored, so a linked worktree checkout does NOT carry it. The hooks
+    // must resolve the main checkout via git-common-dir — otherwise the push
+    // guard silently re-arms (fail-to-enforce) when cwd sits inside a
+    // worktree, disagreeing with the same command run from the main root.
+    it('bash hook reads enforce=false from the MAIN root when run inside a linked worktree', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-bash.sh');
+      const tmpRepo = setupTempRepo();
+      writeFileSync(
+        join(tmpRepo, '.uap.json'),
+        JSON.stringify({ worktrees: { enabled: true, enforce: false } }),
+      );
+      execSync(`git -C "${tmpRepo}" worktree add -q ".worktrees/001-x" -b test-x`, {
+        env: cleanGitEnv(),
+      });
+      const wtDir = realpathSync(join(tmpRepo, '.worktrees/001-x'));
+      const input = JSON.stringify({
+        tool_name: 'Bash',
+        cwd: wtDir,
+        tool_input: { command: 'git push origin master' },
+      });
+
+      const result = execSync(`echo '${input}' | bash "${hookPath}"`, {
+        encoding: 'utf-8',
+        cwd: wtDir,
+        env: { ...cleanGitEnv(), CLAUDE_PROJECT_DIR: tmpRepo },
+      });
+      expect(result).toBeDefined(); // exit 0 = allowed
+    });
+
+    it('bash hook still blocks master push from inside a worktree when enforce=true at the main root', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-bash.sh');
+      const tmpRepo = setupTempRepo();
+      writeFileSync(
+        join(tmpRepo, '.uap.json'),
+        JSON.stringify({ worktrees: { enabled: true, enforce: true } }),
+      );
+      execSync(`git -C "${tmpRepo}" worktree add -q ".worktrees/001-x" -b test-x`, {
+        env: cleanGitEnv(),
+      });
+      const wtDir = realpathSync(join(tmpRepo, '.worktrees/001-x'));
+      const input = JSON.stringify({
+        tool_name: 'Bash',
+        cwd: wtDir,
+        tool_input: { command: 'git push origin master' },
+      });
+
+      try {
+        execSync(`echo '${input}' | bash "${hookPath}"`, {
+          encoding: 'utf-8',
+          cwd: wtDir,
+          env: { ...cleanGitEnv(), CLAUDE_PROJECT_DIR: tmpRepo },
+        });
+        expect.unreachable('Hook should have blocked push to master');
+      } catch (err: unknown) {
+        const error = err as { status: number; stderr: string };
+        expect(error.status).toBe(2);
+        expect(error.stderr).toContain('worktree-enforcement');
+      }
+    });
+
+    it('bash hook allows master commit when worktrees.enforce is false', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-bash.sh');
+      const tmpRepo = setupTempRepo();
+      writeFileSync(
+        join(tmpRepo, '.uap.json'),
+        JSON.stringify({ worktrees: { enabled: true, enforce: false } }),
+      );
+      const input = JSON.stringify({
+        tool_name: 'Bash',
+        cwd: tmpRepo,
+        tool_input: { command: 'git commit -m "wip"' },
+      });
+
+      const result = execSync(`echo '${input}' | bash "${hookPath}"`, {
+        encoding: 'utf-8',
+        cwd: tmpRepo,
+        env: { ...cleanGitEnv(), CLAUDE_PROJECT_DIR: tmpRepo },
+      });
+      expect(result).toBeDefined(); // exit 0 = allowed
+    });
+  });
+
   // ─── Dangerous Command Guard (pre-tool-use-bash.sh) ────────────
   describe('dangerous command guard hook', () => {
     const content = readFileSync(

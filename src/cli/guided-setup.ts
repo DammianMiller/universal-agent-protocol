@@ -598,6 +598,27 @@ export async function finalizeGuidedSetup(
     } catch {
       /* policy selection is best-effort — never block setup on it */
     }
+
+    // The worktree-isolation wizard answer owns the worktree-required policy,
+    // in BOTH directions so re-running setup can re-arm it (the hardcoded
+    // hooks independently read .uap.json worktrees.enforce at runtime).
+    // Surfaced, not swallowed: if this fails, the policy-gate layer would
+    // silently disagree with the hook layer.
+    try {
+      const { setPolicyActive } = await import('./policy.js');
+      await setPolicyActive('worktree-required', selections.multiAgent.worktreeIsolation);
+      ui.note(
+        selections.multiAgent.worktreeIsolation
+          ? 'Worktree enforcement ON — edits outside .worktrees/ are blocked.'
+          : 'Worktree enforcement OFF — worktrees stay supported, not mandated (.uap.json worktrees.enforce=false).',
+        'Worktrees',
+      );
+    } catch {
+      ui.note(
+        'Could not update the worktree-required policy state; the pre-edit hooks still honor .uap.json worktrees.enforce. Check `uap policy list`.',
+        'Worktrees',
+      );
+    }
   }
 
   // Install the pay2u example policy pack when selected in the policy matrix
