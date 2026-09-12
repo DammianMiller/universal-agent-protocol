@@ -315,7 +315,10 @@ reserve handles it.
 (+ proxy); `uap-exl3-server` and `uap-flashnext-server` are disabled.
 
 **Measured on this box** (AP-IQ4_XS, buun fork, `-ub 2048 --fit-target 4096`,
-q4 KV, 131k ctx):
+q4 KV, 131k ctx; tuned 2026-09-12 with `--ctx-checkpoints 64 --cache-ram
+16384 -t 16` from the proven dflash2 profile — prompt-cache reuse across
+agent-loop turns, verified live at 43.5–44.4 t/s warm decode / 833–877 t/s
+prefill):
 
 | config | 2k prefill/decode | 32k | 92k | VRAM @92k |
 | --- | --- | --- | --- | --- |
