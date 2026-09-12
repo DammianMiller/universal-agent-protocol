@@ -17,7 +17,9 @@ on:
           - 'true'
 
 env:
-  NODE_VERSION: '20'
+  # Node 24: npm OIDC trusted publishing needs Node >= 22.14.0 AND
+  # npm >= 11.5.1. Node 20 fails the exchange with a misleading ENEEDAUTH.
+  NODE_VERSION: '24'
 
 permissions:
   contents: read
