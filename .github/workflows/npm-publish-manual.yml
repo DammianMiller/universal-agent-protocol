@@ -82,8 +82,26 @@ jobs:
       - name: Publish to NPM
         run: |
           echo "Publishing with force=${{ github.event.inputs.force }}"
+          # OIDC env sanity (values are secrets — presence/absence only).
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: $([ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && echo yes || echo NO)"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN set: $([ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ] && echo yes || echo NO)"
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             npm publish --access public --provenance --ignore-scripts --force
           else
             npm publish --access public --provenance --ignore-scripts
+          fi
+
+      # On failure, ENEEDAUTH is ambiguous: it appears both when npm never
+      # attempts the OIDC exchange and when the registry rejects it. The npm
+      # debug log records which. Dump the auth/oidc-relevant lines so the
+      # next fix targets the right layer (client config vs npm-side trusted
+      # publisher entry).
+      - name: Dump npm debug log on failure
+        if: failure()
+        run: |
+          LOG=$(ls -t "$HOME/.npm/_logs/"*-debug-0.log 2>/dev/null | head -1)
+          echo "npm debug log: $LOG"
+          if [ -n "$LOG" ]; then
+            grep -iE "oidc|token|auth|provenance|registry|publish" "$LOG" \
+              | grep -viE "tarball|integrity|shasum" | tail -40
           fi
