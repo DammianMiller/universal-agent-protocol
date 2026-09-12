@@ -58,14 +58,24 @@ jobs:
       - name: Run tests
         run: npm test
 
-      # NOTE: no separate ~/.npmrc step. setup-node's registry-url writes
-      # $NPM_CONFIG_USERCONFIG (an npmrc referencing $NODE_AUTH_TOKEN) and
-      # exports it job-wide, so a ~/.npmrc token is never read — the publish
-      # then authenticates with an unset/placeholder NODE_AUTH_TOKEN and npm
-      # answers E404. Supply NODE_AUTH_TOKEN on the publish step instead.
+      # Trusted publishing (OIDC): the package has a GitHub Actions trusted
+      # publisher configured for this workflow, so no token is involved at all
+      # (and no 2FA OTP — token-based auth hit E404 from setup-node's
+      # $NPM_CONFIG_USERCONFIG shadowing ~/.npmrc, then EOTP with a 2FA
+      # account). OIDC auth needs npm CLI >= 11.5.1; Node 20 bundles npm 10,
+      # so upgrade npm before publishing. Do NOT set NODE_AUTH_TOKEN here —
+      # a present-but-2FA-bound token would be tried first and fail the run.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+          # Drop the empty ${NODE_AUTH_TOKEN} reference setup-node left in its
+          # job-wide npmrc — an empty bearer token would fail before the OIDC
+          # exchange is attempted.
+          NPMRC="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          printf 'registry=https://registry.npmjs.org/\n' > "$NPMRC"
+
       - name: Publish to NPM
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           echo "Publishing with force=${{ github.event.inputs.force }}"
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
