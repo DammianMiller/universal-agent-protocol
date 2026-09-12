@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.1.3 (2026-09-12)
+
+- fix(ci): pin npm@^11.5.1 for OIDC publish (npm@latest needs node>=22)
+- feature/290 oidc trusted publish (#793)
+- feature/289 fix npm publish auth (#792)
+- feature/288 optional worktree enforcement (#791)
+- feature/287 remove rtk (#790)
+- feature/285 proxy guarded heartbeat (#788)
+- feature/284 proxy prefill heartbeat (#787)
+- docs: market position & competitive analysis (2026-09) (#786)
+- fix(proxy): stream leading reasoning as thinking deltas (PROXY_STREAM_THINKING_DELTAS) (#785)
+- docs: Qwen3.8-27B on exllamav3 (EXL3) — production serving stack guide (#784)
+- fix(deliver): accommodate slow local models — scaled bench cell budget, python→python3 journey fallback, pytest exit-5 vacuous pass (#783)
+- docs(benchmarks): Qwen3.8-27B with-UAP vs without-UAP paired results (+ two test-robustness fixes) (#782)
+- docs: Qwen3.8-27B paired re-test plan — replicate gate-loop lift on UAP v1.224.x (#781)
+- docs: K3 UAP uplift validation plan — Terminal-Bench 2.1 on Factory Droid (#780)
+- docs: UAP vs other agent harnesses and tooling — comparison reference (#779)
+- docs: comprehensive refresh of all documentation to v1.224.0 (#778)
+- feat(deliver): harden the delivery pipeline — scoped rollback, declared gates, polyglot execution, config routing, liveness, signed overrides (#777)
+- feat(quality): quality-metrics gate — CLI, enforcer, ratchet baseline, expert-review fusion (#776)
+- feat(verify): visual gate grades only servable entry pages (#775)
+- feat(verify): page exclusion for the visual gate via .uap/visual-targets.json (#774)
+- fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
+- fix(proxy): a tools-stripped turn must actually end in prose (#772)
+- fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
+- feature/267 rtk docker proxy (#770)
+
+
 ## v2.1.2 (2026-09-12)
 
 - fix(ci): OIDC trusted publishing for npm-publish-manual
