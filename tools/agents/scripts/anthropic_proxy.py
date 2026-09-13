@@ -12218,7 +12218,7 @@ async def stream_anthropic_message(
             tool_input = json.dumps(block.get("input", {}), separators=(",", ":"))
             yield (
                 "event: content_block_start\n"
-                f"data: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': tool_name}})}\n\n"
+                f"data: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': tool_name, 'input': {}}})}\n\n"
             )
             if tool_input:
                 yield (
@@ -12507,7 +12507,7 @@ async def stream_anthropic_response(
                         # Emit content_block_start for this tool_use
                         yield (
                             f"event: content_block_start\n"
-                            f"data: {json.dumps({'type': 'content_block_start', 'index': this_block_index, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': fn.get('name', '')}})}\n\n"
+                            f"data: {json.dumps({'type': 'content_block_start', 'index': this_block_index, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': fn.get('name', ''), 'input': {}}})}\n\n"
                         )
 
                         # Emit initial arguments fragment (e.g. "{") that
@@ -12749,7 +12749,7 @@ async def stream_anthropic_response(
                 }
                 yield (
                     f"event: content_block_start\n"
-                    f"data: {json.dumps({'type': 'content_block_start', 'index': idx, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': tc_name}})}\n\n"
+                    f"data: {json.dumps({'type': 'content_block_start', 'index': idx, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': tc_name, 'input': {}}})}\n\n"
                 )
                 yield (
                     f"event: content_block_delta\n"
