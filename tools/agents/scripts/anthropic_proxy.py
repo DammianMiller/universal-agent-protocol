@@ -6603,13 +6603,10 @@ def _maybe_inject_error_loop_break(openai_body: dict, monitor: "SessionMonitor")
     directive = (
         "\n\nSTOP — the SAME failure has now recurred "
         + str(monitor.error_signature_streak)
-        + " times in a row despite your edits: \""
+        + " times in a row: \""
         + monitor.last_error_signature[:120]
-        + "\". Your edits are NOT addressing the real cause. Do NOT make another "
-        "edit yet. FIRST re-read the ENTIRE failing file (and the full error "
-        "output) top-to-bottom — the bug is very likely somewhere you have not "
-        "looked (a duplicate declaration, a wrong import, a different file). "
-        "Only after you can name the exact line causing THIS error, fix that."
+        + "\". "
+        + _error_loop_remedy(monitor.last_error_signature)
     )
     if (
         PROXY_ERROR_LOOP_HARD_LIMIT > 0
@@ -6633,6 +6630,60 @@ def _maybe_inject_error_loop_break(openai_body: dict, monitor: "SessionMonitor")
         monitor.error_signature_streak,
         monitor.last_error_signature[:80],
         monitor.error_loop_fires,
+    )
+
+
+def _error_loop_remedy(signature: str) -> str:
+    """Corrective advice matched to the failing signature.
+
+    2026-09-13. The generic remedy is "re-read the ENTIRE failing file", which
+    assumes the loop is a *code* bug. Many observed loops are TOOL MISUSE, where
+    that advice is not merely unhelpful but wrong — there is no failing file to
+    re-read, and the model duly repeats the identical bad call until the hard stop
+    ends the run. Observed live on Signal-3.8-27B + droid: `Read` invoked on a
+    directory x4, and a TodoWrite schema violation x4, each ending in a breaker.
+
+    Matching is on the normalised signature the monitor already computes (literals
+    are replaced by `#`/`<path>`), so these stay substring tests. Falls back to the
+    generic code-bug remedy when nothing matches.
+    """
+    sig = (signature or "").lower()
+
+    if "is a directory" in sig:
+        return (
+            "This is TOOL MISUSE, not a code bug: you called a file-reading tool "
+            "on a DIRECTORY. Do NOT retry it on the same path. To see what is "
+            "inside a directory use the directory-listing tool (LS) or a glob "
+            "search (Glob); use the file-reading tool only on a concrete FILE path."
+        )
+    if "does not exist" in sig or "no such file" in sig:
+        return (
+            "This is TOOL MISUSE, not a code bug: the path you passed does not "
+            "exist, so re-reading it cannot help. Do NOT retype the same path. "
+            "First LIST the parent directory (LS) or search for the file by name "
+            "(Glob/Grep), then use the exact path those results return."
+        )
+    if "must be" in sig and ("status" in sig or "enum" in sig or "one of" in sig):
+        return (
+            "This is a SCHEMA violation, not a code bug: one of your tool "
+            "arguments used a value or shape the tool does not accept. Re-read "
+            "that tool's parameter schema in the tool definition and emit the "
+            "arguments EXACTLY as declared — real JSON types (an array must be a "
+            "JSON array, not a string containing one), and only the permitted "
+            "enum values. If you cannot express it, skip the tool and continue."
+        )
+    if "required" in sig and ("property" in sig or "argument" in sig or "field" in sig):
+        return (
+            "This is a SCHEMA violation, not a code bug: a required argument is "
+            "missing. Re-read the tool's parameter schema and supply every "
+            "required field with its declared type."
+        )
+    return (
+        "Your edits are NOT addressing the real cause. Do NOT make another "
+        "edit yet. FIRST re-read the ENTIRE failing file (and the full error "
+        "output) top-to-bottom — the bug is very likely somewhere you have not "
+        "looked (a duplicate declaration, a wrong import, a different file). "
+        "Only after you can name the exact line causing THIS error, fix that."
     )
 
 
@@ -9465,6 +9516,182 @@ def _default_required_value(field_name: str, field_schema: dict):
     return _MISSING_REQUIRED_VALUE
 
 
+def _declared_json_types(field_schema: dict) -> set[str]:
+    """JSON Schema `type` for one property, normalised to a set.
+
+    Handles the scalar form ("array"), the list form (["array", "null"]) and the
+    anyOf/oneOf union form, so a nullable or unioned field is not mistaken for an
+    untyped one. Returns an empty set when the schema declares no type at all —
+    callers must treat that as "unknown, do not coerce".
+    """
+    if not isinstance(field_schema, dict):
+        return set()
+    out: set[str] = set()
+    raw = field_schema.get("type")
+    if isinstance(raw, str):
+        out.add(raw)
+    elif isinstance(raw, list):
+        out.update(t for t in raw if isinstance(t, str))
+    for union_key in ("anyOf", "oneOf"):
+        for sub in field_schema.get(union_key) or []:
+            out |= _declared_json_types(sub)
+    return out
+
+
+def _coerce_to_declared_type(value, declared: set[str]):
+    """Return a type-corrected `value`, or `_MISSING_REQUIRED_VALUE` if no safe fix.
+
+    Deliberately conservative: a coercion is applied ONLY when the corrected
+    value's own JSON type is one the schema actually declares. Anything
+    ambiguous is left untouched for the existing preflight/retry path.
+    """
+    if not declared:
+        return _MISSING_REQUIRED_VALUE
+    if not isinstance(value, str):
+        return _MISSING_REQUIRED_VALUE
+    text = value.strip()
+    if not text:
+        return _MISSING_REQUIRED_VALUE
+
+    # The dominant local-model defect: a nested array/object emitted as a
+    # *stringified* JSON blob (double-encoded) instead of real JSON.
+    if ("array" in declared or "object" in declared) and text[0] in "[{":
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return _MISSING_REQUIRED_VALUE
+        if isinstance(parsed, list) and "array" in declared:
+            return parsed
+        if isinstance(parsed, dict) and "object" in declared:
+            return parsed
+        return _MISSING_REQUIRED_VALUE
+
+    # Scalars arriving quoted. Guarded so "1.5" never silently becomes an int and
+    # a numeric string stays a string when the schema really wants a string.
+    if "string" in declared:
+        return _MISSING_REQUIRED_VALUE
+    if "boolean" in declared and text.lower() in {"true", "false"}:
+        return text.lower() == "true"
+    if "integer" in declared:
+        try:
+            return int(text)
+        except ValueError:
+            pass
+    if "number" in declared:
+        try:
+            return float(text)
+        except ValueError:
+            pass
+    return _MISSING_REQUIRED_VALUE
+
+
+def _repair_tool_arg_types(
+    openai_resp: dict, anthropic_body: dict
+) -> tuple[dict, int]:
+    """Coerce tool arguments whose JSON type contradicts the declared schema.
+
+    2026-09-13. The preflight guard (`_validate_tool_call_arguments`) only checks
+    that `arguments` parses as JSON and is an object — it never compares property
+    types against the schema. So a double-encoded argument passes validation
+    unflagged, reaches the client broken, and no retry hint ever fires; the model
+    then repeats the identical malformed call until the ERROR-LOOP guard hard-stops
+    the run.
+
+    Measured on Signal-3.8-27B + droid: **120/120** TodoWrite payloads over four
+    days emitted `todos` as a *string* rather than an array, e.g.
+
+        {"todos": "[{\"content\": \"...\", \"status\": \"pending\"}]"}
+
+    which droid rejects ("todo item #: status must be ..."), giving a 0% success
+    rate on that tool. This repairs the encoding at the proxy so the call lands
+    valid. It is a TYPE fix only — it cannot invent a correct inner schema, so a
+    payload whose nested objects use the wrong KEYS still fails downstream (that
+    case is bounded by the coordination-tool ban instead).
+
+    Conservative by construction: a value is rewritten only when the declared type
+    is known and the corrected value matches it, so a tool that legitimately takes
+    a JSON string is never touched.
+    """
+    if not _openai_has_tool_calls(openai_resp):
+        return openai_resp, 0
+
+    tools_by_name = _anthropic_tools_by_name(anthropic_body)
+    if not tools_by_name:
+        return openai_resp, 0
+
+    choice, message = _extract_openai_choice(openai_resp)
+    tool_calls = message.get("tool_calls") or []
+    if not tool_calls:
+        return openai_resp, 0
+
+    repaired_tool_calls = []
+    repaired_count = 0
+
+    for tool_call in tool_calls:
+        fn = tool_call.get("function") if isinstance(tool_call, dict) else {}
+        if not isinstance(fn, dict):
+            fn = {}
+        tool_name = fn.get("name", "")
+        schema = tools_by_name.get(tool_name) or {}
+        properties = schema.get("properties") if isinstance(schema, dict) else {}
+        if not isinstance(properties, dict) or not properties:
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        raw_args = fn.get("arguments", "{}")
+        if isinstance(raw_args, dict):
+            parsed_args = dict(raw_args)
+        else:
+            try:
+                parsed_args = json.loads(str(raw_args))
+            except (json.JSONDecodeError, ValueError):
+                repaired_tool_calls.append(tool_call)
+                continue
+        if not isinstance(parsed_args, dict):
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        fixed_fields = []
+        for field, value in list(parsed_args.items()):
+            declared = _declared_json_types(properties.get(field, {}))
+            coerced = _coerce_to_declared_type(value, declared)
+            if coerced is _MISSING_REQUIRED_VALUE:
+                continue
+            parsed_args[field] = coerced
+            fixed_fields.append(field)
+
+        if not fixed_fields:
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        new_tool_call = dict(tool_call)
+        new_fn = dict(fn)
+        new_fn["arguments"] = json.dumps(parsed_args, separators=(",", ":"))
+        new_tool_call["function"] = new_fn
+        repaired_tool_calls.append(new_tool_call)
+        repaired_count += 1
+        logger.warning(
+            "TOOL ARG TYPE REPAIR: '%s' fields=%s coerced to declared schema types",
+            tool_name,
+            fixed_fields,
+        )
+
+    if repaired_count == 0:
+        return openai_resp, 0
+
+    choices = list(openai_resp.get("choices") or [])
+    if not choices:
+        return openai_resp, 0
+    repaired_response = dict(openai_resp)
+    updated_choice = dict(choice)
+    updated_message = dict(message)
+    updated_message["tool_calls"] = repaired_tool_calls
+    updated_choice["message"] = updated_message
+    choices[0] = updated_choice
+    repaired_response["choices"] = choices
+    return repaired_response, repaired_count
+
+
 def _repair_required_tool_args(
     openai_resp: dict, anthropic_body: dict
 ) -> tuple[dict, int]:
@@ -10610,12 +10837,24 @@ async def _apply_malformed_tool_guardrail(
     repair_count = 0
     if PROXY_TOOL_ARGS_PREFLIGHT and _openai_has_tool_calls(openai_resp):
         working_resp, markup_repairs = _repair_tool_call_markup(openai_resp)
+        # Type coercion runs BEFORE required-arg filling: a double-encoded value
+        # is *present* (just wrongly typed), so _repair_required_tool_args would
+        # leave it alone, and the preflight below never type-checks it at all.
+        working_resp, type_repairs = _repair_tool_arg_types(
+            working_resp, anthropic_body
+        )
         working_resp, required_repairs = _repair_required_tool_args(
             working_resp, anthropic_body
         )
         working_resp, bash_repairs = _repair_bash_command_artifacts(working_resp)
         working_resp, leak_repairs = _repair_system_prompt_leak(working_resp)
-        repair_count = markup_repairs + required_repairs + bash_repairs + leak_repairs
+        repair_count = (
+            markup_repairs
+            + type_repairs
+            + required_repairs
+            + bash_repairs
+            + leak_repairs
+        )
 
     required_tool_choice = openai_body.get("tool_choice") == "required"
     has_tool_calls = _openai_has_tool_calls(working_resp)
