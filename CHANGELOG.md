@@ -138,6 +138,11 @@
 ## v2.0.0 (2026-09-12)
 
 - feat!: remove RTK (Rust Token Killer) integration
+
+## v1.224.12 (2026-09-09)
+
+- docs: Qwen3.8-Flash-Next as 27B replacement candidate — quant update + local bench
+
 - feature/285 proxy guarded heartbeat (#788)
 - feature/284 proxy prefill heartbeat (#787)
 - docs: market position & competitive analysis (2026-09) (#786)
