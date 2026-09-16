@@ -154,8 +154,11 @@ async function buildContext(
   // Build key workflows
   const keyWorkflows = buildKeyWorkflows(analysis);
 
-  // Build infrastructure workflow
-  const infraWorkflow = buildInfraWorkflow(analysis);
+  // Build infrastructure workflow (worktree step wording follows enforcement)
+  const infraWorkflow = buildInfraWorkflow(
+    analysis,
+    config.worktrees?.enforce !== false && config.template?.sections?.worktreeWorkflow !== false,
+  );
 
   // Build MCP plugins
   const mcpPlugins = buildMcpPlugins(cwd);
@@ -203,6 +206,13 @@ async function buildContext(
         : null,
 
     // Worktree config
+    // WORKTREE_ENFORCED: worktrees stay *supported* unless explicitly disabled,
+    // but the MANDATORY instructions only render when the project enforces them
+    // (setup wizard "Worktree isolation" → worktrees.enforce + the
+    // template.sections.worktreeWorkflow section flag).
+    WORKTREE_ENFORCED:
+      config.worktrees?.enforce !== false &&
+      config.template?.sections?.worktreeWorkflow !== false,
     WORKTREE_DIR: config.worktrees?.directory || '.worktrees',
     WORKTREE_CREATE_CMD: 'uap worktree create',
     WORKTREE_PR_CMD: 'uap worktree pr',
@@ -706,7 +716,7 @@ function buildKeyWorkflows(analysis: ProjectAnalysis): string | null {
     .join('\n');
 }
 
-function buildInfraWorkflow(analysis: ProjectAnalysis): string | null {
+function buildInfraWorkflow(analysis: ProjectAnalysis, worktreeEnforced: boolean): string | null {
   if (analysis.directories.infrastructure.length === 0) return null;
 
   const infraPath = analysis.directories.infrastructure[0];
@@ -717,7 +727,10 @@ function buildInfraWorkflow(analysis: ProjectAnalysis): string | null {
         ? 'pulumi preview'
         : 'infrastructure plan';
 
-  return `1. **Create worktree** for infrastructure changes
+  const isolateStep = worktreeEnforced
+    ? '1. **Create worktree** for infrastructure changes'
+    : '1. Isolate infrastructure changes (worktree recommended)';
+  return `${isolateStep}
 2. Update infrastructure in \`${infraPath}/\`
 3. Update CI/CD workflows in \`.github/workflows/\`
 4. Run \`${planCmd}\`
@@ -1097,10 +1110,12 @@ You are Autonomous Claude, a self-directed AI agent with full control over this 
 
 2. **CHECK SKILLS** before implementing (see \`{{SKILLS_PATH}}\`)
 
+{{#if WORKTREE_ENFORCED}}
 3. **CREATE WORKTREE** for ANY code changes
    - \`{{WORKTREE_CREATE_CMD}} <slug>\`
    - NEVER commit directly to {{DEFAULT_BRANCH}}
 
+{{/if}}
 4. **UPDATE MEMORY** after significant actions
    - \`{{MEMORY_STORE_CMD}} lesson "What you learned" --tags tag1,tag2 --importance 7\`
 
@@ -1143,7 +1158,9 @@ You are Autonomous Claude, a self-directed AI agent with full control over this 
 ## Completion Checklist
 
 - [ ] Tests pass
+{{#if WORKTREE_ENFORCED}}
 - [ ] Worktree used
+{{/if}}
 - [ ] Memory updated
 - [ ] PR created (not direct commit)
 

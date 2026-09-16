@@ -67,10 +67,9 @@ describe('CLI Compliance Module', () => {
   });
 });
 
-describe('CLI RTK Module', () => {
-  it('should export rtk module', async () => {
-    const module = await import('../src/cli/rtk.js');
-    expect(module).toBeDefined();
+describe('CLI RTK Module (removed)', () => {
+  it('no longer exists — the RTK integration was removed', async () => {
+    await expect(import('../src/cli/rtk.js')).rejects.toThrow();
   });
 });
 

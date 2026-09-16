@@ -133,4 +133,40 @@ if command -v llama_upstream_watch >/dev/null 2>&1 &&
     llama_upstream_watch "$LLAMA_CPP_BASE" "$$" &
 fi
 
+# ---------------------------------------------------------------------------
+# Source-drift warning. ExecStart runs anthropic_proxy.py straight out of this
+# working tree, so the proxy executes WHATEVER IS CHECKED OUT — a feature branch
+# left over from a merge, or a master that has fallen behind origin, is served
+# silently with no signal anywhere. Hit twice on 2026-09-13: a fix was live only
+# because its branch happened to still be checked out, and `gh pr merge
+# --delete-branch` switching back to master would have reverted the running
+# proxy on its next restart.
+# Advisory only — it never blocks startup, never fetches, and never changes the
+# tree. Making drift visible is the point; deciding what to do about it is the
+# operator's. Set UAP_PROXY_SOURCE_DRIFT_WARN=off to silence.
+# ---------------------------------------------------------------------------
+if [ "${UAP_PROXY_SOURCE_DRIFT_WARN:-on}" != "off" ] && command -v git >/dev/null 2>&1; then
+    _branch="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+    if [ -n "$_branch" ]; then
+        if [ "$_branch" != "master" ] && [ "$_branch" != "main" ]; then
+            echo "[proxy-startup] WARNING: serving from branch '${_branch}', not master/main —" \
+                 "this code may not be released, and a checkout will change what runs" >&2
+        fi
+        # Compare against the last-known remote ref only; no network call, so a
+        # stale origin/master simply yields no warning rather than a hang.
+        _remote="origin/${_branch}"
+        if git -C "$ROOT_DIR" rev-parse --verify --quiet "$_remote" >/dev/null 2>&1; then
+            _behind="$(git -C "$ROOT_DIR" rev-list --count "HEAD..${_remote}" 2>/dev/null || echo 0)"
+            if [ "${_behind:-0}" -gt 0 ]; then
+                echo "[proxy-startup] WARNING: ${_branch} is ${_behind} commit(s) behind ${_remote}" \
+                     "(as of the last fetch) — the running proxy is stale; git pull to update" >&2
+            fi
+        fi
+        if ! git -C "$ROOT_DIR" diff --quiet -- tools/agents/scripts/anthropic_proxy.py 2>/dev/null; then
+            echo "[proxy-startup] WARNING: anthropic_proxy.py has uncommitted changes —" \
+                 "the running proxy does not match any commit" >&2
+        fi
+    fi
+fi
+
 exec python3 tools/agents/scripts/anthropic_proxy.py

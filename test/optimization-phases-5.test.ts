@@ -6,7 +6,6 @@
  *   B3: Pre-warming config wired to Qdrant startup
  *   D2: Hardcoded paths fixed in maintenance scripts
  *   D3: validate-build.sh lint detection fixed
- *   D4: install-rtk.sh typo fixed
  *
  * Phase 2: Core optimizations
  *   B1: AdaptivePatternEngine SQLite persistence
@@ -78,14 +77,6 @@ describe('Phase 1: Quick Wins', () => {
     it('detects .eslintrc.cjs config file', () => {
       const source = readFileSync('scripts/validate-build.sh', 'utf-8');
       expect(source).toContain('.eslintrc.cjs');
-    });
-  });
-
-  describe('D4: install-rtk.sh typo', () => {
-    it('uses correct binary name rtk (not rkt)', () => {
-      const source = readFileSync('scripts/setup/install-rtk.sh', 'utf-8');
-      expect(source).not.toContain('sudo mv rkt ');
-      expect(source).toContain('sudo mv rtk ');
     });
   });
 });

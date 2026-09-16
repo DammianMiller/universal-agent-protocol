@@ -85,6 +85,50 @@ check; the advisory variant is for interactive orientation.
 The same `.worktrees/` containment is enforced at edit time by the
 `worktree-required` policy enforcer — see [POLICIES.md](./POLICIES.md).
 
+### Making enforcement optional
+
+Worktree *enforcement* is a project choice, asked at setup time. In the guided
+setup wizard (`uap setup`), the **Worktree isolation** toggle under
+"Multi-agent coordination" drives it:
+
+- **On (default)** — the pre-edit hooks hard-block edits outside
+  `.worktrees/`, the `worktree-required` policy enforcer stays active, and
+  generated CLAUDE.md files carry the MANDATORY worktree section.
+- **Off** — setup writes `"worktrees": { "enabled": true, "enforce": false }`
+  to `.uap.json`, deactivates the `worktree-required` policy, and omits the
+  MANDATORY section from generated CLAUDE.md. Worktrees remain fully
+  *supported* (`uap worktree create/pr/finish` all work); edits in the project
+  root are simply no longer blocked.
+
+You can flip it later by editing `.uap.json` — set both keys so every layer
+agrees:
+
+```json
+"worktrees": { "enabled": true, "enforce": false },
+"template":  { "sections": { "worktreeWorkflow": false } }
+```
+
+and stand the policy enforcer down with:
+
+```bash
+uap policy disable worktree-required
+```
+
+The three enforcement layers read different signals: the pre-edit hooks and
+`uap worktree ensure` honor the `.uap.json` flags at runtime (no reinstall
+needed), while the `worktree-required` policy enforcer follows its active
+state in the policy database. A missing or unreadable flag defaults to
+`enforce: true` (the historical behavior). For a one-off bypass,
+`UAP_NO_WORKTREE=1` wins over the file for the edit and commit/push guards
+(the `git reset --hard` / `git clean -f` data-loss guard keys on the config
+only).
+
+**Integrity note:** the self-disable path relies on the
+`enforcement-self-protect` policy (installed by `uap init`) — it hard-blocks
+agent edits to `.uap.json` on both the Edit/Write and Bash channels, so an
+agent cannot flip `enforce` itself. Projects that deploy the hook templates
+*without* the seeded policy DB get no such protection on the Bash channel.
+
 ## Parallel-agent safety
 
 The numeric ID is allocated from the SQLite registry, not from a directory

@@ -2,20 +2,16 @@
  * A policy can ship installed but DISABLED.
  *
  * Every policy used to arrive active (`isActive: existing ? … : true`), so
- * offering one and imposing it were the same act. rtk-wrap forced the
- * distinction: rtk saves 60–90% of what command output costs in tokens, but
- * routing every git call through it means machine-readable output comes back
- * rewritten. Measured against real git in this repo — `worktree list
- * --porcelain` returns 46 entries directly and 0 through rtk, and an agent
- * parsing that concludes there are no worktrees. Worth having available; not
- * worth defaulting on.
+ * offering one and imposing it were the same act. Some policies are a genuine
+ * trade — they save something measurable but rewrite or constrain
+ * machine-visible behavior — so they must ship opt-in.
  *
  * The second test is the one that matters most: declaring a policy opt-in is a
  * change to its DEFAULT, and a default must never reach back and undo a choice
  * someone made deliberately.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -45,16 +41,6 @@ const ORDINARY = `# test-ordinary-policy
 
 Does nothing.
 `;
-
-const RTK_POLICY = join(
-  __dirname,
-  '..',
-  'src',
-  'policies',
-  'schemas',
-  'policies',
-  'rtk-wrap.md'
-);
 
 let dir: string;
 let db: string;
@@ -105,23 +91,5 @@ describe('policies without the marker are unaffected', () => {
   it('still install active', async () => {
     await mgr.storeRawPolicy(ORDINARY);
     expect(await isActive('test-ordinary-policy')).toBe(true);
-  });
-});
-
-describe('rtk-wrap ships opt-in', () => {
-  it('declares Default: off and is no longer REQUIRED', () => {
-    const md = readFileSync(RTK_POLICY, 'utf-8');
-    expect(md).toMatch(/\*\*Default\*\*:\s*off/i);
-    expect(md).not.toMatch(/\*\*Level\*\*:\s*REQUIRED/i);
-  });
-
-  it('installs inactive', async () => {
-    await mgr.storeRawPolicy(readFileSync(RTK_POLICY, 'utf-8'));
-    expect(await isActive('rtk-wrap')).toBe(false);
-  });
-
-  it('no longer states the wrapper is mandatory', () => {
-    const rule = readFileSync(RTK_POLICY, 'utf-8').split('## Why')[0];
-    expect(rule).not.toMatch(/\bMUST be invoked\b/);
   });
 });

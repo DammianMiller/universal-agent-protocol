@@ -1033,10 +1033,17 @@ async function ensureWorktree(cwd: string, _git: SimpleGit, strict?: boolean): P
       spinner.succeed('No .uap.json found — worktree check skipped');
       return;
     }
-    const worktreeEnabled = (config as Record<string, unknown>).template
+    // Enforcement stands down when EITHER signal says so: the template
+    // section flag (legacy) or the runtime worktrees.enforce flag the setup
+    // wizard writes (hooks read the same flag, keeping the layers coherent).
+    const templateSectionOn = (config as Record<string, unknown>).template
       ? ((config.template as Record<string, unknown>)?.sections as Record<string, unknown>)
           ?.worktreeWorkflow !== false
       : true;
+    const enforceOn = (config as Record<string, unknown>).worktrees
+      ? ((config.worktrees as Record<string, unknown>)?.enforce) !== false
+      : true;
+    const worktreeEnabled = templateSectionOn && enforceOn;
 
     if (!worktreeEnabled) {
       if (strict) {

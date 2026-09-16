@@ -111,8 +111,6 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
 | `FACTORY_API_KEY` / `DROID_API_KEY` | Factory/droid benchmark API key | — |
 | `NODE_ENV` / `UAM_ENV` / `CI` | Serverless env detection | — |
 | `HOME` | `~/.uap/omp`, droids dir resolution | — |
-| `TMPDIR` | rtk temp dir | `/tmp` |
-| `FORCE_INSTALL` | Force rtk reinstall | off |
 | `APPDATA` / `USERPROFILE` | Windows MCP config path expansion | — |
 
 Per-model API key env var names are configurable via the model config field

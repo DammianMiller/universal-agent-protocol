@@ -31,7 +31,6 @@ const lazy = {
   setupMcpRouter: () => import('../cli/setup-mcp-router.js').then((m) => m.setupMcpRouter),
   compliance: () => import('../cli/compliance.js').then((m) => m.complianceCommand),
   schemaDiff: () => import('../cli/schema-diff.js').then((m) => m.registerSchemaDiffCommand),
-  rtk: () => import('../cli/rtk.js'),
   toolCalls: () => import('../cli/tool-calls.js').then((m) => m.toolCallsCommand),
   policy: () => import('../cli/policy.js').then((m) => m.registerPolicyCommands),
   expertRoute: () => import('../cli/expert-route.js').then((m) => m.expertRouteCommand),
@@ -1991,36 +1990,6 @@ toolCallsCmd.addCommand(
   })
 );
 program.addCommand(toolCallsCmd);
-
-// RTK (Rust Token Killer) - CLI proxy for 60-90% token savings
-const rtkCmd = new Command('rtk');
-rtkCmd.description('Manage RTK (Rust Token Killer) integration for token optimization');
-rtkCmd.addCommand(
-  new Command('install')
-    .description('Install RTK CLI proxy for 60-90% token savings')
-    .option('--force', 'Force reinstall')
-    .option('--method <method>', 'Installation method (npm, cargo, binary)')
-    .action(async (options) => {
-      const rtk = await lazy.rtk();
-      await rtk.installRTK({
-        force: !!options.force,
-        method: options.method as 'homebrew' | 'cargo' | 'curl',
-      });
-    })
-);
-rtkCmd.addCommand(
-  new Command('status').description('Check RTK installation and token savings').action(async () => {
-    const rtk = await lazy.rtk();
-    await rtk.checkRTKStatus();
-  })
-);
-rtkCmd.addCommand(
-  new Command('help').description('Show RTK usage information').action(async () => {
-    const rtk = await lazy.rtk();
-    rtk.showRTKHelp();
-  })
-);
-program.addCommand(rtkCmd);
 
 // MCP Setup - Configure MCP Router for all platforms
 program

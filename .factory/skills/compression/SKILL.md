@@ -8,11 +8,7 @@ version: "2.0.0"
 compatibility: CLAUDE.md v2.3.0+
 ---
 
-> **RTK Integration**: Supports `@hooks-session-start.md`, `@PreCompact.md`
 
-
-
-> **RTK Integration**: Supports `@hooks-session-start.md`, `@PreCompact.md`
 
 | name | description | argument-hint |
 | --- | --- | --- |

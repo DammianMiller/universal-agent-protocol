@@ -79,12 +79,12 @@ else
     echo "✗ Pattern Router MISSING"
 fi
 
-# 10. RTK includes
+# 10. Session-hook includes
 if grep -q "@hooks-session-start.md\|@PreCompact.md" CLAUDE.md; then
     score=$((score + 1))
-    echo "✓ RTK includes (@hooks-session-start, @PreCompact)"
+    echo "✓ Session-hook includes (@hooks-session-start, @PreCompact)"
 else
-    echo "✗ RTK includes MISSING"
+    echo "✗ Session-hook includes MISSING"
 fi
 
 # 11. Verifier loop enforcement (min 3 runs)

@@ -88,8 +88,7 @@ function completeSnapshots(buf: string): number {
  *
  * Timing the window from the request instead made this the flakiest test in the
  * suite, and for a reason the assertion could not see: the first snapshot costs
- * whatever `getDashboardData` costs, and that call shells out to `rtk gain`
- * (cached for 30s AFTER the first one). Under the full 366-file suite that cold
+ * whatever `getDashboardData` costs. Under the full suite that cold
  * call can take seconds, so most of a 4s window was spent before the cadence
  * being measured had produced anything. The test then reported a cadence
  * failure when what it had actually measured was startup latency on a busy box.

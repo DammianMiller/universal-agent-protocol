@@ -31,7 +31,7 @@ List specific scenarios, keywords, or task types that should trigger this skill.
 
 - Principle 1: Follow CLAUDE.md v2.3.0 patterns
 - Principle 2: Respect MANDATORY gates (worktrees, verifier loop)
-- Principle 3: Use RTK includes for session context
+- Principle 3: Use session-hook includes for session context
 - Principle 4: Complete all completion gates before reporting done
 
 ## Workflow Integration
@@ -117,9 +117,9 @@ Before starting work:
 uap memory query "<domain-specific keywords>"
 ```
 
-## RTK Integration
+## Session-Hook Includes
 
-This skill supports Run-Time Knowledge includes:
+This skill supports session-hook includes:
 
 - `@hooks-session-start.md` - Session initialization hooks
 - `@PreCompact.md` - Pre-compact optimization hooks

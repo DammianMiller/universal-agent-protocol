@@ -234,10 +234,9 @@ export class PolicyMemoryManager {
     //
     // Without this every policy arrived switched on, so offering one and
     // imposing it were the same act. Some policies are a genuine trade rather
-    // than a rule: rtk-wrap saves 60–90% of the tokens command output costs,
-    // at the price of routing every git call through a filter that rewrites
-    // machine-readable output (`worktree list --porcelain`: 46 entries
-    // directly, 0 through rtk). Worth offering; not worth defaulting on.
+    // than a rule — they save something measurable at the price of rewriting
+    // or constraining machine-visible behavior. Worth offering; not worth
+    // defaulting on.
     //
     // Only consulted when there is no existing row — see storeRawPolicy. A
     // default must not undo a choice an operator made deliberately.

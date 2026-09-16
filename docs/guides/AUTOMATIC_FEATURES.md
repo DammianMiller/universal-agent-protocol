@@ -195,16 +195,9 @@ the definition of done, and work resumes across sessions without being asked.
 
 ## Developer Experience
 
-### RTK (Rust Token Killer)
-**What it does:** CLI proxy that intercepts common commands (`git status`, `npm install`, etc.) and rewrites them for token efficiency — 60-90% token savings on dev operations.
-
-**When it kicks in:** Automatically for every shell command you run. No flags needed.
-
-**Why it matters:** Token costs add up fast. RTK transparently optimizes every command without you thinking about it.
-
 ### Dashboard — Savings & Orchestration Visibility
 **What it does:** `uap dash serve` shows **Token Savings by Influence** (real
-tokens/cost saved per mechanism — RTK, model routing, context compression — with
+tokens/cost saved per mechanism — model routing, context compression — with
 honest *measured/estimated* labels) and an **Orchestrations & Hierarchy** tree
 (the live mission → epic → task tree with the agents on each node and the active
 build ledger's progress).
@@ -277,7 +270,6 @@ long-running build is progressing — no guesswork.
 | Pattern RAG | ✅ | Every prompt | Battle-tested implementations |
 | Coordination | ✅ | Complex tasks | Parallel subagent execution |
 | Deploy batching | ✅ | Multiple changes | Atomic, efficient deploys |
-| RTK | ✅ | Every command | 60-90% token savings |
 | HALO | ✅ | Substantial prompts | Automatic task decomposition |
 | Model presets | ✅ | Model selection | Optimal params per model |
 

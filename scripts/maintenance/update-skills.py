@@ -28,27 +28,6 @@ skills_to_update = {
 }
 
 
-def add_rtk_header(content, skill_name):
-    rtk_addition = f"""---
-name: {skill_name}
-version: "2.0.0"
-compatibility: CLAUDE.md v2.3.0+
----
-
-> **RTK Integration**: Supports `@hooks-session-start.md`, `@PreCompact.md`
-
-"""
-    if content.startswith("---"):
-        end_frontmatter = content.find("---", 3)
-        if end_frontmatter > 0:
-            return (
-                content[: end_frontmatter + 3]
-                + rtk_addition
-                + content[end_frontmatter + 3 :]
-            )
-    return rtk_addition + content
-
-
 def add_decision_loop_ref(content, skill_name):
     decision_loop = f"""
 ## Protocol Integration
@@ -117,7 +96,6 @@ def update_skill_file(skill_dir, skill_name):
         content = f.read()
 
     original_content = content
-    content = add_rtk_header(content, skill_name)
     content = add_decision_loop_ref(content, skill_name)
     content = add_uam_compliance(content)
 

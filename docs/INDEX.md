@@ -97,7 +97,6 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | Doc | What it covers |
 |---|---|
 | [MCP Router](integrations/MCP_ROUTER.md) | Setting up the MCP router across harnesses |
-| [RTK](integrations/RTK.md) | Rust Token Killer integration |
 
 ## Benchmarks
 
