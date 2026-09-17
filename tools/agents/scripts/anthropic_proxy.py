@@ -10773,6 +10773,14 @@ async def _apply_unexpected_end_turn_guardrail(
     retry_body = dict(openai_body)
     retry_body["tool_choice"] = "required"
     retry_body["stream"] = False
+    # Thinking runaway defeats tool_choice=required: with reasoning enabled the
+    # model can burn the whole retry budget in <think> and return end_turn
+    # (or length) without any tool call — reproduced live 2026-09-17 against
+    # qwen38-gsq-rco-27b (5917 reasoning chars, finish=length, 0 tool_calls;
+    # thinking-off + required returned a clean tool_call immediately). The
+    # retry is a recovery path, so determinism beats reasoning depth here:
+    # force thinking OFF only on this retry, never on the original turn.
+    _set_thinking(retry_body, False)
     _apply_tool_call_grammar(retry_body, tool_choice="required")
 
     retry_resp = await client.post(

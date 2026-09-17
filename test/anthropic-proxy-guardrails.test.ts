@@ -73,3 +73,32 @@ describe('stuck-break guardrail (self-aware loop + rate-limited API)', () => {
   });
 });
 
+
+describe('unexpected-end-turn guardrail retry', () => {
+  it('disables thinking on the retry so tool_choice=required cannot be defeated by <think> runaway', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    // Reproduced live 2026-09-17 on qwen38-gsq-rco-27b: with thinking on, a
+    // required retry burned 5917 reasoning chars and hit the length cap with
+    // zero tool_calls; thinking-off + required returned a clean tool_call.
+    // The retry is a recovery path — determinism beats reasoning depth there.
+    const fnStart = contents.indexOf('async def _apply_unexpected_end_turn_guardrail');
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnBody = contents.slice(fnStart, fnStart + 4000);
+    expect(fnBody).toContain('_set_thinking(retry_body, False)');
+  });
+
+  it('keeps the retry forced (tool_choice=required) and non-stream', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    const fnStart = contents.indexOf('async def _apply_unexpected_end_turn_guardrail');
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnBody = contents.slice(fnStart, fnStart + 4000);
+    expect(fnBody).toContain('retry_body["tool_choice"] = "required"');
+    expect(fnBody).toContain('retry_body["stream"] = False');
+    // thinking-off must land on the retry body BEFORE the grammar application
+    // and upstream POST, not leak onto the caller's original request body
+    expect(fnBody.indexOf('_set_thinking(retry_body, False)')).toBeLessThan(
+      fnBody.indexOf('_apply_tool_call_grammar(retry_body')
+    );
+    expect(fnBody).not.toContain('_set_thinking(openai_body, False)');
+  });
+});
