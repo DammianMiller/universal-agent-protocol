@@ -299,6 +299,12 @@ PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
 PROXY_CONTEXT_PRUNE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.85")
 )
+# Verbatim decision compaction (uplift 1.2): when context pressure triggers a
+# prune, first try per-tool-call keep/truncate/drop decisions that keep all
+# retained content VERBATIM; fall back to the lossy breadcrumb pruner only
+# when the verbatim stages can't reach budget or fail integrity validation.
+# "off" restores the old path entirely.
+PROXY_VERBATIM_COMPACT = os.environ.get("PROXY_VERBATIM_COMPACT", "on")
 # Compaction forcing (Option A, 2026-07-10): Claude Code decides when to
 # auto-compact against ITS believed model window (~200k) using
 # /v1/messages/count_tokens, so an HONEST count on a smaller local rail lets
@@ -2225,7 +2231,11 @@ class SessionMonitor:
     pre_prune_input_tokens: int = 0
     prune_count: int = 0  # How many times pruning was triggered
     overflow_count: int = 0  # How many context overflow errors caught
-    prune_drop_count: int = 0  # monotonic: # of oldest middle msgs pruned (B3)
+    # Monotonic: # of oldest middle msgs pruned (B3). Only meaningful for
+    # legacy lossy-path turns — a successful verbatim compaction (uplift 1.2)
+    # re-indexes the middle non-contiguously and RESETS this to 0, since a
+    # stale boundary would force-drop kept signal on a later fallback.
+    prune_drop_count: int = 0
     context_history: list = field(default_factory=list)  # Recent token counts
 
     # --- Token Loop Protection ---
@@ -3301,6 +3311,28 @@ def _summarize_pruned_block(dropped: list[dict]) -> str:
     return header + "\n" + "\n".join(breadcrumbs)
 
 
+def _prune_overhead_tokens(anthropic_body: dict) -> int:
+    """Estimated non-message tokens (system, agentic supplement, tools) with
+    the 1.5x safety factor for chat-template overhead and tokenization
+    differences between the local estimate and upstream. Shared by
+    prune_conversation and verbatim_compact_conversation so both budget
+    against the same overhead."""
+    overhead_tokens = 0
+    system = anthropic_body.get("system", "")
+    if isinstance(system, str):
+        overhead_tokens += estimate_tokens(system)
+    elif isinstance(system, list):
+        for block in system:
+            if isinstance(block, dict) and block.get("type") == "text":
+                overhead_tokens += estimate_tokens(block.get("text", ""))
+    if _has_tool_definitions(anthropic_body):
+        overhead_tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
+    tools = anthropic_body.get("tools", [])
+    if tools:
+        overhead_tokens += estimate_tokens(json.dumps(tools))
+    return int(overhead_tokens * 1.5)  # Safety factor for template overhead
+
+
 def _truncate_oversized_message_content(messages: list, budget_tokens: int) -> bool:
     """Truncate the largest message content in-place until the total fits
     budget_tokens. Used when message-DROPPING cannot reduce below the window —
@@ -3353,6 +3385,595 @@ def _truncate_oversized_message_content(messages: list, budget_tokens: int) -> b
         elif kind == "tool_result":
             block["content"] = new_text
     return sum(estimate_message_tokens(m) for m in messages) <= budget_tokens
+
+
+# ---------------------------------------------------------------------------
+# Verbatim decision compaction (uplift 1.2)
+# ---------------------------------------------------------------------------
+# Per-tool-call keep/truncate/drop decisions that keep everything retained
+# VERBATIM — no summarization of retained messages. Staged fitting:
+#   stage 1: drop pure-noise tool pairs (acks, superseded reads, repeats)
+#   stage 2: truncate large kept tool results in place (verbatim head + note)
+#   stage 3: return None -> caller falls back to the contiguous breadcrumb
+#            pruner (prune_conversation), whose monotonic prune_drop_count
+#            semantics stay intact for the fallback.
+# HARD INVARIANT — pairing integrity: a tool_use and its tool_result are an
+# atomic pair. Drop/truncate decisions are made at pair granularity so the
+# output never has an orphan tool_result or a dangling tool_use; the output
+# is validated before being accepted, and any failure fails CLOSED (None ->
+# old path). KV-cache doctrine, stated honestly: llama.cpp prefix matching
+# stops at the FIRST divergence, so a byte-identical tail buys no reuse by
+# itself. What this path guarantees is that divergence is DEFERRED as far
+# into the prompt as possible — it diverges at the first dropped/truncated
+# middle pair, where the legacy pruner inserts its marker at index 1 on
+# every run — and never COMPOUNDS: survivors are never reshuffled or
+# re-summarized, so repeated compactions don't keep invalidating more of
+# the prefix.
+
+# Tool-result texts at or below this length that fullmatch an acknowledgment
+# pattern carry no information worth context budget. Whole-string match, NOT
+# a prefix test — "ok, here are the 3 failing tests" is not an ack.
+_VERBATIM_ACK_MAX_CHARS = 120
+_VERBATIM_ACK_PATTERNS = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"ok(?:ay)?[.!]?",
+        r"done[.!]?",
+        r"success(?:fully)?(?: completed| done)?[.!]?",
+        r"acknowledged[.!]?",
+        r"got it[.!]?",
+        r"no changes(?: made)?[.!]?",
+        r"file (?:created|updated|written|saved) successfully(?: at: \S+)?[.!]?",
+        r"the file has been (?:updated|written|saved)[.!]?",
+    )
+)
+
+# Read-class tools whose result for a path is superseded by a later read of
+# the same path. Write-class tools are deliberately absent: their results
+# only qualify as noise via the acknowledgment rule.
+_VERBATIM_READ_TOOLS = frozenset({
+    "read", "read_file", "readfile", "cat", "view", "view_file",
+    "open_file", "grep", "glob", "ls", "list_files", "search", "find",
+})
+
+# Write-class tools: a write to a path between two reads of it means the
+# first read is NOT superseded (the before/after record is state), and their
+# input payloads are the model's own action history — never truncated.
+_VERBATIM_WRITE_TOOLS = frozenset({
+    "write", "edit", "multiedit", "multi_edit", "write_file", "edit_file",
+    "notebookedit", "notebook_edit", "patch", "apply_patch",
+})
+
+# Stage-1 drop breadcrumb shape: one bounded note at the position of the
+# first drop so the elision is accountable in-context.
+_VERBATIM_BREADCRUMB_MAX_ITEMS = 6
+_VERBATIM_BREADCRUMB_MAX_CHARS = 300
+
+# Stage 2 truncation shape: only results larger than MIN are touched; each
+# keeps a verbatim head of HEAD chars followed by a truncation note.
+_VERBATIM_TRUNCATE_MIN_CHARS = 1200
+_VERBATIM_TRUNCATE_HEAD_CHARS = 1500
+
+
+def _iter_tool_use_blocks(msg: dict):
+    """Yield the tool_use blocks of a single message."""
+    content = msg.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                yield block
+
+
+def _iter_tool_result_blocks(msg: dict):
+    """Yield the tool_result blocks of a single message."""
+    content = msg.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                yield block
+
+
+def _tool_call_path(tool_input) -> str | None:
+    """The file path a tool call operates on, if it names one."""
+    if not isinstance(tool_input, dict):
+        return None
+    for key in ("file_path", "path", "filename", "file"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _call_fingerprint(name: str, tool_input) -> str:
+    try:
+        return name + "|" + json.dumps(tool_input, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return name + "|" + repr(tool_input)
+
+
+def _is_ack_result(text: str) -> bool:
+    """Pure-acknowledgment tool result: empty, or a short formulaic string
+    that FULLMATCHES an ack pattern (whole-string, case-insensitive — a
+    real finding that merely STARTS with "ok" is not an ack)."""
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if len(stripped) > _VERBATIM_ACK_MAX_CHARS:
+        return False
+    return any(p.fullmatch(stripped) for p in _VERBATIM_ACK_PATTERNS)
+
+
+def _has_meaningful_text(msg: dict, keep_block_type: str) -> bool:
+    """True when the message carries prose worth keeping besides its tool
+    blocks of type keep_block_type (tool_use for assistant, tool_result for
+    user). Any unknown block type counts as meaningful — when in doubt, keep.
+    """
+    content = msg.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                if block.strip():
+                    return True
+            elif isinstance(block, dict):
+                btype = block.get("type")
+                if btype == keep_block_type:
+                    continue
+                if btype in ("text", "thinking"):
+                    text = block.get("text") or block.get("thinking") or ""
+                    if text.strip():
+                        return True
+                else:
+                    return True
+    return False
+
+
+def _result_blocks_by_use_id(msg: dict) -> dict:
+    """tool_use_id -> tool_result block for a user message."""
+    out = {}
+    for block in _iter_tool_result_blocks(msg):
+        tid = block.get("tool_use_id")
+        if isinstance(tid, str):
+            out[tid] = block
+    return out
+
+
+def _later_occurrence_maps(messages: list) -> tuple[dict, dict, dict]:
+    """Occurrence index for stage-1 noise detection — O(n) memory via
+    per-key ascending occurrence lists (a later-occurrence query is a
+    nearest-neighbor scan of one small list, not a per-index set copy).
+
+    Returns (reads, writes, fps):
+      reads:  read-path  -> [(msg_idx, errored), ...] ascending
+      writes: write-path -> [msg_idx, ...] ascending
+      fps:    call fingerprint -> [(msg_idx, result_text), ...] ascending
+    The protected tail counts as "later" (a read whose freshest copy lives
+    in the tail is superseded); the FINAL message, when it is an unanswered
+    assistant prefill, records no occurrences."""
+    reads: dict = {}
+    writes: dict = {}
+    fps: dict = {}
+    last = len(messages) - 1
+    for idx, msg in enumerate(messages):
+        if idx == last and msg.get("role") == "assistant":
+            break  # unanswered prefill — not an occurrence of anything
+        result_blocks = {}
+        if idx + 1 <= last and messages[idx + 1].get("role") == "user":
+            result_blocks = _result_blocks_by_use_id(messages[idx + 1])
+        for block in _iter_tool_use_blocks(msg):
+            name = block.get("name") or ""
+            tool_input = block.get("input")
+            result = result_blocks.get(block.get("id"))
+            text = _extract_text(result.get("content", "")) if result else ""
+            errored = bool(
+                result
+                and (
+                    result.get("is_error") is True
+                    or text.lower().startswith("error")
+                )
+            )
+            path = _tool_call_path(tool_input)
+            lname = name.lower()
+            if path and lname in _VERBATIM_READ_TOOLS:
+                reads.setdefault(path, []).append((idx, errored))
+            elif path and lname in _VERBATIM_WRITE_TOOLS:
+                writes.setdefault(path, []).append(idx)
+            fps.setdefault(_call_fingerprint(name, tool_input), []).append((idx, text))
+    return reads, writes, fps
+
+
+def _read_is_superseded(path: str, idx: int, reads: dict, writes: dict) -> bool:
+    """A read is superseded only by a LATER, NON-ERRORED read of the same
+    path with NO write to that path in between — Read A -> Write A -> Read A
+    keeps the first read, because the before/after record is state."""
+    later = None
+    for j, errored in reads.get(path, []):
+        if j > idx:
+            later = (j, errored)
+            break
+    if later is None or later[1]:
+        return False  # no later read, or the nearest later read errored
+    for w in writes.get(path, []):
+        if idx < w < later[0]:
+            return False
+    return True
+
+
+def _repeat_is_noise(entries: list, idx: int, result_text: str) -> bool:
+    """A repeated identical call is noise only when the nearest LATER
+    occurrence's result is identical to the earlier one — an earlier result
+    that was an error or a policy denial must never vanish because a later
+    identical call succeeded blandly. (The ack-class early branch in the
+    caller covers the 'earlier result is an ack' case.)"""
+    for j, j_text in entries:
+        if j > idx:
+            return result_text == j_text
+    return False
+
+
+def _pair_units(middle: list) -> list[tuple]:
+    """Group middle messages into atomic units: an assistant message carrying
+    tool_use blocks plus the immediately following user message carrying the
+    matching tool_result blocks form one (assistant, user) pair unit; every
+    other message is a singleton unit. Pairing is decided CONSERVATIVELY —
+    the user's result ids must cover all of the assistant's use ids — so a
+    malformed adjacency degrades to singletons (never dropped, only the old
+    path touches them)."""
+    units: list[tuple] = []
+    i = 0
+    while i < len(middle):
+        msg = middle[i]
+        use_ids = {b.get("id") for b in _iter_tool_use_blocks(msg)}
+        if use_ids and i + 1 < len(middle):
+            nxt = middle[i + 1]
+            result_ids = {b.get("tool_use_id") for b in _iter_tool_result_blocks(nxt)}
+            if nxt.get("role") == "user" and use_ids <= result_ids:
+                units.append((i, i + 1))
+                i += 2
+                continue
+        units.append((i,))
+        i += 1
+    return units
+
+
+def _unit_is_pure_noise(
+    middle: list,
+    unit: tuple,
+    occ: tuple,
+    middle_offset: int,
+) -> bool:
+    """Stage-1 classifier. A pair is pure noise only when it carries no
+    meaningful prose AND every tool call in it is independently noise:
+    a pure acknowledgment result, a superseded read (a later non-errored
+    read of the same path with no intervening write), or a repeated
+    identical call whose fresher copy returned the SAME result. Singletons
+    are never noise. When in doubt: keep."""
+    if len(unit) != 2:
+        return False
+    reads, writes, fps = occ
+    a_msg, u_msg = middle[unit[0]], middle[unit[1]]
+    if _has_meaningful_text(a_msg, "tool_use"):
+        return False
+    if _has_meaningful_text(u_msg, "tool_result"):
+        return False
+    results = {
+        b.get("tool_use_id"): _extract_text(b.get("content", ""))
+        for b in _iter_tool_result_blocks(u_msg)
+    }
+    calls = list(_iter_tool_use_blocks(a_msg))
+    if not calls:
+        return False
+    global_idx = middle_offset + unit[0]
+    for call in calls:
+        result_text = results.get(call.get("id"), "")
+        if _is_ack_result(result_text):
+            continue
+        name = call.get("name") or ""
+        tool_input = call.get("input")
+        if name.lower() in _VERBATIM_READ_TOOLS:
+            path = _tool_call_path(tool_input)
+            if path and _read_is_superseded(path, global_idx, reads, writes):
+                continue
+        fp_entries = fps.get(_call_fingerprint(name, tool_input), [])
+        if _repeat_is_noise(fp_entries, global_idx, result_text):
+            continue
+        return False
+    return True
+
+
+def _truncate_text_block(text: str) -> tuple[str, int]:
+    """(truncated_text, chars_removed) keeping a verbatim head + note, or
+    (text, 0) when truncation would not shrink the block — a text in the
+    (HEAD, HEAD + len(note)] band would otherwise GROW by the note."""
+    if len(text) <= _VERBATIM_TRUNCATE_MIN_CHARS:
+        return text, 0
+    cut = text[_VERBATIM_TRUNCATE_HEAD_CHARS:]
+    note = f"\n\n[… truncated ~{estimate_tokens(cut)} tokens …]"
+    if len(text) <= _VERBATIM_TRUNCATE_HEAD_CHARS + len(note):
+        return text, 0
+    return text[:_VERBATIM_TRUNCATE_HEAD_CHARS] + note, len(cut) - len(note)
+
+
+def _truncate_pair(pair_msgs: list) -> int:
+    """Stage 2: truncate a (assistant, user) tool pair in place, keeping a
+    verbatim head plus a note on each truncated block. tool_result texts are
+    always eligible; tool_use INPUT fields are truncated only for read-class
+    tools — write-class input payloads (content/new_string/old_string etc.)
+    are the model's own action history, and truncating them is state
+    mutation. Returns chars removed (0 when nothing was worth truncating)."""
+    a_msg, u_msg = pair_msgs
+    removed = 0
+    for block in _iter_tool_result_blocks(u_msg):
+        text = _extract_text(block.get("content", ""))
+        new_text, delta = _truncate_text_block(text)
+        if delta > 0:
+            block["content"] = new_text
+            removed += delta
+    for block in _iter_tool_use_blocks(a_msg):
+        if (block.get("name") or "").lower() not in _VERBATIM_READ_TOOLS:
+            continue  # write-class inputs are action history — never truncate
+        tool_input = block.get("input")
+        if not isinstance(tool_input, dict):
+            continue
+        for key, value in tool_input.items():
+            if isinstance(value, str):
+                new_value, delta = _truncate_text_block(value)
+                if delta > 0:
+                    tool_input[key] = new_value
+                    removed += delta
+    return removed
+
+
+def _noise_breadcrumb(middle: list, units: list, noise_ids: set) -> str:
+    """One bounded accountability note for the stage-1 elision, inserted at
+    the position of the first drop: which tool pairs vanished, so the model
+    isn't silently missing them. Capped in items and total chars."""
+    items: list[str] = []
+    n_pairs = 0
+    for unit in units:
+        if unit[0] not in noise_ids:
+            continue
+        n_pairs += 1
+        for call in _iter_tool_use_blocks(middle[unit[0]]):
+            name = (call.get("name") or "tool").lower()
+            path = _tool_call_path(call.get("input"))
+            items.append(f"{name} {path}" if path else name)
+    header = (
+        f"[compaction: {n_pairs} noise tool "
+        f"pair{'s' if n_pairs != 1 else ''} elided"
+    )
+    if not items:
+        return header + "]"
+    shown = items[:_VERBATIM_BREADCRUMB_MAX_ITEMS]
+
+    def _render() -> str:
+        suffix = "" if len(items) <= len(shown) else f", +{len(items) - len(shown)} more"
+        return header + (" — " + ", ".join(shown) + suffix if shown else "") + "]"
+
+    text = _render()
+    while shown and len(text) > _VERBATIM_BREADCRUMB_MAX_CHARS:
+        shown = shown[:-1]
+        text = _render()
+    return text
+
+
+def _tool_pairing_intact(messages: list) -> bool:
+    """Validate the tool_use/tool_result pairing invariant (uplift 1.2).
+
+    Every assistant message carrying tool_use blocks must be answered by the
+    IMMEDIATELY following user message carrying exactly the matching
+    tool_result ids — no orphan tool_result, no dangling tool_use. One
+    legitimate exception: a dangling tool_use in the FINAL message (an
+    assistant prefill awaiting its results)."""
+    pending: set | None = None
+    last_idx = len(messages) - 1
+    for idx, msg in enumerate(messages):
+        use_ids = {
+            b.get("id")
+            for b in _iter_tool_use_blocks(msg)
+            if isinstance(b.get("id"), str)
+        }
+        result_ids = {
+            b.get("tool_use_id")
+            for b in _iter_tool_result_blocks(msg)
+            if isinstance(b.get("tool_use_id"), str)
+        }
+        if pending is not None:
+            if msg.get("role") != "user" or result_ids != pending:
+                return False
+            pending = None
+            continue
+        if use_ids and msg.get("role") == "assistant":
+            pending = use_ids
+        elif result_ids:
+            return False  # orphan tool_result with no pending tool_use
+    # Reaching the end with pending set means the FINAL message is an
+    # assistant prefill awaiting its results — the one legitimate dangling
+    # tool_use (any message after a pending one either clears it in the loop
+    # above or fails the check outright).
+    return pending is None or messages[last_idx].get("role") == "assistant"
+
+
+def verbatim_compact_conversation(
+    anthropic_body: dict,
+    context_window: int,
+    monitor: "SessionMonitor | None" = None,
+    target_fraction: float = 0.65,
+    keep_last: int = 8,
+) -> dict | None:
+    """Compact the conversation with per-tool-call keep/truncate/drop
+    decisions, keeping everything retained VERBATIM (uplift 1.2).
+
+    Returns the compacted body, or None to signal "fall back to
+    prune_conversation" — used when the verbatim stages cannot reach the
+    budget, when pairing integrity cannot be guaranteed, or when there is
+    nothing for the verbatim path to do. Never raises on malformed input by
+    design; the caller also wraps this in try/except and fails closed.
+
+    KV-cache note: this path diverges from the previous prompt at the first
+    dropped/truncated middle pair (the legacy pruner diverges at index 1 via
+    its marker), and survivors are never reshuffled or re-summarized, so
+    repeated compactions don't compound divergence.
+
+    On success the middle has been re-indexed non-contiguously, so the
+    legacy path's monotonic boundary no longer maps to the same messages:
+    monitor.prune_drop_count is RESET to 0 (a stale boundary would
+    force-drop kept signal on a later fallback turn).
+    """
+    messages = anthropic_body.get("messages", [])
+    if len(messages) <= 4:
+        # Few-message overflow needs single-message content truncation,
+        # which is exactly what the old path's oversized-content pass does.
+        return None
+
+    keep_last = max(1, keep_last)
+    message_budget = int(context_window * target_fraction) - _prune_overhead_tokens(
+        anthropic_body
+    )
+    if message_budget <= 0:
+        # Tool-heavy clients: same minimal floor the old path prunes into.
+        message_budget = max(1, int(context_window * 0.20))
+
+    protected_tail = (
+        messages[-keep_last:] if len(messages) > keep_last else messages[1:]
+    )
+    middle = messages[1:-keep_last] if len(messages) > keep_last + 1 else []
+    if not middle:
+        return None
+    protected_tokens = sum(
+        estimate_message_tokens(m) for m in messages[:1] + protected_tail
+    )
+    if protected_tokens >= message_budget:
+        # Even the undroppable head+tail overflow — the old path truncates
+        # them in place; nothing the verbatim stages can do.
+        return None
+
+    def _total() -> int:
+        return sum(estimate_message_tokens(m) for m in messages)
+
+    # No-op check on the ORIGINAL messages — before paying for the deepcopy.
+    if _total() <= message_budget:
+        return None  # nothing to do; let the old path confirm no-op
+
+    # Work on a deep copy so any mid-flight failure leaves the caller's body
+    # pristine for the lossy fallback.
+    body = copy.deepcopy(anthropic_body)
+    messages = body["messages"]
+    middle = messages[1:-keep_last]
+
+    units = _pair_units(middle)
+    occ = _later_occurrence_maps(messages)
+
+    # --- Stage 1: drop pure-noise tool pairs (survivors keep their order) ---
+    noise_ids = {
+        idx
+        for unit in units
+        if _unit_is_pure_noise(middle, unit, occ, 1)
+        for idx in unit
+    }
+    changed = False
+    if noise_ids:
+        # Drops are never silent: one bounded accountability note at the
+        # position of the first drop (all indices below it are kept, so it
+        # lands exactly where the first elided pair used to be).
+        breadcrumb = _noise_breadcrumb(middle, units, noise_ids)
+        first_drop = min(noise_ids)
+        middle = [m for i, m in enumerate(middle) if i not in noise_ids]
+        middle.insert(first_drop, {"role": "user", "content": breadcrumb})
+        messages = messages[:1] + middle + messages[len(messages) - keep_last:]
+        body["messages"] = messages
+        changed = True
+
+    # --- Stage 2: truncate large kept tool results, oldest first, against a
+    # running budget (an exact _total() is recomputed once at the end) ---
+    running = _total()
+    if running > message_budget:
+        middle = messages[1:-keep_last]
+        for unit in _pair_units(middle):
+            if len(unit) != 2:
+                continue
+            if running <= message_budget:
+                break
+            removed = _truncate_pair([middle[unit[0]], middle[unit[1]]])
+            if removed > 0:
+                changed = True
+                running -= int(removed / CHARS_PER_TOKEN)
+
+    if not changed:
+        return None  # nothing the verbatim path could do — old path decides
+
+    if _total() > message_budget:
+        # Stage 3: stages 1-2 cannot reach budget — fail closed to the
+        # contiguous breadcrumb pruner.
+        return None
+
+    # HARD INVARIANT: validate pairing on the transformed output; any
+    # integrity failure fails closed to the old path.
+    if not _tool_pairing_intact(messages):
+        logger.warning(
+            "verbatim compaction produced a pairing-integrity violation -- "
+            "falling back to lossy pruner"
+        )
+        logger.debug(
+            "verbatim skipped: tool_use/tool_result id sets mismatch after "
+            "transform (id-less or mismatched tool blocks)"
+        )
+        return None
+
+    if monitor is not None:
+        # The middle was re-indexed non-contiguously; the legacy monotonic
+        # boundary no longer maps to the same messages.
+        monitor.prune_drop_count = 0
+
+    logger.warning(
+        "VERBATIM COMPACT: dropped %d noise messages, kept %d total, "
+        "target=%.0f%% of %d ctx (est %d -> %d message tokens)",
+        len(noise_ids),
+        len(messages),
+        target_fraction * 100,
+        context_window,
+        sum(estimate_message_tokens(m) for m in anthropic_body.get("messages", [])),
+        _total(),
+    )
+    return body
+
+
+def _compact_conversation(
+    body: dict,
+    ctx_window: int,
+    monitor: "SessionMonitor | None",
+    target_fraction: float,
+    keep_last: int,
+) -> dict:
+    """Context-pressure compaction entry point: try the verbatim
+    keep/truncate/drop path first (kept messages stay byte-identical; only
+    noise pairs are elided, with one bounded breadcrumb, and oversized
+    results keep verbatim heads); on None or ANY exception, fail closed to
+    the known-good lossy pruner. PROXY_VERBATIM_COMPACT=off skips the
+    verbatim path entirely."""
+    if PROXY_VERBATIM_COMPACT != "off":
+        try:
+            compacted = verbatim_compact_conversation(
+                body,
+                ctx_window,
+                monitor=monitor,
+                target_fraction=target_fraction,
+                keep_last=keep_last,
+            )
+            if compacted is not None:
+                return compacted
+        except Exception:
+            logger.exception(
+                "verbatim compaction failed -- falling back to lossy pruner"
+            )
+    return prune_conversation(
+        body,
+        ctx_window,
+        monitor=monitor,
+        target_fraction=target_fraction,
+        keep_last=keep_last,
+    )
 
 
 def prune_conversation(
@@ -3408,22 +4029,9 @@ def prune_conversation(
     target_tokens = int(context_window * target_fraction)
 
     # Estimate non-message tokens (system, tools, agentic supplement)
-    # Apply a 1.5x safety factor to account for chat template overhead
-    # and tokenization differences between local estimate and upstream
-    overhead_tokens = 0
-    system = anthropic_body.get("system", "")
-    if isinstance(system, str):
-        overhead_tokens += estimate_tokens(system)
-    elif isinstance(system, list):
-        for block in system:
-            if isinstance(block, dict) and block.get("type") == "text":
-                overhead_tokens += estimate_tokens(block.get("text", ""))
-    if _has_tool_definitions(anthropic_body):
-        overhead_tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
-    tools = anthropic_body.get("tools", [])
-    if tools:
-        overhead_tokens += estimate_tokens(json.dumps(tools))
-    overhead_tokens = int(overhead_tokens * 1.5)  # Safety factor for template overhead
+    # with the 1.5x safety factor for chat-template overhead and
+    # tokenization differences between local estimate and upstream.
+    overhead_tokens = _prune_overhead_tokens(anthropic_body)
 
     # Budget for messages
     message_budget = target_tokens - overhead_tokens
@@ -13304,7 +13912,7 @@ async def messages(request: Request):
                     keep_last,
                     target_frac * 100,
                 )
-            body = prune_conversation(
+            body = _compact_conversation(
                 body, ctx_window, monitor=monitor,
                 target_fraction=target_frac, keep_last=keep_last,
             )
@@ -13326,7 +13934,7 @@ async def messages(request: Request):
                     "POST-PRUNE VALIDATION: still at %.1f%% after prune, doing aggressive pass",
                     post_util * 100,
                 )
-                body = prune_conversation(
+                body = _compact_conversation(
                     body, ctx_window, monitor=monitor,
                     target_fraction=0.35, keep_last=4,
                 )
