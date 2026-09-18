@@ -140,6 +140,7 @@ the decision record.
 | [P0 anti-vacuous spec](specs/p0-anti-vacuous.md) | The verbatim-operations spec behind deliver's anti-stub hardening |
 | [Dashboard uplift spec](DASHBOARD_UPLIFT_SPEC.md) | Replacing the monolithic dashboard with the modular token-locked console |
 | [Performance baseline](performance/baseline-2026-03-27.json) | Machine-recorded perf baseline (heap, query latency) |
+| [Reliability ladder](performance/reliability-ladder.md) | Measured technique-selection table for the decision loop; `npm run bench:ladder` regenerates it from `benchmark-results/` |
 
 ## Contributing
 
