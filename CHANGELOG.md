@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.1.9 (2026-09-18)
+
+- docs: add System-1 uplift plan from 2026-09-18 ten-source analysis
+
+
 ## v2.1.8 (2026-09-17)
 
 - fix(proxy): disable thinking on unexpected-end-turn guardrail retry
