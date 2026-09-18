@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { Command, Option } from 'commander';
+import chalk from 'chalk';
 import { registerConfigCommands } from '../cli/config-command.js';
 import { existsSync, readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 // Lazy import helpers - commands are loaded on-demand to reduce startup time (~10x faster --help)
@@ -50,6 +51,9 @@ const lazy = {
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   quality: () => import('../cli/quality.js').then((m) => m.qualityCommand),
   supervise: () => import('../cli/supervise.js').then((m) => m.superviseCommand),
+  classify: () => import('../cli/classify.js').then((m) => m.classifyCommand),
+  doctor: () => import('../cli/doctor.js').then((m) => m.doctorCommand),
+  review: () => import('../cli/review.js').then((m) => m.reviewCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
@@ -548,6 +552,19 @@ program
     await cmd(subcommand, options);
   });
 
+// Capacity doctor — per-service budget/headroom policy with GREEN/RED/DARK health
+program
+  .command('doctor')
+  .description('Capacity policy report: probe declared services against budgets (GREEN/RED/DARK)')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('--policy <path>', 'Explicit capacity policy path (default: config/capacity-policy.json, then ~/.config/uap/)')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--strict', 'Exit 1 when any service is RED or DARK (CI/monitor gating)')
+  .action(async (options) => {
+    const cmd = await lazy.doctor();
+    await cmd(options);
+  });
+
 // Quality-metrics gate — complexity/coverage/mutation policing with a ratchet
 program
   .command('quality')
@@ -579,6 +596,58 @@ program
   .action(async (runId, options) => {
     const cmd = await lazy.supervise();
     await cmd(runId, options);
+  });
+
+// Deterministic review support — pre-pass ruleset scan + UI capture binding
+program
+  .command('review')
+  .description('Review support: deterministic pre-pass findings and UI before/after captures for the parallel review protocol')
+  .argument('[subcommand...]', 'prepass | captures [add|check]')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--files <list>', 'prepass: comma-separated repo-relative file list (default: changed files)')
+  .option('--write', 'prepass: write the sibling artifact .uap/reviews/<branch-slug>.pre-pass.json')
+  .option('--before <img>', 'captures add: pre-change capture image')
+  .option('--after <img>', 'captures add: post-change capture image')
+  .option('--tool <name>', 'captures add: capture tool (agent-browser, tuistory, pty-capture, ...)')
+  .option('--note <text>', 'captures add: free-text note for the pair')
+  .action(async (subcommand, options) => {
+    const cmd = await lazy.review();
+    await cmd(subcommand, options);
+  });
+
+// System-1 classifier (uplift §6) — local, airgap-pure assessment surface
+program
+  .command('classify')
+  .description('System-1 classifier: assess a state against built-in questions (noul/score/choice)')
+  .argument('[state]', 'State text to assess')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('-q, --question <name>', 'One built-in question (default: all)')
+  .option('--shadow', 'Append the assessment to .uap/classify-shadow.jsonl (hash-only, no raw text)')
+  .option('--bench [n]', 'Latency self-check against the 50ms p95 budget')
+  .option('--thresholds <path>', 'Explicit threshold config (default: config/ then ~/.config/uap/)')
+  .option('--json', 'Emit machine-readable JSON')
+  .action(async (state, options) => {
+    const cmd = await lazy.classify();
+    try {
+      await cmd({
+        projectDir: options.projectDir ?? process.cwd(),
+        state,
+        question: options.question,
+        json: options.json,
+        shadow: options.shadow,
+        bench: options.bench === true ? 200 : options.bench !== undefined ? Number(options.bench) : undefined,
+        thresholds: options.thresholds,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (options.json) {
+        console.log(JSON.stringify({ reportVersion: 1, error: msg }));
+      } else {
+        console.error(chalk.red(`classify: ${msg}`));
+      }
+      process.exitCode = 1;
+    }
   });
 
 // Engineering principles — the rule-1 stance, asked once per project per session
@@ -2167,7 +2236,10 @@ uapOmpCmd.addCommand(
         .argument('<slug>', 'Worktree slug')
         .action((slug) => {
           try {
-            execSync(`uap worktree create ${slug}`, { stdio: 'inherit' });
+            // execFileSync + arg array: the slug is user/LLM-controlled input
+            // and must never reach a shell (found by the review pre-pass).
+            // The `--` keeps a dash-prefixed slug from being parsed as a flag.
+            execFileSync('uap', ['worktree', 'create', '--', slug], { stdio: 'inherit' });
           } catch (error: unknown) {
             const err = error as Error;
             console.error('Error creating worktree:', err.message);

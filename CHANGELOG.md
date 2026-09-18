@@ -1,8 +1,39 @@
 # Changelog
 
+## v2.7.0 (2026-09-19)
+
+- feat(classify): local System-1 classifier foundation — uap classify (uplift §6)
+
+
+## v2.6.0 (2026-09-19)
+
+- feat(capacity): capacity policy as code — uap doctor GREEN/RED/DARK (uplift 0.5)
+
+
+## v2.5.0 (2026-09-18)
+
+- feat(bench): measured reliability ladder for the decision loop (uplift 0.1)
+
+
+## v2.4.0 (2026-09-18)
+
+- feat(review): visual captures gate for UI diffs (uplift 0.3)
+
+
+## v2.3.0 (2026-09-18)
+
+- feat(review): deterministic review pre-pass before LLM reviewers (uplift 0.2)
+
+
 ## v2.2.0 (2026-09-18)
 
-- feat(supervise): semantic supervisor for deliver missions — uap supervise (uplift 1.1)
+- chore: bump version to 2.2.0
+- feat(evals): routing evals for pattern/droid/skill registries (uplift 0.4)
+
+
+## v2.1.9 (2026-09-18)
+
+- docs: add System-1 uplift plan from 2026-09-18 ten-source analysis
 
 
 ## v2.1.8 (2026-09-17)
