@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.8.0 (2026-09-19)
+
+- feat(supervise): semantic supervisor for deliver missions — uap supervise (uplift 1.1)
+
+
 ## v2.7.0 (2026-09-19)
 
 - feat(classify): local System-1 classifier foundation — uap classify (uplift §6)
