@@ -3,8 +3,8 @@
 <!-- Optimizations #28-34: Mandatory Verifier Loop, Decoder-First Gate, Context Stripping, Environment Check, Schema Diff, State Protection, Conditional Domain -->
 
 <!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,HOOK_INCLUDES,PATTERN_ROUTER,VALIDATE_PLAN -->
-<!-- TEMPLATE_VERSION: 2.4.1 -->
-<!-- LAST_VALIDATED: 2026-09-18 -->
+<!-- TEMPLATE_VERSION: 2.4.2 -->
+<!-- LAST_VALIDATED: 2026-09-19 -->
 
 <!-- Custom Sections (preserved from existing file) -->
 
@@ -24,6 +24,11 @@ uap task ready                        # task readiness check
 The session-start hook is self-healing — it auto-creates missing
 coordination DBs and fails open so it never blocks the agent. Treat its
 output as advisory context, not a gate.
+
+Service health for UAP-managed daemons is checked separately with
+`uap doctor`, which probes each service against its declared budget in
+`config/capacity-policy.json` (see
+[docs/guides/CAPACITY_POLICY.md](docs/guides/CAPACITY_POLICY.md)).
 
 ## DECISION LOOP
 
@@ -77,6 +82,10 @@ See the WORKTREE GATE section below for the per-edit enforcement details.
 ## PARALLEL REVIEW PROTOCOL
 
 For non-trivial changes, run review angles concurrently before claiming done:
+
+Step 0: run the deterministic pre-pass — `uap review prepass`
+([docs/reference/review-prepass.md](docs/reference/review-prepass.md)) — and
+embed its line-anchored findings in each reviewer's prompt.
 
 - `code-reviewer` — correctness, tests, migration risk
 - `security-auditor` — input validation, secrets, OWASP top 10

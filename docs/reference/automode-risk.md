@@ -21,7 +21,7 @@ This is the Python-side calibrated heuristic floor for AutoMode. Its
 vocabulary is *inspired by* the unmerged TypeScript SYS1 baseline
 (`src/classify/baseline.ts` on `feature/301-sys1-classifier`) — not ported:
 the TS baseline scores prose state descriptions, this scorer parses shell
-structure, so the domains and machinery genuinely differ and "cross-stack
+structure, so the domains and machinery differ and "cross-stack
 parity" would overclaim. The promotion path is a **Python-resident head (or
 sidecar) behind the same `classify_tool_call` contract**, gated by the
 calibration harness at held-out destructive recall 1.0 — when it lands, the

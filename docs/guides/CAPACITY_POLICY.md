@@ -9,7 +9,8 @@ This generalizes the 2026-09-18 llama.cpp OOM fix: four SIGABRT crashes
 happened because a KV-cache budget was resolved against a GPU that also runs
 a desktop, and nothing declared that relationship. The fix held, but the
 *discipline* (declare budget + headroom + restart baseline, watch for
-violations) lived in a commit message. Now it is data.
+violations) lived only in a commit message; the capacity policy moves it
+into data.
 
 ## Policy file
 
@@ -73,9 +74,9 @@ elsewhere should ship their own `config/capacity-policy.json` (project) or
 `~/.config/uap/capacity-policy.json` (operator); the resolution order above
 makes the committed file the fallback only inside this repo.
 
-`uap doctor --strict` is the natural health source for the monitor service
-to consult before restarting anything, and for CI to refuse a deploy into a
-degraded host.
+`uap doctor --strict` is the health source the monitor service should
+consult before restarting anything, and CI can use it to refuse a deploy
+into a degraded host.
 
 ## Decisions
 

@@ -109,9 +109,9 @@ Thresholds ship reviewed in `config/supervise-policy.json`:
   "classifierConfidenceMin": 0.7, "classifierTau": 0.6, "maxVerify": 3 }
 ```
 
-Loading is loud: a missing, corrupt, mis-versioned, or out-of-range file
-throws `SupervisorError` and the supervisor refuses to run — it never invents
-defaults. `UAP_SUPERVISE_POLICY` points at an alternate policy file (tests,
+Loading is strict: a missing, corrupt, mis-versioned, or out-of-range file
+throws `SupervisorError` and the supervisor refuses to run — it never
+invents defaults. `UAP_SUPERVISE_POLICY` points at an alternate policy file (tests,
 staged rollouts).
 
 ## Decisions
