@@ -3,7 +3,7 @@
 import { Command, Option } from 'commander';
 import { registerConfigCommands } from '../cli/config-command.js';
 import { existsSync, readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 // Lazy import helpers - commands are loaded on-demand to reduce startup time (~10x faster --help)
@@ -50,6 +50,7 @@ const lazy = {
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   quality: () => import('../cli/quality.js').then((m) => m.qualityCommand),
   doctor: () => import('../cli/doctor.js').then((m) => m.doctorCommand),
+  review: () => import('../cli/review.js').then((m) => m.reviewCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
@@ -577,6 +578,24 @@ program
   .action(async (subcommand, target, options) => {
     if (target && !options.file) options.file = target;
     const cmd = await lazy.quality();
+    await cmd(subcommand, options);
+  });
+
+// Deterministic review support — pre-pass ruleset scan + UI capture binding
+program
+  .command('review')
+  .description('Review support: deterministic pre-pass findings and UI before/after captures for the parallel review protocol')
+  .argument('[subcommand...]', 'prepass | captures [add|check]')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--files <list>', 'prepass: comma-separated repo-relative file list (default: changed files)')
+  .option('--write', 'prepass: write the sibling artifact .uap/reviews/<branch-slug>.pre-pass.json')
+  .option('--before <img>', 'captures add: pre-change capture image')
+  .option('--after <img>', 'captures add: post-change capture image')
+  .option('--tool <name>', 'captures add: capture tool (agent-browser, tuistory, pty-capture, ...)')
+  .option('--note <text>', 'captures add: free-text note for the pair')
+  .action(async (subcommand, options) => {
+    const cmd = await lazy.review();
     await cmd(subcommand, options);
   });
 
@@ -2166,7 +2185,10 @@ uapOmpCmd.addCommand(
         .argument('<slug>', 'Worktree slug')
         .action((slug) => {
           try {
-            execSync(`uap worktree create ${slug}`, { stdio: 'inherit' });
+            // execFileSync + arg array: the slug is user/LLM-controlled input
+            // and must never reach a shell (found by the review pre-pass).
+            // The `--` keeps a dash-prefixed slug from being parsed as a flag.
+            execFileSync('uap', ['worktree', 'create', '--', slug], { stdio: 'inherit' });
           } catch (error: unknown) {
             const err = error as Error;
             console.error('Error creating worktree:', err.message);
