@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.2.0 (2026-09-18)
+
+- chore: bump version to 2.2.0
+- feat(evals): routing evals for pattern/droid/skill registries (uplift 0.4)
+
+
 ## v2.1.9 (2026-09-18)
 
 - docs: add System-1 uplift plan from 2026-09-18 ten-source analysis
