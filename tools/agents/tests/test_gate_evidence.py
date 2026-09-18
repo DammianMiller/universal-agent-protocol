@@ -89,6 +89,62 @@ class TestEvidenceIsNotAgentWritable(unittest.TestCase):
             self.assertTrue(out.get("allowed"), f"{cmd!r} must stay allowed")
 
 
+class TestInterpreterForgeryOfEvidence(unittest.TestCase):
+    """An interpreter-mediated write carries no destructive verb and no shell
+    redirect, so the PROTECTED_TARGETS Bash scan walks straight past it — and
+    `python3 -c 'open(".uap/evidence/<sha>.json","w")…'` used to mint the exact
+    artifact evidence-bound-ship trusts. The interpreter-write rule (built for
+    the trust anchors) now covers the evidence directory too.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / ".uap" / "evidence").mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _bash(self, cmd):
+        return run_enforcer(SELF_PROTECT, "Bash", {"command": cmd}, self.root)
+
+    def test_python_c_forge_is_refused(self):
+        out = self._bash(
+            "python3 -c 'import json; json.dump({}, open(\".uap/evidence/abc.json\",\"w\"))'")
+        self.assertFalse(out.get("allowed"), "python3 -c forge must be refused")
+
+    def test_node_e_forge_is_refused(self):
+        out = self._bash(
+            "node -e 'require(\"fs\").writeFileSync(\".uap/evidence/abc.json\",\"{}\")'")
+        self.assertFalse(out.get("allowed"), "node -e forge must be refused")
+
+    def test_heredoc_forge_is_refused(self):
+        cmd = ("python3 - <<PY\n"
+               "import pathlib\n"
+               "pathlib.Path(\".uap/evidence/abc.json\").write_text(\"{}\")\n"
+               "PY")
+        out = self._bash(cmd)
+        self.assertFalse(out.get("allowed"), "heredoc interpreter forge must be refused")
+
+    def test_append_via_interpreter_is_refused(self):
+        out = self._bash("python3 -c 'open(\".uap/evidence/reads.log\",\"a\").write(\"x\")'")
+        self.assertFalse(out.get("allowed"), "interpreter append must be refused")
+
+    def test_legitimate_interpreter_writes_elsewhere_stay_allowed(self):
+        # Same mechanism, non-evidence target: over-blocking here would break
+        # ordinary scripting, which is why the scan stays narrow.
+        out = self._bash("python3 -c 'open(\".uap/scratch.log\",\"w\").write(\"x\")'")
+        self.assertTrue(out.get("allowed"), out.get("reason"))
+
+    def test_interpreter_READ_of_evidence_stays_allowed(self):
+        out = self._bash("python3 -c 'print(open(\".uap/evidence/abc.json\").read())'")
+        self.assertTrue(out.get("allowed"), "reads are not writes: " + str(out.get("reason")))
+
+    def test_sibling_lookalike_dir_is_not_caught(self):
+        out = self._bash("python3 -c 'open(\".uap/evidence-notes/x\",\"w\").write(\"y\")'")
+        self.assertTrue(out.get("allowed"), ".uap/evidence-notes is not .uap/evidence")
+
+
 class TestGatesReadProtectedEvidence(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

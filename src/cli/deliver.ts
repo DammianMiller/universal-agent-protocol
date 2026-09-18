@@ -369,6 +369,7 @@ import {
 } from '../delivery/practice.js';
 import { detectRungs, mergeRedetectedRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER, demoteBaselineFailures, baselineRegressions } from '../delivery/verifier-ladder.js';
 import type { GateTier, LadderRunFn, GateRung } from '../delivery/verifier-ladder.js';
+import { recordGateEvidence, gateOutcomesFromResult } from '../delivery/gate-evidence.js';
 import { runDeployDevLadder } from '../delivery/deploy-dev-gate.js';
 import { commitPushAndWatch } from '../delivery/ci-watcher.js';
 import type { DeployEnvironment } from '../delivery/ci-watcher.js';
@@ -4418,6 +4419,30 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   saveRunState(runState);
   completeDeliveryTask(missionTask, result);
   await recordDeliveryOutcome(instruction, projectRoot, result, model.id);
+
+  // Gate evidence (uplift 1.4, evidence-bound-ship): bind this mission's green
+  // gates to the HEAD they prove, so a later ship action must present evidence
+  // for THIS candidate commit. This is the single seam every runner kind
+  // (single / phased / orchestrated / ci-reconverge) converges on with a final
+  // `result`; gateOutcomesFromResult picks the LAST passing iteration (or the
+  // baseline ladder run when the tree was already green). Fail-SOFT: evidence
+  // emission must never break a mission — a warning is the whole failure mode.
+  //
+  // Accepted race: the last gate run and the `git rev-parse HEAD` inside
+  // recordGateEvidence are not atomic — a concurrent commit landing between
+  // them would bind evidence to a HEAD the gates did not see. The window is
+  // milliseconds, in-process, and the dirty-tree check closes the common case
+  // (the mission's own uncommitted writes); a deliberate cross-process commit
+  // in that window is out of threat model for a local-only gate.
+  if (result.success) {
+    try {
+      const gates = gateOutcomesFromResult(result, rungs);
+      const evidencePath = recordGateEvidence(projectRoot, gates, { runId });
+      if (!options.json) console.log(chalk.dim(`  gate evidence: ${evidencePath}`));
+    } catch (e) {
+      console.warn(chalk.yellow(`  ⚠ gate evidence not recorded: ${(e as Error).message}`));
+    }
+  }
 
   // Close the HALO observe→learn loop: mine the trace tail for recurring
   // failure patterns after every run — no operator step required.
