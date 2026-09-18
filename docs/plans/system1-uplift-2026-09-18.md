@@ -145,8 +145,7 @@ policy code.
 - **Training data:** UAP's own telemetry — `project_telemetry` events, gate
   decisions and outcomes, escalation results, stuck/attractor events,
   deliver-mission histories, and incident records (e.g., the 2026-09-18 OOM
-  timeline). This dataset is the moat: nobody else has UAP's decision-outcome
-  pairs.
+  timeline). Nobody else has UAP's decision-outcome pairs.
 - **Model form (v1):** small, CPU-fast, calibrated. Start with an embedding +
   calibrated head (nomic-embeddings already deployed; logistic/isotonic on
   top) for noul/score/choice questions. Evaluate against a distilled small

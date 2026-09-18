@@ -1,6 +1,6 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.224.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 367 TypeScript modules across 26 subsystems, 459 vitest suites plus a ~1,200-test Python enforcer/proxy suite, 60 CLI command registrations, 32 executable policy enforcers, 9 supported agent harnesses.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v2.11.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 367 TypeScript modules across 26 subsystems, 459 vitest suites plus a ~1,200-test Python enforcer/proxy suite, 60+ CLI command registrations, 32 executable policy enforcers, 9 supported agent harnesses.
 
 > **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
 > [`documentation/`](../documentation/architecture.md): architecture, flows, permissions
@@ -78,6 +78,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Self-Harness](design/SELF_HARNESS.md) | Self-improving harness (shipped as `uap self-harness`): autonomous mine→propose→validate loop over a bounded Mod DSL; cross-model transfer, online mining |
 | [LLM Self-Tuning (analysis)](design/LLM_SELF_TUNING_ANALYSIS.md) | The design behind `uap tune`: quality signal, LLM-guided + Gaussian-process flag search, closed-loop validation, model profiles, real-time adaptation |
 | [Product Naming (analysis)](design/PRODUCT_NAMING.md) | UAP rename candidates: availability sweeps (npm/PyPI/domains), AI-space collision checks, railway-theme shortlist, recommendation. No decision committed; availability data is point-in-time |
+| [ADRs](architecture/adr/) | Architecture decision records: [0001 AutoMode risk floor](architecture/adr/0001-automode-risk-floor.md) (Python heuristic scorer ahead of the TS SYS1 head), [0002 Evidence-bound ship](architecture/adr/0002-evidence-bound-ship.md) (gate evidence bound to the candidate SHA) |
 
 ## Reference
 
@@ -92,6 +93,10 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Platforms](reference/PLATFORMS.md) | The 9 supported harnesses + support matrix |
 | [Review Pre-Pass](reference/review-prepass.md) | Deterministic ruleset scanner (`uap review prepass`) that feeds line-anchored findings to the parallel review protocol |
 | [Visual Captures](reference/visual-captures.md) | Before/after capture binding for UI diffs (`uap review captures`) — ship-time gate 7 enforcement |
+| [System-1 Classifier](reference/system1-classifier.md) | `uap classify` — the local, airgap-pure assessment backend (noul/score/choice questions) behind the Wave 1 consumers; thresholds ship as policy config |
+| [Semantic Supervisor](reference/semantic-supervisor.md) | `uap supervise` — watchdog loop for `uap deliver` missions; nine assessment dimensions, deterministic safety-first policy, cooperative STOP only |
+| [AutoMode Risk](reference/automode-risk.md) | Pre-execution tool-call risk classification (`tools/agents/scripts/tool_risk.py`) — advisory only, ahead of the deterministic enforcer floor |
+| [Evidence-Bound Ship](reference/evidence-bound-ship.md) | Ship actions blocked unless `.uap/evidence/<head-sha>.json` proves the gates passed for the exact commit being shipped |
 | [Configuration](reference/CONFIGURATION.md) | All config files and env vars |
 | [**Configuration Reference**](reference/CONFIGURATION_REFERENCE.md) | Every setting `uap config` exposes — what it does, default, and a recommendation (generated from the registry); `uap config list/explain/set/doctor/wizard` ⭐ |
 | [Database Schema](reference/DATABASE_SCHEMA.md) | SQLite databases + Qdrant collections |

@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-450%2B_suites-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
-`v1.224.0` · 367 TypeScript modules across 26 subsystems · 459 vitest suites (+ a ~1,200-test Python enforcer/proxy suite) · 9 agent harnesses
+`v2.11.0` · 367 TypeScript modules across 26 subsystems · 459 vitest suites (+ a ~1,200-test Python enforcer/proxy suite) · 9 agent harnesses
 
 [Quickstart](#quickstart) · [Why UAP?](#why-uap) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
 
@@ -110,17 +110,18 @@ UAP installs hooks into your agent harness, then mediates every tool call throug
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                       UAP CLI (uap)                         │
-│  setup · memory · deliver · verify · worktree · policy      │
-│  quality · plan · fidelity · interaction · task · coord ·   │
-│  droids · model · mcp-router · proxy · orchestrator ·       │
-│  self-harness · tune · design · principles · bench …        │
+│  setup · memory · deliver · verify · review · worktree ·    │
+│  policy · quality · plan · fidelity · interaction · task ·  │
+│  coord · droids · model · mcp-router · proxy · supervise ·  │
+│  orchestrator · self-harness · tune · design · principles · │
+│  bench · doctor · classify …                                │
 └──┬─────────┬──────────┬──────────┬──────────┬───────────────┘
    ▼         ▼          ▼          ▼          ▼
  Memory   Policy    MCP Router   Delivery   Coordination
  4 tiers  32 gates  compression  + verify   + deploy batch
 ```
 
-- **60 CLI commands** across 26 source subsystems (367 TypeScript modules).
+- **60+ CLI commands** across 26 source subsystems (367 TypeScript modules).
 - Deep dive: **[docs/architecture/OVERVIEW.md](docs/architecture/OVERVIEW.md)** · protocol spec: **[docs/architecture/PROTOCOL.md](docs/architecture/PROTOCOL.md)**.
 
 ---

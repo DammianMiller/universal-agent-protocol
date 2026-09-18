@@ -75,7 +75,8 @@ local record, never committed payload.
 
 Per-gate `at` is **reconstructed**, not measured: rungs carry durations but no
 wall-clock finish time, so a gate's stamp is the recording time minus the
-durations of the gates that ran after it. Honest ordering, approximate clock.
+durations of the gates that ran after it. Ordering is preserved; timestamps
+are approximate.
 
 ## Forgery resistance
 
@@ -88,7 +89,7 @@ refused. The deliver CLI writes artifacts; the agent cannot. The trust root is
 
 ## Scope & limitations
 
-This gate is a **local** perimeter, and it is honest about what that means:
+This gate is a **local** perimeter, with the following limits:
 
 - **Enforcement fires only on ship actions routed through the local policy
   chain.** A merge pressed in the GitHub web UI, or a push from a machine

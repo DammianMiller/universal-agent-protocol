@@ -20,7 +20,7 @@ fixtures work unchanged:
 | `action-class` | choice | `proceed` / `verify-first` / `escalate` / `stop` |
 
 v1 ships **one dimension end-to-end** (escalation risk) per the plan's scope
-discipline; the other two questions ride the same plumbing.
+discipline; the other two questions use the same plumbing.
 
 ## CLI
 
@@ -89,9 +89,9 @@ the thresholds that came from it.
 - **One GPU/CPU probe budget.** Assessments are synchronous and batched per
   call; Wave 1 consumers batch questions per state.
 - **The baseline is question-scoped, not question-blind.** It answers only
-  the built-in questions and refuses others loudly — a custom noul question
-  must not silently inherit the escalation vocabulary. The trained head is
-  the generalizer.
+  the built-in questions and rejects others with an error — a custom noul
+  question must not silently inherit the escalation vocabulary. The trained
+  head is the generalizer.
 - **Kinship:** `src/models/complexity.ts` runs the same
   heuristic-now-model-behind-the-same-interface-later play for task
   complexity. The two should converge deliberately when the trained head
