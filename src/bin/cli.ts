@@ -49,6 +49,7 @@ const lazy = {
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   quality: () => import('../cli/quality.js').then((m) => m.qualityCommand),
+  doctor: () => import('../cli/doctor.js').then((m) => m.doctorCommand),
   review: () => import('../cli/review.js').then((m) => m.reviewCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
@@ -546,6 +547,19 @@ program
     if (target && !options.file) options.file = target;
     const cmd = await lazy.design();
     await cmd(subcommand, options);
+  });
+
+// Capacity doctor — per-service budget/headroom policy with GREEN/RED/DARK health
+program
+  .command('doctor')
+  .description('Capacity policy report: probe declared services against budgets (GREEN/RED/DARK)')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('--policy <path>', 'Explicit capacity policy path (default: config/capacity-policy.json, then ~/.config/uap/)')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--strict', 'Exit 1 when any service is RED or DARK (CI/monitor gating)')
+  .action(async (options) => {
+    const cmd = await lazy.doctor();
+    await cmd(options);
   });
 
 // Quality-metrics gate — complexity/coverage/mutation policing with a ratchet

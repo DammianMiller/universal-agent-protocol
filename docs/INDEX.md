@@ -24,6 +24,7 @@ UAP is organized like a delivery line. If you know which part of the pipeline yo
 | **QC / verify** — prove it runs | "Done" on code that never ran | [`uap deliver`](guides/DELIVER.md) · [Policies](guides/POLICIES.md) · [Quality gate](../CLAUDE.md) (`uap quality check`) |
 | **Coordination** — many workers, one floor | Parallel agents colliding, stale branches overwriting landed work | [Parallel Agents](guides/PARALLEL_AGENTS.md) · [Coordination](guides/COORDINATION.md) · [Deploy Batching](guides/DEPLOY_BATCHING.md) |
 | **Shipping** — out the door safely | Regressions, red CI, skipped bumps | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) · [Policies](guides/POLICIES.md) |
+| **Capacity** — services inside their budgets | Silent OOMs, crash loops, headroom loss | [Capacity Policy](guides/CAPACITY_POLICY.md) (`uap doctor`) |
 | **Feedback** — the floor learns | The same mistake every session | [Memory](guides/MEMORY.md) · [Self-Harness](design/SELF_HARNESS.md) · [Self-Tuning](guides/SELF_TUNING.md) |
 | *Cross-cutting* — the whole line | Ignored rules, bloated context | [Policies](guides/POLICIES.md) · [MCP Router](guides/MCP_ROUTER.md) |
 
