@@ -87,7 +87,10 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [API](reference/API.md) | Programmatic API surface |
 | [Features](reference/FEATURES.md) | Full feature catalog, mapped to the pipeline stages |
 | [Patterns](reference/PATTERNS.md) | The 23 Terminal-Bench patterns |
+| [Routing Evals](reference/routing-evals.md) | CI-enforced rank-1 routing evals over the pattern/droid/skill registries — planted traps, negative cases, 90% threshold |
 | [Platforms](reference/PLATFORMS.md) | The 9 supported harnesses + support matrix |
+| [Review Pre-Pass](reference/review-prepass.md) | Deterministic ruleset scanner (`uap review prepass`) that feeds line-anchored findings to the parallel review protocol |
+| [Visual Captures](reference/visual-captures.md) | Before/after capture binding for UI diffs (`uap review captures`) — ship-time gate 7 enforcement |
 | [Configuration](reference/CONFIGURATION.md) | All config files and env vars |
 | [**Configuration Reference**](reference/CONFIGURATION_REFERENCE.md) | Every setting `uap config` exposes — what it does, default, and a recommendation (generated from the registry); `uap config list/explain/set/doctor/wizard` ⭐ |
 | [Database Schema](reference/DATABASE_SCHEMA.md) | SQLite databases + Qdrant collections |
@@ -132,6 +135,7 @@ the decision record.
 | [Harness engineering uplift](plans/harness-engineering-uplift-2026-07-31.md) | Three-paper analysis of harness variance and what UAP does about it |
 | [K3 UAP uplift validation](plans/k3-uap-uplift-validation.md) | Plan to measure UAP's paired uplift on Kimi K3 by re-running Terminal-Bench 2.1 with Factory Droid as the harness, UAP on vs off |
 | [Qwen3.8 UAP re-test plan](plans/qwen38-uap-retest-plan.md) | Plan to re-run the paired benchmark matrix on the current local Qwen3.8-27B stack with UAP v1.224.x, replicating the +20pp gate-loop finding and checking the hardened deliver pipeline |
+| [System-1 uplift plan](plans/system1-uplift-2026-09-18.md) | Approved uplift from the 2026-09-18 ten-source analysis (Jev/Foreman/Fluent/CEK et al): Wave 0 quick wins + Wave 1 System-1 decision layer, local-only classifier trained from UAP telemetry |
 
 ## Specs & performance
 
