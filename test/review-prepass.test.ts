@@ -210,14 +210,14 @@ describe('pre-pass CLI contract', () => {
   it('exits 1 on HIGH findings even on the --json path', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'uap-prepass-cli-'));
     writeFileSync(join(dir, 'v.ts'), VULNERABLE_TS);
-    await reviewCommand('prepass', { projectDir: dir, files: 'v.ts', json: true });
+    await reviewCommand(['prepass'], { projectDir: dir, files: 'v.ts', json: true });
     expect(process.exitCode).toBe(1);
   });
 
   it('exits clean on a clean file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'uap-prepass-cli-'));
     writeFileSync(join(dir, 'c.ts'), CLEAN_TS);
-    await reviewCommand('prepass', { projectDir: dir, files: 'c.ts', json: true });
+    await reviewCommand(['prepass'], { projectDir: dir, files: 'c.ts', json: true });
     expect(process.exitCode).toBeUndefined();
   });
 });

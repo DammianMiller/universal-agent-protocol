@@ -90,6 +90,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Routing Evals](reference/routing-evals.md) | CI-enforced rank-1 routing evals over the pattern/droid/skill registries — planted traps, negative cases, 90% threshold |
 | [Platforms](reference/PLATFORMS.md) | The 9 supported harnesses + support matrix |
 | [Review Pre-Pass](reference/review-prepass.md) | Deterministic ruleset scanner (`uap review prepass`) that feeds line-anchored findings to the parallel review protocol |
+| [Visual Captures](reference/visual-captures.md) | Before/after capture binding for UI diffs (`uap review captures`) — ship-time gate 7 enforcement |
 | [Configuration](reference/CONFIGURATION.md) | All config files and env vars |
 | [**Configuration Reference**](reference/CONFIGURATION_REFERENCE.md) | Every setting `uap config` exposes — what it does, default, and a recommendation (generated from the registry); `uap config list/explain/set/doctor/wizard` ⭐ |
 | [Database Schema](reference/DATABASE_SCHEMA.md) | SQLite databases + Qdrant collections |

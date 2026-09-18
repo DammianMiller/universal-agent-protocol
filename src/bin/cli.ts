@@ -567,15 +567,19 @@ program
     await cmd(subcommand, options);
   });
 
-// Deterministic review pre-pass — ruleset scan before the LLM reviewers
+// Deterministic review support — pre-pass ruleset scan + UI capture binding
 program
   .command('review')
-  .description('Review pre-pass: deterministic ruleset findings for the parallel review protocol')
-  .argument('[subcommand]', 'prepass')
+  .description('Review support: deterministic pre-pass findings and UI before/after captures for the parallel review protocol')
+  .argument('[subcommand...]', 'prepass | captures [add|check]')
   .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
   .option('--json', 'Emit machine-readable JSON')
-  .option('--files <list>', 'Comma-separated repo-relative file list (default: changed files)')
-  .option('--write', 'Merge findings into .uap/reviews/<branch-slug>.json as the pre_pass block')
+  .option('--files <list>', 'prepass: comma-separated repo-relative file list (default: changed files)')
+  .option('--write', 'prepass: write the sibling artifact .uap/reviews/<branch-slug>.pre-pass.json')
+  .option('--before <img>', 'captures add: pre-change capture image')
+  .option('--after <img>', 'captures add: post-change capture image')
+  .option('--tool <name>', 'captures add: capture tool (agent-browser, tuistory, pty-capture, ...)')
+  .option('--note <text>', 'captures add: free-text note for the pair')
   .action(async (subcommand, options) => {
     const cmd = await lazy.review();
     await cmd(subcommand, options);
