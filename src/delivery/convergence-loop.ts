@@ -203,6 +203,14 @@ export interface DeliveryResult {
    * progress" (retry may help) from "spinning" (retrying the same way cannot).
    */
   stallReason?: string;
+  /**
+   * Rung results of the BASELINE ladder run, set when the run short-circuited
+   * as alreadyDelivered — `history` is empty on that path, and the gate
+   * evidence seam (uplift 1.4) needs real gate outcomes to bind to HEAD even
+   * when no turns ran, or "re-run `uap deliver`" would dead-end forever on an
+   * already-green tree.
+   */
+  baselineGates?: LadderResult['results'];
 }
 
 export interface ExplorerSettings {
@@ -1216,6 +1224,7 @@ export class ConvergenceLoop {
           finalOutput: '',
           totalDurationMs: Date.now() - start,
           changedTree: false,
+          baselineGates: baseline.results,
         };
       }
     }

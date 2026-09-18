@@ -187,6 +187,20 @@ export {
 } from './critic.js';
 
 export {
+  recordGateEvidence,
+  resolveCandidateSha,
+  assertCleanTree,
+  gateEvidencePath,
+  gateOutcomesFromResult,
+  activeGateHatches,
+  KNOWN_GATE_HATCHES,
+  OUTPUT_TAIL_MAX,
+  type GateOutcome,
+  type GateEvidence,
+  type GateEvidenceSource,
+} from './gate-evidence.js';
+
+export {
   detectRungs,
   runLadder,
   runRung,

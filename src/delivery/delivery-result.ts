@@ -19,4 +19,9 @@ export function foldDeliveryResult(target: DeliveryResult, source: DeliveryResul
   }
   target.finalFeedback = source.finalFeedback;
   target.finalOutput = source.finalOutput;
+  // Baseline gate outcomes survive folding so the evidence seam still sees
+  // them after an orchestrated/phased run short-circuits as alreadyDelivered.
+  if (source.baselineGates && !target.baselineGates) {
+    target.baselineGates = source.baselineGates;
+  }
 }
