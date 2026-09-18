@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.6.0 (2026-09-19)
+
+- feat(capacity): capacity policy as code — uap doctor GREEN/RED/DARK (uplift 0.5)
+
+
 ## v2.5.0 (2026-09-18)
 
 - feat(bench): measured reliability ladder for the decision loop (uplift 0.1)
