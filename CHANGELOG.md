@@ -2,7 +2,13 @@
 
 ## v2.2.0 (2026-09-18)
 
-- feat(review): deterministic review pre-pass before LLM reviewers (uplift 0.2)
+- chore: bump version to 2.2.0
+- feat(evals): routing evals for pattern/droid/skill registries (uplift 0.4)
+
+
+## v2.1.9 (2026-09-18)
+
+- docs: add System-1 uplift plan from 2026-09-18 ten-source analysis
 
 
 ## v2.1.8 (2026-09-17)
