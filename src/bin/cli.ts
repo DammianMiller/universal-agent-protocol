@@ -3,7 +3,7 @@
 import { Command, Option } from 'commander';
 import { registerConfigCommands } from '../cli/config-command.js';
 import { existsSync, readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 // Lazy import helpers - commands are loaded on-demand to reduce startup time (~10x faster --help)
@@ -49,6 +49,7 @@ const lazy = {
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   quality: () => import('../cli/quality.js').then((m) => m.qualityCommand),
+  review: () => import('../cli/review.js').then((m) => m.reviewCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
@@ -563,6 +564,20 @@ program
   .action(async (subcommand, target, options) => {
     if (target && !options.file) options.file = target;
     const cmd = await lazy.quality();
+    await cmd(subcommand, options);
+  });
+
+// Deterministic review pre-pass — ruleset scan before the LLM reviewers
+program
+  .command('review')
+  .description('Review pre-pass: deterministic ruleset findings for the parallel review protocol')
+  .argument('[subcommand]', 'prepass')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--files <list>', 'Comma-separated repo-relative file list (default: changed files)')
+  .option('--write', 'Merge findings into .uap/reviews/<branch-slug>.json as the pre_pass block')
+  .action(async (subcommand, options) => {
+    const cmd = await lazy.review();
     await cmd(subcommand, options);
   });
 
@@ -2152,7 +2167,10 @@ uapOmpCmd.addCommand(
         .argument('<slug>', 'Worktree slug')
         .action((slug) => {
           try {
-            execSync(`uap worktree create ${slug}`, { stdio: 'inherit' });
+            // execFileSync + arg array: the slug is user/LLM-controlled input
+            // and must never reach a shell (found by the review pre-pass).
+            // The `--` keeps a dash-prefixed slug from being parsed as a flag.
+            execFileSync('uap', ['worktree', 'create', '--', slug], { stdio: 'inherit' });
           } catch (error: unknown) {
             const err = error as Error;
             console.error('Error creating worktree:', err.message);
