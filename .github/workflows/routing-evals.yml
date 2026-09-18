@@ -1,0 +1,39 @@
+name: Routing Evals
+
+# CI enforcement for the routing eval harness (0.4 of the System-1 uplift).
+# Fails the build when pattern/droid/skill descriptions degrade below the
+# rank-1 accuracy threshold or a negative case false-routes.
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+# Runs against arbitrary fork PRs — read-only token only.
+permissions:
+  contents: read
+
+jobs:
+  routing-eval:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        # No lifecycle scripts — PR-controlled lockfile must not execute code.
+        run: npm ci --ignore-scripts
+
+      - name: Run routing evals (90% rank-1 threshold)
+        run: npm run eval:routing
+
+      - name: Run routing eval unit tests
+        run: npx vitest run test/routing-eval.test.ts

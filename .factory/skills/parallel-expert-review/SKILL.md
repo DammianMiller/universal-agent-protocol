@@ -86,12 +86,64 @@ Add per-task:
 | Touches UI components | `accessibility-tester` |
 | Touches IaC | `cost-engineer` |
 
+## Step 0: Deterministic Pre-Pass (REQUIRED)
+
+Before spawning any reviewer, run the deterministic ruleset scanner over the
+changed surface. It costs no tokens and catches the pattern-level findings
+(secrets, injection, SQL concatenation, swallowed errors) deterministically,
+so the LLM reviewers spend their budget on judgment:
+
+```bash
+uap review prepass --write        # scans changed files, writes the sibling
+                                  # artifact .uap/reviews/<branch-slug>.pre-pass.json
+```
+
+The pre-pass writes a **sibling** file, never `<branch-slug>.json` itself —
+the expert-review enforcer treats that file's existence as "a review
+happened", so the advisory pass must not create it. At consolidation time,
+merge the pre-pass findings INTO the review artifact alongside the verdict;
+consolidation merges, never overwrites, the review artifact.
+
+Then include the findings in every reviewer's prompt scope — each finding is
+already line-anchored (`file:line [rule] message`), so reviewers adjudicate
+(true positive? exploitable here?) instead of re-deriving them. A reviewer may
+dismiss a pre-pass finding, but must say so explicitly in the consolidation.
+High-severity findings make `uap review prepass` exit 1 — treat that as a
+review blocker until each is adjudicated. Secrets findings carry redacted
+snippets by design; inspect the actual secret at the file:line anchor.
+
+## Step 0.5: Visual captures for UI diffs (REQUIRED when UI files changed)
+
+When the diff touches UI files (styles, components, markup, `web/`/
+`src/dashboard/`/`public/`), code review cannot see what the user sees.
+Before consolidating, capture the rendered surface BEFORE and AFTER the
+change — `agent-browser` for web surfaces, `tuistory`/`pty-capture` for
+terminal surfaces — review the pair with vision, then register it:
+
+```bash
+uap review captures add --before .uap/visual/before.png \
+                        --after  .uap/visual/after.png \
+                        --tool tuistory
+uap review captures check        # exit 1 until the UI diff is covered
+```
+
+Captures are recorded in the **sibling** artifact
+`.uap/reviews/<branch-slug>.captures.json` (same sibling rule as the
+pre-pass), and the ship gate refuses UI diffs without fresh, complete pairs —
+a UI edit made after the captures invalidates them. The BEFORE capture comes
+from the base ref: render the surface from `master`/the main checkout (or the
+pre-edit state you captured before starting), not from the changed tree. The
+gate fires at commit time too, so on a branch with UI commits, re-capture
+before any commit that touches UI files again. At consolidation, embed the
+capture paths into the review artifact (merge, never overwrite) so the review
+trail points at the rendered evidence.
+
 ## Invocation Pattern
 
 ```
-Agent(subagent_type: "code-quality-reviewer",        prompt: <diff scope>)
-Agent(subagent_type: "security-code-reviewer",       prompt: <diff scope>)
-Agent(subagent_type: "performance-reviewer",         prompt: <diff scope>)
+Agent(subagent_type: "code-quality-reviewer",        prompt: <diff scope + pre-pass findings>)
+Agent(subagent_type: "security-code-reviewer",       prompt: <diff scope + pre-pass findings>)
+Agent(subagent_type: "performance-reviewer",         prompt: <diff scope + pre-pass findings>)
 Agent(subagent_type: "documentation-accuracy-reviewer", prompt: <diff scope>)
 Agent(subagent_type: "test-coverage-reviewer",       prompt: <diff scope>)
 ```

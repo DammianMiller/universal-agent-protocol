@@ -44,6 +44,14 @@ an agent that can see the output can improve it.
 - Fail-open ONLY when no headless browser is available (vm-DOM cannot
   render pixels); the skip is stated explicitly in the report.
 
+## Review binding (uplift 0.3)
+
+Distinct from this runtime render gate: when a diff touches UI files, the
+review must also carry before/after **captures** (agent-browser / tuistory /
+pty-capture) registered via `uap review captures add` and validated by the
+ship-time enforcer — see `docs/reference/visual-captures.md`. The render gate
+proves the UI runs; captures prove a reviewer looked at the change.
+
 ## Agent obligations
 
 After any delivery with a rendered artifact: run `uap verify --dir <project>`,
