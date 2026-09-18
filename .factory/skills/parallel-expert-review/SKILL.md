@@ -112,6 +112,32 @@ High-severity findings make `uap review prepass` exit 1 — treat that as a
 review blocker until each is adjudicated. Secrets findings carry redacted
 snippets by design; inspect the actual secret at the file:line anchor.
 
+## Step 0.5: Visual captures for UI diffs (REQUIRED when UI files changed)
+
+When the diff touches UI files (styles, components, markup, `web/`/
+`src/dashboard/`/`public/`), code review cannot see what the user sees.
+Before consolidating, capture the rendered surface BEFORE and AFTER the
+change — `agent-browser` for web surfaces, `tuistory`/`pty-capture` for
+terminal surfaces — review the pair with vision, then register it:
+
+```bash
+uap review captures add --before .uap/visual/before.png \
+                        --after  .uap/visual/after.png \
+                        --tool tuistory
+uap review captures check        # exit 1 until the UI diff is covered
+```
+
+Captures are recorded in the **sibling** artifact
+`.uap/reviews/<branch-slug>.captures.json` (same sibling rule as the
+pre-pass), and the ship gate refuses UI diffs without fresh, complete pairs —
+a UI edit made after the captures invalidates them. The BEFORE capture comes
+from the base ref: render the surface from `master`/the main checkout (or the
+pre-edit state you captured before starting), not from the changed tree. The
+gate fires at commit time too, so on a branch with UI commits, re-capture
+before any commit that touches UI files again. At consolidation, embed the
+capture paths into the review artifact (merge, never overwrite) so the review
+trail points at the rendered evidence.
+
 ## Invocation Pattern
 
 ```
