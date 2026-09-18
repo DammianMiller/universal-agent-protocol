@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.7.0 (2026-09-19)
+
+- feat(classify): local System-1 classifier foundation — uap classify (uplift §6)
+
+
 ## v2.6.0 (2026-09-19)
 
 - feat(capacity): capacity policy as code — uap doctor GREEN/RED/DARK (uplift 0.5)
