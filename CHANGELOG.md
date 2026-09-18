@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.4.0 (2026-09-18)
+
+- feat(review): visual captures gate for UI diffs (uplift 0.3)
+
+
 ## v2.3.0 (2026-09-18)
 
 - feat(review): deterministic review pre-pass before LLM reviewers (uplift 0.2)
