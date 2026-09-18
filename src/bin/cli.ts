@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command, Option } from 'commander';
+import chalk from 'chalk';
 import { registerConfigCommands } from '../cli/config-command.js';
 import { existsSync, readFileSync } from 'fs';
 import { execSync } from 'child_process';
@@ -49,6 +50,7 @@ const lazy = {
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   quality: () => import('../cli/quality.js').then((m) => m.qualityCommand),
+  classify: () => import('../cli/classify.js').then((m) => m.classifyCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
@@ -564,6 +566,40 @@ program
     if (target && !options.file) options.file = target;
     const cmd = await lazy.quality();
     await cmd(subcommand, options);
+  });
+
+// System-1 classifier (uplift §6) — local, airgap-pure assessment surface
+program
+  .command('classify')
+  .description('System-1 classifier: assess a state against built-in questions (noul/score/choice)')
+  .argument('[state]', 'State text to assess')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('-q, --question <name>', 'One built-in question (default: all)')
+  .option('--shadow', 'Append the assessment to .uap/classify-shadow.jsonl (hash-only, no raw text)')
+  .option('--bench [n]', 'Latency self-check against the 50ms p95 budget')
+  .option('--thresholds <path>', 'Explicit threshold config (default: config/ then ~/.config/uap/)')
+  .option('--json', 'Emit machine-readable JSON')
+  .action(async (state, options) => {
+    const cmd = await lazy.classify();
+    try {
+      await cmd({
+        projectDir: options.projectDir ?? process.cwd(),
+        state,
+        question: options.question,
+        json: options.json,
+        shadow: options.shadow,
+        bench: options.bench === true ? 200 : options.bench !== undefined ? Number(options.bench) : undefined,
+        thresholds: options.thresholds,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (options.json) {
+        console.log(JSON.stringify({ reportVersion: 1, error: msg }));
+      } else {
+        console.error(chalk.red(`classify: ${msg}`));
+      }
+      process.exitCode = 1;
+    }
   });
 
 // Engineering principles — the rule-1 stance, asked once per project per session
