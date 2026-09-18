@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.9.0 (2026-09-19)
+
+- feat(proxy): verbatim decision compaction ahead of the lossy pruner (uplift 1.2)
+
+
 ## v2.8.0 (2026-09-19)
 
 - feat(supervise): semantic supervisor for deliver missions — uap supervise (uplift 1.1)
