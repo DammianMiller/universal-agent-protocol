@@ -86,12 +86,38 @@ Add per-task:
 | Touches UI components | `accessibility-tester` |
 | Touches IaC | `cost-engineer` |
 
+## Step 0: Deterministic Pre-Pass (REQUIRED)
+
+Before spawning any reviewer, run the deterministic ruleset scanner over the
+changed surface. It costs no tokens and catches the pattern-level findings
+(secrets, injection, SQL concatenation, swallowed errors) deterministically,
+so the LLM reviewers spend their budget on judgment:
+
+```bash
+uap review prepass --write        # scans changed files, writes the sibling
+                                  # artifact .uap/reviews/<branch-slug>.pre-pass.json
+```
+
+The pre-pass writes a **sibling** file, never `<branch-slug>.json` itself —
+the expert-review enforcer treats that file's existence as "a review
+happened", so the advisory pass must not create it. At consolidation time,
+merge the pre-pass findings INTO the review artifact alongside the verdict;
+consolidation merges, never overwrites, the review artifact.
+
+Then include the findings in every reviewer's prompt scope — each finding is
+already line-anchored (`file:line [rule] message`), so reviewers adjudicate
+(true positive? exploitable here?) instead of re-deriving them. A reviewer may
+dismiss a pre-pass finding, but must say so explicitly in the consolidation.
+High-severity findings make `uap review prepass` exit 1 — treat that as a
+review blocker until each is adjudicated. Secrets findings carry redacted
+snippets by design; inspect the actual secret at the file:line anchor.
+
 ## Invocation Pattern
 
 ```
-Agent(subagent_type: "code-quality-reviewer",        prompt: <diff scope>)
-Agent(subagent_type: "security-code-reviewer",       prompt: <diff scope>)
-Agent(subagent_type: "performance-reviewer",         prompt: <diff scope>)
+Agent(subagent_type: "code-quality-reviewer",        prompt: <diff scope + pre-pass findings>)
+Agent(subagent_type: "security-code-reviewer",       prompt: <diff scope + pre-pass findings>)
+Agent(subagent_type: "performance-reviewer",         prompt: <diff scope + pre-pass findings>)
 Agent(subagent_type: "documentation-accuracy-reviewer", prompt: <diff scope>)
 Agent(subagent_type: "test-coverage-reviewer",       prompt: <diff scope>)
 ```
