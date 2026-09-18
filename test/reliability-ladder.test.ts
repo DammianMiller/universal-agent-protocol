@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -162,11 +163,21 @@ describe('resolveResultsDir', () => {
     rmSync(explicit, { recursive: true, force: true });
   });
 
-  it('falls back to the main checkout when run inside a worktree (this repo)', () => {
-    // The test suite itself runs in a worktree without benchmark-results/,
-    // and the main checkout has it — the fallback is observable right here.
-    const resolved = resolveResultsDir(process.cwd());
-    expect(resolved).not.toBeNull();
-    expect(resolved!.endsWith('benchmark-results')).toBe(true);
+  it('falls back to the main checkout when run inside a worktree', () => {
+    // Hermetic fixture: a real main checkout with benchmark-results/ plus a
+    // real linked worktree without it. (Depending on THIS repo's untracked,
+    // git-ignored benchmark-results/ made the test pass locally and fail on a
+    // fresh CI clone.)
+    const main = mkdtempSync(join(tmpdir(), 'uap-ladder-main-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: main });
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: main });
+      mkdirSync(join(main, 'benchmark-results'));
+      const wt = join(main, 'wt');
+      execFileSync('git', ['worktree', 'add', '-q', '--detach', wt], { cwd: main });
+      expect(resolveResultsDir(wt)).toBe(join(main, 'benchmark-results'));
+    } finally {
+      rmSync(main, { recursive: true, force: true });
+    }
   });
 });
