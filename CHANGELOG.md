@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.2.0 (2026-09-18)
+
+- feat(policy): evidence-bound merge candidates — ship requires SHA-bound gate evidence (uplift 1.4)
+
+
 ## v2.1.8 (2026-09-17)
 
 - fix(proxy): disable thinking on unexpected-end-turn guardrail retry
