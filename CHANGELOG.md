@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.10.0 (2026-09-19)
+
+- feat(proxy): AutoMode pre-execution risk classification (uplift 1.3)
+
+
 ## v2.9.0 (2026-09-19)
 
 - feat(proxy): verbatim decision compaction ahead of the lossy pruner (uplift 1.2)

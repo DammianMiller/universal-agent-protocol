@@ -994,6 +994,38 @@ try:
 except Exception:  # pragma: no cover - optional middleware
     _TOOLCALL_NORMALIZER_OK = False
 
+# AutoMode pre-execution risk classification (uplift 1.3): an ADVISORY
+# calibrated heuristic scorer (tools/agents/scripts/tool_risk.py) classifies
+# each outbound tool_use block before the client dispatches it. It NEVER
+# blocks and NEVER modifies the stream — the deterministic enforcers
+# (src/policies/enforcers/*.py) remain the blocking floor; this path only
+# observes, logs and records. Escape hatch: PROXY_AUTOMODE_RISK=off.
+# Default ON: the scorer is pure regex/dict work measured in microseconds
+# (see docs/performance/automode-risk-calibration.md).
+PROXY_AUTOMODE_RISK = os.environ.get(
+    "PROXY_AUTOMODE_RISK", "on"
+).lower() not in ("off", "0", "false", "no")
+try:
+    _d = os.path.dirname(os.path.abspath(__file__))
+    if _d not in sys.path:
+        # append, not insert(0): a position-0 prepend would shadow stdlib
+        # process-wide for anything ever added to this directory.
+        sys.path.append(_d)
+    from tool_risk import classify_tool_call as _automode_classify
+    _AUTOMODE_RISK_OK = True
+except Exception as _exc:  # pragma: no cover - optional advisory middleware
+    _AUTOMODE_RISK_OK = False
+    if PROXY_AUTOMODE_RISK:
+        # A default-on feature must never be silently dead — same visibility
+        # doctrine as the source-drift startup warning (PR #799). `logger` is
+        # defined further down the module, so address the channel by name;
+        # this fires exactly once, at import (= proxy startup).
+        logging.getLogger("uap.anthropic_proxy").warning(
+            "AUTOMODE RISK: tool_risk import failed (%s) — advisory risk "
+            "classification is DISABLED; the deterministic enforcers remain "
+            "the blocking floor", type(_exc).__name__,
+        )
+
 
 def _record_project_telemetry(body, model, usage, duration_ms: float = 0.0) -> None:
     """Fail-open per-project routing/cost telemetry: derive the request's project
@@ -1077,6 +1109,101 @@ def _maybe_normalize_toolcall_paths(anthropic_resp: dict, request_body: dict) ->
                 )
     except Exception as exc:  # never break a response over normalization
         logger.warning("TOOLCALL PATH NORMALIZER: skipped (%s)", type(exc).__name__)
+
+
+def _tool_args_dict(raw: str) -> dict:
+    """Parse a streamed tool-call arguments buffer into a dict ({} on any
+    failure — classification is advisory and must not fail on truncation)."""
+    try:
+        value = json.loads(raw) if raw else {}
+        return value if isinstance(value, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+_TOOL_NAME_UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _log_safe_tool_name(name) -> str:
+    """Tool names are MODEL-CONTROLLED and reach log lines and dashboard rows:
+    a name with a newline would forge a log line, an unbounded one would bloat
+    a telemetry row. Strip control chars to '?' and cap at 64 chars. Used only
+    at the sinks — classification itself sees the raw name."""
+    return _TOOL_NAME_UNSAFE.sub("?", str(name or ""))[:64]
+
+
+def _automode_risk_scan(pairs, request_body: "dict | None" = None) -> list:
+    """Advisory AutoMode risk scan of outbound tool_use blocks.
+
+    pairs: iterable of (tool_use_id, tool_name, input_dict).
+
+    DOCTRINE — advisory, floor-preserved: this path classifies and records
+    ONLY. It never blocks, never mutates the response, and on any classifier
+    error it logs a warning and passes the tool call through unchanged. That
+    is deliberately fail-OPEN for the advisory path precisely because the
+    deterministic enforcer chain (src/policies/enforcers/*.py) is fail-CLOSED:
+    the heuristics remain the blocking floor, so a dead classifier degrades
+    to exactly today's behaviour plus one warning line. Never raises.
+    """
+    if not (_AUTOMODE_RISK_OK and PROXY_AUTOMODE_RISK):
+        return []
+    results = []
+    for tu_id, name, inp in pairs:
+        safe_name = _log_safe_tool_name(name)
+        try:
+            assessment = _automode_classify(
+                str(name or ""), inp if isinstance(inp, dict) else {}
+            )
+        except Exception as exc:
+            logger.warning(
+                "AUTOMODE RISK: classifier error on %s (%s) — passing through "
+                "unchanged; deterministic enforcers remain the floor",
+                safe_name, type(exc).__name__,
+            )
+            continue
+        results.append((tu_id, name, assessment))
+        logger.debug(
+            "AUTOMODE RISK: %s %s class=%s score=%d signals=%s latency=%.3fms",
+            tu_id, safe_name, assessment.risk_class, assessment.risk_score,
+            ",".join(assessment.signals) or "-", assessment.latency_ms,
+        )
+    # Telemetry (same shape as _record_project_telemetry: fail-open, project
+    # dir derived from the request). Only score>=4 calls earn a dashboard
+    # event — one row per routine read would drown the live feed.
+    high = [(tid, n, a) for tid, n, a in results if a.risk_score >= 4]
+    if high and request_body:
+        try:
+            import project_telemetry as _pt
+            project_dir = _pt.derive_project_dir(request_body)
+            if project_dir:
+                for tu_id, name, a in high:
+                    _pt.record_risk_event(
+                        project_dir, _log_safe_tool_name(name), a.risk_class,
+                        a.risk_score, list(a.signals), a.latency_ms,
+                    )
+        except Exception:
+            pass  # advisory telemetry must never stall a turn
+    return results
+
+
+def _automode_risk_scan_response(anthropic_resp: dict,
+                                 request_body: "dict | None" = None) -> list:
+    """Extract tool_use blocks from a fully assembled Anthropic response and
+    risk-scan them (advisory; see _automode_risk_scan for the doctrine)."""
+    if not (_AUTOMODE_RISK_OK and PROXY_AUTOMODE_RISK):
+        return []
+    try:
+        content = anthropic_resp.get("content")
+        if not isinstance(content, list):
+            return []
+        pairs = [
+            (b.get("id", ""), b.get("name", ""), b.get("input"))
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+    except Exception:
+        return []
+    return _automode_risk_scan(pairs, request_body)
 # Recon-convergence guardrail: after this many consecutive turns that use
 # tools but produce NO write/deliverable tool call (see _WRITE_TOOL_CLASS),
 # the proxy injects a directive telling the model to stop exploring and
@@ -13191,6 +13318,20 @@ async def stream_anthropic_response(
 
     # Close any open tool call blocks (skip if XML recovery already emitted them)
     xml_recovered = tool_calls_by_index.pop("_xml_recovered", False)
+    # AutoMode advisory risk scan (uplift 1.3) of the completed streamed tool
+    # calls: the full arguments buffer has accumulated by now, so this is the
+    # earliest point the stream path can classify. Classification only — the
+    # events already forwarded to the client are byte-identical either way.
+    if tool_calls_by_index:
+        _automode_risk_scan(
+            [
+                (tc.get("id", ""), tc.get("name", ""),
+                 _tool_args_dict(tc.get("arguments", "")))
+                for tc in tool_calls_by_index.values()
+                if isinstance(tc, dict) and "block_index" in tc
+            ],
+            anthropic_body,
+        )
     if tool_calls_by_index and not xml_recovered:
         for tc in tool_calls_by_index.values():
             if isinstance(tc, dict) and "block_index" in tc:
@@ -14210,6 +14351,9 @@ async def messages(request: Request):
                 suppress_text_tool_extraction=monitor.suppress_text_tool_extraction,
             )
             _maybe_normalize_toolcall_paths(anthropic_resp, body)
+            # AutoMode advisory risk scan (uplift 1.3): classify every outbound
+            # tool_use before the client sees it. Never blocks, never mutates.
+            _automode_risk_scan_response(anthropic_resp, body)
             # FINALIZE CONTINUATION: inject synthetic tool_use to keep client loop alive
             if (
                 monitor.finalize_turn_active
@@ -14657,6 +14801,9 @@ async def messages(request: Request):
             suppress_text_tool_extraction=monitor.suppress_text_tool_extraction,
         )
         _maybe_normalize_toolcall_paths(anthropic_resp, body)
+        # AutoMode advisory risk scan (uplift 1.3): classify every outbound
+        # tool_use before the client sees it. Never blocks, never mutates.
+        _automode_risk_scan_response(anthropic_resp, body)
         # FINALIZE CONTINUATION: inject synthetic tool_use (non-guarded stream path)
         if (
             monitor.finalize_turn_active

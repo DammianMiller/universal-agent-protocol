@@ -280,6 +280,58 @@ def record_dashboard_turn(
         return False
 
 
+def record_risk_event(
+    project_dir: str,
+    tool_name: str,
+    risk_class: str,
+    risk_score: int,
+    signals: list,
+    latency_ms: float = 0.0,
+) -> bool:
+    """Append one AutoMode risk-classification event (uplift 1.3) to the
+    project's telemetry.db dashboard_events table, so the dashboard's Live
+    Events panel shows high-risk tool calls the advisory scorer flagged.
+    Never raises — advisory telemetry must never stall a turn. Same store,
+    pragmas and schema as record_dashboard_turn above."""
+    try:
+        if not project_dir:
+            return False
+        db_dir = os.path.join(project_dir, "agents", "data", "memory")
+        if not os.path.isdir(db_dir):
+            return False
+        conn = sqlite3.connect(os.path.join(db_dir, "telemetry.db"), timeout=1.0)
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA busy_timeout = 2000")
+            conn.executescript(_TELEMETRY_CREATE_SQL)
+            severity = "warning" if risk_class == "destructive" else "info"
+            conn.execute(
+                "INSERT INTO dashboard_events (category, type, severity, title, detail, metadata) "
+                "VALUES ('automode', 'risk.classified', ?, ?, ?, ?)",
+                (
+                    severity,
+                    f"{tool_name} classified {risk_class} (score {risk_score})",
+                    ", ".join(str(s) for s in signals),
+                    json.dumps(
+                        {
+                            "tool": str(tool_name or ""),
+                            "riskClass": str(risk_class),
+                            "riskScore": int(risk_score),
+                            "signals": [str(s) for s in signals],
+                            "latencyMs": round(float(latency_ms or 0), 3),
+                        }
+                    ),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
 def record_from_request(
     body: dict, model: str, usage: dict, *, task_id: str = "", duration_ms: float = 0.0
 ) -> bool:
