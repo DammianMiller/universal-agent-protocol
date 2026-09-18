@@ -49,6 +49,7 @@ const lazy = {
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   quality: () => import('../cli/quality.js').then((m) => m.qualityCommand),
+  supervise: () => import('../cli/supervise.js').then((m) => m.superviseCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
@@ -564,6 +565,20 @@ program
     if (target && !options.file) options.file = target;
     const cmd = await lazy.quality();
     await cmd(subcommand, options);
+  });
+
+// Semantic supervisor — watches a deliver mission and acts on reviewed policy
+program
+  .command('supervise')
+  .description('Semantic supervisor for a deliver mission (CONTINUE/STOP/RETRY/VERIFY/FINISH/ESCALATE)')
+  .argument('[runId]', 'Run id to watch, or "latest" (default)')
+  .option('--once', 'Single observe → assess → decide → persist cycle, then exit')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--interval-ms <ms>', 'Override the periodic assessment interval')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .action(async (runId, options) => {
+    const cmd = await lazy.supervise();
+    await cmd(runId, options);
   });
 
 // Engineering principles — the rule-1 stance, asked once per project per session
