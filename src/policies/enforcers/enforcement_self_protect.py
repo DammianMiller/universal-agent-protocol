@@ -80,6 +80,8 @@ BYPASS_PATTERNS = (
     # the launch env, so the only agent-reachable move is PERSISTING the flag
     # (rc files, proxy env) — which is exactly what this pattern refuses.
     re.compile(r"UAP_QUALITY_GATE_OFF\s*=\s*['\"]?1", re.I),
+    # visual-captures gate hatch (uplift 0.3), same operator-only shape.
+    re.compile(r"UAP_VISUAL_GATE_OFF\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_USER_VALIDATION\s*=\s*['\"]?0", re.I),
     # Single-flight is a DATA-SAFETY control, not a policy preference: deliver
     # runs each candidate in a git worktree, and two runs against one repo are

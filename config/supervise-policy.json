@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "stallMinutes": 10,
+  "maxMinutes": 120,
+  "maxTurns": 50,
+  "maxRetries": 2,
+  "maxFailures": 3,
+  "debounceMs": 5000,
+  "intervalMs": 30000,
+  "classifierConfidenceMin": 0.7,
+  "classifierTau": 0.6,
+  "maxVerify": 3
+}
