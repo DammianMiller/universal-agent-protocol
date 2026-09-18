@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "name": "gsq-rco-server",
+      "systemd": { "unit": "uap-gsq-rco-server.service", "scope": "user" },
+      "budget": {
+        "vramMiB": 5120,
+        "note": "--vbr-vram 5120M, -c 229376, -np 1, -ub 1024 (OOM fix rounds 1-2, 2026-09-18: four SIGABRTs from KV-budget overcommit on the 24 GiB 3090)"
+      },
+      "headroom": {
+        "gpuMinFreeMiB": 600
+      },
+      "restartBudget": {
+        "knownRestarts": 0,
+        "allowedNew": 0
+      }
+    },
+    {
+      "name": "gsq-monitor",
+      "systemd": { "unit": "uap-gsq-monitor.service", "scope": "user" },
+      "budget": {
+        "rssMiB": 256,
+        "note": "watchdog for the gsq-rco server; created 2026-09-18"
+      },
+      "restartBudget": {
+        "knownRestarts": 0,
+        "allowedNew": 0
+      }
+    }
+  ]
+}

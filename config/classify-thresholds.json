@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "_comment": "System-1 classifier decision thresholds (uplift §6). Reviewed policy config — never model output. tau decides noul questions ONLY (score/choice return their value directly, gated by confidenceFloor alone); below confidenceFloor the caller defers to its heuristic (shadow-mode contract). Initial values are conservative defaults; recalibrate from .uap/classify-shadow.jsonl once shadow data accumulates.",
+  "questions": {
+    "escalation-risk": { "tau": 0.6, "confidenceFloor": 0.3 },
+    "task-risk": { "confidenceFloor": 0.3 },
+    "action-class": { "confidenceFloor": 0.3 }
+  }
+}

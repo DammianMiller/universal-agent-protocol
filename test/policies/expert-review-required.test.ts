@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync, execFileSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -163,11 +163,30 @@ describe('expert-review-required: risk-scope + file waiver', () => {
     git(repo, ['commit', '-q', '-m', `add ${path}`]);
   }
 
-  it('ALLOWS gh pr merge for a frontend-only diff (no review artifact)', () => {
+  it('ALLOWS gh pr merge for a frontend-only diff (captures registered, no review artifact)', () => {
     add('src/components/Button.tsx', 'export const B = () => null;');
     add('src/styles/app.css', '.b{color:var(--x);}');
     add('docs/guide.md', '# guide');
+    // Since uplift 0.3, frontend-only diffs still skip the parallel review
+    // artifact, but UI files require registered before/after captures —
+    // without them the ship is blocked (see the visual-captures suite below).
+    writeFileSync(join(repo, 'before.png'), 'b');
+    writeFileSync(join(repo, 'after.png'), 'a');
+    mkdirSync(join(repo, '.uap', 'reviews'), { recursive: true });
+    writeFileSync(
+      join(repo, '.uap', 'reviews', 'feature%2Fx.captures.json'),
+      JSON.stringify({
+        captures: [{ tool: 'tuistory', before: 'before.png', after: 'after.png', at: new Date().toISOString() }],
+        at: new Date().toISOString(),
+      })
+    );
     expect(runEnforcer(repo, 'gh pr merge 12 --merge --admin')).toBe(0);
+  });
+
+  it('BLOCKS a frontend-only diff WITHOUT captures (0.3 changed the low-risk semantics)', () => {
+    add('src/components/Button.tsx', 'export const B = () => null;');
+    add('docs/guide.md', '# guide');
+    expect(runEnforcer(repo, 'gh pr merge 12 --merge --admin')).toBe(2);
   });
 
   it('STILL BLOCKS when the diff touches IaC (.tf)', () => {
@@ -196,6 +215,124 @@ describe('expert-review-required: risk-scope + file waiver', () => {
   it('.uap/reviews/WAIVER marker also bypasses', () => {
     add('src/server/handler.ts', 'export function h(){return 3;}');
     add('.uap/reviews/WAIVER', 'frontend sprint');
+    expect(runEnforcer(repo, 'git push')).toBe(0);
+  });
+});
+
+describe('expert-review-required: visual-captures gate (uplift 0.3)', () => {
+  let repo: string;
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'uap-review-visual-'));
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 't@t.dev']);
+    git(repo, ['config', 'user.name', 't']);
+    git(repo, ['checkout', '-q', '-b', 'master']);
+    writeFileSync(join(repo, 'README.md'), '# base\n');
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', 'base']);
+    git(repo, ['checkout', '-q', '-b', 'feature/x']);
+  });
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  function add(path: string, content = 'x'): void {
+    const full = join(repo, path);
+    mkdirSync(join(full, '..'), { recursive: true });
+    writeFileSync(full, content);
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', `add ${path}`]);
+  }
+
+  /** A valid captures artifact: one pair whose files exist, taken "now". */
+  function writeCaptures(): void {
+    writeFileSync(join(repo, 'before.png'), 'b');
+    writeFileSync(join(repo, 'after.png'), 'a');
+    mkdirSync(join(repo, '.uap', 'reviews'), { recursive: true });
+    writeFileSync(
+      join(repo, '.uap', 'reviews', 'feature%2Fx.captures.json'),
+      JSON.stringify({
+        branch: 'feature/x',
+        ui_files: ['src/app.tsx'],
+        captures: [{ tool: 'tuistory', before: 'before.png', after: 'after.png', at: new Date().toISOString() }],
+        at: new Date().toISOString(),
+      })
+    );
+  }
+
+  it('BLOCKS a UI diff with no captures artifact (even though UI-only diffs skip review)', () => {
+    add('src/app.tsx', 'export const A = () => null;');
+    expect(runEnforcer(repo, 'git push')).toBe(2);
+  });
+
+  it('ALLOWS a UI diff once a fresh before/after pair is registered', () => {
+    add('src/app.tsx', 'export const A = () => null;');
+    writeCaptures();
+    expect(runEnforcer(repo, 'git push')).toBe(0);
+  });
+
+  it('BLOCKS when the captures artifact has no complete pair', () => {
+    add('src/app.tsx');
+    mkdirSync(join(repo, '.uap', 'reviews'), { recursive: true });
+    writeFileSync(
+      join(repo, '.uap', 'reviews', 'feature%2Fx.captures.json'),
+      JSON.stringify({ captures: [{ tool: 'tuistory', before: 'b.png' }], at: new Date().toISOString() })
+    );
+    expect(runEnforcer(repo, 'git push')).toBe(2);
+  });
+
+  it('BLOCKS when a UI file changed after the captures (stale)', () => {
+    add('src/app.tsx');
+    writeCaptures();
+    // Newer UI edit after the captures artifact was written. The mtime is set
+    // explicitly past the 1s grace window — whole-second filesystems would
+    // otherwise keep a same-second rewrite inside it.
+    add('src/app.tsx', 'export const A = () => "changed";');
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(join(repo, 'src', 'app.tsx'), future, future);
+    expect(runEnforcer(repo, 'git push')).toBe(2);
+  });
+
+  it('does not affect non-UI diffs', () => {
+    add('docs/guide.md', '# g');
+    expect(runEnforcer(repo, 'git push')).toBe(0); // low-risk, no UI
+  });
+
+  it('still requires the full review artifact for HIGH-risk UI diffs (both gates apply)', () => {
+    add('src/app.tsx');
+    add('infra/terraform/main.tf', 'resource "null_resource" "x" {}');
+    writeCaptures();
+    // captures satisfied, but the diff is high-risk => review artifact required
+    expect(runEnforcer(repo, 'git push')).toBe(2);
+  });
+
+  it('honors the operator env escape hatch UAP_VISUAL_GATE_OFF=1', () => {
+    add('src/app.tsx');
+    expect(runEnforcer(repo, 'git push', { UAP_VISUAL_GATE_OFF: '1' })).toBe(0);
+  });
+
+  it('BLOCKS artifacts referencing absolute or escaping capture paths (gate does not trust the recorder)', () => {
+    add('src/app.tsx');
+    mkdirSync(join(repo, '.uap', 'reviews'), { recursive: true });
+    for (const bad of ['/etc/hostname', '../outside.png']) {
+      writeFileSync(
+        join(repo, '.uap', 'reviews', 'feature%2Fx.captures.json'),
+        JSON.stringify({
+          captures: [{ tool: 't', before: bad, after: 'after.png', at: new Date().toISOString() }],
+          at: new Date().toISOString(),
+        })
+      );
+      writeFileSync(join(repo, 'after.png'), 'a');
+      expect(runEnforcer(repo, 'git push')).toBe(2);
+    }
+  });
+
+  it('treats UI directory prefixes case-insensitively like the TS classifier', () => {
+    // `Public/` (capital P) must be seen as the `public/` UI prefix — and the
+    // file needs a low-risk extension (.md) so the ONLY gate that can fire is
+    // the captures gate (`.bin` would also trip the review requirement).
+    add('Public/logo.md', '# logo notes');
+    expect(runEnforcer(repo, 'git push')).toBe(2); // UI by prefix, no captures
+    writeCaptures();
     expect(runEnforcer(repo, 'git push')).toBe(0);
   });
 });
