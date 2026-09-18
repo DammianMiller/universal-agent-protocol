@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.11.0 (2026-09-19)
+
+- feat(policy): evidence-bound merge candidates — ship requires SHA-bound gate evidence (uplift 1.4)
+
+
 ## v2.10.0 (2026-09-19)
 
 - feat(proxy): AutoMode pre-execution risk classification (uplift 1.3)
