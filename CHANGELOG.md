@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.5.0 (2026-09-18)
+
+- feat(bench): measured reliability ladder for the decision loop (uplift 0.1)
+
+
 ## v2.4.0 (2026-09-18)
 
 - feat(review): visual captures gate for UI diffs (uplift 0.3)
