@@ -23,6 +23,7 @@ import os
 import re
 import shlex
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -275,6 +276,114 @@ def _is_low_risk(f: str) -> bool:
     return Path(f).suffix.lower() in LOW_RISK_EXT
 
 
+# --- Visual-captures gate (uplift 0.3) --------------------------------------
+# A diff touching UI files is not done until before/after captures are bound
+# to the review — code review cannot see what the user sees. The captures live
+# in a SIBLING artifact (<slug>.captures.json), never in <slug>.json itself:
+# this enforcer treats that file's existence as "a review happened", so an
+# advisory recording must not create it. The surface definition mirrors
+# UI_EXT/UI_DIR_PREFIXES in visual_verification.py and
+# src/review/visual-captures.ts — keep all three in sync.
+UI_EXT = {".css", ".scss", ".sass", ".less", ".tsx", ".jsx", ".vue", ".svelte", ".html", ".astro"}
+UI_DIR_PREFIXES = ("web/", "src/dashboard/", "public/")
+CAPTURES_STALENESS_GRACE_S = 1.0  # same grace the commit-time visual enforcer uses
+
+
+def _is_ui(f: str) -> bool:
+    # Case-insensitive like the TS mirror (isUiFile in visual-captures.ts):
+    # `Web/` or `Component.TSX` must not slip between two definitions.
+    lower = f.lower()
+    return Path(lower).suffix in UI_EXT or lower.startswith(UI_DIR_PREFIXES)
+
+
+def _safe_capture_path(p: object) -> str | None:
+    """A capture path the gate may existence-check, or None when it escapes
+    the project. The recorder refuses these, but the enforcer is the gate and
+    must not trust the artifact: Path(root) / "/etc/passwd" collapses to the
+    absolute path, and "root / '../../x'" resolves outside the project."""
+    s = str(p)
+    if os.path.isabs(s) or s == ".." or s.startswith("../") or "/../" in s:
+        return None
+    return s
+
+
+def _check_visual_captures(root: Path, slug: str, ui_files: list[str]) -> None:
+    """emit(False, ...) unless fresh before/after captures cover the UI diff."""
+    # Operator escape hatch, environment-only (set by whoever launched the
+    # session) — never parsed out of the command string; an inline override
+    # would be self-grantable, the exact hole removed from UAP_NO_REVIEW.
+    if os.environ.get("UAP_VISUAL_GATE_OFF") == "1":
+        return
+
+    artifact = root / REVIEW_ARTIFACT_DIR / f"{slug}.captures.json"
+    guidance = (
+        "capture before/after evidence with a capture tool (agent-browser for "
+        "web surfaces, tuistory/pty-capture for terminal surfaces), review the "
+        "pair, and register it: uap review captures add --before <img> --after "
+        "<img> --tool <name>. Verify with `uap review captures check`."
+    )
+    if not artifact.exists():
+        emit(
+            False,
+            f"visual-captures: the diff touches {len(ui_files)} UI file(s) "
+            f"({', '.join(sorted(ui_files)[:6])}{' …' if len(ui_files) > 6 else ''}) "
+            f"but no captures artifact exists at .uap/reviews/{slug}.captures.json. "
+            "A UI change is not reviewable from code alone — completion gate 7 "
+            f"(self-review) requires the rendered evidence. {guidance} "
+            "Operator override: UAP_VISUAL_GATE_OFF=1 in the launch environment.",
+        )
+    try:
+        data = json.loads(artifact.read_text())
+    except Exception:  # noqa: BLE001
+        data = {}
+    captures = data.get("captures") if isinstance(data, dict) else None
+    pairs = [c for c in (captures or []) if isinstance(c, dict) and c.get("before") and c.get("after")]
+    if not pairs:
+        emit(
+            False,
+            f"visual-captures: .uap/reviews/{slug}.captures.json has no complete "
+            f"before/after pair. {guidance}",
+        )
+    paths = [p for c in pairs for p in (c.get("before"), c.get("after"))]
+    if any(_safe_capture_path(p) is None for p in paths):
+        emit(
+            False,
+            f"visual-captures: .uap/reviews/{slug}.captures.json references a path "
+            "outside the project (absolute or .. escape). Re-register captures with "
+            "`uap review captures add` — project-relative paths only.",
+        )
+    missing = [str(p) for p in paths if not (root / str(p)).exists()]
+    if missing:
+        emit(
+            False,
+            f"visual-captures: capture file(s) referenced by the artifact are missing: "
+            f"{', '.join(sorted(set(missing))[:6])}. Re-capture and re-register.",
+        )
+
+    # Freshness: captures predating the newest UI edit say nothing about the
+    # current look. The artifact's `at` must postdate every UI file's mtime.
+    try:
+        captured_at = datetime.fromisoformat(str(data.get("at", "")).replace("Z", "+00:00")).timestamp()
+    except Exception:  # noqa: BLE001
+        captured_at = 0.0
+    stale = []
+    for f in ui_files:
+        p = root / f
+        try:
+            if p.exists() and p.stat().st_mtime > captured_at + CAPTURES_STALENESS_GRACE_S:
+                stale.append(f)
+        except OSError:
+            continue
+    if stale:
+        emit(
+            False,
+            f"visual-captures: UI file(s) changed AFTER the captures were taken — the "
+            f"current look is unverified: {', '.join(sorted(stale)[:6])}"
+            f"{' …' if len(stale) > 6 else ''}. Re-capture and re-register with "
+            "`uap review captures add`.",
+        )
+
+
 def _active_waiver(root: Path) -> bool:
     """A committable, env-free bypass: an active waiver file. Works in harnesses
     that strip env vars (where UAP_NO_REVIEW=1 cannot be set)."""
@@ -438,6 +547,17 @@ def main() -> None:
     # `gh pr merge` from the main checkout is not the PR's contents at all —
     # it would grade the wrong change as low-risk.
     changed = None if pr_branch else _changed_files(root)
+
+    # Visual-captures gate BEFORE the low-risk early-allow: UI-only diffs are
+    # exactly what this gate exists for, and the low-risk path would otherwise
+    # wave them through unobserved. Fail-open when the base is unresolvable
+    # (same posture as the risk-scope check) and skipped for PR ships, where
+    # the local diff is not the PR's contents.
+    if changed is not None:
+        ui_files = [f for f in changed if _is_ui(f)]
+        if ui_files:
+            _check_visual_captures(root, slug, ui_files)
+
     if changed and all(_is_low_risk(f) for f in changed):
         emit(
             True,

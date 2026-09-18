@@ -3,8 +3,8 @@
 <!-- Optimizations #28-34: Mandatory Verifier Loop, Decoder-First Gate, Context Stripping, Environment Check, Schema Diff, State Protection, Conditional Domain -->
 
 <!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,HOOK_INCLUDES,PATTERN_ROUTER,VALIDATE_PLAN -->
-<!-- TEMPLATE_VERSION: 2.4.0 -->
-<!-- LAST_VALIDATED: 2026-05-14 -->
+<!-- TEMPLATE_VERSION: 2.4.1 -->
+<!-- LAST_VALIDATED: 2026-09-18 -->
 
 <!-- Custom Sections (preserved from existing file) -->
 
@@ -34,7 +34,23 @@ When working on a task, follow the loop:
 3. **MATCH** specialized skills via `@Skill:name.md` references — invoke
    them through the Skill tool before writing code when a domain-specific
    workflow applies (`/critique`, `/audit`, `/harden`, `/normalize`, etc.)
-4. **THINK** about what to do next; classify task complexity
+4. **THINK** about what to do next; classify task complexity. Technique
+   selection follows the measured reliability ladder
+   ([docs/performance/reliability-ladder.md](docs/performance/reliability-ladder.md),
+   regenerate with `npm run bench:ladder`):
+
+   | Task shape | Technique |
+   | --- | --- |
+   | Small, well-specified, 1–2 files | Direct |
+   | Multi-file, gate-covered, moderate risk | Direct + verify loop |
+   | Hardest tier, novel/ambiguous | Full loop + escalation |
+   | Production-critical, human available | SDD + human review |
+
+   Escalate with measured difficulty, not anxiety; a technique's token cost
+   is part of the technique. The quantitative backing (each row's token cost
+   and discrimination status) lives in the ladder doc — never cite a success
+   delta without its status; current measured rows are underpowered, so treat
+   their quality deltas as directional.
 5. **ACT** — execute via the appropriate tool (Edit/Write/Bash)
 6. **RECORD** observations to short-term memory
 7. **PROMOTE** significant learnings to long-term memory
