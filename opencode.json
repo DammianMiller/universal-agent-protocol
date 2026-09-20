@@ -1,63 +1,77 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "_comment": "Synced to the live local stack 2026-09-20. Previously pointed at 192.168.1.165:4000 with model id 'qwen35-a3b-iq4xs' (a model this server has not served in some time), apiKey 'sk-qwen35b', context 262144 and output 81920 — every one of those was wrong, and because a project opencode.json OVERRIDES the global one, this file was what opencode actually used in this repo. Values below track uap-gsq-rco-server.service; see config/model-profiles/qwen38.json for the authoritative record.",
+
   "provider": {
     "qwen-proxy": {
       "npm": "@ai-sdk/anthropic",
       "name": "llama guardrail proxy (local)",
       "options": {
-        "baseURL": "http://192.168.1.165:4000/v1",
-        "apiKey": "sk-qwen35b",
-        "chunkTimeout": 45000
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "{env:UAP_PROXY_TOKEN}",
+        "chunkTimeout": 300000,
+        "headers": {
+          "x-uap-proxy-token": "{env:UAP_PROXY_TOKEN}",
+          "x-uap-model-profile": "qwen38"
+        }
       },
       "models": {
-        "qwen35-a3b-iq4xs": {
-          "name": "Qwen3.5 35B A3B (IQ4_XS via proxy)",
-          "reasoning": false,
+        "Qwen3.8-27B": {
+          "name": "Qwen3.8-27B GSQ-RCO (proxy)",
+          "reasoning": true,
           "tool_call": true,
+          "attachment": true,
           "limit": {
-            "context": 262144,
-            "output": 81920
+            "context": 114688,
+            "output": 32768
           }
         }
       }
     },
     "llama.cpp-direct": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "llama-server direct (fallback)",
+      "name": "llama-server direct (fallback, NO guardrails)",
       "options": {
         "baseURL": "http://127.0.0.1:8080/v1",
-        "apiKey": "sk-qwen35b"
+        "apiKey": "sk-no-auth"
       },
       "models": {
-        "qwen35-a3b-iq4xs": {
-          "name": "Qwen3.5 35B A3B (IQ4_XS direct)",
+        "qwen38-gsq-rco-27b": {
+          "name": "Qwen3.8-27B GSQ-RCO (direct)",
           "limit": {
-            "context": 262144,
-            "output": 81920
+            "context": 229376,
+            "output": 32768
           }
         }
       }
     }
   },
-  "model": "qwen-proxy/qwen35-a3b-iq4xs",
+
+  "_limits_comment": "Proxy path: context 114688 is the PER-SESSION half of the server's 229376 shared 2-rail pool, applied by the qwen38 profile via the x-uap-model-profile header — two concurrent agents then fit the pool exactly. Direct path bypasses the proxy and the profile, so it sees the whole 229376 pool and carries no guardrails; use it for probing, not for agent work. output 32768 matches the proxy's tool-turn cap (PROXY_TOOL_TURN_MAX_TOKENS), which is what nearly every agentic turn hits.",
+  "_reasoning_comment": "reasoning: true — the server runs --reasoning-format auto and the proxy streams thinking deltas (PROXY_STREAM_THINKING_DELTAS=on). The old 'false' hid that output.",
+  "_token_comment": "apiKey is {env:UAP_PROXY_TOKEN}, NOT a literal: this file is tracked in git and the live proxy token must never land in history. Export UAP_PROXY_TOKEN in your shell; the value lives in the untracked ~/.config/opencode/opencode.json, which scripts/sync-local-agent-configs.sh reads (it never prints the secret).",
+  "_auth_posture_comment": "Requests currently succeed WITHOUT a token, and the reason is not the one it looks like: PROXY_ALLOW_UNAUTHENTICATED_BIND=1 is a startup BIND-time assertion only (anthropic_proxy.py ~15355) and never runs per request. The request gate is `if PROXY_AUTH_TOKEN and ...` (~5519), and PROXY_AUTH_TOKEN is simply unset. There is NO loopback exemption in that gate: if an operator ever sets PROXY_AUTH_TOKEN, an unset {env:UAP_PROXY_TOKEN} will 401 even from 127.0.0.1. Note also that :4000 and :8080 are both bound to 0.0.0.0 and were verified on 2026-09-20 to answer unauthenticated from the LAN address — so this is an open inference endpoint on the local network, not a loopback-only service.",
+
+  "model": "qwen-proxy/Qwen3.8-27B",
   "agent": {
     "build": {
-      "model": "qwen-proxy/qwen35-a3b-iq4xs",
+      "model": "qwen-proxy/Qwen3.8-27B",
       "temperature": 0.1
     },
     "plan": {
-      "model": "qwen-proxy/qwen35-a3b-iq4xs",
+      "model": "qwen-proxy/Qwen3.8-27B",
       "temperature": 0.2
     },
     "memory": {
-      "model": "qwen-proxy/qwen35-a3b-iq4xs",
+      "model": "qwen-proxy/Qwen3.8-27B",
       "temperature": 0
     },
     "review": {
-      "model": "qwen-proxy/qwen35-a3b-iq4xs",
+      "model": "qwen-proxy/Qwen3.8-27B",
       "temperature": 0.1
     }
   },
+
   "mcp": {
     "uap-router": {
       "type": "local",

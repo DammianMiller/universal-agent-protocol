@@ -22,6 +22,19 @@ export interface ServicePolicy {
     rssMiB?: number;
     /** Free-text provenance, e.g. "--vbr-vram 5120M (OOM fix 2026-09-18)". */
     note?: string;
+    /**
+     * Literal flags that MUST appear in the unit's ExecStart.
+     *
+     * The `note` field is prose and drifts silently: on 2026-09-20 it still
+     * read `-np 1` while the unit had been running `-np 2`, and the doctor
+     * reported GREEN because it never looked at ExecStart at all. Anything
+     * load-bearing enough to write in the note — rail count, context size, a
+     * memory budget — belongs here too, where a mismatch is RED.
+     *
+     * Matched as plain substrings against the probed ExecStart, so
+     * "-np 2" also tolerates surrounding flags in any order.
+     */
+    execStartMustContain?: string[];
   };
   /** Headroom the HOST must keep for the service to be safe. */
   headroom?: {
@@ -55,6 +68,8 @@ export interface ServiceReport {
     mainPid?: number;
     memoryCurrentMiB?: number;
     gpuFreeMiB?: number;
+    /** The unit's ExecStart command line, when systemctl reported it. */
+    execStart?: string;
   };
 }
 
@@ -109,6 +124,12 @@ export function parsePolicy(text: string, source = 'policy'): CapacityPolicy {
         }
       }
     }
+    const must = svc.budget?.execStartMustContain;
+    if (must !== undefined) {
+      if (!Array.isArray(must) || must.some((f) => typeof f !== 'string' || f.length === 0)) {
+        throw new PolicyError(`${where}: budget.execStartMustContain must be an array of non-empty strings`);
+      }
+    }
     const rb = svc.restartBudget;
     if (rb !== undefined) {
       for (const key of ['knownRestarts', 'allowedNew'] as const) {
@@ -160,6 +181,24 @@ export function computeHealth(
         `NRestarts=${probed.nRestarts} exceeds budget ${allowed} ` +
           `(${rb.knownRestarts} known + ${rb.allowedNew} new) — new crashes since the baseline`,
       );
+    }
+  }
+  // Configuration drift: the unit is serving, but NOT with the flags the
+  // policy declares. Same doctrine as the budgets — declared vs probed
+  // reality. Unverifiable (systemctl gave us no ExecStart) is called out
+  // rather than passed silently.
+  const mustContain = svc.budget?.execStartMustContain;
+  if (mustContain && mustContain.length > 0) {
+    if (!probed.execStart) {
+      reasons.push('execStartMustContain declared but ExecStart could not be probed — configuration unverified');
+    } else {
+      const missing = mustContain.filter((flag) => !probed.execStart!.includes(flag));
+      if (missing.length > 0) {
+        reasons.push(
+          `ExecStart is missing declared flag(s) ${missing.map((f) => `"${f}"`).join(', ')} — ` +
+            'the running configuration has drifted from the policy',
+        );
+      }
     }
   }
   if (svc.headroom?.gpuMinFreeMiB !== undefined) {
