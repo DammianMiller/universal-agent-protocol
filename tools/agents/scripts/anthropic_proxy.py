@@ -13754,7 +13754,24 @@ async def count_tokens(request: Request):
             media_type="application/json",
         )
     est = estimate_total_tokens(body)
-    scale = _count_tokens_scale()
+    # This endpoint has no session contextvar, but the client sends the same
+    # profile header here as on /v1/messages — so the session's real window is
+    # recoverable from the request itself. Without this the scale is computed
+    # from the shared pool and a profile-capped client is told to compact at a
+    # point it can never reach.
+    _profile_window = 0
+    # getattr: this endpoint is also driven directly by tests with a minimal
+    # request stub, and a missing header map must degrade to "no profile",
+    # never raise.
+    _prof = _resolve_profile_name(getattr(request, "headers", {}) or {}, body)
+    if _prof:
+        _cfg = _load_profile_config(_prof)
+        if _cfg and _cfg.get("context_window"):
+            try:
+                _profile_window = int(_cfg["context_window"])
+            except (TypeError, ValueError):
+                _profile_window = 0
+    scale = _count_tokens_scale(_profile_window)
     if scale > 1.0:
         scaled = int(est * scale)
         # Once per scale value, explain the discrepancy an operator would
@@ -13768,7 +13785,7 @@ async def count_tokens(request: Request):
                 "fires at ~%d real tokens, before the pruner",
                 scale,
                 PROXY_CLIENT_ASSUMED_WINDOW,
-                _effective_context_window(),
+                _profile_window or _effective_context_window(),
                 int(PROXY_CLIENT_ASSUMED_WINDOW * 0.925 / scale),
             )
         return {"input_tokens": scaled}
@@ -13778,12 +13795,50 @@ async def count_tokens(request: Request):
 _count_scale_logged: float = 0.0
 
 
-def _count_tokens_scale() -> float:
+def _scale_window() -> int:
+    """The window compaction forcing should be computed against.
+
+    The per-SESSION window when one is in force, else the process default.
+
+    This used to be `_effective_context_window()` unconditionally, which is the
+    process-wide value detected from /slots. That silently broke the moment a
+    session carried a profile that capped it BELOW the detected rail, because
+    the two numbers then disagree and only one of them bounds the session:
+
+        detected rail  229376   (shared pool, -np 2 + --kv-unified)
+        profile cap    114688   (what the session may actually use)
+        compact fires  123060   computed from the RAIL -> ABOVE the cap
+        prune fires     80282   computed from the CAP
+
+    Compaction became unreachable and the pruner — designed as a backstop —
+    became the only context manager. That is a real loss, not a wash: the
+    client's compaction writes an LLM summary, while a prune drops the messages
+    and leaves a short breadcrumb list. Resolving the session window first
+    restores the intended ordering (compact ~61.5k, then prune at 80.2k).
+    """
+    try:
+        sid = _current_request_session.get()
+    except LookupError:
+        sid = None
+    if sid:
+        mon = session_monitors.get(sid)
+        win = getattr(mon, "context_window", 0) if mon else 0
+        if win and win > 0:
+            return int(win)
+    return _effective_context_window()
+
+
+def _count_tokens_scale(window_override: int = 0) -> float:
     """Resolve the count_tokens compaction-forcing scale (>= 1.0; 1.0 = off).
 
     "auto" derives it from the LIVE rail each call so a rail resize (server
     restart with a different --ctx-size) re-tunes the client's compact point
     without a proxy restart.
+
+    `window_override` lets a caller that knows the session's window — the
+    count_tokens endpoint, which resolves it from the request's own profile
+    header — supply it directly, since that endpoint runs outside the
+    request-session contextvar that `_scale_window` reads.
     """
     raw = PROXY_COUNT_TOKENS_SCALE.strip().lower()
     if raw in ("", "off", "none", "0", "1", "1.0"):
@@ -13793,7 +13848,7 @@ def _count_tokens_scale() -> float:
             return max(1.0, float(raw))
         except ValueError:
             return 1.0
-    window = _effective_context_window()
+    window = window_override if window_override > 0 else _scale_window()
     if window <= 0:
         return 1.0
     frac = (

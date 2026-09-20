@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.12.0 (2026-09-20)
+
+- feat(inference): 2 rails on Qwen3.8, per-session cap, and an honest config sync
+
+
 ## v2.11.1 (2026-09-19)
 
 - docs: uplift documentation refresh — coverage for merged System-1 features, plain-prose pass

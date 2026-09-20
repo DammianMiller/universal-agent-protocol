@@ -1,70 +1,78 @@
 {
   "_profile": "qwen38",
-  "_description": "Qwen3.8 27B — local ninfer-serve deployment for agentic tool-calling workloads. Successor to qwen36; the default local executor in UAP routing. Routes through the anthropic-proxy for the tool/finalize guardrails, NOT the inference server directly.",
-  "_engine": "ninfer-serve (NOT llama.cpp). Observed flags: --max-context 131072 --kv-capacity 131072 --max-concurrency 1 --max-pending-requests 16 --prefill-chunk 1024 --kv-dtype int8 --spec mtp --draft-tokens 3 --lm-head-draft. It speaks the OpenAI API and emits native tool_calls, so the proxy needs no format shim, but it is NOT llama.cpp and does not serve /props, /metrics or /slots.",
-  "model": "qwen3.8-27b",
-
-  "max_tokens": 65536,
-  "_max_tokens_comment": "Deliberately generous against a 131072 window. This engine returns chain-of-thought in a SEPARATE reasoning_content field, so reasoning spends completion budget without ever appearing in content. A tight cap therefore does not produce a short answer, it produces an EMPTY one with finish_reason=length — measured previously as ~90% first-turn decode failure that read as bad output format and was really budget truncation.",
-
+  "_description": "Qwen3.8 27B GSQ-RCO — local llama.cpp (buun fork) deployment for agentic tool-calling workloads. Successor to qwen36; the default local executor in UAP routing. Routes through the anthropic-proxy for the tool/finalize guardrails, NOT the inference server directly.",
+  "_engine": "buun-llama-cpp b1261-ed67e11b8 (llama.cpp fork) via uap-gsq-rco-server.service on :8080. Serves /props, /slots, /metrics and /v1. Weights: Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf (ISTA-DASLab non-uniform 3.50 bpw, 10.96 GiB) + mmproj-Qwen3.8-27B-BF16.gguf (vision/video) + Qwen3.8-27B-DFlash2-Q4_K_M.gguf draft.",
+  "_engine_history": "CORRECTED 2026-09-20. This profile previously described ninfer-serve and asserted that /props, /slots and /metrics did not exist and that chat_template_kwargs was rejected with HTTP 400. That backend is not what is running; all three endpoints are live. Verify against /props before trusting engine claims here.",
+  "model": "qwen38-gsq-rco-27b",
+  "max_tokens": 57344,
+  "_max_tokens_comment": "Deliberately generous: 50% of the 114688 window, the same ratio the previous 65536/131072 pairing used. The engine returns chain-of-thought in a SEPARATE reasoning_content field (--reasoning-format auto), so reasoning spends completion budget without ever appearing in content. A tight cap therefore does not produce a short answer, it produces an EMPTY one with finish_reason=length — measured previously as ~90% first-turn decode failure that read as bad output format and was really budget truncation. Do not lower this without re-measuring decode compliance.",
   "temperature": 0.3,
   "top_p": 0.9,
   "top_k": 20,
   "min_p": 0.05,
   "repetition_penalty": 1.0,
-  "_sampling_comment": "Carried over from qwen36 unchanged: these are UAP's tool-call-tuned values, not the vendor's chat defaults, and nothing has been re-measured on 3.8 yet. Re-tune with `uap tune` before changing them.",
-
-  "stop_sequences": ["<|im_end|>"],
+  "_sampling_comment": "Carried over from qwen36 unchanged: these are UAP's tool-call-tuned values, not the vendor's chat defaults, and nothing has been re-measured on 3.8. They deliberately differ from the server's own defaults (temp 0.7 / top_p 0.95 / top_k 20 / min_p 0, plus DRY 0.8 allowed_length 16). Left untouched on 2026-09-20 because the 2-rail work measured throughput, not output quality. Re-tune with `uap tune` before changing them.",
+  "stop_sequences": [
+    "<|im_end|>"
+  ],
   "timeout_ms": 300000,
-  "context_window": 131072,
+  "context_window": 114688,
+  "_context_window_comment": "THIS IS A PER-SESSION CAP, AND IT IS LOAD-BEARING (set 2026-09-20). The server runs -np 2 -c 229376 with kv_unified=true, which means 229376 is ONE SHARED POOL, not a per-rail allowance: /slots reports n_ctx=229376 for BOTH slots and each rail may address the whole pool. The proxy's own detection (anthropic_proxy.py _maybe_recheck_context_window) reads slots[0].n_ctx and overrides the PROXY_CONTEXT_WINDOW env pin, so without a profile every session would be told it owns 229376 — two concurrent sessions would then demand 458752 cells from a 229376-cell pool and thrash the prefix cache. A profile context_window is the mechanism that applies a per-session cap (anthropic_proxy.py:13933). It is not the only writer of monitor.context_window — :3245 sweeps every live monitor whenever upstream n_ctx changes — but the recheck runs BEFORE the profile override on each request (:13893), so the cap is restored on the next call rather than lost. 114688 x 2 rails = exactly the pool. In practice sessions sit far below it: the proxy prunes at 0.70 (~80k) toward 0.50 (~57k). IMPORTANT GAP: this cap is OPT-IN. _resolve_profile_name returns None when no x-uap-model-profile header (or uap_model_profile body param) is present, and there is no default-profile setting, so a client that does not send it gets the full shared pool. opencode, codex and claude-local are configured to send it; factory/droid custom models have no header field and CANNOT, so keep factory to one local session at a time. Note also that /v1/models advertises the process-wide window (229376), not this cap — a client that sizes itself from discovery rather than its own config will still aim at the pool.",
   "optimize_for_tool_calls": true,
   "mode_switch_buffer_tokens": 500,
   "enable_thinking": true,
-  "_thinking_comment": "Top-level only. This engine REJECTS chat_template_kwargs outright (HTTP 400 chat_template_option_not_supported) — that key is a llama.cpp --jinja concept and qwen36.json carries it for that reason. The proxy probes the backend once and drops the nested form when it is refused (PROXY_CHAT_TEMPLATE_KWARGS=auto|on|off).",
-
+  "_thinking_comment": "Top-level. The previous ninfer engine REJECTED chat_template_kwargs (HTTP 400 chat_template_option_not_supported), which is why qwen36.json carries the nested form and this profile dropped it. The current backend runs llama.cpp --jinja, where chat_template_kwargs is native and supported. The proxy probes the backend once and adapts (PROXY_CHAT_TEMPLATE_KWARGS=auto|on|off), so the top-level form remains correct and safe either way.",
   "dynamic_temperature": {
     "enabled": true,
     "decay": 0.5,
     "floor": 0.2,
     "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
   },
-
   "tool_call_batching": {
     "enabled": true,
     "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
     "_comment": "Reduces round-trips by encouraging multi-tool emission in one turn."
   },
-
   "concurrency": {
-    "max_parallel_requests": 1,
-    "_comment": "The server runs --max-concurrency 1 with --max-pending-requests 16: a second request QUEUES, it does not run alongside. Anything that fans out local calls is buying latency, not throughput, so the model-slot lease must treat this as a single rail. Unlike the qwen36 llama.cpp setup there are no --parallel slots and the window is NOT divided.",
-    "kv_capacity_shared": false
+    "max_parallel_requests": 2,
+    "_comment": "Matches the server's 2 rails AND the proxy settings that scripts/sync-local-agent-configs.sh installs in the same change: PROXY_CONCURRENCY_LIMIT=2, UAP_MODEL_SLOTS=2 and — the one that actually protects the shared pool — PROXY_SESSION_ADMISSION_LIMIT=2. Those three must move together with this field: raising it while the proxy still serializes at 1 makes callers fan out and buy latency rather than throughput, and raising admission above the rail count admits more hot sessions than the pool can hold. NOTE this value is aspiration until that script is actually run; the live proxy env is the authority. Whether the second rail is EARNING anything is a separate question — check llamacpp:n_busy_slots_per_decode in /metrics: a prior reading of 1.002 over 139 requests meant the workload never had two concurrent requests at all.",
+    "kv_capacity_shared": true,
+    "_kv_shared_comment": "true since 2026-09-20: the fork forces --kv-unified whenever VBR runs with -np > 1 ('-np 2 without --kv-unified would disarm the degrade controller'). Rails share one 229376-cell pool rather than owning private slices."
   },
-
   "server_optimization": {
-    "kv_dtype": "int8",
+    "kv_dtype": "vbr",
+    "_kv_dtype_comment": "VBR dynamic turbo: entry tier t8 (~q8_0 quality) degrading toward floor t4 (4.125 bits/value ~ q4_0) only as the pool fills, under an explicit 5120 MiB KV budget (--vbr-vram 5120M). The explicit budget replaced 'auto' on 2026-09-18 after auto resolved 9536 MiB and overcommitted the card through THREE SIGABRT core dumps. A fourth dump followed WITH the 5120M budget already in place; that one was fixed by dropping the pool 262144 -> 229376, not by the budget. Do not fold it into the budget's evidence.",
     "prefill_chunk": 1024,
-    "max_context": 131072,
-    "kv_capacity": 131072,
+    "max_context": 229376,
+    "kv_capacity": 229376,
+    "_capacity_comment": "Shared pool total across both rails, NOT per rail. Per-session allowance is context_window above.",
+    "parallel_rails": 2,
     "speculative_decoding": {
       "enabled": true,
-      "type": "mtp",
-      "draft_tokens": 3,
-      "lm_head_draft": true,
-      "_comment": "Multi-token-prediction self-speculation built into the engine (--spec mtp --draft-tokens 3 --lm-head-draft). No draft model, no separate weights."
+      "type": "draft-dflash",
+      "draft_model": "Qwen3.8-27B-DFlash2-Q4_K_M.gguf",
+      "draft_max": 4,
+      "draft_min": 0,
+      "_comment": "A real 1.06 GiB draft MODEL, not self-speculation. Replaces the previously recorded '--spec mtp --draft-tokens 3 --lm-head-draft' (that was the ninfer engine's built-in MTP). DFlash2 was measured on this box 2026-09-12 to beat the native MTP head at every depth (45/31/30 vs 36/20/13 t/s at 2k/32k/92k)."
     },
-    "_comment": "These are the flags the server is actually running under, recorded so a rebuild reproduces the measured behaviour."
+    "_comment": "These are the flags uap-gsq-rco-server.service is actually running under, recorded so a rebuild reproduces the measured behaviour.",
+    "_budget_tier_comment": "Budget arithmetic worth knowing: 5120 MiB / 229376 cells = 22.86 KiB/token, which is EXACTLY the t4 floor (4.125 bpv). The budget was sized so the full pool fits only at the WORST quality tier; at the t8 entry tier it covers roughly 107k tokens. Consequence of --kv-unified that did not exist at one rail: KV precision is now COUPLED ACROSS SESSIONS. A lone agent at 60k sits at t8; add a second agent at 60k and both degrade toward t4."
   },
-
   "measured": {
-    "date": "2026-08-19",
-    "gpu": "NVIDIA GeForce RTX 3090 (24GB, ~23.2GB resident)",
-    "decode_tokens_per_second": 78,
-    "_comment": "3 reps direct to the inference server (76.3/78.8/78.3 tok/s) and 3 through the proxy (77.6/81.8/81.7), greedy, 512-token cap. The proxy adds no measurable overhead — the two sets overlap within run-to-run noise."
+    "date": "2026-09-20",
+    "gpu": "NVIDIA GeForce RTX 3090, 24576 MiB",
+    "_gpu_comment": "llama-server resident is NOT a constant: VBR maps KV lazily, so it tracks pool occupancy. 16652 MiB was a cold-start reading on an empty pool and should not be quoted as steady state. Measured under real load the same day: ~19.5 GiB resident, ~3.2 GiB free. Budget headroom against the 3.2 GiB figure, not the cold one — and remember a vision request allocates image-encode buffers on top.",
+    "decode_tokens_per_second": 43,
+    "_decode_comment": "CODE GENERATION at shallow depth, which is the closest single number to agent work. Decode here is strongly workload- AND depth-dependent, so one number is always a simplification. Measured 3 reps each, greedy, 220 max_tokens, via scripts/bench-decode-reps.sh: code 41.1/45.7/43.0 tok/s | prose 25.4/25.1/32.3 | counting 52.2/52.7/54.2. Depth matters as much: an earlier probe run measured ~72 at ~100 tokens of context but only ~32 at 27k. The DFlash2 rows above (45/31/30 t/s at 2k/32k/92k) remain the best depth-resolved characterisation. An earlier version of this file recorded 72 tok/s from a SINGLE rep on 'count from 1 to 40' — a degenerate, near-perfectly draftable prompt at zero depth. Do not quote a decode number without saying which workload and what depth.",
+    "draft_acceptance": 0.71,
+    "_draft_acceptance_comment": "Code generation, 3 reps: 67.8/73.4/71.7%. Strongly prompt-dependent — prose only reaches 30.5-39.8%, while counting hits 93.9-97.7%. The 0.90 previously recorded here came from the counting prompt and is not characteristic of anything an agent does.",
+    "prefill_tokens_per_second": 900,
+    "_prefill_comment": "Bulk prefill on unique (uncacheable) prompts: ~927 t/s at 3.5k, ~899 at 13.7k, ~883 at 27.4k, ~751 at 41k. A previously recorded 105 t/s was fixed per-request overhead measured on a ~100-token prompt, not a prefill rate — wrong by roughly 8x. Rough model: ms/token = 1.03 + 6.3e-6*N.",
+    "concurrent_2_rail_throughput": null,
+    "_concurrency_comment": "STILL UNMEASURED. Decode on this card is memory-bandwidth-bound, so the expected win from the second rail is OVERLAP (no head-of-line blocking; one session's prefill can proceed during another's decode), NOT 2x throughput. The honest acceptance test is llamacpp:n_busy_slots_per_decode from /metrics: a prior investigation recorded 1.002 over 139 requests, i.e. the workload never actually had two concurrent requests and the second rail bought nothing. Require that metric to exceed 1 under real load before claiming the rail is earning its keep."
   },
-
   "routing": {
     "endpoint": "http://127.0.0.1:4000/v1",
-    "_comment": "Route through the anthropic-proxy, NOT the inference server directly — the proxy applies the tool/finalize guardrails and advertises the context window that clients size their history to."
+    "_comment": "Route through the anthropic-proxy, NOT the inference server directly — the proxy applies the tool/finalize guardrails and, via this profile, the per-session context window that clients size their history to. Clients select this profile with the header 'x-uap-model-profile: qwen38' (or a uap_model_profile body param)."
   }
 }

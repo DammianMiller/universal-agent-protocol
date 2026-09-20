@@ -29,7 +29,7 @@ export function probeSystemd(unit: string, scope: 'user' | 'system'): ProbeState
   try {
     const out = execFileSync(
       'systemctl',
-      [...args, '-p', 'ActiveState,SubState,NRestarts,MainPID,MemoryCurrent', '--', unit],
+      [...args, '-p', 'ActiveState,SubState,NRestarts,MainPID,MemoryCurrent,ExecStart', '--', unit],
       { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: PROBE_TIMEOUT_MS },
     );
     const props = Object.fromEntries(
@@ -47,6 +47,11 @@ export function probeSystemd(unit: string, scope: 'user' | 'system'): ProbeState
       nRestarts: Number.isFinite(restarts) && props.NRestarts ? restarts : undefined,
       mainPid: Number.isFinite(pid) && pid > 0 ? pid : undefined,
       memoryCurrentMiB: Number.isFinite(mem) && mem > 0 ? Math.round(mem / 1048576) : undefined,
+      // systemd renders ExecStart as a single-line struct; the flags are in
+      // there verbatim, which is all execStartMustContain needs. Probed so
+      // the doctor can catch a unit whose flags have drifted from the policy
+      // — previously it only ever saw liveness, never configuration.
+      execStart: props.ExecStart || undefined,
     };
   } catch {
     return null; // no systemctl / timeout (container, macOS) — UNKNOWN, not GREEN
