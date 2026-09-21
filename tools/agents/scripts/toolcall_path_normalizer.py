@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Self-Harness middleware (proxy side) — conversation-aware tool-call path normalizer.
 
 The mechanical fix for the `toolcall.path.garbled` failure: a small quant

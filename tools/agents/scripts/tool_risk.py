@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """AutoMode pre-execution risk classification — advisory heuristic scorer.
 
 Uplift 1.3. Classifies each tool call BEFORE dispatch into one of five risk
