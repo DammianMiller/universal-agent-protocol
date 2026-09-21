@@ -30,6 +30,13 @@ Service health for UAP-managed daemons is checked separately with
 `config/capacity-policy.json` (see
 [docs/guides/CAPACITY_POLICY.md](docs/guides/CAPACITY_POLICY.md)).
 
+`uap doctor` answers "is it up and inside budget". Whether the local model is
+still doing useful WORK is a different question — throughput can decay ~8x
+over a long-lived process while every liveness check stays GREEN. Use
+`uap inference health` for that (see
+[docs/guides/INFERENCE_HEALTH.md](docs/guides/INFERENCE_HEALTH.md)); it also
+replays a past window with `--since`/`--until`.
+
 ## DECISION LOOP
 
 When working on a task, follow the loop:

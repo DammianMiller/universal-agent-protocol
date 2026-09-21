@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.13.0 (2026-09-21)
+
+- feat(inference): uap inference health — catch a server that is up but not working
+- fix(ci): register the new proxy test so CI actually runs it
+
+
 ## v2.12.0 (2026-09-20)
 
 - feat(inference): 2 rails on Qwen3.8, per-session cap, and an honest config sync

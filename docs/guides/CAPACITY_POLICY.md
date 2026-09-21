@@ -42,11 +42,35 @@ the project, then `~/.config/uap/capacity-policy.json`.
     `MemoryCurrent`. Declaring it when systemd cannot report memory
     (cgroup accounting off) is RED — a declared budget that cannot be
     verified is not healthy.
+  - `budget.execStartMustContain` **is** enforced: literal strings that must
+    all appear in the unit's probed `ExecStart`, matched as plain substrings
+    so ordering and surrounding flags do not matter.
+
+    ```json
+    "budget": {
+      "vramMiB": 5120,
+      "note": "--vbr-vram 5120M, -c 229376, -np 2",
+      "execStartMustContain": ["-c 229376", "-np 2", "--vbr-vram 5120M"]
+    }
+    ```
+
+    It exists because `note` is prose and drifts silently. On 2026-09-20 a
+    note still read `-np 1` while the unit had been running `-np 2` for hours,
+    and the doctor stayed GREEN throughout — it probed only liveness
+    properties and never looked at `ExecStart`. Anything load-bearing enough
+    to write in the note belongs here too, where a mismatch is RED. As with
+    the other budgets, *unverifiable* is also RED: if `systemctl` reports no
+    `ExecStart`, the declaration is not quietly assumed satisfied.
 - **headroom.gpuMinFreeMiB** — free VRAM the *host* must keep; below it the
   service is in OOM territory even while running.
 - **restartBudget** — `knownRestarts` is the accepted historical baseline
   (e.g. crashes already fixed); `allowedNew` new crashes beyond that turn the
   service RED. Zero is the right default after a fix lands.
+
+`uap doctor` answers whether a service is up and inside its declared budget.
+Whether the local model is still doing useful *work* — throughput can decay
+~8x over a long-lived process while every one of these checks stays GREEN — is
+[`uap inference health`](INFERENCE_HEALTH.md).
 
 ## Health semantics
 
