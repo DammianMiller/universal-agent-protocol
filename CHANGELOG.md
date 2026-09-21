@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.13.3 (2026-09-21)
+
+- fix(inference): split each size bucket on its own clock, not the global one
+
+
 ## v2.13.2 (2026-09-21)
 
 - chore(scripts): add shebangs and track the exec bit on four agent scripts
