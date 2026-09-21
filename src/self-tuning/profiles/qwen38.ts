@@ -3,14 +3,23 @@
  * raises toward Opus (successor to the qwen3.6-a3b seed in qwen36.ts).
  *
  * Carried over from QWEN36_PROFILE unchanged EXCEPT for concurrency, which is
- * not a preference here but a property of the server: this model is served by
- * `ninfer-serve --max-concurrency 1 --max-pending-requests 16`. There is ONE
- * rail. Requesting 4 slots does not get 4 in flight — it gets one running and
- * three queued behind it, so the extra slots buy latency and a longer wedge
- * window rather than throughput, and the adaptive controller then reads the
- * queueing delay as backpressure and throttles a server that was never
- * saturated. The qwen36 value of 4 was correct for llama.cpp `--parallel`; it
- * is wrong for this engine.
+ * not a preference here but a property of the server.
+ *
+ * CORRECTED 2026-09-21. This header said the model was served by
+ * `ninfer-serve --max-concurrency 1` and that there was ONE rail. That engine
+ * is not what runs: the backend is buun-llama-cpp behind
+ * uap-gsq-rco-server.service with `-np 2`, and the proxy was raised to match
+ * (PROXY_CONCURRENCY_LIMIT / UAP_MODEL_SLOTS / PROXY_SESSION_ADMISSION_LIMIT
+ * all 2). The reasoning below still holds, only the number changed: slots must
+ * track what the server and proxy will actually run in parallel. Declaring
+ * MORE than that does not get more in flight — it gets one running and the
+ * rest queued, the extra slots buy latency and a longer wedge window rather
+ * than throughput, and the adaptive controller then reads the queueing delay
+ * as backpressure and throttles a server that was never saturated.
+ *
+ * Whether the second rail EARNS anything is a separate question from whether
+ * it exists: check llamacpp:n_busy_slots_per_decode in /metrics (>1 means
+ * requests genuinely overlapped), or `uap inference health`.
  *
  * Everything else is deliberately identical to the qwen36 seed: nothing has
  * been re-measured on 3.8 yet, and the tuning loop's job is to beat this seed,
@@ -32,9 +41,10 @@ export const QWEN38_PROFILE: FlagConfig = {
   'handsfree.enabled': true,
   'handsfree.intensity': 'aggressive',
   UAP_HANDSFREE_STAGNATION_LIMIT: 6,
-  // Concurrency: ONE rail (see the header). Adaptive stays on so a genuinely
-  // overloaded server still backs off.
-  'modelConcurrency.slots': 1,
+  // Concurrency: TWO rails (see the header) — matches `-np 2` on the server
+  // and the proxy's concurrency/admission limits. Adaptive stays on so a
+  // genuinely overloaded server still backs off.
+  'modelConcurrency.slots': 2,
   'modelConcurrency.adaptive': true,
   // Memory: bigger short-term window + pattern RAG compensate for weak planning.
   'memory.shortTerm.maxEntries': 80,

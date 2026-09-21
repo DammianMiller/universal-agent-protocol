@@ -5335,7 +5335,10 @@ class TestModelsEndpoint(unittest.TestCase):
 
         # Local model — what the inference server actually serves. Tracks the
         # active model: qwen3.8-27b as of 2026-08-19, served by ninfer-serve
-        # (NOT llama.cpp). Requests for this ID route locally even with the
+        # then; as of 2026-09-21 the backend is buun-llama-cpp serving the alias
+        # qwen38-gsq-rco-27b. The id here still routes locally either way —
+        # llama.cpp ignores the OpenAI `model` field — which is the property
+        # under test. Requests for this ID route locally even with the
         # __local_only__ passthrough sentinel set.
         #
         # This assertion is about AGREEMENT with the backend, not about naming.

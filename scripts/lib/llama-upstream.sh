@@ -82,10 +82,16 @@ llama_upstream_is_chat_server() {
     # PATH 2 — any other OpenAI-compatible engine.
     #
     # Requiring /props made this check llama.cpp-SPECIFIC, and it rejected the
-    # engine actually serving this host. Measured 2026-08-19: the box runs
+    # engine actually serving this host. Measured 2026-08-19: the box then ran
     # ninfer-serve, which serves /health and /v1/models but NO /props, so the live
     # server on the documented default port was refused, discovery yielded
     # nothing, the dead pin stood, and every local completion returned 529.
+    #
+    # (2026-09-21: that host is back on llama.cpp and /props answers again, so
+    # this particular engine no longer triggers it. The check stays capability-
+    # based rather than endpoint-based on purpose — the point is not which
+    # engine is running today, it is that requiring a vendor-specific endpoint
+    # makes discovery reject any other one.)
     #
     # The trust model asks for "chat-capable, and not the embedding server". That
     # is a CAPABILITY question, and the direct way to answer it is to ask for a

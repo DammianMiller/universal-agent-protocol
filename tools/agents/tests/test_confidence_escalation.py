@@ -372,8 +372,9 @@ class SlotRightSizingTest(unittest.TestCase):
     """
 
     def test_unknown_width_changes_nothing(self):
-        # Not every backend can be probed (ninfer serves no /slots), so silence
-        # is not evidence -- unknown width must leave behaviour identical.
+        # Not every backend can be probed -- some engines serve no /slots, and a
+        # probe can fail -- so silence is not evidence: unknown width must leave
+        # behaviour identical.
         self.assertEqual(ce.select_recipe(body(), S(recipe="fusion"), False), "fusion")
 
     def test_single_slot_downgrades_explicit_fusion(self):

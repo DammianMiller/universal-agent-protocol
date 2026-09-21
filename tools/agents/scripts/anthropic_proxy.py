@@ -1360,6 +1360,12 @@ PROXY_DISABLE_THINKING_ALWAYS = os.environ.get(
 # switches, the tool-turn breakers, the JSON-verdict grammar, the empty-response
 # retry and every assistant prefill/continuation.
 #
+# SUPERSEDED 2026-09-21: that backend is not what runs. The local engine is
+# buun-llama-cpp with --jinja, which ACCEPTS chat_template_kwargs (verified
+# with a live 200 carrying enable_thinking). The capability probe below is why
+# the engine change needed no code change at all — it adapts instead of
+# assuming. The incident above is kept as the record of why the probe exists.
+#
 # 'auto' (default) probes the upstream once and remembers; 'on'/'off' pin it for
 # an operator who knows their backend and does not want the probe.
 PROXY_CHAT_TEMPLATE_KWARGS = os.environ.get(
@@ -1544,7 +1550,11 @@ async def _reconcile_wire_model(openai_body: dict) -> None:
 
     THE BUG THIS FIXES, measured 2026-08-19. llama.cpp ignores the OpenAI
     `model` field entirely, so for years the proxy could forward whatever the
-    client asked for. ninfer-serve VALIDATES it. With the local-only sentinel
+    client asked for. ninfer-serve VALIDATES it. (SUPERSEDED 2026-09-21: the
+    backend is llama.cpp again, which ignores the field — both `qwen3.8-27b`
+    and the real alias return 200. This reconciliation is now belt-and-braces
+    rather than load-bearing, and stays because the next engine may validate
+    again.) With the local-only sentinel
     (ANTHROPIC_PASSTHROUGH_MODELS=__local_only__ -- the shipped systemd default)
     EVERY advertised id is served locally, including the four `claude-*` ones,
     and every one of them came back:

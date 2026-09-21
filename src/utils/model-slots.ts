@@ -81,13 +81,19 @@ export function configuredSlots(cwd?: string): number | undefined {
  *   - the endpoint is unreachable        -> we know nothing; 2 is a fair guess
  *   - the endpoint answered 404/405      -> this is NOT llama.cpp
  *
- * The second case is now the normal one here: the local backend is ninfer-serve
- * (`--max-concurrency 1`), which serves no `/slots` at all. Guessing 2 against a
- * server that runs ONE request and queues the rest does not double throughput —
- * it puts a second request in a queue and then lets the adaptive controller read
- * the queueing delay as backpressure on a server that was never saturated.
+ * A server that ANSWERS 404/405 is telling us something: it is not llama.cpp,
+ * and engines without a `--parallel` equivalent typically run one request and
+ * queue the rest. Guessing 2 there does not double throughput — it puts a
+ * second request in a queue and then lets the adaptive controller read the
+ * queueing delay as backpressure on a server that was never saturated.
  *
  * So a live server that denies knowing about `/slots` reports 1, not "unknown".
+ *
+ * NOTE (2026-09-21): this used to cite the local backend as the motivating
+ * example — "ninfer-serve, which serves no /slots at all". That is no longer
+ * the case: the local backend is buun-llama-cpp and /slots answers with two
+ * rails, so the 404 branch is now the FOREIGN-engine path, not the normal one.
+ * The logic is unchanged and still correct; only the example was stale.
  */
 export async function probeSlots(base: string, timeoutMs = 1500): Promise<number | null> {
   try {

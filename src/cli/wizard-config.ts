@@ -497,7 +497,11 @@ export function writeProxyEnv(cwd: string, selections: WizardSelections): string
     lines.push(`PROXY_CONFIDENCE_THRESHOLD=${r.confidenceThreshold}`);
     lines.push(`PROXY_FUSION_N=${r.fusionN}`);
     // Backend WIDTH, so the proxy can right-size fan-out recipes to hardware it
-    // cannot probe for itself (ninfer serves no /slots endpoint). A one-slot
+    // cannot always probe for itself — an engine that serves no /slots endpoint,
+    // or a proxy that cannot reach it. (This once read "ninfer serves no /slots
+    // endpoint"; the local backend is llama.cpp and does serve it, but an
+    // operator-declared width still wins over a probe that may not run.)
+    // A one-slot
     // backend serializes fusion's N generations, turning an N-way sample into
     // an N-times-slower single answer; the proxy downgrades to `single` when it
     // sees this, unless PROXY_FORCE_MULTI_CALL=1. Written only when the operator
