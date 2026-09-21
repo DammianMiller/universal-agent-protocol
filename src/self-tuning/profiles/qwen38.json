@@ -10,7 +10,7 @@
     "handsfree.enabled": true,
     "handsfree.intensity": "aggressive",
     "UAP_HANDSFREE_STAGNATION_LIMIT": 6,
-    "modelConcurrency.slots": 1,
+    "modelConcurrency.slots": 2,
     "modelConcurrency.adaptive": true,
     "memory.shortTerm.maxEntries": 80,
     "memory.patternRag.enabled": true,

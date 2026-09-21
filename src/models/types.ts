@@ -208,34 +208,61 @@ export const ModelPresets: Record<string, ModelConfig> = {
   },
   'qwen38-27b': {
     id: 'qwen38-27b',
-    name: 'Qwen 3.8 27B (ninfer, local)',
+    name: 'Qwen 3.8 27B (local)',
     provider: 'custom',
     apiModel: 'qwen3.8-27b',
     // Route through the anthropic-proxy (:4000) for the tool/finalize
     // guardrails, not the inference server's :8080 raw.
     //
-    // The local engine is ninfer-serve, NOT llama.cpp:
-    //   ninfer-serve models/qwen3_8_27b.ninfer --max-context 131072
-    //     --kv-capacity 131072 --max-concurrency 1 --max-pending-requests 16
-    //     --prefill-chunk 1024 --kv-dtype int8 --spec mtp --draft-tokens 3
-    //     --lm-head-draft
-    // Two consequences UAP has to respect. (1) --max-concurrency 1: there is
-    // ONE rail, so the whole window belongs to a single request and nothing
-    // here is divided by a slot count the way the qwen36 llama.cpp entry was.
-    // (2) reasoning is returned in a separate `reasoning_content` field rather
-    // than inline <think> tags, so it costs completion budget without ever
-    // appearing in the text — see the profile's max_tokens note.
+    // CORRECTED 2026-09-21. This entry described ninfer-serve — "NOT llama.cpp",
+    // "--max-concurrency 1", "serves none of the llama.cpp endpoints". All of
+    // that is superseded: the backend is buun-llama-cpp (b1261) behind
+    // uap-gsq-rco-server.service, it serves /props, /slots and /metrics, and it
+    // runs TWO rails. Verify against /props before trusting any engine claim
+    // here; see docs/guides/INFERENCE_HEALTH.md.
+    //
+    // `apiModel` is deliberately NOT the server's alias (qwen38-gsq-rco-27b).
+    // The endpoint below is the proxy, which is pinned local-only and routes on
+    // its own rules rather than the requested id — both spellings return 200.
+    // Pinning the live alias here would turn a backend switch
+    // (~/.config/uap/model-switch.sh) into an outage, which is the same reason
+    // the 'local-auto' entry below carries no pinned name at all.
+    //
+    // Still true, and still load-bearing: reasoning comes back in a separate
+    // `reasoning_content` field rather than inline <think> tags, so it costs
+    // completion budget without ever appearing in the text — a tight max_tokens
+    // yields an EMPTY answer with finish_reason=length, not a short one.
     endpoint: 'http://127.0.0.1:4000/v1',
-    maxContextTokens: 131072,
+    // The PER-SESSION cap, not the server's pool. The server runs -c 229376
+    // with --kv-unified, so that 229376 is ONE SHARED pool across both rails
+    // and -np does NOT divide it; the qwen38 model profile caps a session at
+    // half of it so two concurrent agents fit. 131072 stood here from the
+    // single-rail era and is now ABOVE that cap — a client sizing to it would
+    // aim past what its own session is allowed.
+    maxContextTokens: 114688,
     costPer1MInput: 0,
     costPer1MOutput: 0,
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
-    // A 1024-token safety margin under the served window, NOT a computed
-    // reserve — nothing in the code derives 131072 - 1024, and this backend
-    // serves none of the llama.cpp endpoints (/props, /slots) the proxy's
-    // window discovery reads, so there is no live figure to defer to here.
-    modelContextBudget: 130048,
+    // A 1024-token safety margin under the per-session cap above, NOT a
+    // computed reserve — nothing in the code derives 114688 - 1024.
+    //
+    // READ THIS BEFORE TRUSTING THE NUMBER. It is a FALLBACK, and on the live
+    // path it loses. resolveSessionTokenBudget (src/delivery/context-budget.ts)
+    // ranks discovery ABOVE the preset, and discovery (`/v1/context`) reports
+    // the SHARED POOL (229376), not this per-session cap — because the cap is
+    // opt-in via the `x-uap-model-profile` header and NOTHING in src/ sends it
+    // (opencode, codex and claude-local do; UAP's own clients do not). So a
+    // deliver run on this box resolves 229376 * 0.7 = 160563 against a 114688
+    // cap. Under-claiming here is still the safe direction — every consumer
+    // clamps downward — but do not read this constant as evidence that
+    // anything is enforcing the cap on UAP's own traffic. Tracked separately.
+    modelContextBudget: 113664,
   },
+  // NOTE: this entry keeps 131072/130048 while 'qwen38-27b' above dropped to
+  // the per-session cap. Deliberate: 'local-auto' resolves whatever backend is
+  // serving and sends no profile header either, so it gets the full shared pool
+  // and 131072 is conservative against it. Do not "align" the two — they are
+  // derived from different models of the same endpoint on purpose.
   'local-auto': {
     id: 'local-auto',
     name: 'Local model (auto-detected)',

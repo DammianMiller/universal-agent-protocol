@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.13.1 (2026-09-21)
+
+- fix(models): retire the ninfer-serve claims, and the wrong values they left
+
+
 ## v2.13.0 (2026-09-21)
 
 - feat(inference): uap inference health — catch a server that is up but not working
