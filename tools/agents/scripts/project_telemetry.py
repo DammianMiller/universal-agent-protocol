@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Per-project routing/cost telemetry for the shared UAP anthropic proxy.
 
 The proxy is a shared singleton that serves *every* project, so per-project

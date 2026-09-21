@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Calibration harness for the AutoMode advisory risk scorer (uplift 1.3).
 
 Loads the labeled corpus (tools/agents/tests/fixtures/tool_risk_cases.json),
