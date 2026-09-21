@@ -53,6 +53,7 @@ const lazy = {
   supervise: () => import('../cli/supervise.js').then((m) => m.superviseCommand),
   classify: () => import('../cli/classify.js').then((m) => m.classifyCommand),
   doctor: () => import('../cli/doctor.js').then((m) => m.doctorCommand),
+  inference: () => import('../cli/inference.js').then((m) => m.inferenceHealthCommand),
   review: () => import('../cli/review.js').then((m) => m.reviewCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
@@ -562,6 +563,30 @@ program
   .option('--strict', 'Exit 1 when any service is RED or DARK (CI/monitor gating)')
   .action(async (options) => {
     const cmd = await lazy.doctor();
+    await cmd(options);
+  });
+
+// Inference health — the questions `doctor` cannot answer, because nothing is
+// down: throughput decaying over a long-lived process, checkpoints too few to
+// track a growing conversation, KV pinned at its lowest quality tier.
+program
+  .command('inference')
+  .description('Inference-stack health: throughput decay, checkpoint reuse, KV pressure')
+  .argument('[subcommand]', 'health (default)', 'health')
+  .option('--server-unit <unit>', 'systemd user unit for the inference server')
+  .option('--proxy-unit <unit>', 'systemd user unit for the proxy (timeout counting)')
+  .option('--url <url>', 'inference server base URL (default: http://127.0.0.1:8080)')
+  .option('--since <expr>', 'journalctl --since window (default: the server process start)')
+  .option('--until <expr>', 'journalctl --until bound — analyse a PAST incident window')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--strict', 'Exit 1 when health is WARN or RED (CI/monitor gating)')
+  .action(async (subcommand, options) => {
+    if (subcommand && subcommand !== 'health') {
+      console.error(`unknown subcommand '${subcommand}' — supported: health`);
+      process.exitCode = 1;
+      return;
+    }
+    const cmd = await lazy.inference();
     await cmd(options);
   });
 
