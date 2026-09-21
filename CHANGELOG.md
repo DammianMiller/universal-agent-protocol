@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.13.2 (2026-09-21)
+
+- chore(scripts): add shebangs and track the exec bit on four agent scripts
+
+
 ## v2.13.1 (2026-09-21)
 
 - fix(models): retire the ninfer-serve claims, and the wrong values they left
