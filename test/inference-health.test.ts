@@ -107,13 +107,18 @@ describe('analyzeTrend — must compare like with like', () => {
     // "NaN -> NaN tok/s" while --json emitted a null indistinguishable from
     // "no data".
     const rows = [
-      ...Array.from({ length: 5 }, (_, i) => sample(1_000 + i, 20_000, 600)),
-      ...Array.from({ length: 4 }, (_, i) => sample(9_000 + i, 20_000, 100)),
+      ...Array.from({ length: 6 }, (_, i) => sample(1_000 + i, 20_000, 600)),
+      ...Array.from({ length: 6 }, (_, i) => sample(9_000 + i, 20_000, 100)),
       sample(9_500, 20_000, Number.NaN),
     ];
     const t = analyzeTrend(rows);
+    // Assert the PROPERTY (a NaN sample cannot poison the result), not an
+    // exact figure — an exact one encodes the split's arithmetic and breaks
+    // whenever the split changes, which says nothing about NaN handling.
     expect(Number.isFinite(t.ratio!)).toBe(true);
-    expect(t.ratio).toBeCloseTo(100 / 600, 3);
+    expect(t.ratio!).toBeCloseTo(100 / 600, 2);
+    // the NaN row is dropped, not counted into either era
+    expect(t.earlyCount + t.recentCount).toBe(12);
   });
 
   it('gives a note, never a silent blank, when the early era is all zeros', () => {
@@ -126,6 +131,69 @@ describe('analyzeTrend — must compare like with like', () => {
     const t = analyzeTrend(rows);
     expect(t.ratio).toBeUndefined();
     expect(t.note).toBeTruthy();
+  });
+
+  it('analyses a bucket whose samples are SKEWED IN TIME', () => {
+    // The defect this fixes, taken from a live 6h journal. Agent conversations
+    // grow, so large prompts arrive late; splitting every sample at the GLOBAL
+    // median then left that bucket with 2 early / 21 recent and the
+    // minSamplesPerEra guard dropped it entirely.
+    //
+    //   <5k     41 early / 17 recent  -> reported 0.78 (mild)
+    //   15-30k   2 early / 21 recent  -> EXCLUDED
+    //
+    // The excluded bucket had gone 616 -> 73 tok/s. An 8x collapse, invisible,
+    // while the report showed a benign 0.78 and emitted no finding at all.
+    // Modelled on the bucket's OWN chronology, which is what the fix reads:
+    // large prompts appear only in the back half of wall-clock time, and
+    // within that span they decay 610 -> 73. Under the global split every one
+    // of them lands in the "recent" half, the early era is empty, and the
+    // whole bucket is dropped.
+    const rows: PrefillSample[] = [
+      ...Array.from({ length: 41 }, (_, i) => sample(1_000 + i, 3_000, 310)),
+      ...Array.from({ length: 17 }, (_, i) => sample(5_000 + i, 3_000, 242)),
+      ...Array.from({ length: 11 }, (_, i) => sample(9_000 + i, 20_000, 610)),
+      ...Array.from({ length: 12 }, (_, i) => sample(9_500 + i, 20_000, 73)),
+    ];
+    const t = analyzeTrend(rows);
+    expect(t.bucket).toBe('15-30k');
+    expect(t.ratio!).toBeLessThan(0.35);
+    // and it must actually FIRE, not just be measured
+    const f = assessInference({ prefill: rows, checkpoints: [] }).findings.find(
+      (x) => x.code === 'prefill-decay',
+    );
+    expect(f?.health).toBe('RED');
+  });
+
+  it('splits each bucket on its own clock, not the global one', () => {
+    // A bucket entirely inside the second half of wall-clock time still has a
+    // first and second half OF ITS OWN, which is what "did this get slower"
+    // means for that prompt size.
+    const rows: PrefillSample[] = [
+      ...Array.from({ length: 10 }, (_, i) => sample(1_000 + i, 3_000, 500)),
+      ...Array.from({ length: 5 }, (_, i) => sample(8_000 + i, 20_000, 600)),
+      ...Array.from({ length: 5 }, (_, i) => sample(9_000 + i, 20_000, 150)),
+    ];
+    const t = analyzeTrend(rows);
+    const big = t.buckets?.find((b) => b.bucket === '15-30k');
+    expect(big).toBeDefined();
+    expect(big!.earlyCount).toBe(5);
+    expect(big!.recentCount).toBe(5);
+    expect(big!.ratio).toBeCloseTo(150 / 600, 2);
+  });
+
+  it('still refuses a bucket with too few samples to split at all', () => {
+    // Per-bucket splitting must not become "judge anything": a bucket needs
+    // minSamplesPerEra on BOTH sides of its own median.
+    const rows: PrefillSample[] = [
+      ...Array.from({ length: 10 }, (_, i) => sample(1_000 + i, 3_000, 500)),
+      ...Array.from({ length: 10 }, (_, i) => sample(9_000 + i, 3_000, 400)),
+      // only 3 samples — cannot make two eras of 4
+      ...Array.from({ length: 3 }, (_, i) => sample(5_000 + i, 20_000, 40)),
+    ];
+    const t = analyzeTrend(rows);
+    expect(t.buckets?.map((b) => b.bucket)).not.toContain('15-30k');
+    expect(t.bucket).toBe('<5k');
   });
 
   it('reports improvement as a ratio above 1, not as a fault', () => {

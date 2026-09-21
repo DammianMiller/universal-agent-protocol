@@ -51,6 +51,14 @@ The trend is therefore computed **within a size bucket** (`<5k`, `5-15k`,
 window. If none qualifies, it reports that it cannot compare like with like
 rather than guessing.
 
+Each bucket is split at **its own** median time, not the global one. That
+matters because agent conversations grow, so large prompts arrive late: on a
+live 6h journal the `15-30k` bucket had 2 samples before the global midpoint
+and 21 after, so the minimum-samples guard dropped it — while it had gone
+616 → 73 tok/s. An 8× collapse, invisible, with the report showing a benign
+`<5k` at 0.78 and emitting no finding at all. A bucket's own chronology is what
+"did this get slower" means for that prompt size.
+
 Findings are based on the **worst** bucket, and the others are named alongside
 it. Ranking by sample count instead would hide the problem: on the real
 incident window the `>30k` bucket had the most samples and sat at 0.52 (WARN),
@@ -142,6 +150,32 @@ In a replay (`--until`), the live readings are dropped from the analysis too,
 not merely hidden — including the unit's current `-np`/`-c`, which describe the
 process running now rather than the one in the window. The `shared-pool` line
 therefore does not appear in a replay.
+
+## Tuning checkpoints when KV sits at the floor
+
+`kv-at-floor` usually means the pool is saturated — and on this stack a common
+cause is the checkpoint allowance, because checkpoints are charged to the SAME
+`--vbr-vram` budget as live context, at ~190 MiB each **per slot**:
+
+| `--ctx-checkpoints` | cost across 2 rails | share of a 5120 MiB budget |
+| --- | --- | --- |
+| 4 | 1520 MiB | 30% |
+| 3 | 1140 MiB | 22% |
+| 2 | 760 MiB | 15% |
+
+`scripts/set-ctx-checkpoints.sh N` retunes it, backing up the unit and leaving
+the comment history intact:
+
+```bash
+bash scripts/set-ctx-checkpoints.sh 3        # stage only
+bash scripts/set-ctx-checkpoints.sh 3 --now  # stage and restart
+```
+
+There is no free direction. Raising it bought checkpoint recovery from 20% to
+69% of the reusable prefix on 2026-09-21 — roughly 32k tokens of prefill saved
+per turn — and cost KV quality, which settled at the 4.125 floor within six
+hours. `uap inference health` reports both sides: `reuse NN%` is the checkpoint
+value, `kv N.NNN bpv (floor …)` is the headroom it consumed.
 
 ## Related
 

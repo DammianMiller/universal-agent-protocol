@@ -142,27 +142,39 @@ export function analyzeTrend(
   if (samples.length < thresholds.minSamplesPerEra * 2) {
     return { earlyCount: 0, recentCount: 0, note: 'not enough prefill samples for a trend' };
   }
-  const ordered = [...samples].sort((a, b) => a.at - b.at);
-  const mid = Math.floor(ordered.length / 2);
 
-  const byBucket = (rows: PrefillSample[]) => {
-    const m = new Map<string, number[]>();
-    for (const r of rows) {
-      // A NaN or negative reading is a parse artefact, not a measurement.
-      if (!Number.isFinite(r.tokensPerSecond) || r.tokensPerSecond < 0) continue;
-      const b = sizeBucket(r.tokens);
-      (m.get(b) ?? m.set(b, []).get(b)!).push(r.tokensPerSecond);
-    }
-    return m;
-  };
-  const e = byBucket(ordered.slice(0, mid));
-  const r = byBucket(ordered.slice(mid));
+  // Bucket FIRST, then split each bucket at its OWN median time.
+  //
+  // This used to split every sample at the GLOBAL median and bucket the two
+  // halves. That silently dropped any bucket whose samples were skewed in
+  // time — and a real agent workload skews hard, because conversations grow,
+  // so large prompts arrive late. Measured on a live 6h journal:
+  //
+  //   bucket   early recent  outcome
+  //   <5k         41     17  reported: 0.78 (mild)
+  //   15-30k       2     21  EXCLUDED — needed 4 per era
+  //
+  // The excluded bucket had gone 616 -> 73 tok/s across its 23 samples. An 8x
+  // collapse, invisible, while the report showed a benign 0.78. A bucket's own
+  // chronology is what "did this get slower" means; the other buckets' arrival
+  // times are irrelevant to it.
+  const byBucket = new Map<string, PrefillSample[]>();
+  for (const r of samples) {
+    // A NaN or negative reading is a parse artefact, not a measurement.
+    if (!Number.isFinite(r.tokensPerSecond) || r.tokensPerSecond < 0) continue;
+    const b = sizeBucket(r.tokens);
+    (byBucket.get(b) ?? byBucket.set(b, []).get(b)!).push(r);
+  }
 
   const buckets: BucketTrend[] = [];
-  for (const [bucket, ev] of e) {
-    const rv = r.get(bucket);
-    if (!rv) continue;
+  for (const [bucket, rows] of byBucket) {
+    if (rows.length < thresholds.minSamplesPerEra * 2) continue;
+    const ordered = [...rows].sort((a, b) => a.at - b.at);
+    const mid = Math.floor(ordered.length / 2);
+    const ev = ordered.slice(0, mid).map((x) => x.tokensPerSecond);
+    const rv = ordered.slice(mid).map((x) => x.tokensPerSecond);
     if (ev.length < thresholds.minSamplesPerEra || rv.length < thresholds.minSamplesPerEra) continue;
+
     const earlyMean = ev.reduce((a, b) => a + b, 0) / ev.length;
     const recentMean = rv.reduce((a, b) => a + b, 0) / rv.length;
     // An all-zero early era cannot produce a meaningful ratio.
@@ -181,7 +193,7 @@ export function analyzeTrend(
     return {
       earlyCount: 0,
       recentCount: 0,
-      note: 'no prompt-size bucket had enough samples in both halves — cannot compare like with like',
+      note: 'no prompt-size bucket had enough samples to split — cannot compare like with like',
     };
   }
 
