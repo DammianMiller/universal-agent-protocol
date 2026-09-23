@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.13.5 (2026-09-24)
+
+- chore: purge remaining rtk references repo-wide
+
+
 ## v2.13.4 (2026-09-23)
 
 - fix(proxy): tolerate explicit null tool_calls/usage from OpenAI-compatible backends
