@@ -117,17 +117,12 @@ describe('dashboard savings table — explicit idle state', () => {
   });
 });
 
-describe('savings report without RTK (rtk integration removed)', () => {
+describe('savings report influences', () => {
   let dir: string;
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'uap-sav-nortk-')); });
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'uap-sav-infl-')); });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('contains no RTK influence row', () => {
-    const sv = getSavingsByInfluence(dir);
-    expect(sv.influences.find((i) => i.influence.startsWith('RTK'))).toBeUndefined();
-  });
-
-  it('still measures the remaining influences (routing + compression)', () => {
+  it('measures the routing + compression influences', () => {
     const names = getSavingsByInfluence(dir).influences.map((i) => i.influence);
     expect(names.some((n) => n.startsWith('Model routing'))).toBe(true);
     expect(names.some((n) => n.startsWith('Context compression'))).toBe(true);

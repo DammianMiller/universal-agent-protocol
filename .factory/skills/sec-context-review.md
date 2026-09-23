@@ -4,7 +4,7 @@ version: "2.0.0"
 compatibility: CLAUDE.md v2.3.0+
 ---
 
-> **RTK Integration**: Supports `@hooks-session-start.md`, `@PreCompact.md`
+> **Includes**: Supports `@hooks-session-start.md`, `@PreCompact.md`
 
 
 ## Protocol Integration

@@ -166,4 +166,4 @@ uap memory query "adversarial bypass <target_type>"
 
 **Last Updated**: 2026-03-09  
 **Compatibility**: CLAUDE.md v2.3.0+  
-**RTK Includes**: `@hooks-session-start.md`, `@PreCompact.md`
+**Includes**: `@hooks-session-start.md`, `@PreCompact.md`
