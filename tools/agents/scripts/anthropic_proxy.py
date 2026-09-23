@@ -6244,7 +6244,7 @@ def openai_to_anthropic_request(openai_body: dict) -> dict:
                     elif isinstance(block, str):
                         blocks.append({"type": "text", "text": block})
 
-            for tc in msg.get("tool_calls", []) or []:
+            for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function", {})
                 try:
                     args = json.loads(fn.get("arguments", "{}") or "{}")
@@ -11451,7 +11451,7 @@ def _build_safe_text_openai_response(
                 },
             }
         ],
-        "usage": openai_resp.get("usage", {}),
+        "usage": openai_resp.get("usage") or {},
     }
 
 
@@ -11473,7 +11473,7 @@ def _build_clean_guardrail_openai_response(
                 },
             }
         ],
-        "usage": openai_resp.get("usage", {}),
+        "usage": openai_resp.get("usage") or {},
     }
 
 
@@ -11666,7 +11666,7 @@ async def _apply_malformed_tool_guardrail(
     # Option 2: Log garbled argument content for diagnostics
     arg_excerpt = ""
     if issue.kind == "invalid_tool_args":
-        for tc in (working_resp.get("choices", [{}])[0].get("message", {}).get("tool_calls", [])):
+        for tc in (working_resp.get("choices", [{}])[0].get("message", {}).get("tool_calls") or []):
             raw_args = tc.get("function", {}).get("arguments", "")
             if raw_args and _is_garbled_tool_arguments(raw_args):
                 arg_excerpt = raw_args[:200].replace("\n", " ")
@@ -11693,7 +11693,7 @@ async def _apply_malformed_tool_guardrail(
     # Track failing tool names for tool narrowing on retry
     failing_tools: set[str] = set()
     if issue.kind == "invalid_tool_args":
-        for tc in (working_resp.get("choices", [{}])[0].get("message", {}).get("tool_calls", [])):
+        for tc in (working_resp.get("choices", [{}])[0].get("message", {}).get("tool_calls") or []):
             fn_name = tc.get("function", {}).get("name", "")
             raw_args = tc.get("function", {}).get("arguments", "")
             if fn_name and raw_args and _is_garbled_tool_arguments(raw_args):
@@ -11804,7 +11804,7 @@ async def _apply_malformed_tool_guardrail(
             monitor.invalid_tool_call_streak += 1
             monitor.arg_preflight_rejections += 1
             # Track failing tools from retries for progressive narrowing
-            for tc in (retry_working.get("choices", [{}])[0].get("message", {}).get("tool_calls", [])):
+            for tc in (retry_working.get("choices", [{}])[0].get("message", {}).get("tool_calls") or []):
                 fn_name = tc.get("function", {}).get("name", "")
                 raw_args = tc.get("function", {}).get("arguments", "")
                 if fn_name and raw_args and _is_garbled_tool_arguments(raw_args):
@@ -12678,7 +12678,7 @@ def openai_to_anthropic_response(
         content.append({"type": "text", "text": sanitized_text})
 
     # Convert tool calls
-    for tc in message.get("tool_calls", []):
+    for tc in message.get("tool_calls") or []:
         fn = tc.get("function", {})
         try:
             args = json.loads(fn.get("arguments", "{}"))
@@ -12745,7 +12745,7 @@ def openai_to_anthropic_response(
         "function_call": "tool_use",
     }
 
-    usage = openai_resp.get("usage", {})
+    usage = openai_resp.get("usage") or {}
 
     _log_non_stream_resp(content, finish, usage)
 
@@ -15049,7 +15049,7 @@ async def chat_completions(request: Request):
             yield f"data: {json.dumps(content_chunk)}\n\n".encode()
 
         # Tool call chunks
-        for idx, tc in enumerate(message.get("tool_calls", []) or []):
+        for idx, tc in enumerate(message.get("tool_calls") or []):
             tc_chunk = {
                 "id": resp_id,
                 "object": "chat.completion.chunk",
