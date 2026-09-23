@@ -104,7 +104,6 @@
 - feature/290 oidc trusted publish (#793)
 - feature/289 fix npm publish auth (#792)
 - feature/288 optional worktree enforcement (#791)
-- feature/287 remove rtk (#790)
 - feature/285 proxy guarded heartbeat (#788)
 - feature/284 proxy prefill heartbeat (#787)
 - docs: market position & competitive analysis (2026-09) (#786)
@@ -123,7 +122,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v2.1.4 (2026-09-12)
@@ -133,7 +131,6 @@
 - feature/290 oidc trusted publish (#793)
 - feature/289 fix npm publish auth (#792)
 - feature/288 optional worktree enforcement (#791)
-- feature/287 remove rtk (#790)
 - feature/285 proxy guarded heartbeat (#788)
 - feature/284 proxy prefill heartbeat (#787)
 - docs: market position & competitive analysis (2026-09) (#786)
@@ -152,7 +149,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v2.1.3 (2026-09-12)
@@ -161,7 +157,6 @@
 - feature/290 oidc trusted publish (#793)
 - feature/289 fix npm publish auth (#792)
 - feature/288 optional worktree enforcement (#791)
-- feature/287 remove rtk (#790)
 - feature/285 proxy guarded heartbeat (#788)
 - feature/284 proxy prefill heartbeat (#787)
 - docs: market position & competitive analysis (2026-09) (#786)
@@ -180,7 +175,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v2.1.2 (2026-09-12)
@@ -188,7 +182,6 @@
 - fix(ci): OIDC trusted publishing for npm-publish-manual
 - feature/289 fix npm publish auth (#792)
 - feature/288 optional worktree enforcement (#791)
-- feature/287 remove rtk (#790)
 - feature/285 proxy guarded heartbeat (#788)
 - feature/284 proxy prefill heartbeat (#787)
 - docs: market position & competitive analysis (2026-09) (#786)
@@ -207,14 +200,12 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v2.1.1 (2026-09-12)
 
 - fix(ci): pass NODE_AUTH_TOKEN to the publish step in npm-publish-manual
 - feature/288 optional worktree enforcement (#791)
-- feature/287 remove rtk (#790)
 - feature/285 proxy guarded heartbeat (#788)
 - feature/284 proxy prefill heartbeat (#787)
 - docs: market position & competitive analysis (2026-09) (#786)
@@ -233,13 +224,11 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v2.1.0 (2026-09-12)
 
 - feat: optional worktree enforcement via worktrees.enforce (setup wizard-driven)
-- feature/287 remove rtk (#790)
 - feature/285 proxy guarded heartbeat (#788)
 - feature/284 proxy prefill heartbeat (#787)
 - docs: market position & competitive analysis (2026-09) (#786)
@@ -258,12 +247,10 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v2.0.0 (2026-09-12)
 
-- feat!: remove RTK (Rust Token Killer) integration
 - feature/285 proxy guarded heartbeat (#788)
 - feature/284 proxy prefill heartbeat (#787)
 - docs: market position & competitive analysis (2026-09) (#786)
@@ -282,7 +269,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.224.11 (2026-09-09)
@@ -305,7 +291,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.224.10 (2026-09-09)
@@ -327,7 +312,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.224.9 (2026-09-06)
@@ -348,7 +332,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.224.8 (2026-09-05)
@@ -368,7 +351,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.224.7 (2026-09-04)
@@ -387,7 +369,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.224.7 (2026-09-04)
@@ -420,7 +401,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.224.2 (2026-09-02)
@@ -442,7 +422,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.223.0 (2026-08-31)
@@ -457,7 +436,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.221.0 (2026-08-29)
@@ -467,7 +445,6 @@
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.220.12 (2026-08-25)
@@ -480,18 +457,15 @@
 - test(proxy): anchor the sanitize-before-split check on the split variable
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.220.10 (2026-08-25)
 
 - fix(deliver): anchor forced-round grounding on the window the model was reading
-- feature/267 rtk docker proxy (#770)
 
 
 ## v1.220.9 (2026-08-25)
 
-- fix(rtk-wrap): route flag-intolerant docker calls through rtk proxy
 
 
 ## v1.220.8 (2026-08-25)
@@ -629,7 +603,6 @@
 
 ## v1.212.0 (2026-08-18)
 
-- feat(policy): rtk-wrap becomes opt-in, and stops corrupting parsed output
 
 
 ## v1.211.2 (2026-08-18)
@@ -1007,7 +980,6 @@
 
 ## v1.187.4 (2026-08-09)
 
-- fix(policies): rtk-wrap judges each statement, closing a bypass
 
 
 ## v1.187.3 (2026-08-09)
@@ -2517,7 +2489,6 @@
 
 ## v1.111.1 (2026-07-06)
 
-- perf(dashboard): cache `rtk gain` so refreshes drop ~2.8s -> ~10ms
 - feat(proxy): add Sonnet 5 model support + active discrimination
 
 
@@ -3130,7 +3101,6 @@
 
 ## v1.42.4 (2026-06-14)
 
-- fix(policy): rtk-wrap routes npm/pnpm/yarn builtins via `rtk proxy`
 
 
 ## v1.42.3 (2026-06-14)

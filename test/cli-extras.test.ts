@@ -67,12 +67,6 @@ describe('CLI Compliance Module', () => {
   });
 });
 
-describe('CLI RTK Module (removed)', () => {
-  it('no longer exists — the RTK integration was removed', async () => {
-    await expect(import('../src/cli/rtk.js')).rejects.toThrow();
-  });
-});
-
 describe('CLI MCP Router Setup Module', () => {
   it('should export setupMcpRouter function', async () => {
     const module = await import('../src/cli/setup-mcp-router.js');

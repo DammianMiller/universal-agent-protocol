@@ -207,9 +207,8 @@ class TestShipDetectionIsCommandPosition(unittest.TestCase):
     review artifact was refused because the notes described the bug being fixed.
 
     The risk in the fix is UNDER-detection, so the ship cases below matter more
-    than the prose ones. The wrapper cases especially: rtk is no longer
-    integrated in UAP, but the binary can still exist on operator machines, so
-    a verb check that stopped at the wrapper would miss wrapped ship commands.
+    than the prose ones. The wrapper cases especially: a verb check that
+    stopped at the wrapper would miss wrapped ship commands.
     """
 
     def setUp(self):
@@ -246,18 +245,18 @@ class TestShipDetectionIsCommandPosition(unittest.TestCase):
     def test_plain_git_push_is_a_ship_action(self):
         self.assert_ship("git push origin master")
 
-    def test_rtk_wrapped_git_is_a_ship_action(self):
-        # rtk is no longer a UAP integration, but the wrapper unwrap stays as
-        # defense-in-depth for machines where the binary remains installed.
-        self.assert_ship("rtk git push origin master")
+    def test_wrapped_git_is_a_ship_action(self):
+        # Wrapper unwrap: the gate must see through prefix wrappers to the
+        # real verb.
+        self.assert_ship("env git push origin master")
 
-    def test_rtk_wrapped_git_with_value_option_is_a_ship_action(self):
+    def test_wrapped_git_with_value_option_is_a_ship_action(self):
         # The `-C <path>` form needs the wrapper unwrap — the raw prose
         # patterns only catch adjacent `git push`. Regression guard.
-        self.assert_ship("rtk git -C /repo push origin master")
+        self.assert_ship("env git -C /repo push origin master")
 
-    def test_rtk_wrapped_plumbing_is_a_ship_action(self):
-        self.assert_ship("rtk git send-pack origin master")
+    def test_wrapped_plumbing_is_a_ship_action(self):
+        self.assert_ship("env git send-pack origin master")
 
     def test_ship_action_after_a_chained_command(self):
         self.assert_ship("cd sub && git commit -m x")
