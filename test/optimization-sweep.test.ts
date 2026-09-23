@@ -1,7 +1,6 @@
 /**
  * Tests for the optimization sweep changes:
  * - B1: Schema diff implementation
- * - B2: RTK validation implementation
  * - B3: Decoder-first gate fix (hasReadTool)
  * - C1-C3: Module exports from src/index.ts
  * - A1+D1: Adaptive cache in pattern-router
@@ -34,16 +33,6 @@ describe('B1: Schema Diff', () => {
     // Running against HEAD~1 in test env may not have changes, but should not throw
     const results = await schemaDiffCommand('HEAD');
     expect(Array.isArray(results)).toBe(true);
-  });
-});
-
-// ── B2: RTK Validation ──
-
-describe('B2: RTK Validation', () => {
-  it('rtk-validation.ts was removed as dead code (zero production callers)', () => {
-    // The module had zero production imports — only test imports.
-    // RTK validation logic was never wired into the CLI or any hook.
-    expect(true).toBe(true);
   });
 });
 

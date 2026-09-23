@@ -67,10 +67,21 @@ BYPASS_PATTERNS = (
     # agent writes its own command strings, so an inline form waives its own
     # review. Refuse it here so the attempt is visible rather than silent.
     re.compile(r"UAP_NO_REVIEW\s*=\s*['\"]?1", re.I),
+    # evidence-bound-ship's hatch is environment-only for the same reason: the
+    # agent writes its own command strings, so an inline form would let it
+    # ship a candidate with no gate evidence at all.
+    re.compile(r"UAP_EVIDENCE_GATE_OFF\s*=\s*['\"]?1", re.I),
+    # The staleness WINDOW is a gate parameter: any assignment, not just =1.
+    # An agent persisting UAP_EVIDENCE_MAX_AGE_HOURS=8760 into ~/.bashrc would
+    # quietly retire the staleness check for every later session, so the
+    # assignment itself is refused wherever it appears.
+    re.compile(r"UAP_EVIDENCE_MAX_AGE_HOURS\s*=", re.I),
     # quality-metrics gate hatch, same operator-only shape: the enforcer reads
     # the launch env, so the only agent-reachable move is PERSISTING the flag
     # (rc files, proxy env) — which is exactly what this pattern refuses.
     re.compile(r"UAP_QUALITY_GATE_OFF\s*=\s*['\"]?1", re.I),
+    # visual-captures gate hatch (uplift 0.3), same operator-only shape.
+    re.compile(r"UAP_VISUAL_GATE_OFF\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_USER_VALIDATION\s*=\s*['\"]?0", re.I),
     # Single-flight is a DATA-SAFETY control, not a policy preference: deliver
     # runs each candidate in a git worktree, and two runs against one repo are
@@ -572,6 +583,17 @@ def _kills_live_deliver_run(command: str, root) -> str:
 # is what makes this narrow list sufficient — anything else the agent writes
 # is distrusted on READ, so it need not be write-blocked here.
 _TRUST_ANCHORS = (".uap/operator-overrides.json", ".uap/policy-liveness.json")
+# Gate-evidence artifacts (.uap/evidence/<sha>.json for evidence-bound-ship,
+# plus the read/memory evidence logs) get the SAME interpreter-write
+# protection as the trust anchors: they are proof a ship/plan gate accepts, so
+#   python3 -c 'open(".uap/evidence/<sha>.json","w").write("{}')   # forgery
+#   node -e 'require("fs").writeFileSync(".uap/evidence/x.json",…)'
+# must be refused even though the Write-tool path into that directory is
+# already covered by PROTECTED_TARGETS — the interpreter path carried no
+# destructive verb and walked straight past that scan. The dir is matched with
+# a trailing separator/quote so a sibling like `.uap/evidence-notes` is NOT
+# caught.
+_EVIDENCE_DIR_RE = re.compile(r"\.uap/evidence(?:[/\"'\\)\s]|$)")
 _INTERPRETER_RE = re.compile(r"(?:^|[\s;|&('\"`])(?:python\d*(?:\.\d+)?|perl|ruby|node)(?:\s|$)")
 # A write primitive in interpreter code: open(…, "w"/"a"/"x"/"+"), or a
 # mutating method call. Reads (open without a mode, json.load, print) match
@@ -583,9 +605,10 @@ _INTERPRETER_WRITE_RE = re.compile(
 
 
 def _interpreter_write_to_anchor(command: str) -> bool:
-    """True when an interpreter command names a trust anchor with write intent."""
+    """True when an interpreter command names a trust anchor OR the gate
+    evidence directory with write intent."""
     lowered = command.lower()
-    if not any(anchor in lowered for anchor in _TRUST_ANCHORS):
+    if not any(anchor in lowered for anchor in _TRUST_ANCHORS) and not _EVIDENCE_DIR_RE.search(lowered):
         return False
     return bool(_INTERPRETER_RE.search(command) and _INTERPRETER_WRITE_RE.search(command))
 

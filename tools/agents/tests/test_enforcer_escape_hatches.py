@@ -171,6 +171,19 @@ class SelfProtectRefusesInlineAttemptsTest(unittest.TestCase):
     def test_refuses_inline_infra_protect_off(self):
         self.assertFalse(verdict(self.E, f"UAP_INFRA_PROTECT_OFF=1 {RESTART}"))
 
+    def test_refuses_inline_evidence_gate_off(self):
+        self.assertFalse(verdict(self.E, f"UAP_EVIDENCE_GATE_OFF=1 {SHIP}"))
+
+    def test_refuses_any_assignment_of_the_evidence_staleness_window(self):
+        """The staleness window is a gate parameter, so ANY assignment is
+        refused — not just =1. An agent persisting a huge window into its
+        launch env would quietly retire the staleness check."""
+        self.assertFalse(verdict(self.E, f"UAP_EVIDENCE_MAX_AGE_HOURS=8760 {SHIP}"))
+        self.assertFalse(verdict(self.E, "UAP_EVIDENCE_MAX_AGE_HOURS=0 " + SHIP))
+        # The persist form (rc files) carries the same assignment text.
+        self.assertFalse(
+            verdict(self.E, "echo 'export UAP_EVIDENCE_MAX_AGE_HOURS=8760' >> ~/.bashrc"))
+
     def test_still_refuses_the_pre_existing_bypasses(self):
         """Guards against a regression that drops the older patterns while adding
         the new ones."""

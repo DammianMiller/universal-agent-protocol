@@ -50,7 +50,7 @@ class Settings:
     allow_self_judge: bool = False
     #: Backend width: how many generations the upstream serves CONCURRENTLY.
     #: None = UNKNOWN, which must change nothing (not every backend can be
-    #: probed -- ninfer serves no /slots endpoint -- so silence is not evidence).
+    #: probed -- some engines serve no /slots endpoint, and a probe can fail -- so silence is not evidence).
     #: A FIELD rather than a process-env read at decision time: select_recipe is
     #: called per request and an ambient UAP_MODEL_SLOTS=1 (which is exactly what
     #: writeProxyEnv now puts in proxy.env, and what _load_proxy_env_file
@@ -336,7 +336,9 @@ def select_recipe(anthropic_body: dict, settings: Settings, has_tools: bool) -> 
     # N=3 costs 3x the wall clock of a single call for the same answer, and the
     # deliver run paying it has a fixed wall-clock budget to finish in.
     #
-    # Measured live (2026-08-20, ninfer --max-concurrency 1, qwen3.8-27b): tool
+    # Measured live on a ONE-RAIL backend (2026-08-20, --max-concurrency 1;
+    # that engine has since been replaced by llama.cpp with -np 2, so the
+    # downgrade now fires only when the probed width really is 1): tool
     # -carrying turns already bypass recipes via `has_tools` above, but mission
     # PLANNING carries no tools -- so it ran under fusion N=3 and took ~20 minutes,
     # 17% of a 120-minute run budget, before turn 1 existed.

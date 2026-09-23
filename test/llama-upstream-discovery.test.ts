@@ -242,10 +242,13 @@ describe('llama_upstream_resolve', () => {
   it('accepts an OpenAI-compatible engine that serves NO /props', () => {
     // MEASURED 2026-08-19. The capability check required llama.cpp's /props, so
     // it was vendor-shape detection wearing a capability check's name. The engine
-    // actually serving this host (ninfer-serve) has /health and /v1/models but no
-    // /props, so the live server on the documented default port was REFUSED,
+    // serving this host AT THE TIME (ninfer-serve) had /health and /v1/models but
+    // no /props, so the live server on the documented default port was REFUSED,
     // discovery yielded nothing, the dead pin stood, and every local completion
-    // returned 529.
+    // returned 529. (That host is back on llama.cpp as of 2026-09-21 and /props
+    // answers again — which is precisely why the check stays capability-based
+    // rather than endpoint-based: the property under test is not which engine
+    // runs today.)
     expect(
       resolve('http://127.0.0.1:59879/v1', { openaiPorts: [8080], ss: ssRow('127.0.0.1:8080', 'ninfer-serve') })
     ).toBe('http://127.0.0.1:8080/v1');

@@ -3,8 +3,8 @@
 <!-- Optimizations #28-34: Mandatory Verifier Loop, Decoder-First Gate, Context Stripping, Environment Check, Schema Diff, State Protection, Conditional Domain -->
 
 <!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,HOOK_INCLUDES,PATTERN_ROUTER,VALIDATE_PLAN -->
-<!-- TEMPLATE_VERSION: 2.4.0 -->
-<!-- LAST_VALIDATED: 2026-05-14 -->
+<!-- TEMPLATE_VERSION: 2.4.2 -->
+<!-- LAST_VALIDATED: 2026-09-19 -->
 
 <!-- Custom Sections (preserved from existing file) -->
 
@@ -25,6 +25,18 @@ The session-start hook is self-healing — it auto-creates missing
 coordination DBs and fails open so it never blocks the agent. Treat its
 output as advisory context, not a gate.
 
+Service health for UAP-managed daemons is checked separately with
+`uap doctor`, which probes each service against its declared budget in
+`config/capacity-policy.json` (see
+[docs/guides/CAPACITY_POLICY.md](docs/guides/CAPACITY_POLICY.md)).
+
+`uap doctor` answers "is it up and inside budget". Whether the local model is
+still doing useful WORK is a different question — throughput can decay ~8x
+over a long-lived process while every liveness check stays GREEN. Use
+`uap inference health` for that (see
+[docs/guides/INFERENCE_HEALTH.md](docs/guides/INFERENCE_HEALTH.md)); it also
+replays a past window with `--since`/`--until`.
+
 ## DECISION LOOP
 
 When working on a task, follow the loop:
@@ -34,7 +46,23 @@ When working on a task, follow the loop:
 3. **MATCH** specialized skills via `@Skill:name.md` references — invoke
    them through the Skill tool before writing code when a domain-specific
    workflow applies (`/critique`, `/audit`, `/harden`, `/normalize`, etc.)
-4. **THINK** about what to do next; classify task complexity
+4. **THINK** about what to do next; classify task complexity. Technique
+   selection follows the measured reliability ladder
+   ([docs/performance/reliability-ladder.md](docs/performance/reliability-ladder.md),
+   regenerate with `npm run bench:ladder`):
+
+   | Task shape | Technique |
+   | --- | --- |
+   | Small, well-specified, 1–2 files | Direct |
+   | Multi-file, gate-covered, moderate risk | Direct + verify loop |
+   | Hardest tier, novel/ambiguous | Full loop + escalation |
+   | Production-critical, human available | SDD + human review |
+
+   Escalate with measured difficulty, not anxiety; a technique's token cost
+   is part of the technique. The quantitative backing (each row's token cost
+   and discrimination status) lives in the ladder doc — never cite a success
+   delta without its status; current measured rows are underpowered, so treat
+   their quality deltas as directional.
 5. **ACT** — execute via the appropriate tool (Edit/Write/Bash)
 6. **RECORD** observations to short-term memory
 7. **PROMOTE** significant learnings to long-term memory
@@ -61,6 +89,10 @@ See the WORKTREE GATE section below for the per-edit enforcement details.
 ## PARALLEL REVIEW PROTOCOL
 
 For non-trivial changes, run review angles concurrently before claiming done:
+
+Step 0: run the deterministic pre-pass — `uap review prepass`
+([docs/reference/review-prepass.md](docs/reference/review-prepass.md)) — and
+embed its line-anchored findings in each reviewer's prompt.
 
 - `code-reviewer` — correctness, tests, migration risk
 - `security-auditor` — input validation, secrets, OWASP top 10

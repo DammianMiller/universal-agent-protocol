@@ -1,6 +1,6 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.224.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 367 TypeScript modules across 26 subsystems, 459 vitest suites plus a ~1,200-test Python enforcer/proxy suite, 60 CLI command registrations, 32 executable policy enforcers, 9 supported agent harnesses.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v2.11.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 367 TypeScript modules across 26 subsystems, 459 vitest suites plus a ~1,200-test Python enforcer/proxy suite, 60+ CLI command registrations, 32 executable policy enforcers, 9 supported agent harnesses.
 
 > **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
 > [`documentation/`](../documentation/architecture.md): architecture, flows, permissions
@@ -18,12 +18,14 @@ UAP is organized like a delivery line. If you know which part of the pipeline yo
 | Station | The break it prevents | Start with |
 |---|---|---|
 | **Intake** — understand the work | Amnesiac sessions, invented scope | [Memory](guides/MEMORY.md) · [Reactor](design/UAP_REACTOR.md) |
-| **Prep / routing** — right job, right station | Wrong approach or wrong-sized model | [Multi-Model Routing](guides/MULTI_MODEL.md) · [Patterns](reference/PATTERNS.md) · [Droids & Skills](guides/DROIDS_AND_SKILLS.md) |
+| **Prep / routing** — right job, right station | Wrong approach or wrong-sized model | [Multi-Model Routing](guides/MULTI_MODEL.md) · [Patterns](reference/PATTERNS.md) · [Droids & Skills](guides/DROIDS_AND_SKILLS.md) · [System-1 Classifier](reference/system1-classifier.md) (`uap classify`) |
 | **Isolation** — a bench per job | Editing `main`, clobbering files | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) |
 | **Build** — make the thing | Plausible-but-wrong code, stubs, empty output | [`uap deliver`](guides/DELIVER.md) · [Local Models](guides/LOCAL_MODELS.md) · [Inference Proxy](guides/PROXY.md) |
-| **QC / verify** — prove it runs | "Done" on code that never ran | [`uap deliver`](guides/DELIVER.md) · [Policies](guides/POLICIES.md) · [Quality gate](../CLAUDE.md) (`uap quality check`) |
-| **Coordination** — many workers, one floor | Parallel agents colliding, stale branches overwriting landed work | [Parallel Agents](guides/PARALLEL_AGENTS.md) · [Coordination](guides/COORDINATION.md) · [Deploy Batching](guides/DEPLOY_BATCHING.md) |
+| **QC / verify** — prove it runs | "Done" on code that never ran | [`uap deliver`](guides/DELIVER.md) · [Policies](guides/POLICIES.md) · [Quality gate](../CLAUDE.md) (`uap quality check`) · [AutoMode risk](reference/automode-risk.md) · [Evidence-bound ship](reference/evidence-bound-ship.md) |
+| **Coordination** — many workers, one floor | Parallel agents colliding, stale branches overwriting landed work | [Parallel Agents](guides/PARALLEL_AGENTS.md) · [Coordination](guides/COORDINATION.md) · [Deploy Batching](guides/DEPLOY_BATCHING.md) · [Semantic Supervisor](reference/semantic-supervisor.md) (`uap supervise`) |
 | **Shipping** — out the door safely | Regressions, red CI, skipped bumps | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) · [Policies](guides/POLICIES.md) |
+| **Capacity** — services inside their budgets | Silent OOMs, crash loops, headroom loss | [Capacity Policy](guides/CAPACITY_POLICY.md) (`uap doctor`) |
+| **Inference** — the model still doing useful work | Throughput decaying with uptime, starved checkpoints, KV at its quality floor | [Inference Health](guides/INFERENCE_HEALTH.md) (`uap inference health`) |
 | **Feedback** — the floor learns | The same mistake every session | [Memory](guides/MEMORY.md) · [Self-Harness](design/SELF_HARNESS.md) · [Self-Tuning](guides/SELF_TUNING.md) |
 | *Cross-cutting* — the whole line | Ignored rules, bloated context | [Policies](guides/POLICIES.md) · [MCP Router](guides/MCP_ROUTER.md) |
 
@@ -77,6 +79,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Self-Harness](design/SELF_HARNESS.md) | Self-improving harness (shipped as `uap self-harness`): autonomous mine→propose→validate loop over a bounded Mod DSL; cross-model transfer, online mining |
 | [LLM Self-Tuning (analysis)](design/LLM_SELF_TUNING_ANALYSIS.md) | The design behind `uap tune`: quality signal, LLM-guided + Gaussian-process flag search, closed-loop validation, model profiles, real-time adaptation |
 | [Product Naming (analysis)](design/PRODUCT_NAMING.md) | UAP rename candidates: availability sweeps (npm/PyPI/domains), AI-space collision checks, railway-theme shortlist, recommendation. No decision committed; availability data is point-in-time |
+| [ADRs](architecture/adr/) | Architecture decision records: [0001 AutoMode risk floor](architecture/adr/0001-automode-risk-floor.md) (Python heuristic scorer ahead of the TS SYS1 head), [0002 Evidence-bound ship](architecture/adr/0002-evidence-bound-ship.md) (gate evidence bound to the candidate SHA) |
 
 ## Reference
 
@@ -87,7 +90,14 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [API](reference/API.md) | Programmatic API surface |
 | [Features](reference/FEATURES.md) | Full feature catalog, mapped to the pipeline stages |
 | [Patterns](reference/PATTERNS.md) | The 23 Terminal-Bench patterns |
+| [Routing Evals](reference/routing-evals.md) | CI-enforced rank-1 routing evals over the pattern/droid/skill registries — planted traps, negative cases, 90% threshold |
 | [Platforms](reference/PLATFORMS.md) | The 9 supported harnesses + support matrix |
+| [Review Pre-Pass](reference/review-prepass.md) | Deterministic ruleset scanner (`uap review prepass`) that feeds line-anchored findings to the parallel review protocol |
+| [Visual Captures](reference/visual-captures.md) | Before/after capture binding for UI diffs (`uap review captures`) — ship-time gate 7 enforcement |
+| [System-1 Classifier](reference/system1-classifier.md) | `uap classify` — the local, airgap-pure assessment backend (noul/score/choice questions) behind the Wave 1 consumers; thresholds ship as policy config |
+| [Semantic Supervisor](reference/semantic-supervisor.md) | `uap supervise` — watchdog loop for `uap deliver` missions; nine assessment dimensions, deterministic safety-first policy, cooperative STOP only |
+| [AutoMode Risk](reference/automode-risk.md) | Pre-execution tool-call risk classification (`tools/agents/scripts/tool_risk.py`) — advisory only, ahead of the deterministic enforcer floor |
+| [Evidence-Bound Ship](reference/evidence-bound-ship.md) | Ship actions blocked unless `.uap/evidence/<head-sha>.json` proves the gates passed for the exact commit being shipped |
 | [Configuration](reference/CONFIGURATION.md) | All config files and env vars |
 | [**Configuration Reference**](reference/CONFIGURATION_REFERENCE.md) | Every setting `uap config` exposes — what it does, default, and a recommendation (generated from the registry); `uap config list/explain/set/doctor/wizard` ⭐ |
 | [Database Schema](reference/DATABASE_SCHEMA.md) | SQLite databases + Qdrant collections |
@@ -132,6 +142,7 @@ the decision record.
 | [Harness engineering uplift](plans/harness-engineering-uplift-2026-07-31.md) | Three-paper analysis of harness variance and what UAP does about it |
 | [K3 UAP uplift validation](plans/k3-uap-uplift-validation.md) | Plan to measure UAP's paired uplift on Kimi K3 by re-running Terminal-Bench 2.1 with Factory Droid as the harness, UAP on vs off |
 | [Qwen3.8 UAP re-test plan](plans/qwen38-uap-retest-plan.md) | Plan to re-run the paired benchmark matrix on the current local Qwen3.8-27B stack with UAP v1.224.x, replicating the +20pp gate-loop finding and checking the hardened deliver pipeline |
+| [System-1 uplift plan](plans/system1-uplift-2026-09-18.md) | Approved uplift from the 2026-09-18 ten-source analysis (Jev/Foreman/Fluent/CEK et al): Wave 0 quick wins + Wave 1 System-1 decision layer, local-only classifier trained from UAP telemetry |
 
 ## Specs & performance
 
@@ -140,6 +151,7 @@ the decision record.
 | [P0 anti-vacuous spec](specs/p0-anti-vacuous.md) | The verbatim-operations spec behind deliver's anti-stub hardening |
 | [Dashboard uplift spec](DASHBOARD_UPLIFT_SPEC.md) | Replacing the monolithic dashboard with the modular token-locked console |
 | [Performance baseline](performance/baseline-2026-03-27.json) | Machine-recorded perf baseline (heap, query latency) |
+| [Reliability ladder](performance/reliability-ladder.md) | Measured technique-selection table for the decision loop; `npm run bench:ladder` regenerates it from `benchmark-results/` |
 
 ## Contributing
 

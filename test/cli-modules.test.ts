@@ -3,8 +3,6 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 
 describe('CLI Init Module', () => {
   it('should export initCommand function', async () => {
@@ -130,13 +128,5 @@ describe('CLI MCP Router Module', () => {
     const module = await import('../src/cli/mcp-router.js');
     expect(module.mcpRouterCommand).toBeDefined();
     expect(typeof module.mcpRouterCommand).toBe('function');
-  });
-});
-
-describe('CLI RTK Module (removed)', () => {
-  it('is not registered in the CLI lazy-loader map', () => {
-    const src = readFileSync(join(__dirname, '..', 'src', 'bin', 'cli.ts'), 'utf-8');
-    expect(src).not.toMatch(/import\('\.\.\/cli\/rtk\.js'\)/);
-    expect(src).not.toMatch(/new Command\('rtk'\)/);
   });
 });

@@ -447,10 +447,16 @@ class ColdBackendProbeBudgetTest(unittest.TestCase):
 class WireModelReconciliationTest(unittest.TestCase):
     """Send a model the backend answers to, or the turn is lost to a 404.
 
-    llama.cpp ignored the OpenAI `model` field; ninfer validates it. With the
-    local-only sentinel every advertised id is served locally, so the four
-    `claude-*` ids the proxy advertises for SDK compatibility all came back
-    `404 model_not_found` -- measured against the live backend.
+    llama.cpp ignores the OpenAI `model` field; the ninfer-serve backend in
+    place on 2026-08-19 VALIDATED it. With the local-only sentinel every
+    advertised id is served locally, so the four `claude-*` ids the proxy
+    advertises for SDK compatibility all came back `404 model_not_found` --
+    measured against that backend.
+
+    As of 2026-09-21 the backend is llama.cpp again and ignores the field, so
+    this reconciliation is belt-and-braces rather than load-bearing today. The
+    behaviour is still worth pinning: the next engine may validate again, and
+    the cost of being wrong is every turn lost to a 404.
     """
 
     def _ap(self, ids=("qwen3.8-27b",)):

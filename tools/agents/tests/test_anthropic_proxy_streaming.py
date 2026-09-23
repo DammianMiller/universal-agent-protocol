@@ -5335,7 +5335,10 @@ class TestModelsEndpoint(unittest.TestCase):
 
         # Local model — what the inference server actually serves. Tracks the
         # active model: qwen3.8-27b as of 2026-08-19, served by ninfer-serve
-        # (NOT llama.cpp). Requests for this ID route locally even with the
+        # then; as of 2026-09-21 the backend is buun-llama-cpp serving the alias
+        # qwen38-gsq-rco-27b. The id here still routes locally either way —
+        # llama.cpp ignores the OpenAI `model` field — which is the property
+        # under test. Requests for this ID route locally even with the
         # __local_only__ passthrough sentinel set.
         #
         # This assertion is about AGREEMENT with the backend, not about naming.
@@ -6184,6 +6187,54 @@ class TestSendStreamWithRetry(unittest.TestCase):
         self.assertEqual(client.stream_flags, [True])
         self.assertIs(getattr(resp, "_uap_client"), client)
         self.assertEqual(client.requests[0]["url"], "http://x/v1/chat/completions")
+
+
+class TestNullToolCallsAndUsage(unittest.TestCase):
+    """tabbyAPI/exllamav3 serializes explicit nulls where llama.cpp omits the
+    keys entirely: "tool_calls": null and "usage": null. dict.get(key, default)
+    returns None for present-but-null keys, so every consumer must coerce with
+    `or []` / `or {}`. Regression coverage for the 2026-09-23 EXL3 cutover
+    500s (TypeError: 'NoneType' object is not iterable)."""
+
+    def test_null_tool_calls_treated_as_absent(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "hello", "tool_calls": None},
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+        }
+        out = proxy.openai_to_anthropic_response(openai_resp, "qwen3.8")
+        self.assertEqual(out["stop_reason"], "end_turn")
+        self.assertEqual(out["content"], [{"type": "text", "text": "hello"}])
+
+    def test_null_usage_defaults_to_zero_counts(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "hi"},
+            }],
+            "usage": None,
+        }
+        out = proxy.openai_to_anthropic_response(openai_resp, "qwen3.8")
+        self.assertEqual(out["usage"]["input_tokens"], 0)
+        self.assertEqual(out["usage"]["output_tokens"], 0)
+
+    def test_null_tool_calls_and_null_usage_together(self):
+        # exact response shape observed from tabbyAPI non-streaming completions
+        openai_resp = {
+            "id": "chatcmpl-x",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "PROXYOK", "tool_calls": None},
+            }],
+            "usage": None,
+        }
+        out = proxy.openai_to_anthropic_response(openai_resp, "qwen3.8")
+        self.assertEqual(out["content"][0]["text"], "PROXYOK")
+        self.assertEqual(out["usage"]["output_tokens"], 0)
 
 
 if __name__ == "__main__":
