@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.13.4 (2026-09-23)
+
+- fix(proxy): tolerate explicit null tool_calls/usage from OpenAI-compatible backends
+
+
 ## v2.13.3 (2026-09-21)
 
 - fix(inference): split each size bucket on its own clock, not the global one
