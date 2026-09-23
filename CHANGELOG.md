@@ -1,8 +1,13 @@
 # Changelog
 
+## v2.13.6 (2026-09-24)
+
+- docs: reword v2.13.5 changelog entry to drop the retired tool name
+
+
 ## v2.13.5 (2026-09-24)
 
-- chore: purge remaining rtk references repo-wide
+- chore: purge remaining references to the retired token proxy repo-wide
 
 
 ## v2.13.4 (2026-09-23)
