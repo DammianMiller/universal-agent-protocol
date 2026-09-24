@@ -24,6 +24,7 @@ import { normalizeToolPath } from './path-normalize.js';
 import { generationHeartbeatMs, startGenerationTicker } from './heartbeat.js';
 import { withModelSlot, recordModelSuccess, recordModelExhaustion, isExhaustionError } from '../utils/model-slot-lease.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'fs';
+import { createHash } from 'crypto';
 import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
@@ -104,6 +105,14 @@ const DEFAULT_READ_WINDOW_BYTES = 8_000;
  * total, and the exact call for the next chunk. The trailer matters more than
  * the parameter — a truncation nobody is told about cannot be worked around.
  */
+/**
+ * Prefix of the past-EOF note readFileWindow returns when the window starts
+ * beyond the last line. The read_file tool handler keys off this exact
+ * prefix: a past-EOF read served NO content, so it must not mark the window
+ * as served to the state-hash conversation set.
+ */
+const PAST_EOF_NOTE_PREFIX = 'NOTE: offset ';
+
 export function readFileWindow(
   contents: string,
   opts: { offset?: number; windowBytes?: number; path?: string } = {}
@@ -119,7 +128,7 @@ export function readFileWindow(
 
   if (startLine > totalLines) {
     return (
-      `NOTE: offset ${startLine} is past the end of ${opts.path ?? 'the file'} ` +
+      `${PAST_EOF_NOTE_PREFIX}${startLine} is past the end of ${opts.path ?? 'the file'} ` +
       `(${totalLines} lines). Read from an earlier line.`
     );
   }
@@ -1563,8 +1572,12 @@ export function readRoundsEnv(name: string, fallback: number): number {
  * the operator just tried to disable stayed on at its default. Split rather
  * than loosened, so round thresholds keep rejecting 0.
  */
-export function readCountEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
+export function readCountEnv(
+  name: string,
+  fallback: number,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const raw = env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
   const n = Number(raw.trim());
   if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) return fallback;
@@ -1573,6 +1586,131 @@ export function readCountEnv(name: string, fallback: number): number {
 
 export function newReadCache(): ReadCache {
   return { seen: new Map(), nextSeq: 1 };
+}
+
+/**
+ * Content-hash de-duplication for read_file results (Harness-Loop-Graph state
+ * hashing). The ReadCache above decides whether a read is a REPEAT; this store
+ * decides whether the repeat's RESULT can be collapsed to a compact reference.
+ * The hash is computed from the bytes just read off disk — the saving is in
+ * the result handed back to the model, never in skipped I/O, so an external
+ * modification between reads is caught by the hash itself and always serves
+ * fresh content.
+ *
+ * The reference is served ONLY when this exact window was already served IN
+ * THE CURRENT CONVERSATION with an identical hash. v1.148.21 served
+ * "UNCHANGED — act on what you have" unconditionally and deadlocked runs (76
+ * re-reads, 64 nudges, zero writes in 36 minutes — see
+ * test/delivery/dedup-serves-content.test.ts): a model that no longer HAS the
+ * content cannot act on a pointer to it. Each turn starts a fresh conversation
+ * (runTurn rebuilds `messages`, and messages are never pruned mid-turn — the
+ * context budget stop fires first), so the run-level entry survives the turn
+ * boundary but `served` does not: the first read of a turn always pays full
+ * content, only repeats within that same turn collapse.
+ */
+export interface StateHashEntry {
+  sha256: string;
+  bytes: number;
+  round: number;
+  turn: number;
+}
+
+export interface StateHashStore {
+  /** Run-level: `${absPath}@${offsetLine}` → first-seen hash metadata. */
+  entries: Map<string, StateHashEntry>;
+  /**
+   * Conversation-level: windows whose full content the CURRENT turn has
+   * already received. Cleared at every turn open — see the block above.
+   */
+  served: Set<string>;
+}
+
+/** Stable prefix so the call site can recognise a reference (and not double-nudge it). */
+export const STATE_HASH_REF_PREFIX = '[unchanged:';
+
+/** Below this many bytes, re-sending the content is cheaper than the reference to it. */
+export const STATE_HASH_DEFAULT_MIN_BYTES = 1024;
+
+export function newStateHashStore(): StateHashStore {
+  return { entries: new Map(), served: new Set() };
+}
+
+/** On by default; UAP_DELIVER_STATE_HASH=0 disables, same env style as the other deliver rails. */
+export function stateHashEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.UAP_DELIVER_STATE_HASH !== '0';
+}
+
+export function stateHashMinBytes(env: NodeJS.ProcessEnv = process.env): number {
+  return readCountEnv('UAP_DELIVER_STATE_HASH_MIN_BYTES', STATE_HASH_DEFAULT_MIN_BYTES, env);
+}
+
+function stateHashKey(abs: string, offsetLine: number): string {
+  return `${abs}@${offsetLine}`;
+}
+
+export function isStateHashReference(result: string): boolean {
+  return result.startsWith(STATE_HASH_REF_PREFIX);
+}
+
+/**
+ * Record the hash of the bytes just read and, when this window was already
+ * served to this conversation with an identical hash, return the compact
+ * reference to substitute for the full result. Returns null when full content
+ * must be served — first sight of the window, a hash change, below the size
+ * floor, or content this conversation has never received.
+ */
+export function stateHashReference(
+  store: StateHashStore,
+  abs: string,
+  rel: string,
+  content: string,
+  offsetLine: number,
+  round: number,
+  turn: number,
+): string | null {
+  if (!stateHashEnabled()) return null;
+  const bytes = Buffer.byteLength(content, 'utf-8');
+  if (bytes < stateHashMinBytes()) return null;
+  const key = stateHashKey(abs, offsetLine);
+  const sha256 = createHash('sha256').update(content, 'utf-8').digest('hex');
+  const prior = store.entries.get(key);
+  if (!prior || prior.sha256 !== sha256) {
+    // New window or CHANGED content: refresh the stored hash. Writes also
+    // invalidate eagerly (see invalidateStateHash), but an edit that happened
+    // outside the write tools — run_bash, another process — is caught here,
+    // by the hash itself.
+    store.entries.set(key, { sha256, bytes, round, turn });
+    return null;
+  }
+  if (!store.served.has(key)) return null;
+  return (
+    `${STATE_HASH_REF_PREFIX} sha256:${sha256.slice(0, 12)}… ${rel} is unchanged since ` +
+    `turn ${prior.turn} round ${prior.round} (${bytes} bytes) — that content is already in this ` +
+    'conversation; act on it instead of re-reading. For a different region, call read_file with an offset.]'
+  );
+}
+
+/** Mark a window's full content as served to the current conversation. */
+export function markStateHashServed(store: StateHashStore, abs: string, offsetLine: number): void {
+  if (!stateHashEnabled()) return;
+  store.served.add(stateHashKey(abs, offsetLine));
+}
+
+/**
+ * A successful write/edit invalidates every recorded window of the path. The
+ * store is deliberately NOT refreshed with the new hash here: the model has
+ * never been SHOWN the post-write bytes (edit_file's whitespace-tolerant match
+ * can land text that differs from what it sent), so the next read must serve
+ * full content and re-record — a refreshed hash would serve a compact
+ * reference to bytes the model never received.
+ */
+export function invalidateStateHash(store: StateHashStore, abs: string): void {
+  for (const key of [...store.entries.keys()]) {
+    if (key === abs || key.startsWith(`${abs}@`)) {
+      store.entries.delete(key);
+      store.served.delete(key);
+    }
+  }
 }
 
 /** mtime of a path, or null when it does not exist / is unreadable. */
@@ -1651,7 +1789,10 @@ export function runTool(
   // Run-scoped write ledger (see AgenticExecutorOptions.writeLedger). Recorded
   // at the actual writeFileSync sites — NOT via the sweep's `authorised` map,
   // which is a no-op when bash is disabled, exactly when the ledger matters.
-  writeLedger?: Set<string>
+  writeLedger?: Set<string>,
+  // Content-hash dedup context (see stateHashReference). Optional — callers
+  // that omit it (tests, one-off dispatches) simply get no result collapsing.
+  stateHash?: { store: StateHashStore; round: number; turn: number }
 ): string {
   let pathNote = '';
   // Contain/repair garbled tool-call paths against the known project root before
@@ -1700,7 +1841,39 @@ export function runTool(
           `Its contents:\n${entries}`
         );
       }
-      return readFileWindow(readFileSync(abs, 'utf-8'), {
+      const fullContent = readFileSync(abs, 'utf-8');
+      // Content-hash dedup: the bytes are already read (no I/O saved — that is
+      // what keeps an external edit detectable); what a repeat saves is the
+      // full RESULT. Only a window this conversation has already received,
+      // unchanged, collapses to a reference — see stateHashReference.
+      if (stateHash) {
+        const offsetLine = Number.isFinite(Number(args.offset))
+          ? Math.max(1, Math.trunc(Number(args.offset)))
+          : 1;
+        const ref = stateHashReference(
+          stateHash.store,
+          abs,
+          String(args.path),
+          fullContent,
+          offsetLine,
+          stateHash.round,
+          stateHash.turn,
+        );
+        if (ref) return ref;
+        const result = readFileWindow(fullContent, {
+          offset: args.offset as number | undefined,
+          path: String(args.path),
+        });
+        // Mark served ONLY when the window actually returned content. A
+        // past-EOF read gets the "offset past the end" note — no bytes — so
+        // recording it would let a repeat serve a reference claiming content
+        // the model never received is "already in this conversation".
+        if (!result.startsWith(PAST_EOF_NOTE_PREFIX)) {
+          markStateHashServed(stateHash.store, abs, offsetLine);
+        }
+        return result;
+      }
+      return readFileWindow(fullContent, {
         offset: args.offset as number | undefined,
         path: String(args.path),
       });
@@ -1871,6 +2044,8 @@ export function runTool(
       writeFileSync(abs, String(args.content ?? ''), 'utf-8');
       recordAuthorisedWrite(sweep, rel, String(args.content ?? ''));
       writeLedger?.add(rel);
+      // The write succeeded: every recorded read of this path is now stale.
+      if (stateHash) invalidateStateHash(stateHash.store, abs);
       // Per-write compile feedback for Rust: without it, a weak model writes
       // whole turns of code against types it invented, and the turn-end gate
       // reports an avalanche it cannot dig out of (observed live 2026-07-10:
@@ -2027,6 +2202,8 @@ export function runTool(
       writeFileSync(abs, updated, 'utf-8');
       recordAuthorisedWrite(sweep, rel, updated);
       writeLedger?.add(rel);
+      // The edit succeeded: every recorded read of this path is now stale.
+      if (stateHash) invalidateStateHash(stateHash.store, abs);
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
       const plural = batch.length === 1 ? 'replacement' : 'replacements';
@@ -2095,6 +2272,8 @@ export function runTool(
       writeFileSync(abs, ranged.text, 'utf-8');
       recordAuthorisedWrite(sweep, rel, ranged.text);
       writeLedger?.add(rel);
+      // The edit succeeded: every recorded read of this path is now stale.
+      if (stateHash) invalidateStateHash(stateHash.store, abs);
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
       return (
@@ -2411,6 +2590,12 @@ export function createAgenticExecutor(
   const protectIac = opts.protectIac ?? false;
   // run_bash executes only when kernel-contained (uap sandbox sets
   // UAP_SANDBOX_ACTIVE=1) or the operator explicitly opts in (audit X3).
+  // Run-level content-hash dedup store: hash entries survive turn boundaries
+  // (cross-turn persistence within the run), while the `served` set is cleared
+  // at each turn open — see stateHashReference for why the two have different
+  // lifetimes. Incremented once per turn by the wrapper below.
+  const stateHashStore = newStateHashStore();
+  let stateHashTurn = 0;
   const allowBash =
     opts.allowBash === true ||
     process.env.UAP_SANDBOX_ACTIVE === '1' ||
@@ -2446,6 +2631,13 @@ export function createAgenticExecutor(
     const summaries: string[] = [];
     // Per-session: what this agent has already read, and at what mtime.
     const readCache = newReadCache();
+    // A turn is a fresh conversation (messages rebuilt above), so no content
+    // from a previous turn is in context: clear the served set, and the first
+    // read of anything this turn pays full content again. Without this the
+    // compact reference would point at content the model never received —
+    // the v1.148.21 deadlock.
+    stateHashStore.served.clear();
+    const turn = stateHashTurn;
     // Read-only-streak nudge: a weak model in a gap-closure/whole-mission epic
     // can spend EVERY round on read_file/list_dir and end the turn with zero
     // writes — attempt after attempt (run I live, 2026-07-17: two 5-turn
@@ -2651,7 +2843,10 @@ export function createAgenticExecutor(
               contractFiles,
               sweep,
               protectIac,
-              opts.writeLedger
+              opts.writeLedger,
+              // Recovered writes mutate files too — the store must hear about
+              // them or the next read could collapse to a stale reference.
+              { store: stateHashStore, round, turn }
             );
             opts.onEvent?.({
               round,
@@ -2808,7 +3003,8 @@ export function createAgenticExecutor(
           contractFiles,
           sweep,
           protectIac,
-          opts.writeLedger
+          opts.writeLedger,
+          { store: stateHashStore, round, turn }
         );
         // #2a: per-tool-call progress — refresh the deliver heartbeat now, not
         // just at turn end, so wedge-detection tracks real intra-turn activity.
@@ -2849,7 +3045,14 @@ export function createAgenticExecutor(
         // to proceed, and it simply asks again. Live: 76 re-reads of one file,
         // 64 nudges, ZERO writes in 36 minutes. Serve the content, and prepend
         // the nudge so repetition still costs it nothing but a line.
-        const result = repeat ? `${repeat}\n\n${toolResult}` : toolResult;
+        // The state-hash reference is the ONE safe exception: it is only ever
+        // returned for content this very conversation has already received in
+        // full (see stateHashReference), and it already carries the steer — so
+        // the repeat note, which promises "content follows anyway", must NOT
+        // be prepended over it.
+        const result = repeat && !isStateHashReference(toolResult)
+          ? `${repeat}\n\n${toolResult}`
+          : toolResult;
         opts.onEvent?.({
           round,
           kind: 'tool',
@@ -2878,6 +3081,10 @@ export function createAgenticExecutor(
    * must not be left holding it.
    */
   return async (prompt: string): Promise<string> => {
+    // Turn counter for the state-hash reference labels ("unchanged since turn
+    // N"). Incremented here — the single per-turn entry point — not in
+    // runTurn, which has early-return paths a counter inside it would miss.
+    stateHashTurn += 1;
     const sweep = beginBashSweep(opts.projectRoot, allowBash);
     // Fold the sweep's observed changes into the run write ledger: tool writes
     // are recorded at their writeFileSync sites, but shell writes only become

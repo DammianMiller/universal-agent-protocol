@@ -51,7 +51,11 @@ export interface EpicMissionDeps {
    * already passed validation and each task converges against real gates).
    */
   planEpicTasks: (goal: string) => Promise<DeliveryPhase[]>;
-  /** Resolved deliver.parallelTasks; >1 enables the orchestrated branch. */
+  /** Resolved deliver.parallelTasks; >1 enables the orchestrated branch. Since
+   * the default flip an unset config resolves >1 (DEFAULT_PARALLEL_TASKS) —
+   * 1 (config, or UAP_DELIVER_PARALLEL_TASKS=1) keeps the classic single-loop
+   * epic. The orchestrated branch itself still requires worktree isolation
+   * (it degrades to sequential in-tree without a workspace manager). */
   epicParallelTasks: number;
   /** Run one epic as an orchestrated task DAG (worktree-isolated parallel
    * dispatch); the caller wires the orchestrated-mission runner. */
@@ -444,9 +448,10 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         };
       };
 
-      // Epic-path parallel dispatch: with deliver.parallelTasks > 1, an epic
-      // whose goal itself decomposes runs as an orchestrated task DAG —
-      // worktree-isolated parallel dispatch inside the DEFAULT (epics-on)
+      // Epic-path parallel dispatch: with the resolved fan-out > 1 (the
+      // DEFAULT since the parallel-default flip — see resolveParallelTasks),
+      // an epic whose goal itself decomposes runs as an orchestrated task DAG
+      // — worktree-isolated parallel dispatch inside the DEFAULT (epics-on)
       // path. Only the DECOMPOSITION call is fail-soft (a miss falls through
       // to the classic single loop); a runner exception must propagate —
       // swallowing it would silently restart the epic on a partially-merged

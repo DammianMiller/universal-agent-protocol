@@ -29,12 +29,18 @@
  * Bounded honestly: appended MODULE-SCOPE code still executes before test
  * callbacks run, so a deliberately adversarial append that patches the SUT's
  * module cache can weaken old tests without tripping the denylist. The
- * durable control for that residual is behavioral: compare the runner's
- * per-test results against baseline (the ladder already captures per-test
- * names) — tracked as follow-up. This rule closes the convergence-drift
- * paths a model reaches by gradient, in every write layer, with ONE
- * definition — a divergence between layers is how "two write paths, one
- * guard" incidents happen.
+ * SUPPRESSOR/EXIT/ASSERT regexes themselves are evadable too — comment
+ * separators (`test./* *\/only(...)`) and computed access (`assert['equal']=`,
+ * Object.assign, Reflect.set) all slip past them; the rule is a
+ * gradient-drift control, NOT a boundary. And the hooks/mocks steering below
+ * is JS-runner-centric: under pytest's shared-session process, module-scope
+ * patching in a NEW test file (conftest-style monkeypatching, sys.modules
+ * edits) can still reach pre-existing tests. The durable control for these
+ * residuals is behavioral: compare the runner's per-test results against
+ * baseline (the ladder already captures per-test names) — tracked as
+ * follow-up. This rule closes the convergence-drift paths a model reaches by
+ * gradient, in every write layer, with ONE definition — a divergence between
+ * layers is how "two write paths, one guard" incidents happen.
  */
 
 /** Test-case titles: JS/TS (test/it/describe, incl. .each/.skip forms) and python (def test_*). */
@@ -80,6 +86,32 @@ export function extractTestTitles(source: string): string[] {
 }
 
 /**
+ * Delta-level refusal checks shared by the additive edit rule and by callers
+ * that sanction wholly NEW test files (the adversarial red-team gate):
+ * suppression modifiers, process.exit, and assertion-machinery reassignment.
+ *
+ * Deliberately EXCLUDES the file-scope hook/mock check (HOOK_OR_MOCK_RE) —
+ * that rule exists because an APPENDED `beforeEach`/`vi.mock` reaches the
+ * frozen tests above it. In a brand-new file hooks and mocks cannot touch any
+ * pre-existing test, which is exactly why the additive rule steers such tests
+ * into a new file. Callers sanctioning an APPEND must keep the hook/mock
+ * check (additiveTestEditRefusal does); callers sanctioning a NEW file use
+ * this helper alone.
+ */
+export function additiveTestDeltaRefusal(delta: string): string | null {
+  if ([...delta.matchAll(SUPPRESSOR_RE)].length > 0) {
+    return 'it adds test-suppression modifiers (.only/.skip/.todo/x*/f*/skip options), which silence existing tests while their titles remain';
+  }
+  if ([...delta.matchAll(EXIT_RE)].length > 0) {
+    return 'it adds process.exit, which can end the run before existing tests execute';
+  }
+  if ([...delta.matchAll(ASSERT_PATCH_RE)].length > 0) {
+    return 'it reassigns assertion machinery (assert/expect), which can neutralize existing tests';
+  }
+  return null;
+}
+
+/**
  * Null when replacing `oldContent` with `newContent` is a sanctioned ADDITIVE
  * test edit; otherwise a short human-readable refusal reason.
  */
@@ -100,15 +132,8 @@ export function additiveTestEditRefusal(oldContent: string, newContent: string):
   if (delta.length > 0 && !/^\s/.test(delta)) {
     return 'the appended content must start on a new line after the existing content';
   }
-  if ([...delta.matchAll(SUPPRESSOR_RE)].length > 0) {
-    return 'it adds test-suppression modifiers (.only/.skip/.todo/x*/f*/skip options), which silence existing tests while their titles remain';
-  }
-  if ([...delta.matchAll(EXIT_RE)].length > 0) {
-    return 'it adds process.exit, which can end the run before existing tests execute';
-  }
-  if ([...delta.matchAll(ASSERT_PATCH_RE)].length > 0) {
-    return 'it reassigns assertion machinery (assert/expect), which can neutralize existing tests';
-  }
+  const deltaRefusal = additiveTestDeltaRefusal(delta);
+  if (deltaRefusal) return deltaRefusal;
   if ([...delta.matchAll(HOOK_OR_MOCK_RE)].length > 0) {
     return (
       'it appends file-scope lifecycle hooks or module mocking (beforeEach/vi.mock/mock.method/…), ' +

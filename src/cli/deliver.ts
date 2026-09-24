@@ -370,6 +370,8 @@ import {
 import { detectRungs, mergeRedetectedRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER, demoteBaselineFailures, baselineRegressions } from '../delivery/verifier-ladder.js';
 import type { GateTier, LadderRunFn, GateRung } from '../delivery/verifier-ladder.js';
 import { recordGateEvidence, gateOutcomesFromResult } from '../delivery/gate-evidence.js';
+import { resolveAdversarialGate, runAdversarialGate } from '../delivery/adversarial-gate.js';
+import { resolveMasterPipeline, formatMasterPipelineLine } from '../delivery/master-pipeline.js';
 import { runDeployDevLadder } from '../delivery/deploy-dev-gate.js';
 import { commitPushAndWatch } from '../delivery/ci-watcher.js';
 import type { DeployEnvironment } from '../delivery/ci-watcher.js';
@@ -1785,6 +1787,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   }
 
+  // Master-pipeline stage readout — the Harness/Loop/Graph composition this
+  // command runs by default: worktree-isolated parallel fan-out → evidence-
+  // gated convergence loops → state-hash read dedup → adversarial red-team
+  // gate. Resolved once via delivery/master-pipeline.ts (which mirrors each
+  // stage's own env > .uap.json > default precedence) and surfaced in the
+  // startup banner and the dry-run plan, so what is printed is what the
+  // run gets.
+  const deliverCfgEarly = (() => {
+    try {
+      return (loadUapConfigRaw(projectRoot) ?? {}).deliver as Record<string, unknown> | undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const masterPipeline = resolveMasterPipeline(deliverCfgEarly);
+  if (!options.dryRun) {
+    console.log(chalk.cyan(`⇒ master pipeline: ${formatMasterPipelineLine(masterPipeline)}`));
+  }
+
   // `--optimize` turns on every convergence aid at once. Deploy queueing is
   // deliberately excluded — committing applied files is a side effect the
   // user must opt into explicitly.
@@ -2219,6 +2240,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       branch: watchCi ? currentBranch(projectRoot) : null,
       gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required, tier: tierOf(r) })),
       selfGate: needsSelfGate,
+      masterPipeline: {
+        parallelTasks: masterPipeline.parallelTasks,
+        stateHash: masterPipeline.stateHash,
+        stateHashMinBytes: masterPipeline.stateHashMinBytes,
+        adversarialGate: masterPipeline.adversarial.enabled ? masterPipeline.adversarial.maxRounds : 0,
+      },
     };
     if (options.json) {
       console.log(JSON.stringify(summary, null, 2));
@@ -2242,6 +2269,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(`  HALO tracing: ${summary.halo ? 'on' : 'off'}`);
       console.log(`  Coordination: ${summary.coordinate ? 'on' : 'off'}`);
       console.log(`  Deploy queue on success: ${summary.deploy ? 'on' : 'off'}`);
+      console.log(`  Master pipeline: ${formatMasterPipelineLine(masterPipeline)}`);
       console.log(
         `  Test protection: ${summary.protectTests ? `on (${summary.protectedTestFiles} pre-existing test/oracle file(s))` : 'off'}`
       );
@@ -2514,6 +2542,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // sweep record real written paths here; the applier below drains them into
   // ApplyResult.filesWritten so history[].filesApplied is truthful again.
   const agenticWriteLedger = new Set<string>();
+  // Hoisted shared protection set (HLG stage 5 hardening): the adversarial
+  // gate's breaching tests are written AFTER this t0 snapshot, so a repair
+  // could delete them unless the set grows. Both executors hold THIS
+  // reference and check membership per write, so the stage's onBreach hook
+  // can extend it before reconvergence runs.
+  const sharedProtectedFiles: Set<string> =
+    options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>();
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
         projectRoot,
@@ -2524,8 +2559,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         contractFiles: contractLock,
         writeLedger: agenticWriteLedger,
         // Block oracle tampering: protected test files are read-only to the agent.
-        protectedFiles:
-          options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>(),
+        protectedFiles: sharedProtectedFiles,
         // Block gate-config / IaC rigging in the agentic path too (it bypasses
         // the file-block applier where this protection otherwise lives).
         protectGateConfigs: options.protectTests !== false,
@@ -2551,8 +2585,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         contextTokenBudget: sessionBudget,
         contractFiles: contractLock,
         writeLedger: agenticWriteLedger,
-        protectedFiles:
-          options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>(),
+        protectedFiles: sharedProtectedFiles,
         protectGateConfigs: options.protectTests !== false,
         allowBash: options.allowBash === true || process.env.UAP_DELIVER_ALLOW_BASH === '1',
         onEvent: (e) =>
@@ -4389,6 +4422,87 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   }
 
+  // Adversarial red-team gate (HLG stage 5): before the verdict is accepted,
+  // a skeptical verifier attacks the converged patch with edge-case tests
+  // designed to break it. A breach routes back into the convergence loop as
+  // ordinary gate evidence (bounded rounds); only a surviving patch proceeds
+  // to the outcome/evidence bookkeeping below. Placed AFTER keep-best so the
+  // attack targets the same tree the rollback rail settled on, and BEFORE
+  // evidence recording so the artifact reflects the post-attack state.
+  // Skipped on alreadyDelivered (no patch to attack) and on --dry-run.
+  // Default ON; escape hatch: UAP_DELIVER_ADVERSARIAL_GATE=0 or
+  // `.uap.json` deliver.adversarialGate=false — same path deliver.parallelTasks
+  // resolves through.
+  const adversarialSettings = resolveAdversarialGate(
+    (cfgRaw.deliver as Record<string, unknown> | undefined)?.adversarialGate
+  );
+  if (result.success && !result.alreadyDelivered && adversarialSettings.enabled && !options.dryRun) {
+    const adversarial = await runAdversarialGate({
+      instruction,
+      projectRoot,
+      rungs,
+      // Gate-time redetection: `rungs` was detected at t0, so a mission that
+      // CREATED its test gate (greenfield) would no-surface forever. Merge
+      // the fresh detection with the same policy the loop's mid-mission
+      // redetection and the combined-tree verification use.
+      redetectRungs: () => {
+        try {
+          return mergeRedetectedRungs(rungs, detectRungs(projectRoot), loopConfig.redetectFilter);
+        } catch {
+          return rungs; // detection unavailable — attack with the t0 rungs
+        }
+      },
+      // Defense in depth for the repair: the executors' protected set was
+      // snapshotted before the breaching tests existed — add them so the
+      // repair agent structurally CANNOT delete/skip/weaken them (the gate's
+      // own post-repair verification remains the enforcing floor).
+      onBreach: (breach) => {
+        for (const rel of breach.testFiles) sharedProtectedFiles.add(rel.toLowerCase());
+      },
+      // Authoring judges text; keep it on the blind executor even when the
+      // loop's executor is agentic (same rule as the critic/judge).
+      executor: jsonBlindExecutor,
+      settings: adversarialSettings,
+      initial: result,
+      reconverge: (prompt) =>
+        new ConvergenceLoop(
+          { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onCheckpoint: undefined },
+          executor,
+          seams
+        ).deliver(prompt),
+      note: (line) => console.log(chalk.dim(`  ${line}`)),
+    });
+    result = adversarial.result;
+    result.adversarial = {
+      status: adversarial.status,
+      rounds: adversarial.rounds.length,
+      authored: adversarial.authored,
+      ran: adversarial.ran,
+      failed: adversarial.failed,
+      summary: adversarial.summary,
+    };
+    if (!options.json) {
+      const color =
+        adversarial.status === 'breached'
+          ? chalk.red
+          : adversarial.status === 'survived'
+            ? chalk.green
+            : chalk.dim;
+      console.log(color(`  🛡 ${adversarial.summary}`));
+    }
+  } else if (result.success && !result.alreadyDelivered && !adversarialSettings.enabled) {
+    // Record the hatch on the result so the JSON outcome and evidence say the
+    // stage was deliberately off, not silently absent.
+    result.adversarial = {
+      status: 'disabled',
+      rounds: 0,
+      authored: 0,
+      ran: 0,
+      failed: 0,
+      summary: 'adversarial gate: disabled (UAP_DELIVER_ADVERSARIAL_GATE=0 or deliver.adversarialGate=false)',
+    };
+  }
+
   // Surface the observed stop on the result itself: the JSON output (and the
   // MCP deliver tool reading it) is what the NEXT agent decides from, and a
   // stopped run that prints as a plain failure gets relaunched instead of
@@ -4437,7 +4551,45 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   if (result.success) {
     try {
       const gates = gateOutcomesFromResult(result, rungs);
+      // HLG stage 5 telemetry: bind the adversarial attack outcome into the
+      // same artifact as the run's other gate evidence, so evidence consumers
+      // see what the red team did (tests authored / ran / failed / survived).
+      // 'disabled' is recorded too — an absent entry must never be ambiguous
+      // with a skipped one.
+      if (result.adversarial) {
+        gates.push({
+          name: 'adversarial-gate',
+          command: 'uap deliver adversarial red-team gate',
+          exitCode: 0,
+          outputTail: result.adversarial.summary,
+          at: new Date().toISOString(),
+        });
+      }
       const evidencePath = recordGateEvidence(projectRoot, gates, { runId });
+      if (!options.json) console.log(chalk.dim(`  gate evidence: ${evidencePath}`));
+    } catch (e) {
+      console.warn(chalk.yellow(`  ⚠ gate evidence not recorded: ${(e as Error).message}`));
+    }
+  } else if (result.adversarial) {
+    // Breached runs record their adversarial evidence TOO (C-stage review):
+    // the stage ran and REJECTED the patch, so an absent entry would be
+    // ambiguous with "stage skipped". Nonzero exitCode — the enforcer only
+    // accepts 0, so this artifact can never masquerade as a pass. Fail-soft,
+    // same as the success path (a dirty post-breach tree simply warns).
+    try {
+      const evidencePath = recordGateEvidence(
+        projectRoot,
+        [
+          {
+            name: 'adversarial-gate',
+            command: 'uap deliver adversarial red-team gate',
+            exitCode: 1,
+            outputTail: result.adversarial.summary,
+            at: new Date().toISOString(),
+          },
+        ],
+        { runId }
+      );
       if (!options.json) console.log(chalk.dim(`  gate evidence: ${evidencePath}`));
     } catch (e) {
       console.warn(chalk.yellow(`  ⚠ gate evidence not recorded: ${(e as Error).message}`));

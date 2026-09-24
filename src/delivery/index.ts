@@ -88,6 +88,7 @@ export { buildMissionAcceptanceGate, resolveAcceptanceVerdict, type MissionAccep
 export {
   createTaskWorkspaceManager,
   resolveParallelTasks,
+  DEFAULT_PARALLEL_TASKS,
   type TaskWorkspace,
   type TaskWorkspaceManager,
 } from './task-workspace.js';
@@ -201,6 +202,27 @@ export {
 } from './gate-evidence.js';
 
 export {
+  runAdversarialGate,
+  runAdversarialRound,
+  resolveAdversarialGate,
+  pickTestRung,
+  attackSurface,
+  sanctionAttackBlocks,
+  buildAttackPrompt,
+  breachReconvergencePrompt,
+  DEFAULT_ADVERSARIAL_ROUNDS,
+  MAX_ADVERSARIAL_ROUNDS,
+  type AdversarialGateSettings,
+  type AdversarialGateOptions,
+  type AdversarialGateReport,
+  type AdversarialRoundOptions,
+  type AdversarialRoundResult,
+  type AdversarialStatus,
+  type SuiteRun,
+  type SuiteRunner,
+} from './adversarial-gate.js';
+
+export {
   detectRungs,
   runLadder,
   runRung,
@@ -212,6 +234,12 @@ export {
   type LadderResult,
   type LadderOptions,
 } from './verifier-ladder.js';
+
+export {
+  resolveMasterPipeline,
+  formatMasterPipelineLine,
+  type MasterPipelineReadout,
+} from './master-pipeline.js';
 
 export {
   applyFileBlocks,

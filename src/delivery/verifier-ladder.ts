@@ -677,16 +677,28 @@ export function parseTestOutcomes(output: string, rungId?: string): TestOutcomes
       add(m[2] === 'PASSED' ? passed : failed, m[1]);
       continue;
     }
+    // TAP (node --test, prove): `ok 1 - name` / `not ok 2 - name`, optionally
+    // indented (subtests). A `# SKIP`/`# TODO` directive is neither pass nor
+    // fail — a skipped adversarial test must not read as having attacked.
+    m = /^\s*(not\s+)?ok\s+\d+\s*-?\s*(.*?)\s*$/.exec(line);
+    if (m && m[2]) {
+      if (/#[ \t]*(SKIP|TODO)\b/i.test(line)) continue;
+      // node prints a duration on FILE-level entries: `ok 1 - t/x.test.js (9.1 ms)`.
+      add(m[1] ? failed : passed, m[2].replace(/\s*\(\d+(?:\.\d+)?\s*ms\)$/, ''));
+      continue;
+    }
     if (!jsRunner) continue;
-    // jest / vitest verbose: `✓ name` / `✕ name` / `× name`. The file-level
-    // summary lines vitest prints (`✓ test/foo.test.ts (12 tests) 34ms`) are
-    // excluded — they are files, not tests, and would collide across runs.
-    m = /^\s*(?:[✓✔])\s+(.+?)(?:\s+\(\d+\s*(?:ms|tests?)\))?\s*$/.exec(line);
+    // jest / vitest verbose / node --test (spec reporter): `✓ name` /
+    // `✕ name` / `× name`, with an optional trailing duration (`(12 ms)`,
+    // node's decimal `(0.55ms)`). The file-level summary lines vitest prints
+    // (`✓ test/foo.test.ts (12 tests) 34ms`) are excluded — they are files,
+    // not tests, and would collide across runs.
+    m = /^\s*(?:[✓✔])\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s|tests?)\))?(?:\s+\d+\s*ms)?\s*$/.exec(line);
     if (m && !/\(\d+\s+tests?\)/.test(line)) {
       add(passed, m[1]);
       continue;
     }
-    m = /^\s*(?:[✕✖×])\s+(.+?)(?:\s+\(\d+\s*ms\))?\s*$/.exec(line);
+    m = /^\s*(?:[✕✖×])\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$/.exec(line);
     if (m && !/\(\d+\s+tests?\)/.test(line)) add(failed, m[1]);
   }
 
@@ -1639,8 +1651,12 @@ export function testsActuallyRan(rungId: string, output: string): boolean | null
     return null;
   }
 
-  // JS/TS (vitest / jest)
+  // JS/TS (vitest / jest / node --test)
   if (rungId === 'test' || rungId.includes('vitest') || rungId.includes('jest')) {
+    // node --test: every run ends with a count summary — `# tests N` (TAP
+    // reporter) or `ℹ tests N` (spec reporter, the default since node 20).
+    const nodeSummary = out.match(/^[#ℹ]\s+tests\s+(\d+)\s*$/m);
+    if (nodeSummary) return Number(nodeSummary[1]) > 0;
     if (/no test files found|no tests found|found 0 test/.test(out)) return false;
     if (/tests?\s+\d+\s+passed|\d+\s+(passed|failed)/.test(out)) return true;
     return null;

@@ -1,0 +1,51 @@
+#!/bin/bash
+# UAP terminal-bench setup: install the Factory Droid CLI, wire it to Kimi K3
+# via BYOK customModels, and (UAP arm only) drop the AGENTS.md protocol.
+#
+# Keys arrive via /installed-agent/setup-env.sh (sourced by the harness before
+# this script runs): FACTORY_API_KEY plus KIMI_API_KEY or OPENROUTER_API_KEY.
+set -e
+
+apt-get update
+apt-get install -y curl git jq
+
+# --- Droid CLI -------------------------------------------------------------
+curl -fsSL https://app.factory.ai/cli | sh
+export PATH="$HOME/.factory/bin:$PATH"
+command -v droid >/dev/null || { echo "[uap-setup] droid install FAILED"; exit 1; }
+echo "[uap-setup] droid installed: $(droid --version 2>/dev/null || echo unknown)"
+
+# --- BYOK provider config ----------------------------------------------------
+# The apiKey comes from the sourced env at install time. It must NOT pass
+# through shell expansion on its way into settings.json: an unquoted heredoc
+# would evaluate $(...)/backticks inside the key. jq --arg passes the value
+# as data (and JSON-escapes it); only the host-side Jinja values below
+# ({{ base_url }}, {{ model_id }}) expand at template-render time.
+if [ -n "$KIMI_API_KEY" ]; then
+  PROVIDER_API_KEY="$KIMI_API_KEY"
+elif [ -n "$OPENROUTER_API_KEY" ]; then
+  PROVIDER_API_KEY="$OPENROUTER_API_KEY"
+else
+  echo "[uap-setup] no provider key (KIMI_API_KEY or OPENROUTER_API_KEY) — FAIL"
+  exit 1
+fi
+
+FACTORY_DIR="$HOME/.factory"
+mkdir -p "$FACTORY_DIR"
+jq -n --arg apikey "$PROVIDER_API_KEY" --arg baseurl "{{ base_url }}" --arg model "{{ model_id }}" \
+  '{customModels: [{model: $model, displayName: "Kimi K3", baseUrl: $baseurl, apiKey: $apikey, provider: "generic-chat-completion-api", maxOutputTokens: 65536, extraArgs: {temperature: 1.0, top_p: 1.0}}]}' \
+  > "$FACTORY_DIR/settings.json"
+chmod 600 "$FACTORY_DIR/settings.json"
+echo "[uap-setup] customModels configured (baseUrl={{ base_url }}, model={{ model_id }})"
+
+if [ -z "$FACTORY_API_KEY" ]; then
+  echo "[uap-setup] WARNING: FACTORY_API_KEY unset — headless auth will fail"
+fi
+
+{% if inject_agents %}
+# UAP treatment surface: the gates protocol, read by Droid from the run cwd.
+cat > "$PWD/AGENTS.md" <<'UAP_AGENTS_EOF'
+{{ agents_md }}
+UAP_AGENTS_EOF
+echo "[uap-setup] wrote AGENTS.md into run cwd"
+{% endif %}

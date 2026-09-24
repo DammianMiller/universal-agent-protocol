@@ -211,6 +211,21 @@ export interface DeliveryResult {
    * already-green tree.
    */
   baselineGates?: LadderResult['results'];
+  /**
+   * Adversarial red-team gate outcome (HLG stage 5), set by the deliver CLI
+   * when the stage ran on this result's converged state. Compact by design —
+   * this object rides run-state and the JSON output. The full per-round
+   * detail stays in the CLI's AdversarialGateReport; the one-line `summary`
+   * is what the gate-evidence artifact records.
+   */
+  adversarial?: {
+    status: 'survived' | 'breached' | 'no-surface' | 'disabled';
+    rounds: number;
+    authored: number;
+    ran: number;
+    failed: number;
+    summary: string;
+  };
 }
 
 export interface ExplorerSettings {

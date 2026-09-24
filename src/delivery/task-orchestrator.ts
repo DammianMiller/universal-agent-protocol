@@ -139,13 +139,18 @@ export interface OrchestratorConfig {
    * Dependency-aware parallel dispatch: max independent READY tasks running
    * concurrently (wave-barrier scheduling: each wave completes before the
    * next dispatches — simple and deterministic over maximal utilization).
-   * Default 1 = sequential, the historical behavior. DELIBERATELY config-only,
-   * no env override: >1 requires a runTask that tolerates concurrent
-   * execution. deliver's production runTask satisfies that since PR #516
-   * (worktree isolation + per-task judge state via orchestrated-mission.ts);
-   * env stays excluded because parallelism must remain an explicit
-   * per-project decision, not something one exported variable flips for
-   * every run on a machine. Clamped to [1, 16].
+   * This PRIMITIVE still defaults to 1 (sequential): the orchestrator cannot
+   * verify that the caller's runTask tolerates concurrent execution, so the
+   * safe choice stays with the caller. The parallel-by-DEFAULT policy lives
+   * one layer up: deliver resolves `deliver.parallelTasks` to
+   * DEFAULT_PARALLEL_TASKS when unset (escape hatch:
+   * `UAP_DELIVER_PARALLEL_TASKS=1`, or config `1`), and
+   * orchestrated-mission.ts passes a value >1 here ONLY when every task runs
+   * in its own worktree — the isolation predicate that replaced default-1 as
+   * the guard against concurrent loops racing one shared working tree.
+   * deliver's production runTask satisfies that since PR #516 (worktree
+   * isolation + per-task judge state via orchestrated-mission.ts). Clamped
+   * to [1, 16].
    */
   concurrency?: number;
 }
@@ -276,8 +281,10 @@ function envInt(name: string, fallback: number, max: number): number {
 /**
  * P1 — execute the task DAG on a blackboard. Dependency-aware: a task runs
  * only after every dependency has SUCCEEDED; independent READY tasks dispatch
- * in parallel up to `concurrency` (default 1 — the historical sequential
- * behavior). A task that fails gets ATG-style MINIMAL REPAIR before its
+ * in parallel up to `concurrency` (this primitive defaults to 1 — the caller
+ * vouches for a concurrency-safe runTask; deliver's wiring resolves a
+ * parallel-by-default value behind the worktree-isolation predicate, see
+ * task-workspace.ts / orchestrated-mission.ts). A task that fails gets ATG-style MINIMAL REPAIR before its
  * dependents are blocked: bounded fresh re-execution of just that node with
  * the failure fed back (`maxRepairsPerTask`), then an optional re-planned
  * replacement chain (`repairTask`) credited under the original id — the
