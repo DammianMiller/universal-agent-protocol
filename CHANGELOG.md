@@ -2,22 +2,6 @@
 
 ## v2.14.0 (2026-09-24)
 
-- feat(deliver): compose the Harness/Loop/Graph master architecture as defaults
-- docs: signal checkpoints capped at 2 — each pins ~150 MiB VRAM
-- docs: signal unit tuned with dflash2-profile checkpoint/cache settings
-- docs: Signal 3.8 27B activated as the 27B backend; benched, DFlash2 > native MTP
-- docs: stage Signal 3.8 27B as third backend (disabled, gated on operator)
-- docs: boot enablement flipped back to 27B EXL3 + proxy
-- docs: flashnext + anthropic-proxy systemd units are the live stack
-- docs: revert GGUF VRAM tuning — decode peak not worth the headroom
-- docs: GGUF tuned serving config — >=1GB VRAM freed, 92k-stable
-- docs: Flash Next 2.05bpw EXL3 bench results + kit deltas
-- chore: bump version to 1.224.12
-- docs: Qwen3.8-Flash-Next as 27B replacement candidate — quant update + local bench
-
-
-## v2.14.0 (2026-09-24)
-
 - feat(deliver): compose the Harness/Loop/Graph master architecture as defaults — parallel fan-out ×4 (worktree-isolated), state-hash read dedup, adversarial red-team gate, and a master-pipeline readout in the banner and `--dry-run` plan (docs/plans/hlg-master-architecture-uplift-2026-09-24.md)
 - feat(deliver): parallel task dispatch is now the DEFAULT for independent orchestrator tasks when worktree isolation is available (behavioral change — `deliver.parallelTasks: 1` or `UAP_DELIVER_PARALLEL_TASKS=1` forces the old sequential behavior)
 - feat(deliver): adversarial red-team gate runs after convergence by default (≤2 rounds; `UAP_DELIVER_ADVERSARIAL_GATE=0` disables) — note this adds up to 2 model calls + 2 suite runs per successful deliver
