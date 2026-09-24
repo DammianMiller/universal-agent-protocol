@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.14.1 (2026-09-24)
+
+- refactor(deliver): split adversarial-gate.ts under the 500-LOC quality gate
+- docs: dedupe the v2.14.0 changelog section
+
+
 ## v2.14.0 (2026-09-24)
 
 - feat(deliver): compose the Harness/Loop/Graph master architecture as defaults — parallel fan-out ×4 (worktree-isolated), state-hash read dedup, adversarial red-team gate, and a master-pipeline readout in the banner and `--dry-run` plan (docs/plans/hlg-master-architecture-uplift-2026-09-24.md)
