@@ -32,6 +32,15 @@
  * - `parallelTasks` should be sized to CPU cores, not inference slots: the
  *   model-slot lease bounds model calls, but concurrent GATE runs (npm
  *   test/build per worktree) have no governor.
+ *
+ * Parallel-by-default: since the default flip, an unset config resolves to
+ * DEFAULT_PARALLEL_TASKS (not 1) — see resolveParallelTasks. The safety
+ * property the historical sequential default protected (one writer to the
+ * working tree at a time) is now enforced STRUCTURALLY instead of by
+ * default: parallel dispatch only happens with worktree isolation active
+ * (runOrchestratedMission degrades to sequential, with a logged reason, when
+ * no workspace manager is available), and merge-backs are serialized under
+ * the caller's merge lock.
  */
 
 import { execFileSync } from 'child_process';
@@ -95,15 +104,57 @@ function sweepStaleWorkspaces(): void {
 }
 
 /**
- * Clamp the `.uap.json` `deliver.parallelTasks` value to [1, 8]. Config-only
- * by design (no env override) — see the concurrency notes in
- * task-orchestrator.ts: an env knob would let one exported variable flip
- * every deliver run into parallel execution.
+ * Default fan-out when neither config nor env says otherwise. Parallel is the
+ * DEFAULT since the default flip: independent READY tasks run concurrently,
+ * each in its own detached git worktree (this module). The orchestrator's
+ * wave slice (`ready.slice(0, concurrency)`) already caps a wave at the
+ * number of independent READY tasks, so a small DAG never over-dispatches.
+ * Sized to a modest CPU budget, not inference slots (see the header notes).
  */
-export function resolveParallelTasks(raw: unknown): number {
+export const DEFAULT_PARALLEL_TASKS = 4;
+
+/**
+ * Resolve the effective `deliver.parallelTasks` fan-out, clamped to [1, 8].
+ *
+ * Precedence: the `UAP_DELIVER_PARALLEL_TASKS` env var > the `.uap.json`
+ * `deliver.parallelTasks` value > DEFAULT_PARALLEL_TASKS. The env knob exists
+ * ONLY because parallel is now the default: the original config-only design
+ * barred env so one exported variable could never silently parallelize every
+ * run on a machine; that danger is gone (parallel is the default), and the
+ * env serves the safe direction — `UAP_DELIVER_PARALLEL_TASKS=1` forces
+ * sequential execution everywhere as an escape hatch, or retunes the cap.
+ * Set-but-unparseable values (either layer) fail SAFE to sequential; only an
+ * UNSET config falls through to the parallel default.
+ *
+ * Parallel dispatch additionally requires worktree isolation — see
+ * runOrchestratedMission, which degrades to sequential with a logged reason
+ * when no workspace manager is available. The resolved number alone never
+ * enables concurrency.
+ */
+export function resolveParallelTasks(raw: unknown, env: NodeJS.ProcessEnv = process.env): number {
+  const clamp = (n: number): number => (n <= 1 ? 1 : Math.min(Math.floor(n), HARD_PARALLEL_CEILING));
+  const envRaw = env.UAP_DELIVER_PARALLEL_TASKS;
+  if (envRaw !== undefined && envRaw.trim() !== '') {
+    const n = Number(envRaw);
+    if (!Number.isFinite(n)) {
+      // Fail-safe must not be SILENT: an exported typo quietly pinning every
+      // run to sequential is exactly the surprise this knob was blamed for.
+      console.log(
+        `  task-workspace: UAP_DELIVER_PARALLEL_TASKS='${envRaw}' is not a number — forcing sequential (1)`
+      );
+      return 1;
+    }
+    return clamp(n);
+  }
+  if (raw === undefined || raw === null) return DEFAULT_PARALLEL_TASKS;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 1) return 1;
-  return Math.min(Math.floor(n), HARD_PARALLEL_CEILING);
+  if (!Number.isFinite(n)) {
+    console.log(
+      `  task-workspace: deliver.parallelTasks=${JSON.stringify(raw)} is not a number — forcing sequential (1)`
+    );
+    return 1;
+  }
+  return clamp(n);
 }
 
 function git(cwd: string, args: string[], input?: string, timeoutMs = 120_000): string {

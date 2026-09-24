@@ -4,12 +4,12 @@
  * Uses real temp git repos — this module is pure git orchestration.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { execFileSync } from 'child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createTaskWorkspaceManager, resolveParallelTasks } from '../../src/delivery/task-workspace.js';
+import { createTaskWorkspaceManager, resolveParallelTasks, DEFAULT_PARALLEL_TASKS } from '../../src/delivery/task-workspace.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -41,14 +41,46 @@ function makeRepo(): string {
 }
 
 describe('resolveParallelTasks', () => {
-  it('clamps to [1, 8] and treats garbage as sequential', () => {
-    expect(resolveParallelTasks(undefined)).toBe(1);
-    expect(resolveParallelTasks('nope')).toBe(1);
-    expect(resolveParallelTasks(0)).toBe(1);
-    expect(resolveParallelTasks(1)).toBe(1);
-    expect(resolveParallelTasks(3)).toBe(3);
-    expect(resolveParallelTasks('4')).toBe(4);
-    expect(resolveParallelTasks(99)).toBe(8);
+  // Pass an explicit empty env so a developer's exported
+  // UAP_DELIVER_PARALLEL_TASKS can never leak into these assertions.
+  it('clamps explicit config to [1, 8] and treats garbage as sequential', () => {
+    expect(resolveParallelTasks('nope', {})).toBe(1);
+    expect(resolveParallelTasks(0, {})).toBe(1);
+    expect(resolveParallelTasks(1, {})).toBe(1);
+    expect(resolveParallelTasks(3, {})).toBe(3);
+    expect(resolveParallelTasks('4', {})).toBe(4);
+    expect(resolveParallelTasks(99, {})).toBe(8);
+  });
+
+  it('an UNSET config defaults to parallel (the default flip)', () => {
+    expect(resolveParallelTasks(undefined, {})).toBe(DEFAULT_PARALLEL_TASKS);
+    expect(resolveParallelTasks(null, {})).toBe(DEFAULT_PARALLEL_TASKS);
+    expect(DEFAULT_PARALLEL_TASKS).toBeGreaterThan(1);
+  });
+
+  it('a set-but-unparseable value LOGS the forced sequential fallback (never silently)', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(resolveParallelTasks(undefined, { UAP_DELIVER_PARALLEL_TASKS: 'junk' })).toBe(1);
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("UAP_DELIVER_PARALLEL_TASKS='junk'"));
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('forcing sequential'));
+
+      spy.mockClear();
+      expect(resolveParallelTasks('nope', {})).toBe(1);
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('deliver.parallelTasks'));
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('forcing sequential'));
+
+      // Valid and unset values stay silent — the note exists only for the
+      // present-but-invalid fail-safe.
+      spy.mockClear();
+      expect(resolveParallelTasks(3, {})).toBe(3);
+      expect(resolveParallelTasks(undefined, {})).toBe(DEFAULT_PARALLEL_TASKS);
+      expect(resolveParallelTasks(undefined, { UAP_DELIVER_PARALLEL_TASKS: '4' })).toBe(4);
+      expect(resolveParallelTasks(undefined, { UAP_DELIVER_PARALLEL_TASKS: '' })).toBe(DEFAULT_PARALLEL_TASKS);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

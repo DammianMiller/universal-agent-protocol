@@ -560,8 +560,10 @@ export function parseFileBlocks(output: string): FileBlock[] {
  * Resolve `target`'s parent to its real (symlink-followed) location and
  * confirm it stays inside the project root. Lexical checks alone let a
  * pre-existing symlink inside the repo redirect a write outside it.
+ * Exported for the adversarial gate's attack-file sanctioning, which must
+ * apply the same symlink discipline as the applier (one rule, all writers).
  */
-function realParentEscapes(target: string, realRoot: string): boolean {
+export function realParentEscapes(target: string, realRoot: string): boolean {
   let dir = dirname(target);
   // Walk up to the nearest existing ancestor (target/intermediate dirs may
   // not exist yet) and realpath that.

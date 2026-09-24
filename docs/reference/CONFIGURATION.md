@@ -91,6 +91,10 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
 | `UAP_AGENT_ID` | Agent id for MCP execute | `mcp-<pid>` |
 | `UAP_MAX_PARALLEL` | Override max parallel workers | auto |
 | `UAP_PARALLEL` | `false` disables parallelism | enabled |
+| `UAP_DELIVER_PARALLEL_TASKS` | Override `deliver.parallelTasks`: `1` forces sequential task dispatch everywhere (escape hatch); `2`–`8` retunes the fan-out cap. Set-but-invalid fails safe to sequential. | unset (config wins) |
+| `UAP_DELIVER_STATE_HASH` | State-hash read dedup in the deliver executor: a within-turn re-read of a file window whose sha256 is unchanged serves a compact reference instead of full content (token saving); writes/edits invalidate, external edits are caught by re-hashing on read. `0` disables. Note: the compact reference carries a 48-bit sha256 prefix plus the exact byte count into run telemetry — negligible for source trees, relevant if runs read secret-bearing files. | on |
+| `UAP_DELIVER_STATE_HASH_MIN_BYTES` | Size floor below which a repeated read is cheaper to serve in full than as a reference. | `1024` |
+| `UAP_DELIVER_ADVERSARIAL_GATE` | Adversarial red-team gate: after a deliver run converges, a bounded skeptic pass authors edge-case tests against the patch (append-only oracle channel); a breach routes back into the loop as ordinary gate feedback. `0`/`off`/`false` disables; a positive integer retunes the round budget (cap 4). Set-but-invalid fails safe to ON. Residual risk: authored adversarial tests execute with host privileges (env-stripped only — file-based credentials such as `~/.aws` are still reachable), and repo content is a prompt-injection channel into the authoring model; use `uap sandbox` containment for untrusted repos. | on (≤2 rounds) |
 
 ### `.uap.json` `deliver` section
 
@@ -98,7 +102,8 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
 |---|---|---|
 | `deliver.orchestrate` | Blackboard orchestration for decomposed missions (`"on"`/`"off"`) | `"on"` (preflight seeds it) |
 | `deliver.epics` | Epic controller outer loop (`"on"`/`"off"`) | `"on"` (preflight seeds it) |
-| `deliver.parallelTasks` | Worktree-isolated parallel dispatch: independent READY orchestrator tasks run concurrently, each convergence loop + its gates in a detached git worktree seeded with the mission's current state; deltas merge back serially, and a merge conflict fails the task into the minimal-repair retry. Clamped to 1–8. **Config-only by design — no env override** (an exported variable must never silently parallelize every run). | `1` (sequential) |
+| `deliver.parallelTasks` | Worktree-isolated parallel dispatch: independent READY orchestrator tasks run concurrently, each convergence loop + its gates in a detached git worktree seeded with the mission's current state; deltas merge back serially, and a merge conflict fails the task into the minimal-repair retry. Clamped to 1–8. **Parallel is the default** — an unset key resolves to 4, capped per wave at the number of independent READY tasks. Parallelism is conditional on worktree isolation: outside a git repo (or with an unborn HEAD) the run stays sequential and logs why. Set `1` (or `UAP_DELIVER_PARALLEL_TASKS=1`) to force sequential execution. | `4` (parallel, worktree-isolated) |
+| `deliver.adversarialGate` | Adversarial red-team gate before a converged run is accepted (`false`/`0`/`"off"` disables; a positive integer retunes the round budget, cap 4). Overridden by `UAP_DELIVER_ADVERSARIAL_GATE`. | on (≤2 rounds) |
 | `deliver.autoSizeEpics` | Context auto-size for epic sessions (`false`/`"off"` disables) | enabled |
 | `UAP_BENCHMARK_MODE` | `true` enables benchmark template mode | off |
 | `UAP_BENCHMARK_PARALLEL` | Parallel model count in benchmarks | — |

@@ -46,7 +46,10 @@ export interface OrchestratedMissionDeps {
   /** The task DAG to execute. */
   tasks: OrchestratorTask[];
   /**
-   * Resolved `deliver.parallelTasks` (1 = sequential). Parallel dispatch
+   * Resolved `deliver.parallelTasks` fan-out (1 = sequential). Since the
+   * default flip this is typically >1: an unset config resolves to
+   * DEFAULT_PARALLEL_TASKS in task-workspace.ts (escape hatch:
+   * `UAP_DELIVER_PARALLEL_TASKS=1` or config `1`). Parallel dispatch
    * additionally requires a workspace manager; without one it degrades to
    * sequential with a note.
    */
@@ -141,15 +144,24 @@ export async function runOrchestratedMission(deps: OrchestratedMissionDeps): Pro
     history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
   };
 
-  // -- Worktree-isolated parallel dispatch --
-  // `.uap.json` deliver.parallelTasks (config-only BY DESIGN - no env; see
-  // the concurrency notes in task-orchestrator.ts) dispatches independent
-  // READY tasks concurrently, EACH in its own detached git worktree seeded
-  // with the main tree's current uncommitted state and judged against its
-  // own spec. Merge-backs are SERIALIZED under a lock; a conflicting merge
-  // fails the task, and the orchestrator's minimal repair retries it in a
-  // fresh workspace seeded with the updated baseline - conflicts resolve
-  // through the ATG repair path instead of corrupting the tree.
+  // -- Worktree-isolated parallel dispatch (the DEFAULT since the flip) --
+  // `deliver.parallelTasks` resolves to DEFAULT_PARALLEL_TASKS when unset
+  // (task-workspace.ts; escape hatch: UAP_DELIVER_PARALLEL_TASKS=1 or config
+  // 1). Independent READY tasks dispatch concurrently, EACH in its own
+  // detached git worktree seeded with the main tree's current uncommitted
+  // state and judged against its own spec. Merge-backs are SERIALIZED under
+  // a lock; a conflicting merge fails the task, and the orchestrator's
+  // minimal repair retries it in a fresh workspace seeded with the updated
+  // baseline - conflicts resolve through the ATG repair path instead of
+  // corrupting the tree.
+  //
+  // SAFETY PREDICATE for the parallel default: tasks fan out ONLY when every
+  // concurrent task runs in its own worktree (wsManager non-null). The
+  // production runLoop mutates whatever working tree it is pointed at, so
+  // concurrent IN-TREE execution would race file writes and gate runs — that
+  // is the property the historical default-1 protected, now enforced
+  // structurally. No isolation (not a git repo, unborn HEAD) => sequential,
+  // with the reason logged here.
   const wsManager = deps.parallelTasks > 1 ? deps.workspaceManager : null;
   if (deps.parallelTasks > 1 && !wsManager) {
     note('  ⇉ parallel tasks: worktree isolation unavailable (not a git repo?) - running sequentially');
