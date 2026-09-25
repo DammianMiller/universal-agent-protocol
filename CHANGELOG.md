@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.15.0 (2026-09-25)
+
+- feat(deliver): evidence-gates uplift — closes the measured premature-delivery hole (paired-qwen38-games, 2026-09-24: 4/4 self-declared deliveries failed external verify on shallow model-authored journeys)
+- feat(deliver): plan-time criteria lint rewrites behavioral acceptance criteria with an explicit executable-evidence clause (`UAP_DELIVER_CRITERIA_LINT=0` or `deliver.criteriaLint: false` disables)
+- feat(deliver): journey-depth enforcement — a user-paths journey only counts as behavioral evidence when a state-changing interaction precedes an assertion; all-shallow passes are flagged to the judge, and manifests edited after the run are treated as stale
+- feat(deliver): anti-vacuous delivery gate — a judge/breaker PASS on a web deliverable without executable behavioral evidence is refused, forcing another turn while budget remains (`UAP_DELIVER_EVIDENCE_GATE=0` or `deliver.evidenceGate: false` disables). BEHAVIORAL CHANGE, default on: missions that previously self-delivered on vacuous evidence now consume extra turns and can exhaust budget; static-content web missions declare not-applicable via an empty user-paths manifest
+- feat(deliver): over-claim metric — every audited judge pass is appended to `.uap/delivery-evidence.jsonl` (`sufficient:false` = caught over-claim), recorded even with enforcement off
+- feat(deliver): master-pipeline readout gains `criteria lint` and `evidence gate` stages
+
+
 ## v2.14.1 (2026-09-24)
 
 - refactor(deliver): split adversarial-gate.ts under the 500-LOC quality gate
