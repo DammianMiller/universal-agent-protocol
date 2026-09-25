@@ -662,6 +662,48 @@ _DOUBLING_FAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# LOCKSTEP ESCALATION guardrail: the SAME tool call failing with the SAME
+# error, over and over -- the intersection of DOUBLING-DOWN (identical
+# fingerprint) and ERROR-LOOP (identical failure signature). Those two guards
+# used to split this case against itself: DOUBLING-DOWN yielded ("ERROR-LOOP
+# owns the lockstep case") while ERROR-LOOP's remedy assumes a failing FILE to
+# re-read, which is wrong for tool-misuse loops (a remote command that can
+# never succeed). Observed live (2026-09-25): one ssh/docker/python call
+# re-issued 27 times -- ~15 min of full-context prefills at 100% GPU, three
+# ignored re-read nudges -- before the ERROR-LOOP hard stop finally fired.
+#
+# Lockstep owns the case and escalates decisively: a PIVOT directive at
+# PROXY_LOCKSTEP_PIVOT_AT, a final warning one fire later, and a hard stop
+# (400 + loop-incident record) at PROXY_LOCKSTEP_HARD_AT. Both directives are
+# always given before the stop, so with the defaults the stop lands at
+# max(HARD_AT, PIVOT_AT+2) -- never earlier. A fresh human user turn re-arms
+# the guard, mirroring ERROR-LOOP. PROXY_LOCKSTEP_BREAK=off disables the
+# guard; PIVOT_AT=0 disables it too (the ladder has no entry point);
+# HARD_AT=0 disables only the hard stop (advisory tiers still fire).
+#
+# Dependency: the streaks lockstep reads are fed by the ERROR-LOOP and
+# DOUBLING-DOWN trackers, so PROXY_ERROR_LOOP=off or PROXY_DOUBLING_BREAK=off
+# silently disarms lockstep as well. Fail-safe direction, but operator-visible
+# in the docs.
+PROXY_LOCKSTEP_BREAK = os.environ.get("PROXY_LOCKSTEP_BREAK", "on").lower() not in {
+    "0", "off", "false", "no",
+}
+PROXY_LOCKSTEP_PIVOT_AT = int(os.environ.get("PROXY_LOCKSTEP_PIVOT_AT", "2"))
+PROXY_LOCKSTEP_HARD_AT = int(os.environ.get("PROXY_LOCKSTEP_HARD_AT", "4"))
+
+# Loop-incident ledger: every lockstep escalation tier appends one JSONL
+# record so `uap loops` can show what looped, how hard, and hand the incident
+# to `uap ideate` / `uap deliver` for resolution. Best-effort telemetry -- the
+# proxy never fails a request over it. "" disables; the default honors
+# XDG_CONFIG_HOME like the rest of the UAP config layout.
+_LOOP_INCIDENT_DEFAULT = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "uap",
+    "loop-incidents.jsonl",
+)
+UAP_LOOP_INCIDENTS = os.environ.get("UAP_LOOP_INCIDENTS", _LOOP_INCIDENT_DEFAULT)
+
 PROXY_TOOL_STATE_MACHINE = os.environ.get(
     "PROXY_TOOL_STATE_MACHINE", "on"
 ).lower() not in {
@@ -2406,6 +2448,13 @@ class SessionMonitor:
     doubling_streak: int = 0  # consecutive FAILED retries of that same call
     doubling_break_fires: int = 0  # monotonic count of injected pivot directives
     last_doubling_obs: str = ""  # msg-count:fingerprint key of the last counted observation
+    lockstep_fires: int = 0  # lockstep escalation directives injected this streak
+    lockstep_blocks: int = 0  # monotonic count of lockstep hard stops (400s) served
+    # Streak depth at which the last lockstep tier fired. A client retry resends
+    # an IDENTICAL trailing transcript (5xx, stream abort), which without this
+    # would re-inject the directive and re-append a ledger record per retry.
+    lockstep_last_fire_streak: int = 0
+    session_id: str = ""  # owning session id (set by get_session_monitor)
     mandate_deliver_fires: int = 0  # monotonic count of forced deliver-routings (mandate)
     mandate_deliver_active: bool = False  # THIS turn is pinned to deliver (beats recon convergence)
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
@@ -3270,6 +3319,7 @@ def get_session_monitor(session_id: str) -> SessionMonitor:
         monitor = SessionMonitor(context_window=default_context_window)
         session_monitors[session_id] = monitor
 
+    monitor.session_id = session_id
     monitor.touch()
     if monitor.context_window <= 0:
         monitor.context_window = default_context_window
@@ -7271,11 +7321,237 @@ def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> N
     logger.warning("STUCK-BREAK: forced terminal turn (%s, fires=%d)", reason, monitor.stuck_break_fires)
 
 
+def _lockstep_streak(monitor: "SessionMonitor") -> int:
+    """Depth of the identical-call-identical-failure lockstep.
+
+    DOUBLING-DOWN tracks consecutive failed retries of one fingerprint;
+    ERROR-LOOP tracks consecutive recurrences of one error signature. When both
+    climb together the loop is provably deterministic -- the same input
+    produces the same failure -- so the lockstep depth is the shallower of the
+    two (either signal resetting breaks the lockstep)."""
+    if not PROXY_LOCKSTEP_BREAK:
+        return 0
+    if not monitor.doubling_fp:
+        return 0
+    return min(monitor.doubling_streak, monitor.error_signature_streak)
+
+
+def _lockstep_active(monitor: "SessionMonitor") -> bool:
+    """True when the lockstep ladder owns this turn. ERROR-LOOP and
+    DOUBLING-DOWN consult this to yield rather than stack a second (and, for
+    ERROR-LOOP's file-centric remedy, actively wrong) directive."""
+    return (
+        PROXY_LOCKSTEP_BREAK
+        and PROXY_LOCKSTEP_PIVOT_AT > 0
+        and _lockstep_streak(monitor) >= PROXY_LOCKSTEP_PIVOT_AT
+    )
+
+
+def _record_loop_incident(monitor: "SessionMonitor", outcome: str, detail: str) -> None:
+    """Append one JSONL record to the loop-incident ledger. Best-effort: the
+    proxy never fails a request over telemetry.
+
+    Deliberately lossy -- the fingerprint is hashed and tool ARGUMENTS are
+    never written. The observed loops run remote shells whose command lines
+    can carry tokens, URLs, and credentials; `uap loops` needs the SHAPE of
+    the loop (tool, error signature, streak), not its payload.
+
+    The ledger grows ~3 records per loop episode (pivot / final / hard stop);
+    there is deliberately no rotation -- a wedged session hard-stops instead
+    of streaming records. The file is created 0600 (normalized error
+    fragments can still name internal hosts/services) and opened O_NOFOLLOW
+    so a symlink at the path is refused race-free."""
+    path = UAP_LOOP_INCIDENTS
+    if not path:
+        return
+    try:
+        if os.path.islink(path):
+            logger.warning(
+                "loop-incident ledger is a symlink -- refusing to append (%s)", path
+            )
+            return
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+        fp = monitor.doubling_fp or ""
+        record = {
+            "v": 1,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "guard": "lockstep",
+            "outcome": outcome,
+            "session": (monitor.session_id or "")[:64],
+            "tool": "+".join(sorted(_fingerprint_tool_names(fp)))[:80],
+            "fingerprint": hashlib.sha1(fp.encode("utf-8", "replace")).hexdigest()[:12]
+            if fp
+            else "",
+            "error_signature": (monitor.last_error_signature or "")[:200],
+            "streak": _lockstep_streak(monitor),
+            "doubling_streak": monitor.doubling_streak,
+            "error_signature_streak": monitor.error_signature_streak,
+            "fires": monitor.lockstep_fires,
+            "blocks": monitor.lockstep_blocks,
+            "detail": (detail or "")[:200],
+        }
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.warning("loop-incident ledger append failed (non-fatal): %s", exc)
+
+
+def _maybe_lockstep_escalate(openai_body: dict, monitor: "SessionMonitor") -> None:
+    """Decisive escalation for the identical-call-identical-failure loop.
+
+    Owns the lockstep case the older guards split against themselves (see the
+    knob block for the 2026-09-25 incident: 27 identical ssh calls, ~15 min of
+    full-context prefills, three ignored re-read nudges). The ladder:
+    PIVOT_AT  -> inject a pivot directive (name the deterministic failure,
+                 demand genuinely different approaches, take one);
+    one fire later -> a final warning that the next recurrence hard-fails;
+    HARD_AT   -> raise ErrorLoopHardBlock (served as a 400) and record the
+                 incident for `uap loops`. A fresh human user turn re-arms,
+                 mirroring ERROR-LOOP. Advisory tiers do not touch tool_choice:
+    the model should keep acting, just never with THAT call again."""
+    streak = _lockstep_streak(monitor)
+    if streak < PROXY_LOCKSTEP_PIVOT_AT or PROXY_LOCKSTEP_PIVOT_AT <= 0:
+        # The lockstep broke (a different call, a new error, or a clean
+        # result): reset the ladder so the NEXT loop climbs it from the pivot
+        # tier instead of inheriting "directives ignored" from a previous,
+        # resolved loop.
+        monitor.lockstep_fires = 0
+        monitor.lockstep_last_fire_streak = 0
+        return
+    # Recon-convergence may strip tools / force a terminal summary this turn;
+    # a "take a different approach now" directive would contradict it. Mirrors
+    # DOUBLING-DOWN's yield.
+    if monitor.recon_convergence_pending():
+        return
+    # Deliberately NO yield to STUCK-BREAK: its repeat-call signal is
+    # continuously true during exactly the loop this guard owns, so yielding
+    # would suppress the decisive tier in the target incident shape. The
+    # directives are complementary anyway -- both demand abandoning the
+    # identical call -- and lockstep's diagnosis steps are prose-doable on a
+    # tool-stripped turn.
+    tool = (monitor.doubling_fp or "").split("|", 1)[0].split(":", 1)[0] or "tool"
+    if (
+        PROXY_LOCKSTEP_HARD_AT > 0
+        and streak >= PROXY_LOCKSTEP_HARD_AT
+        and monitor.lockstep_fires >= 2
+    ):
+        if _has_fresh_user_turn(openai_body):
+            monitor.lockstep_fires = 0
+            monitor.lockstep_last_fire_streak = 0
+            logger.warning(
+                "LOCKSTEP: human turn after %d hard stop(s) -- guard re-armed",
+                monitor.lockstep_blocks,
+            )
+            return
+        monitor.lockstep_blocks += 1
+        # Refuse EVERY retry (that is the hard stop) but record the incident
+        # once per new depth -- a client retrying the refused request resends
+        # the identical transcript and must not spam the ledger.
+        if streak > monitor.lockstep_last_fire_streak:
+            monitor.lockstep_last_fire_streak = streak
+            _record_loop_incident(monitor, "hard_blocked", f"{tool} x{streak}")
+        raise LockstepHardBlock(
+            "LOOP-ESCALATE hard stop: the identical "
+            + tool
+            + " call has now failed "
+            + str(streak)
+            + " times with the identical error, and both pivot directives were "
+            "ignored. Retrying a deterministic failure cannot work, so the "
+            "proxy refuses to burn another full-context prefill on this loop "
+            "(operator policy PROXY_LOCKSTEP_HARD_AT="
+            + str(PROXY_LOCKSTEP_HARD_AT)
+            + "). The incident was recorded to the loop ledger -- run "
+            "`uap loops` to inspect it and hand it to `uap ideate` / "
+            "`uap deliver`, or send a normal user message to re-arm the guard. "
+            "Failing signature: \""
+            + monitor.last_error_signature[:120]
+            + "\""
+        )
+    # Duplicate observation of an already-addressed depth: the client resent
+    # the same trailing transcript. The directive for this depth is already in
+    # the conversation; injecting again would stack copies per retry.
+    if monitor.lockstep_fires > 0 and streak <= monitor.lockstep_last_fire_streak:
+        return
+    if monitor.lockstep_fires == 0:
+        outcome = "pivot"
+        directive = (
+            "\n\nLOOP-ESCALATE -- the identical "
+            + tool
+            + " call has failed "
+            + str(streak)
+            + " times with the IDENTICAL error: \""
+            + monitor.last_error_signature[:120]
+            + "\". Retrying this exact call CANNOT work -- the failure is "
+            "deterministic, so do not issue it again. Switch strategy now:\n"
+            "1. State in one sentence WHY the call fails (quote the decisive "
+            "line of the error).\n"
+            "2. List 2-3 genuinely different approaches -- a different tool, a "
+            "different target, or a smaller verifiable step.\n"
+            "3. Take the most promising one on your next tool turn -- or, if "
+            "tools are unavailable this turn, state the choice now.\n"
+            "If no alternative exists, stop and report the blocker in one "
+            "sentence instead of retrying."
+        )
+    else:
+        outcome = "final_warning"
+        # Accurate deadline: the stop lands at max(HARD_AT, the turn both
+        # directives have been given), so phrase from the knob rather than
+        # promising "once more" when HARD_AT sits further out.
+        if streak + 1 >= PROXY_LOCKSTEP_HARD_AT:
+            deadline = "If the same call with the same error recurs once more"
+        else:
+            deadline = (
+                "If the same call keeps failing through streak "
+                + str(PROXY_LOCKSTEP_HARD_AT)
+            )
+        directive = (
+            "\n\nFINAL WARNING -- the identical failing "
+            + tool
+            + " call was retried AGAIN after the pivot directive. "
+            + deadline
+            + ", the proxy HARD-FAILS this session (400) and records the loop "
+            "incident for `uap loops`. Choose one of the alternatives you "
+            "listed, or stop and report the blocker."
+        )
+    monitor.lockstep_fires += 1
+    monitor.lockstep_last_fire_streak = streak
+    _record_loop_incident(monitor, outcome, f"{tool} x{streak}")
+    msgs = openai_body.get("messages")
+    if not isinstance(msgs, list):
+        msgs = []
+    if msgs and msgs[0].get("role") == "system":
+        msgs[0]["content"] = (msgs[0].get("content") or "") + directive
+    else:
+        msgs.insert(0, {"role": "system", "content": directive.strip()})
+    openai_body["messages"] = msgs
+    logger.warning(
+        "LOCKSTEP: %s injected (%s x%d, sig=%r, fires=%d)",
+        outcome,
+        tool,
+        streak,
+        monitor.last_error_signature[:80],
+        monitor.lockstep_fires,
+    )
+
+
 class ErrorLoopHardBlock(Exception):
     """A session kept re-hitting the SAME tool_result error after
     PROXY_ERROR_LOOP_HARD_LIMIT injected re-read nudges. The /v1/messages
     handler converts this into a 400 so the loop stops consuming full-context
     prefills instead of being nudged yet again."""
+
+
+class LockstepHardBlock(ErrorLoopHardBlock):
+    """The LOCKSTEP ladder's terminal tier. Subclasses ErrorLoopHardBlock so
+    the single existing 400 handler serves it unchanged; the distinct type
+    lets that handler attribute the stop to the right guard."""
 
 
 def _has_fresh_user_turn(openai_body: dict) -> bool:
@@ -7313,6 +7589,11 @@ def _maybe_inject_error_loop_break(openai_body: dict, monitor: "SessionMonitor")
     a 400 rather than burning another prefill. A fresh human user turn re-arms
     the guard."""
     if not PROXY_ERROR_LOOP:
+        return
+    # LOCKSTEP owns the identical-call-identical-error case: its ladder is
+    # faster and its directive correct (pivot to a different approach, not
+    # re-read a file that may not exist). Yield rather than stack directives.
+    if _lockstep_active(monitor):
         return
     if monitor.error_signature_streak < PROXY_ERROR_LOOP_THRESHOLD:
         return
@@ -7444,6 +7725,10 @@ def _maybe_inject_doubling_break(openai_body: dict, monitor: "SessionMonitor") -
     touch tool_choice -- the model should keep acting, just not with THAT call."""
     should, reason = monitor.should_force_doubling_break()
     if not should:
+        return
+    # LOCKSTEP owns the identical-call-identical-error case (faster ladder,
+    # harder stop); only the varied-error doubling shape remains here.
+    if _lockstep_active(monitor):
         return
     # STUCK-BREAK (a self-aware loop wanting a prose exit) is more urgent.
     stuck, _ = monitor.should_force_stuck_break()
@@ -8628,6 +8913,12 @@ def build_openai_request(
     _maybe_inject_recon_convergence(openai_body, monitor, full_openai_tools)
 
     _maybe_inject_stuck_break(openai_body, monitor)
+
+    # LOCKSTEP ESCALATION: the identical call failing with the identical error.
+    # Runs before ERROR-LOOP/DOUBLING-DOWN, which yield to it -- its ladder
+    # (pivot -> final warning -> hard stop + loop-incident record) is decisive
+    # where their nudges drifted for 27 turns on 2026-09-25.
+    _maybe_lockstep_escalate(openai_body, monitor)
 
     # ERROR-LOOP: same tool_result failure recurring despite varied edits.
     _maybe_inject_error_loop_break(openai_body, monitor)
@@ -14182,9 +14473,11 @@ async def messages(request: Request):
             profile_grammar=profile_grammar,
         )
     except ErrorLoopHardBlock as exc:
+        lockstep = isinstance(exc, LockstepHardBlock)
         logger.error(
-            "ERROR-LOOP hard stop served (blocks=%d): %s",
-            monitor.error_loop_blocks,
+            "%s hard stop served (blocks=%d): %s",
+            "LOOP-ESCALATE" if lockstep else "ERROR-LOOP",
+            monitor.lockstep_blocks if lockstep else monitor.error_loop_blocks,
             str(exc)[:160],
         )
         return Response(

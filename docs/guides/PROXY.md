@@ -181,6 +181,7 @@ set is below.
 | **Recon-convergence** | `PROXY_RECON_CONVERGENCE_THRESHOLD` (40) | After N tool-using turns with **no** write/deliverable, inject "stop exploring, produce the deliverable"; escalates to stripping tools if it persists (0 disables) |
 | **Hard-finalize** | `PROXY_HARD_FINALIZE_TURNS` (40) | Absolute turn cap before a forced finalize |
 | **MANDATE-DELIVER** | `PROXY_MANDATE_DELIVER` (on) | On the delivery-enforcer block marker, pin `tool_choice` to `deliver` so the next turn *must* route through the gated path — makes routing binding for weak models |
+| **Lockstep escalation** | `PROXY_LOCKSTEP_BREAK` (on), `PROXY_LOCKSTEP_PIVOT_AT` (2), `PROXY_LOCKSTEP_HARD_AT` (4) | The identical tool call failing with the identical error: inject a pivot directive at streak 2, a final warning one fire later, then hard-fail the session (400) at streak 4 instead of drifting (both directives always precede the stop, so it lands at `max(HARD_AT, PIVOT_AT+2)`). Each tier appends to the loop-incident ledger (`UAP_LOOP_INCIDENTS`, default `~/.config/uap/loop-incidents.jsonl`, ~3 records per episode, no rotation) for `uap loops` to inspect and hand to `uap ideate`/`uap deliver`. A fresh human user turn re-arms the guard. Disarmed if `PROXY_ERROR_LOOP=off` or `PROXY_DOUBLING_BREAK=off` (their trackers feed it) |
 
 ### Context & compaction
 
