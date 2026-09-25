@@ -19,6 +19,8 @@ const CLEAN_ENV: NodeJS.ProcessEnv = {
   UAP_DELIVER_STATE_HASH: undefined,
   UAP_DELIVER_STATE_HASH_MIN_BYTES: undefined,
   UAP_DELIVER_ADVERSARIAL_GATE: undefined,
+  UAP_DELIVER_CRITERIA_LINT: undefined,
+  UAP_DELIVER_EVIDENCE_GATE: undefined,
 };
 
 describe('resolveMasterPipeline', () => {
@@ -112,5 +114,32 @@ describe('formatMasterPipelineLine', () => {
     );
     expect(line).toContain('state-hash dedup off');
     expect(line).toContain('adversarial gate off');
+  });
+});
+
+describe('evidence-gates stages (criteria lint C + delivery evidence B)', () => {
+  it('reports both ON by default and in the readout line, after the adversarial stage', () => {
+    // `{}` deliverCfg (not undefined): a provided-but-keyless config resolves
+    // to the default WITHOUT reading the repo's own .uap.json — hermetic
+    // (correctness-review finding 9).
+    const p = resolveMasterPipeline({}, CLEAN_ENV);
+    expect(p.criteriaLint).toBe(true);
+    expect(p.evidenceGate).toBe(true);
+    const line = formatMasterPipelineLine(p);
+    expect(line).toContain('criteria lint on');
+    expect(line).toContain('evidence gate on');
+    expect(line.indexOf('adversarial gate')).toBeLessThan(line.indexOf('criteria lint'));
+  });
+
+  it('reflects the env kill-switches as off', () => {
+    const line = formatMasterPipelineLine(
+      resolveMasterPipeline(undefined, {
+        ...CLEAN_ENV,
+        UAP_DELIVER_CRITERIA_LINT: '0',
+        UAP_DELIVER_EVIDENCE_GATE: '0',
+      })
+    );
+    expect(line).toContain('criteria lint off');
+    expect(line).toContain('evidence gate off');
   });
 });

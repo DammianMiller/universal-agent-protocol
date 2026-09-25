@@ -154,7 +154,11 @@ describe('buildMissionAcceptanceGate', () => {
         },
       })
     );
-    const verdict = await gate('/proj');
+    // Secondary acceptance only runs on a GREEN ladder in production — say
+    // so explicitly. The delivery-evidence gate (B) counts that ladder as the
+    // executable signal; without the ctx a rendered page with no journeys is
+    // (correctly) refused as vacuous.
+    const verdict = await gate('/proj', { ladderPassed: true });
     expect(judged).toBe(1);
     expect(verdict.passed).toBe(true);
     // Secondary mode used to discard the observation entirely; it is evidence now.
@@ -209,7 +213,9 @@ describe('buildMissionAcceptanceGate', () => {
         },
       })
     );
-    expect((await gate('/proj')).passed).toBe(true);
+    // Green ladder = the executable signal the delivery-evidence gate (B)
+    // accepts in secondary mode (see the graded-visual test above).
+    expect((await gate('/proj', { ladderPassed: true })).passed).toBe(true);
     expect(judged).toBe(1);
   });
 
@@ -366,6 +372,15 @@ describe('fidelity-max vision convergence (run Y delivered-vs-verify divergence,
       visualGate: stubVisual,
       visionReview: async () => null,
       judge: (async () => ({ passed: true, feedback: '', score: 1 })) as never,
+      // The delivery-evidence gate (B) refuses a rendered-page pass with no
+      // behavioral proof; this test's subject is vision convergence, so it
+      // supplies a deep journey as its executable signal.
+      userPathsNote: () => ({
+        note: 'User-path validation ALL PASSED (1 real-client journey)',
+        trusted: true,
+        verdict: 'pass',
+        depth: { total: 1, deep: 1, shallowIds: [] },
+      }),
     });
     const r = await gate('/tmp/x');
     expect(r.passed).toBe(true);
@@ -445,5 +460,205 @@ describe('red-ladder acceptance (runAcceptanceDespiteLadder safety)', () => {
 
     await gate('/tmp/x', { ladderPassed: true });
     expect(breakerCalls).toBe(1); // green turn: counted as before
+  });
+});
+
+describe('delivery-evidence gate (B) + over-claim metric (D)', () => {
+  const renderedVisual = async (): Promise<VisualVerdict> => ({
+    passed: true,
+    skipped: false,
+    structural: false,
+    feedback: '',
+    pages: [renderedPage],
+    screenshotDir: null,
+  });
+  // The measured failure shape: journeys passed, none deep (onvukh rubiks).
+  const shallowNote = {
+    note: 'User-path validation ALL PASSED (2 real-client journeys) … SHALLOW …',
+    trusted: true,
+    shallow: true,
+    verdict: 'pass' as const,
+    depth: { total: 2, deep: 0, shallowIds: ['load-and-title', 'scramble-control'] },
+  };
+  const deepNote = {
+    note: 'User-path validation ALL PASSED (2 real-client journeys) — …',
+    trusted: true,
+    verdict: 'pass' as const,
+    depth: { total: 2, deep: 1, shallowIds: ['load-and-title'] },
+  };
+
+  it('PRIMARY: refuses a judge pass whose only behavioral evidence is SHALLOW journeys', async () => {
+    process.env.UAP_DELIVER_EVIDENCE_GATE = '1';
+    try {
+      const notes: string[] = [];
+      const gate = buildMissionAcceptanceGate(
+        makeDeps({
+          primary: true,
+          visualGate: renderedVisual,
+          userPathsNote: () => shallowNote,
+          note: (l) => notes.push(l),
+        })
+      );
+      const verdict = await gate('/proj');
+      expect(verdict.passed).toBe(false);
+      expect(verdict.feedback).toContain('DELIVERY EVIDENCE INSUFFICIENT');
+      expect(verdict.feedback).toContain('PERFORMS a state-changing interaction');
+      expect(notes.some((n) => n.includes('delivery refused'))).toBe(true);
+    } finally {
+      delete process.env.UAP_DELIVER_EVIDENCE_GATE;
+    }
+  });
+
+  it('PRIMARY: a judge pass backed by at least one DEEP journey is delivered', async () => {
+    process.env.UAP_DELIVER_EVIDENCE_GATE = '1';
+    try {
+      const gate = buildMissionAcceptanceGate(
+        makeDeps({ primary: true, visualGate: renderedVisual, userPathsNote: () => deepNote })
+      );
+      const verdict = await gate('/proj');
+      expect(verdict.passed).toBe(true);
+    } finally {
+      delete process.env.UAP_DELIVER_EVIDENCE_GATE;
+    }
+  });
+
+  it('SECONDARY with a green ladder delivers on the ladder basis (normal path unaffected)', async () => {
+    process.env.UAP_DELIVER_EVIDENCE_GATE = '1';
+    try {
+      const gate = buildMissionAcceptanceGate(
+        makeDeps({ userPathsNote: () => shallowNote })
+      );
+      const verdict = await gate('/proj', { ladderPassed: true } as never);
+      expect(verdict.passed).toBe(true);
+    } finally {
+      delete process.env.UAP_DELIVER_EVIDENCE_GATE;
+    }
+  });
+
+  it('UAP_DELIVER_EVIDENCE_GATE=0 restores the pre-gate behavior', async () => {
+    process.env.UAP_DELIVER_EVIDENCE_GATE = '0';
+    try {
+      const gate = buildMissionAcceptanceGate(
+        makeDeps({ primary: true, visualGate: renderedVisual, userPathsNote: () => shallowNote })
+      );
+      const verdict = await gate('/proj');
+      expect(verdict.passed).toBe(true);
+    } finally {
+      delete process.env.UAP_DELIVER_EVIDENCE_GATE;
+    }
+  });
+
+  it('appends the caught over-claim to .uap/delivery-evidence.jsonl (the D metric stream)', async () => {
+    process.env.UAP_DELIVER_EVIDENCE_GATE = '1';
+    const { mkdtempSync, readFileSync, existsSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'uap-evgate-'));
+    try {
+      const gate = buildMissionAcceptanceGate(
+        makeDeps({ primary: true, visualGate: renderedVisual, userPathsNote: () => shallowNote })
+      );
+      const verdict = await gate(dir);
+      expect(verdict.passed).toBe(false);
+      const log = join(dir, '.uap', 'delivery-evidence.jsonl');
+      expect(existsSync(log)).toBe(true);
+      const rows = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        judgePassed: true,
+        sufficient: false,
+        basis: 'vacuous',
+        primary: true,
+        journeys: { total: 2, deep: 0 },
+      });
+    } finally {
+      delete process.env.UAP_DELIVER_EVIDENCE_GATE;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('churn-breaker × delivery-evidence gate (correctness finding 2)', () => {
+  const shallowNote2 = {
+    note: 'User-path validation ALL PASSED (1 real-client journey) … SHALLOW …',
+    trusted: true,
+    shallow: true,
+    verdict: 'pass' as const,
+    depth: { total: 1, deep: 0, shallowIds: ['load-only'] },
+  };
+
+  it('a breaker override on a GREEN ladder still delivers (ladder basis)', async () => {
+    process.env.UAP_DELIVER_EVIDENCE_GATE = '1';
+    try {
+      const specs = createSpecRegistry({ initialSpec: 'MISSION', sharedRoot: '/proj', flipLimit: 2 });
+      specs.recordWrites('/proj', 3);
+      const gate = buildMissionAcceptanceGate(
+        makeDeps({ specs, judge: async () => judgeFail, userPathsNote: () => shallowNote2 })
+      );
+      await gate('/proj', { ladderPassed: true });
+      const second = await gate('/proj', { ladderPassed: true });
+      // The breaker tripped AND the evidence gate accepted the green ladder
+      // as the executable signal — no wedge.
+      expect(second.passed).toBe(true);
+    } finally {
+      delete process.env.UAP_DELIVER_EVIDENCE_GATE;
+    }
+  });
+
+  it('a breaker override with NO executable evidence is refused (documented: fix the evidence, not the judge)', async () => {
+    process.env.UAP_DELIVER_EVIDENCE_GATE = '1';
+    try {
+      const specs = createSpecRegistry({ initialSpec: 'MISSION', sharedRoot: '/proj', flipLimit: 2 });
+      specs.recordWrites('/proj', 3);
+      const gate = buildMissionAcceptanceGate(
+        makeDeps({
+          specs,
+          judge: async () => judgeFail,
+          userPathsNote: () => shallowNote2,
+          visualGate: async (): Promise<VisualVerdict> => ({
+            passed: true,
+            skipped: false,
+            structural: false,
+            feedback: '',
+            pages: [renderedPage],
+            screenshotDir: null,
+          }),
+        })
+      );
+      await gate('/proj');
+      const second = await gate('/proj');
+      expect(second.passed).toBe(false);
+      expect(second.feedback).toContain('DELIVERY EVIDENCE INSUFFICIENT');
+    } finally {
+      delete process.env.UAP_DELIVER_EVIDENCE_GATE;
+    }
+  });
+
+  it('records the over-claim metric even with enforcement disabled (security nit 5)', async () => {
+    process.env.UAP_DELIVER_EVIDENCE_GATE = '0';
+    const { mkdtempSync, readFileSync, existsSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'uap-evmetric-'));
+    try {
+      const gate = buildMissionAcceptanceGate(
+        makeDeps({
+          primary: true,
+          visualGate: async (): Promise<VisualVerdict> => ({
+            passed: true, skipped: false, structural: false, feedback: '', pages: [renderedPage], screenshotDir: null,
+          }),
+          userPathsNote: () => shallowNote2,
+        })
+      );
+      const verdict = await gate(dir);
+      expect(verdict.passed).toBe(true); // enforcement off
+      const log = join(dir, '.uap', 'delivery-evidence.jsonl');
+      expect(existsSync(log)).toBe(true); // …but the metric still records
+      const rows = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(rows[0]).toMatchObject({ judgePassed: true, sufficient: false, basis: 'vacuous' });
+    } finally {
+      delete process.env.UAP_DELIVER_EVIDENCE_GATE;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

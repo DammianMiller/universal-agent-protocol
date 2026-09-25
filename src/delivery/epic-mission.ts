@@ -31,6 +31,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { runEpics, type Epic, type EpicRunResult } from './epic-controller.js';
 import { lintSourceContracts } from './contract-lint.js';
+import { lintCriteria, resolveCriteriaLint } from './criteria-lint.js';
 export { missingMissionFiles } from './mission-files.js';
 import { missingMissionFiles } from './mission-files.js';
 import { foldDeliveryResult } from './delivery-result.js';
@@ -237,6 +238,21 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
   // re-shaping a persisted single-epic plan would swap its id.
   const persisted = deps.initialEpics && deps.initialEpics.length >= 1 ? deps.initialEpics : undefined;
   const planned = persisted ?? (await deps.planEpics());
+  // Plan-time criteria lint (criteria-lint.ts): planner-emitted criteria like
+  // "the user can rotate faces and the stickers update" assert runtime
+  // behavior with no machine-checkable anchor, which is exactly what shallow
+  // user journeys then "verify" by loading the page. Rewriting each
+  // behavioral criterion with an explicit executable-evidence clause at PLAN
+  // time makes the requirement part of the spec the builder and the judge
+  // both see (the delivery-evidence gate enforces it at acceptance).
+  const criteriaLintOn = resolveCriteriaLint(undefined, process.env, deps.projectRoot);
+  let criteriaLintRewrites = 0;
+  const lintCriteriaList = (list: string[]): string[] => {
+    if (!criteriaLintOn || list.length === 0) return list;
+    const linted = lintCriteria(list);
+    criteriaLintRewrites += linted.stats.rewritten;
+    return linted.criteria;
+  };
   const epics: Epic[] = (persisted || planned.length >= 2
     ? planned
     : singleEpicFor(deps.instruction)
@@ -249,8 +265,11 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     ...(ph.scaffold ? { scaffold: true } : {}),
     // Planner-emitted acceptance criteria feed the epic spec's judge clause
     // (previously declared on Epic but never populated — a dead clause).
-    ...(ph.criteria?.length ? { criteria: ph.criteria } : {}),
+    ...(ph.criteria?.length ? { criteria: lintCriteriaList(ph.criteria) } : {}),
   }));
+  if (criteriaLintRewrites > 0) {
+    note(`📏 criteria lint: appended executable-evidence requirements to ${criteriaLintRewrites} behavioral criterion/criteria`);
+  }
   note(`🗂  epic controller: ${epics.length} epic(s): ${epics.map((e) => e.title).join(' → ')}`);
   // Persist the shaped plan BEFORE execution: an interruption at any point
   // (even mid-first-epic) must resume against these exact epics and ids.
@@ -329,11 +348,12 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
           : '');
       const subs = await deps.planSplit(subGoal);
       if (subs.length < 2) return null;
+      const lintedBefore = criteriaLintRewrites;
       // A split CONTRACTS (or SCAFFOLD) epic's pieces are still contracts/
       // scaffold work: without the flag, an epic accepted VIA SPLIT locked
       // nothing (or the parent's last FAILED attempt's files). Each accepted
       // piece now locks its own files through the normal onEpic path.
-      return subs.map((s) => ({
+      const pieces = subs.map((s) => ({
         id: s.id,
         title: s.title,
         goal: s.goal,
@@ -342,8 +362,14 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         // A split piece's judge deserves the same criteria treatment as an
         // unsplit epic — dropping them here was the flag-propagation bug's
         // sibling.
-        ...(s.criteria?.length ? { criteria: s.criteria } : {}),
+        ...(s.criteria?.length ? { criteria: lintCriteriaList(s.criteria) } : {}),
       }));
+      // Split-piece rewrites happen long after the plan-time report — say so
+      // here or they are invisible (correctness-review finding 10).
+      if (criteriaLintRewrites > lintedBefore) {
+        note(`  📏 criteria lint: appended executable-evidence requirements to ${criteriaLintRewrites - lintedBefore} split-piece criterion/criteria`);
+      }
+      return pieces;
     },
     onEpic: (epic, outcome) => {
       try {

@@ -36,6 +36,11 @@ import { runInteractionGate } from './interaction-gate.js';
 import type { ProbeMode } from './interaction/types.js';
 import { resolveFidelity } from './fidelity.js';
 import { buildUserPathsNote } from './user-validation.js';
+import {
+  appendEvidenceEvent,
+  assessDeliveryEvidence,
+  resolveEvidenceGate,
+} from './delivery-evidence.js';
 import type { SpecRegistry } from './spec-registry.js';
 
 /**
@@ -168,6 +173,11 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     const fidelity = resolveFidelity(root);
     let visualNote = '';
     let capabilityAdvisory = '';
+    // Evidence-gate (B/D) inputs: the interaction/visual outcomes observed on
+    // THIS turn, hoisted so the judge-pass audit at the end can see what
+    // actually ran regardless of which branch ran it.
+    let interactionOutcome: { skipped: boolean; passed: boolean } | null = null;
+    let visualOutcome: { skipped: boolean; passed: boolean } | null = null;
     if (deps.primary || fidelity.max) {
       const exec = await executionGate(root);
       if (!exec.passed) {
@@ -195,6 +205,10 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
               ? { modes: ['core', 'accelerated', 'soak'] as ProbeMode[], strictCoverage: true }
               : {}),
           });
+          // Record for the finalizePass evidence audit below — every gate
+          // invocation site MUST record its outcome or the audit degrades to
+          // null (fail-safe: vacuous ⇒ refusal, never acceptance).
+          interactionOutcome = { skipped: interaction.skipped, passed: interaction.passed };
           if (!interaction.skipped && !interaction.passed && (deps.primary || fidelity.max)) {
             return { passed: false, feedback: interaction.feedback };
           }
@@ -247,6 +261,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
           // throw-TODO bodies are uncaught errors, and downgrading to passed is
           // how that stays satisfiable), and it keeps a "renders clean" verdict
           // from ever being returned as a blocking failure.
+          visualOutcome = { skipped: visual.skipped, passed: visual.passed }; // evidence audit input — do not skip recording
           if (!visual.skipped && !visual.passed && (deps.primary || visual.structural)) {
             return { passed: false, feedback: structuralFeedback(visual) };
           }
@@ -290,6 +305,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
       // a live history of false positives, and adding a second browser pass to
       // every turn is not worth importing that risk. It stays primary/max-gated.
       const visual = await visualGate(root);
+      visualOutcome = { skipped: visual.skipped, passed: visual.passed }; // evidence audit input — do not skip recording
       if (!visual.skipped) {
         if (!visual.passed && visual.structural) {
           return { passed: false, feedback: structuralFeedback(visual) };
@@ -299,6 +315,51 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     }
     const resolvedSpec = deps.specs.resolve(root);
     const uvNote = userPathsNote(root);
+    // Delivery-evidence gate (B) + over-claim metric (D): a judge (or churn
+    // breaker) PASS is not deliverable on its own — audit the EXECUTABLE
+    // evidence this turn actually produced (delivery-evidence.ts). A refused
+    // pass returns passed:false, so the convergence loop takes another turn
+    // while budget remains; every audited pass is appended to
+    // .uap/delivery-evidence.jsonl for the delivered ∧ ¬verify cross-join.
+    const evidenceGateOn = resolveEvidenceGate(undefined, process.env, root);
+    const finalizePass = (v: {
+      passed: boolean;
+      feedback: string;
+      score?: number;
+    }): { passed: boolean; feedback: string; score?: number } => {
+      // The metric records even with enforcement OFF — a disabled gate is
+      // exactly where caught over-claims are most informative (security
+      // review); only the refusal is gated by the knob.
+      if (!v.passed) return v;
+      const assessment = assessDeliveryEvidence({
+        primary: deps.primary,
+        ladderGreen: gateCtx?.ladderPassed === true,
+        interaction: interactionOutcome,
+        visual: visualOutcome,
+        userPaths:
+          uvNote?.trusted && uvNote.verdict
+            ? {
+                verdict: uvNote.verdict,
+                trusted: uvNote.trusted,
+                ...(uvNote.depth ? { depth: uvNote.depth } : {}),
+                ...(uvNote.stale ? { stale: true } : {}),
+              }
+            : null,
+      });
+      appendEvidenceEvent(root, {
+        ts: new Date().toISOString(),
+        judgePassed: true,
+        sufficient: assessment.sufficient,
+        basis: assessment.basis,
+        primary: deps.primary,
+        ...(uvNote?.depth ? { journeys: { total: uvNote.depth.total, deep: uvNote.depth.deep } } : {}),
+      });
+      if (!evidenceGateOn || assessment.sufficient) return v;
+      note(
+        `⚖ acceptance: judge passed on ${assessment.basis} evidence — delivery refused, requiring executable behavioral proof (UAP_DELIVER_EVIDENCE_GATE=0 disables)`
+      );
+      return { passed: false, feedback: assessment.feedback };
+    };
     // The secondary-mode note asserts the objective gates passed. That was safe
     // while acceptance only ever ran on a green ladder; under
     // runAcceptanceDespiteLadder it would instruct the judge to treat FAILING
@@ -339,8 +400,8 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
           '⚖ acceptance: judge rejected consecutive objectively-green turns — accepting on gates (raise UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT to let the judge argue longer)'
         );
       }
-      return checked;
+      return finalizePass(checked);
     }
-    return verdict;
+    return finalizePass(verdict);
   };
 }

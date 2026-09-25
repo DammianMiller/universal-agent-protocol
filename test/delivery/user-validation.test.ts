@@ -509,3 +509,109 @@ describe('resource-integrity pre-check (run V octopus variant, 2026-07-18: anony
     }
   });
 });
+
+describe('buildUserPathsNote journey-depth enforcement (A2)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-uvdepth-'));
+    resetTrustedReportHash();
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a pass resting on SHALLOW journeys is flagged, not vouched as verified', async () => {
+    // The measured failure (rubiks-cube-onvukh): journeys that never perform
+    // the interaction they are named after. A bare `run` with no assertion
+    // is the cli-shaped equivalent.
+    writeManifest(dir, {
+      version: 1,
+      paths: [
+        { id: 'bare-run', rule: 'the tool runs', client: 'cli', steps: [{ run: { argv: [process.execPath, '-e', ''] } }] },
+      ],
+    });
+    await runUserValidation(dir);
+    const note = buildUserPathsNote(dir);
+    expect(note?.trusted).toBe(true);
+    expect(note?.shallow).toBe(true);
+    expect(note?.note).toContain('ALL PASSED');
+    expect(note?.note).toContain('SHALLOW');
+    expect(note?.note).toContain('bare-run');
+    expect(note?.note).toContain('UNVERIFIED');
+  });
+
+  it('a pass with at least one DEEP journey carries no shallow flag', async () => {
+    writeManifest(dir, {
+      version: 1,
+      paths: [
+        {
+          id: 'real-check',
+          rule: 'tool exits 0',
+          client: 'cli',
+          steps: [{ run: { argv: [process.execPath, '-e', ''] } }, { expect_exit: 0 }],
+        },
+      ],
+    });
+    await runUserValidation(dir);
+    const note = buildUserPathsNote(dir);
+    expect(note?.trusted).toBe(true);
+    expect(note?.shallow).toBeUndefined();
+    expect(note?.note).toContain('ALL PASSED');
+  });
+});
+
+describe('buildUserPathsNote manifest freshness (correctness finding 1)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-uvfresh-'));
+    resetTrustedReportHash();
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a manifest edited AFTER the run cannot mint a deep-journeys basis', async () => {
+    // The report is pinned to the manifest the runner executed; appending
+    // never-executed deep steps afterwards must not satisfy the evidence
+    // gate — depth is withheld and the note declares the evidence STALE.
+    writeManifest(dir, {
+      version: 1,
+      paths: [
+        { id: 'bare', rule: 'runs', client: 'cli', steps: [{ run: { argv: [process.execPath, '-e', ''] } }] },
+      ],
+    });
+    await runUserValidation(dir);
+    // Post-run edit: add a deep-looking journey that never ran.
+    writeManifest(dir, {
+      version: 1,
+      paths: [
+        { id: 'bare', rule: 'runs', client: 'cli', steps: [{ run: { argv: [process.execPath, '-e', ''] } }] },
+        { id: 'fake-deep', rule: 'interacts', client: 'cli', steps: [{ run: { argv: [process.execPath, '-e', ''] } }, { expect_exit: 0 }] },
+      ],
+    });
+    const note = buildUserPathsNote(dir);
+    expect(note?.trusted).toBe(true); // the REPORT is still the sanctioned one
+    expect(note?.verdict).toBe('pass');
+    expect(note?.depth).toBeUndefined(); // …but the live manifest is stale
+    expect(note?.shallow).toBeUndefined();
+    expect(note?.note).toContain('STALE');
+  });
+
+  it('an untouched manifest still yields the depth rollup', async () => {
+    writeManifest(dir, {
+      version: 1,
+      paths: [
+        {
+          id: 'real',
+          rule: 'exits 0',
+          client: 'cli',
+          steps: [{ run: { argv: [process.execPath, '-e', ''] } }, { expect_exit: 0 }],
+        },
+      ],
+    });
+    await runUserValidation(dir);
+    const note = buildUserPathsNote(dir);
+    expect(note?.depth).toEqual({ total: 1, deep: 1, shallowIds: [] });
+    expect(note?.note).not.toContain('STALE');
+  });
+});
