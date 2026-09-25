@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.15.0 (2026-09-25)
+
+- feat(deliver): evidence-gates uplift — plan-time criteria lint, journey-depth enforcement, anti-vacuous delivery gate + over-claim metric
+
+
 ## v2.14.1 (2026-09-24)
 
 - refactor(deliver): split adversarial-gate.ts under the 500-LOC quality gate
