@@ -19,6 +19,8 @@
 import { resolveParallelTasks } from './task-workspace.js';
 import { stateHashEnabled, stateHashMinBytes } from './agentic-executor.js';
 import { resolveAdversarialGate, type AdversarialGateSettings } from './adversarial-gate.js';
+import { resolveCriteriaLint } from './criteria-lint.js';
+import { resolveEvidenceGate } from './delivery-evidence.js';
 
 export interface MasterPipelineReadout {
   /** Effective fan-out cap for orchestrated dispatch (1 = sequential). */
@@ -29,6 +31,12 @@ export interface MasterPipelineReadout {
   stateHashMinBytes: number;
   /** Adversarial red-team gate settings (enabled + round budget). */
   adversarial: AdversarialGateSettings;
+  /** Plan-time criteria lint: behavioral criteria get executable-evidence
+   * clauses (UAP_DELIVER_CRITERIA_LINT / deliver.criteriaLint). */
+  criteriaLint: boolean;
+  /** Anti-vacuous delivery: a judge pass with no executable behavioral
+   * evidence is refused (UAP_DELIVER_EVIDENCE_GATE / deliver.evidenceGate). */
+  evidenceGate: boolean;
 }
 
 /**
@@ -52,6 +60,8 @@ export function resolveMasterPipeline(
     stateHash: stateHashEnabled(env),
     stateHashMinBytes: stateHashMinBytes(env),
     adversarial: resolveAdversarialGate(deliverCfg?.adversarialGate, env),
+    criteriaLint: resolveCriteriaLint(deliverCfg, env),
+    evidenceGate: resolveEvidenceGate(deliverCfg, env),
   };
 }
 
@@ -60,6 +70,7 @@ export function formatMasterPipelineLine(p: MasterPipelineReadout): string {
   return (
     `fan-out ×${p.parallelTasks} (worktree-isolated) → evidence loops → ` +
     `state-hash dedup ${p.stateHash ? `on (≥${p.stateHashMinBytes}B)` : 'off'} → ` +
-    `adversarial gate ${p.adversarial.enabled ? `on (≤${p.adversarial.maxRounds} rounds)` : 'off'}`
+    `adversarial gate ${p.adversarial.enabled ? `on (≤${p.adversarial.maxRounds} rounds)` : 'off'} → ` +
+    `criteria lint ${p.criteriaLint ? 'on' : 'off'} → evidence gate ${p.evidenceGate ? 'on' : 'off'}`
   );
 }

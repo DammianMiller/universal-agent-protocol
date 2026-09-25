@@ -36,6 +36,7 @@ import {
   type UserPathsServer,
   type UserPathStep,
 } from './user-paths.js';
+import { assessManifestDepth, shallowDepthNote } from './journey-depth.js';
 
 export const VALIDATION_REPORT_FILE = join('agents', 'data', 'validation', 'latest.json');
 export const USER_VALIDATION_RUNG_ID = 'user-validation';
@@ -909,6 +910,20 @@ export function createUserValidationRunner(runOpts: RunUserValidationOptions = {
 export interface UserPathsNote {
   note: string;
   trusted: boolean;
+  /**
+   * True when a PASSING report rests on shallow journeys only — no journey
+   * performs a state-changing interaction with a subsequent assertion
+   * (journey-depth.ts; the rubiks-cube-onvukh measured failure). Advisory
+   * here; the delivery-evidence gate makes the blocking decision.
+   */
+  shallow?: boolean;
+  /** Structured fields for the delivery-evidence gate (B/D): the report's
+   * verdict and the manifest's depth rollup, when both are readable. */
+  verdict?: 'pass' | 'fail' | 'na';
+  depth?: import('./journey-depth.js').ManifestDepth;
+  /** True when the manifest on disk changed after the validated run — the
+   * depth rollup was withheld; the remediation is re-running validation. */
+  stale?: boolean;
 }
 
 /**
@@ -934,14 +949,41 @@ export function buildUserPathsNote(projectRoot: string): UserPathsNote | null {
   }
   try {
     const report = JSON.parse(text) as ValidationReport;
+    // Depth is computed from the LIVE manifest, but the report is pinned to
+    // the manifest the sanctioned runner RAN (manifestHash). A manifest
+    // edited after the run — e.g. never-executed click steps appended to a
+    // passing shallow manifest — must not be able to mint a deep-journeys
+    // basis for the evidence gate (correctness-review finding 1): on hash
+    // mismatch the depth rollup is withheld and the note says the journey
+    // evidence is stale.
+    const live = loadUserPaths(projectRoot);
+    const manifestFresh = Boolean(
+      live?.ok &&
+        live.manifest &&
+        report.manifestHash !== null &&
+        sha256Text(JSON.stringify(live.manifest)) === report.manifestHash
+    );
+    const depth = manifestFresh && live?.manifest ? assessManifestDepth(live.manifest) : undefined;
+    const staleManifest = Boolean(live?.ok && live.manifest && !manifestFresh);
+    const staleClause = staleManifest
+      ? ' The manifest CHANGED since this validation ran — the journey evidence is STALE; rerun user validation before trusting it.'
+      : '';
     if (report.verdict === 'pass') {
-      return { note: `User-path validation ALL PASSED (${report.results.length} real-client journeys) — treat user-facing requirements covered by these paths as objectively verified.`, trusted: true };
+      const base = `User-path validation ALL PASSED (${report.results.length} real-client journeys) — treat user-facing requirements covered by these paths as objectively verified.${staleClause}`;
+      // Journey-depth enforcement (A2): the runner honestly executes whatever
+      // the manifest declares, and the manifest is MODEL-AUTHORED — a pass on
+      // load-only journeys is not behavioral verification. Read the manifest
+      // and say so when nothing deep ran (rubiks-cube-onvukh, 2026-09-24).
+      if (depth && depth.total > 0 && depth.deep === 0) {
+        return { note: `${base} ${shallowDepthNote(depth)}`, trusted: true, shallow: true, verdict: 'pass', depth };
+      }
+      return { note: base, trusted: true, verdict: 'pass', ...(depth ? { depth } : {}), ...(staleManifest ? { stale: true } : {}) };
     }
     if (report.verdict === 'fail') {
       const failed = report.results.filter((r) => r.status === 'fail').map((r) => `${r.id} (${r.rule})`).join('; ');
-      return { note: `User-path validation FAILED: ${failed} — the artifact does not work for a real user on these journeys.`, trusted: true };
+      return { note: `User-path validation FAILED: ${failed} — the artifact does not work for a real user on these journeys.${staleClause}`, trusted: true, verdict: 'fail', ...(depth ? { depth } : {}), ...(staleManifest ? { stale: true } : {}) };
     }
-    return { note: `User-path validation: not applicable (${report.naReason ?? 'no user-facing surface'}).`, trusted: true };
+    return { note: `User-path validation: not applicable (${report.naReason ?? 'no user-facing surface'}).`, trusted: true, verdict: 'na', ...(depth ? { depth } : {}) };
   } catch {
     return null;
   }

@@ -222,6 +222,16 @@ export {
   type SuiteRunner,
 } from './adversarial-gate.js';
 
+// Evidence-gates uplift (criteria lint C, journey depth A2, delivery
+// evidence B+D) — tight surface: the resolvers, classifiers, and the event
+// appender are all the CLI/bench analyzers need.
+export { classifyCriterion, lintCriteria, resolveCriteriaLint, EVIDENCE_CLAUSE_MARKER } from './criteria-lint.js';
+export type { CriterionClass, CriteriaLintResult } from './criteria-lint.js';
+export { classifyJourney, assessManifestDepth } from './journey-depth.js';
+export type { ManifestDepth } from './journey-depth.js';
+export { assessDeliveryEvidence, appendEvidenceEvent, resolveEvidenceGate, EVIDENCE_LOG_FILE } from './delivery-evidence.js';
+export type { DeliveryEvidenceInput, EvidenceAssessment, EvidenceEvent } from './delivery-evidence.js';
+
 export {
   detectRungs,
   runLadder,

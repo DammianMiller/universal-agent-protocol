@@ -734,3 +734,77 @@ describe('retriesRemaining reaches the loop that can act on it', () => {
     expect(seen).toEqual([2, 1, 0]);
   });
 });
+
+describe('plan-time criteria lint (evidence-gates uplift, workstream C)', () => {
+  it('rewrites planner-emitted BEHAVIORAL criteria with the executable-evidence clause', async () => {
+    // Measured gap (paired-qwen38-games, 2026-09-24): criteria like "the user
+    // can rotate faces" let shallow load-only journeys pass as verification.
+    process.env.UAP_DELIVER_CRITERIA_LINT = '1';
+    try {
+      let persisted: Array<{ criteria?: string[] }> = [];
+      await runEpicMission(
+        baseDeps({
+          planEpics: async () => [
+            phase('a', { criteria: ['the user can click a face and the stickers update'] }),
+            phase('b', { criteria: ['`npm run build` exits 0'] }),
+          ],
+          persistPlan: (epics) => {
+            persisted = epics;
+          },
+        })
+      );
+      expect(persisted[0].criteria?.[0]).toContain('ACCEPTANCE EVIDENCE REQUIRED');
+      expect(persisted[1].criteria?.[0]).toBe('`npm run build` exits 0');
+    } finally {
+      delete process.env.UAP_DELIVER_CRITERIA_LINT;
+    }
+  });
+
+  it('passes criteria through untouched when the knob is off', async () => {
+    process.env.UAP_DELIVER_CRITERIA_LINT = '0';
+    try {
+      let persisted: Array<{ criteria?: string[] }> = [];
+      await runEpicMission(
+        baseDeps({
+          planEpics: async () => [
+            phase('a', { criteria: ['the user can click a face and the stickers update'] }),
+            phase('b'),
+          ],
+          persistPlan: (epics) => {
+            persisted = epics;
+          },
+        })
+      );
+      expect(persisted[0].criteria?.[0]).toBe('the user can click a face and the stickers update');
+    } finally {
+      delete process.env.UAP_DELIVER_CRITERIA_LINT;
+    }
+  });
+
+  it('lints SPLIT pieces too, not just the top-level plan', async () => {
+    process.env.UAP_DELIVER_CRITERIA_LINT = '1';
+    try {
+      const specs: string[] = [];
+      await runEpicMission(
+        baseDeps({
+          planEpics: async () => [phase('a'), phase('b')],
+          maxAttemptsPerEpic: 1,
+          splitOnAnyFailure: true,
+          runEpicLoop: async () => ok({ success: false, finalFeedback: 'nope' }),
+          planSplit: async () => [
+            phase('a1', { criteria: ['dragging rotates the view and the scene updates'] }),
+            phase('a2'),
+          ],
+          setEpicSpec: (spec) => {
+            specs.push(spec);
+          },
+        })
+      );
+      const splitSpec = specs.find((s) => s.includes('deliver a1'));
+      expect(splitSpec).toBeDefined();
+      expect(splitSpec).toContain('ACCEPTANCE EVIDENCE REQUIRED');
+    } finally {
+      delete process.env.UAP_DELIVER_CRITERIA_LINT;
+    }
+  });
+});
