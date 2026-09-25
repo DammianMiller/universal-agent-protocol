@@ -795,6 +795,20 @@ When the model self-reports "stuck" but keeps repeating the same failing tool, r
 
 **Recommendation:** Keep on for local models; harmless for cloud models (rarely triggers).
 
+### `PROXY_LOCKSTEP_BREAK`
+
+| | |
+|---|---|
+| **Where** | `.uap/proxy.env` |
+| **Type** | boolean (+ `PROXY_LOCKSTEP_PIVOT_AT` / `PROXY_LOCKSTEP_HARD_AT` numbers) |
+| **Default** | `true` (pivot at streak 2, hard stop at streak 4) |
+
+When the *identical* tool call fails with the *identical* error, escalates decisively: pivot directive → final warning → hard-fail the session with a 400, recording each tier to the loop-incident ledger (`UAP_LOOP_INCIDENTS`, default `~/.config/uap/loop-incidents.jsonl`). Both directives are always given before the stop, so the stop lands at `max(HARD_AT, PIVOT_AT + 2)` — never earlier. `uap loops` lists the ledger and prints a ready `uap ideate`/`uap deliver` handoff for the broken loop. A fresh human user turn re-arms the guard.
+
+**Dependency:** the streaks lockstep reads are fed by the ERROR-LOOP and DOUBLING-DOWN trackers — `PROXY_ERROR_LOOP=off` or `PROXY_DOUBLING_BREAK=off` silently disarms lockstep too. `PIVOT_AT=0` disables the guard; `HARD_AT=0` disables only the hard stop.
+
+**Recommendation:** Keep on — this is the guard that ends deterministic-failure loops in minutes instead of tens of wasted full-context turns.
+
 ### `PROXY_RECON_CONVERGENCE_THRESHOLD`
 
 | | |

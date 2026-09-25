@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.16.0 (2026-09-25)
+
+- feat(proxy): LOCKSTEP ESCALATION guardrail — the identical tool call failing with the identical error now climbs a decisive ladder (pivot directive → final warning → hard stop 400) instead of drifting; closes the measured 2026-09-25 incident where one failing ssh call was re-issued 27 times (~15 min of full-context prefills) because ERROR-LOOP and DOUBLING-DOWN split the case against each other. Default on: `PROXY_LOCKSTEP_BREAK=off` disables; `PROXY_LOCKSTEP_PIVOT_AT` (2) / `PROXY_LOCKSTEP_HARD_AT` (4) tune the ladder; both directives always precede the stop
+- feat(proxy): loop-incident ledger — every escalation tier appends a lossy JSONL record (hashed fingerprint, raw tool args never written, 0600 perms, symlink-refused) to `UAP_LOOP_INCIDENTS` (default `~/.config/uap/loop-incidents.jsonl`)
+- feat(cli): `uap loops` lists recorded loop incidents and prints a ready `uap ideate`/`uap deliver` escalation handoff seeded from the incident (shell-quoted, control-byte-stripped)
+- fix(proxy): ERROR-LOOP / DOUBLING-DOWN now yield the identical-call-identical-error case to the lockstep ladder; hard-stop log lines attribute the correct guard (LOOP-ESCALATE vs ERROR-LOOP)
+
+
 ## v2.15.0 (2026-09-25)
 
 - feat(deliver): evidence-gates uplift — closes the measured premature-delivery hole (paired-qwen38-games, 2026-09-24: 4/4 self-declared deliveries failed external verify on shallow model-authored journeys)

@@ -53,6 +53,7 @@ const lazy = {
   supervise: () => import('../cli/supervise.js').then((m) => m.superviseCommand),
   classify: () => import('../cli/classify.js').then((m) => m.classifyCommand),
   doctor: () => import('../cli/doctor.js').then((m) => m.doctorCommand),
+  loops: () => import('../cli/loops.js').then((m) => m.loopsCommand),
   inference: () => import('../cli/inference.js').then((m) => m.inferenceHealthCommand),
   review: () => import('../cli/review.js').then((m) => m.reviewCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
@@ -564,6 +565,21 @@ program
   .action(async (options) => {
     const cmd = await lazy.doctor();
     await cmd(options);
+  });
+
+// Loop incidents — the lockstep guardrail's ledger: which sessions looped an
+// identical failing call, how the ladder escalated, and the ideate/deliver
+// handoff that turns a broken loop into a resolution task.
+program
+  .command('loops')
+  .description('Loop incidents recorded by the proxy lockstep guardrail')
+  .argument('[id]', 'list index or fingerprint prefix — show one incident with its escalation handoff')
+  .option('--limit <n>', 'how many recent incidents to list', '10')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--file <path>', 'Ledger path (default: $UAP_LOOP_INCIDENTS or ~/.config/uap/loop-incidents.jsonl)')
+  .action(async (id, options) => {
+    const cmd = await lazy.loops();
+    await cmd(id, options);
   });
 
 // Inference health — the questions `doctor` cannot answer, because nothing is
