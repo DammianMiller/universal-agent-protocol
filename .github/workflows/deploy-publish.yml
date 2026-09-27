@@ -21,18 +21,22 @@ env:
   # npm >= 11.5.1. Node 20 bundles npm 10, which fails the OIDC exchange.
   NODE_VERSION: '24'
 
+# Workflow-level (not job-level) so the OIDC id-token grant matches the
+# shape proven working in npm-publish-manual.yml (which published 2.16.2).
+# create-release overrides this with its own job-level permissions block.
+permissions:
+  contents: read
+  # OIDC trusted publishing: npm exchanges a GitHub Actions identity
+  # token for publish auth — no NPM_TOKEN, no 2FA OTP. The token path
+  # failed EOTP on every release since 2.12 (npm's own deprecation
+  # notice in the logs confirms token-based publishing is being
+  # restricted; OIDC is the replacement).
+  id-token: write
+
 jobs:
   build-test-npm-publish:
     name: Build, Test & Publish
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # OIDC trusted publishing: npm exchanges a GitHub Actions identity
-      # token for publish auth — no NPM_TOKEN, no 2FA OTP. The token path
-      # failed EOTP on every release since 2.12 (npm's own deprecation
-      # notice in the logs confirms token-based publishing is being
-      # restricted; OIDC is the replacement).
-      id-token: write
 
     steps:
       - name: Checkout code
@@ -95,7 +99,25 @@ jobs:
           # prepublishOnly (build+test) already ran above in this job; the
           # droid-integrity and full suite run too, so --ignore-scripts skips
           # only that duplicate. --provenance requires the OIDC id-token flow.
+          # OIDC env sanity (values are secrets — presence/absence only).
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: $([ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && echo yes || echo NO)"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN set: $([ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ] && echo yes || echo NO)"
           npm publish --access public --provenance --ignore-scripts
+
+      # ENEEDAUTH is ambiguous: it appears both when npm never attempts the
+      # OIDC exchange (missing id-token permission) and when the registry
+      # rejects it (trusted-publisher entry bound to a different workflow
+      # filename). The npm debug log records which; dump the auth-relevant
+      # lines so the next fix targets the right layer.
+      - name: Dump npm debug log on failure
+        if: failure()
+        run: |
+          LOG=$(ls -t "$HOME/.npm/_logs/"*-debug-0.log 2>/dev/null | head -1)
+          echo "npm debug log: $LOG"
+          if [ -n "$LOG" ]; then
+            grep -iE "oidc|token|auth|provenance|registry|publish" "$LOG" \
+              | grep -viE "tarball|integrity|shasum" | tail -40
+          fi
 
       - name: Output publication status
         if: always()
