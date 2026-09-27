@@ -17,12 +17,22 @@ on:
         type: boolean
 
 env:
-  NODE_VERSION: '20'
+  # Node 24: npm OIDC trusted publishing needs Node >= 22.14.0 AND
+  # npm >= 11.5.1. Node 20 bundles npm 10, which fails the OIDC exchange.
+  NODE_VERSION: '24'
 
 jobs:
   build-test-npm-publish:
     name: Build, Test & Publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # OIDC trusted publishing: npm exchanges a GitHub Actions identity
+      # token for publish auth — no NPM_TOKEN, no 2FA OTP. The token path
+      # failed EOTP on every release since 2.12 (npm's own deprecation
+      # notice in the logs confirms token-based publishing is being
+      # restricted; OIDC is the replacement).
+      id-token: write
 
     steps:
       - name: Checkout code
@@ -65,13 +75,27 @@ jobs:
             echo "Version $VERSION not yet published to NPM"
           fi
 
+      # Trusted publishing (OIDC) — the same method npm-publish-manual.yml
+      # uses (proven publishing 2.16.2, 2026-09-27). npm >= 11.5.1 is required;
+      # setup-node's registry-url writes a ${NODE_AUTH_TOKEN} placeholder into
+      # the job npmrc that would be tried FIRST and fail before the OIDC
+      # exchange, so rewrite it bare. Do NOT set NODE_AUTH_TOKEN here — a
+      # present-but-2FA-bound token shadows the OIDC path and fails the run.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+          NPMRC="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          printf 'registry=https://registry.npmjs.org/\n' > "$NPMRC"
+
       - name: Publish to NPM (if version doesn't exist)
         if: steps.check_npm.outputs.exists == 'false' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master')
         run: |
           echo "Publishing @miller-tech/uap@${{ steps.get_version.outputs.VERSION }} to NPM..."
-          npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # prepublishOnly (build+test) already ran above in this job; the
+          # droid-integrity and full suite run too, so --ignore-scripts skips
+          # only that duplicate. --provenance requires the OIDC id-token flow.
+          npm publish --access public --provenance --ignore-scripts
 
       - name: Output publication status
         if: always()
