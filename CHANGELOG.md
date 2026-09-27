@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.16.1 (2026-09-27)
+
+- fix(delivery): browser-faithful vm-dom sandbox + worktree ensure regression
+
+
 ## v2.16.0 (2026-09-25)
 
 - feat(proxy): LOCKSTEP ESCALATION guardrail — the identical tool call failing with the identical error now climbs a decisive ladder (pivot directive → final warning → hard stop 400) instead of drifting; closes the measured 2026-09-25 incident where one failing ssh call was re-issued 27 times (~15 min of full-context prefills) because ERROR-LOOP and DOUBLING-DOWN split the case against each other. Default on: `PROXY_LOCKSTEP_BREAK=off` disables; `PROXY_LOCKSTEP_PIVOT_AT` (2) / `PROXY_LOCKSTEP_HARD_AT` (4) tune the ladder; both directives always precede the stop
