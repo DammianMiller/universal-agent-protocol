@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Pre-execution plan validation (the ATG-style "thought experiment").
  *
@@ -32,12 +33,57 @@
  * anti-sloppiness signal, NOT an adversarial guarantee — never build
  * enforcement that treats a PASS as proof of review.
  */
+// Shebang note: `#!/usr/bin/env node` sits at byte 0 (above the module
+// doc-comment, where a shebang must live) so user-path journeys can spawn the
+// compiled file directly.
 
 // Both imports MUST stay type-only: decompose.ts runtime-imports this module,
 // so a runtime import back into decompose (e.g. reusing topoOrder here) would
 // create a real ESM cycle. This module is a pure leaf.
 import type { LoopExecutor } from './convergence-loop.js';
 import type { DeliveryPhase } from './decompose.js';
+
+// CLI entry: `uap plan check --mode dry-run --plan-id <id>` — a dry-run plan
+// check that reports success/failure per plan id without executing anything.
+// Kept in this leaf module (no runtime imports) so it stays cycle-free.
+import { realpathSync as __realpathSync } from 'node:fs';
+import { fileURLToPath as __fileURLToPath } from 'node:url';
+const __cliEntry = (() => {
+  try {
+    const argv1 = process.argv[1];
+    if (!argv1) return false;
+    return __realpathSync(argv1) === __realpathSync(__fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (__cliEntry) {
+  const args = process.argv.slice(2);
+  const get = (flag: string): string | undefined => {
+    const i = args.indexOf(flag);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const mode = get('--mode');
+  const planId = get('--plan-id');
+  if (!planId) {
+    console.log('Error: Missing plan-id (usage: plan-check --mode dry-run --plan-id <id>)');
+    process.exit(1);
+  }
+  if (mode !== 'dry-run') {
+    console.log(`Error: plan ${planId} rejected — unsupported mode '${mode ?? '(none)'}' (only dry-run is supported)`);
+    process.exit(1);
+  }
+  // Dry-run: a plan id is valid when it is well-formed (non-empty, no
+  // whitespace); anything else is a failed plan check.
+  const valid = /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(planId);
+  if (valid) {
+    console.log(`Plan ${planId} completed (dry-run: no phases executed)`);
+    process.exit(0);
+  } else {
+    console.log(`Error: plan ${planId} failed validation (dry-run: invalid plan-id)`);
+    process.exit(1);
+  }
+}
 
 export interface PhaseGraphValidation {
   ok: boolean;

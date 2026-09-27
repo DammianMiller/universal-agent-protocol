@@ -17,14 +17,13 @@
  * browser paths skipped (rung non-blocking) rather than failing delivery on an
  * environment gap — but the skip is loud in the report and the judge note.
  */
-import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { createHash } from 'node:crypto';
-
 // SECURITY: every spawn below that runs project/model code must use
-// sanitizedEnv() (secret-stripped env) — see ./sanitized-env.ts.
+// sanitizedEnv() (secret-stripped env) — see ./sanitized-env.js.
 import { sanitizedEnv } from './sanitized-env.js';
+import { createHash } from 'node:crypto';
+import { spawn, spawnSync, execFileSync, type SpawnSyncReturns } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 
 import type { GateRung, LadderResult, LadderRunFn, RungResult } from './verifier-ladder.js';
 import { findWebEntryDir, startStaticServer } from './execution-gate.js';
@@ -333,11 +332,23 @@ export function jsonContains(actual: unknown, expected: unknown): boolean {
  * Python check"; the alias is an environment detail); any other spawn failure
  * is returned as-is for the caller to report explicitly.
  */
+/**
+ * Tag a fallback re-spawn so journey evidence shows WHICH interpreter/file
+ * actually ran (`via=tsx`, `via=strip-types`, `via=dist:dist/foo.js`), not
+ * only the argv the manifest declared. Without it, a fallback that runs a
+ * different file than the journey named looks identical in the report.
+ */
+function tagVia(r: SpawnSyncReturns<string>, tag: string): SpawnSyncReturns<string> {
+  return Object.assign(r, { __via: tag }) as SpawnSyncReturns<string> & { __via: string };
+}
 function spawnJourneyStep(
   argv: string[],
   ctx: RunContext,
   run: { timeoutMs?: number; stdin?: string },
 ): SpawnSyncReturns<string> {
+  // SECURITY: runCliPath's spawnSync must run with the secret-stripped env —
+  // env: sanitizedEnv() is applied here so every CLI-path step (project/model
+  // code) inherits no host credentials.
   const opts = {
     cwd: ctx.projectRoot,
     env: sanitizedEnv(),
@@ -350,6 +361,50 @@ function spawnJourneyStep(
   const r = spawnSync(cmd, rest, opts);
   if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT' && cmd === 'python') {
     const alt = spawnSync('python3', rest, opts);
+    if (!alt.error) return alt;
+  }
+  // A .ts/.tsx journey target is a TypeScript source file: Node cannot exec
+  // it directly (EACCES — no exec bit, and Node does not parse .ts without a
+  // loader). Re-spawn through the project's TypeScript runner when one is
+  // available (tsx, ts-node), then Node's type stripping. Last resort: the
+  // project's own compiled output (npm run build → dist/) — the source tree
+  // mirrors dist/ 1:1, so a journey targeting src/delivery/foo.ts can run
+  // dist/delivery/foo.js when the build is current. Without these fallbacks a
+  // .ts journey EACCESes on every box — an unsatisfiable gate the agent can
+  // only fight (run 20260824T054426's user-path gate burned its turns there).
+  // Every re-spawn is tagged (__via) so the step evidence shows WHICH
+  // interpreter/file actually ran, not just the argv the manifest declared.
+  if (r.error && (r.error as NodeJS.ErrnoException).code === 'EACCES' && /\.(ts|tsx)$/.test(cmd)) {
+    for (const runner of ['tsx', 'ts-node']) {
+      const alt = spawnSync(runner, [cmd, ...rest], opts);
+      if (!alt.error) return tagVia(alt, runner);
+    }
+    const stripped = spawnSync(process.execPath, ['--experimental-strip-types', cmd, ...rest], opts);
+    if (!stripped.error) {
+      // On Node < 22.6 the flag itself is rejected ("bad option"): the spawn
+      // succeeds but the run is garbage. Fall through to the dist mirror
+      // instead of returning a dead end that hides the working fallback.
+      if (!/bad option|unknown option/i.test(stripped.stderr ?? '')) return tagVia(stripped, 'strip-types');
+    }
+    // Resolve against the project root (the manifest's cwd) so absolute,
+    // ./-relative and bare src/ spellings all reach the mirror; only spawn a
+    // mirror that exists (a stale/missing build reports the original EACCES
+    // rather than a confusing Cannot-find-module exit).
+    const srcRel = relative(ctx.projectRoot, resolve(ctx.projectRoot, cmd));
+    if (srcRel.startsWith('src/')) {
+      const distRel = srcRel.replace(/^src\//, 'dist/').replace(/\.tsx?$/, '.js');
+      if (existsSync(join(ctx.projectRoot, distRel))) {
+        const viaDist = spawnSync(process.execPath, [distRel, ...rest], opts);
+        if (!viaDist.error) return tagVia(viaDist, `dist:${distRel}`);
+      }
+    }
+  }
+  // A .js/.mjs journey target that is NOT executable (no exec bit) also
+  // EACCESes on a direct spawn. Re-spawn through the Node binary — the
+  // journey's intent is "run this script", the exec bit is an environment
+  // detail (same precedent as the python→python3 fallback above).
+  if (r.error && (r.error as NodeJS.ErrnoException).code === 'EACCES' && /\.(js|mjs|cjs)$/.test(cmd)) {
+    const alt = spawnSync(process.execPath, [cmd, ...rest], opts);
     if (!alt.error) return alt;
   }
   return r;
@@ -390,7 +445,12 @@ function runCliPath(path: UserPath, ctx: RunContext): PathResult {
         lastExit = r.status;
         lastStdout = r.stdout ?? '';
         lastStderr = r.stderr ?? '';
-        steps.push({ step: label, ok: true, observed: `exit=${String(lastExit)} stdout=${lastStdout.slice(0, 120)}` });
+        const via = (r as SpawnSyncReturns<string> & { __via?: string }).__via;
+        steps.push({
+          step: label,
+          ok: true,
+          observed: `exit=${String(lastExit)}${via ? ` via=${via}` : ''} stdout=${lastStdout.slice(0, 120)}`,
+        });
       } else if (step.expect_exit !== undefined) {
         const ok = lastExit === step.expect_exit;
         // pytest exit 5 = "no tests collected". Against a plain-script
@@ -449,7 +509,10 @@ async function startManifestServer(srv: UserPathsServer, projectRoot: string): P
   const args = declaredArgs.length === 0 ? parts.slice(1) : declaredArgs;
   const child = spawn(cmd, args, {
     cwd: projectRoot,
-    env: sanitizedEnv(srv.env),
+    // SECURITY: manifest servers run project/model code — base the env on the
+    // secret-stripped sanitizedEnv() (host credentials must not leak to the
+    // child); srv.env overrides still apply on top.
+    env: { ...sanitizedEnv(), ...srv.env } as NodeJS.ProcessEnv,
     stdio: 'ignore',
     detached: false,
   });
@@ -717,7 +780,7 @@ export function computeTreeStamp(projectRoot: string): string {
     // Manifest edits are caught separately via the report's manifestHash.
     const relevant = status
       .split('\n')
-      .filter((line) => {
+      .filter((line: string) => {
         const path = line.slice(3);
         return line.trim() !== '' && !path.startsWith('agents/') && !path.startsWith('.uap/');
       })
