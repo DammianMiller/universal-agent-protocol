@@ -14,5 +14,16 @@
 const SECRET_ENV_RE =
   /(API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|AUTH_SOCK|SESSION|COOKIE|_DSN|SA_KEY|KUBECONFIG|(^|_)(DATABASE|REDIS|MONGO|POSTGRES|MYSQL|AMQP)_?URL|_URI$)/i;
 
+// The probe is spawned by the user-validation runner (runCliPath →
+// spawnJourneyStep) with env: sanitizedEnv(), and the manifest-server spawn
+// site (startManifestServer) bases its child env on sanitizedEnv() as well —
+// so the env this process inherited is exactly what those spawn sites pass.
+// CI=true is the marker sanitizedEnv() sets; its absence means a spawn site
+// regressed to the raw host env. secrets=0 proves the secret-stripping.
 const secretCount = Object.keys(process.env).filter((k) => SECRET_ENV_RE.test(k)).length;
-console.log(`sanitizedEnv ok: CI=${process.env.CI ?? 'unset'} secrets=${secretCount} keys=${Object.keys(process.env).length}`);
+const ci = process.env.CI ?? 'unset';
+if (ci !== 'true' || secretCount !== 0) {
+  console.error(`sanitizedEnv FAIL: CI=${ci} secrets=${secretCount} — spawn site regressed to raw host env`);
+  process.exit(1);
+}
+console.log(`sanitizedEnv ok: CI=${ci} secrets=${secretCount} keys=${Object.keys(process.env).length}`);
