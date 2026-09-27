@@ -1,0 +1,13 @@
+{
+  "name": "Build Octopus Invaders web game",
+  "instruction": "Build a playable Octopus Invaders web game in this directory. Create index.html (plus any JS/CSS files you want) implementing: a canvas-based space shooter where octopuses descend in waves, the player moves and shoots with keyboard controls, score tracking, lives, and a start screen. The page must display the title text 'OCTOPUS INVADERS'. All JavaScript must be syntactically valid.",
+  "difficulty": "hard",
+  "tags": [
+    "build",
+    "web-game",
+    "canvas"
+  ],
+  "verifyCmd": "f=$(ls index.html *.html 2>/dev/null | head -1); [ -n \"$f\" ] || exit 1; grep -qi octopus \"$f\" || exit 1; grep -qiE '<canvas' \"$f\" || exit 1; ok=false; grep -qiE 'requestAnimationFrame|setInterval' \"$f\" && ok=true; for j in *.js; do [ -e \"$j\" ] || continue; node --check \"$j\" || exit 1; grep -qiE 'requestAnimationFrame|setInterval' \"$j\" && ok=true; done; $ok || exit 1; P=/tmp/uapv_$$_octo; node -e 'const fs=require(\"fs\");const h=fs.readFileSync(process.argv[1],\"utf8\");let i=0;for(const m of h.matchAll(/<script([^>]*)>([\\s\\S]*?)<\\/script>/gi)){if(/\\bsrc\\s*=/.test(m[1]||\"\"))continue;const c=(m[2]||\"\").trim();if(!c)continue;i++;fs.writeFileSync(process.argv[2]+i+\".mjs\",c)}' \"$f\" \"$P\"; for k in \"${P}\"*.mjs; do [ -e \"$k\" ] || continue; node --check \"$k\" || exit 1; done",
+  "verifyTimeoutSec": 120,
+  "agentTimeoutSec": 1800
+}

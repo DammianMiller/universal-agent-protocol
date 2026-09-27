@@ -1,0 +1,13 @@
+{
+  "name": "Build interactive Rubik's cube web app",
+  "instruction": "Build an interactive Rubik's cube web app in this directory. Create index.html (plus any JS/CSS files you want) implementing: a 3D or 2D-unfolded cube with all six colored faces, user-triggered face rotations that update the sticker layout, and a scramble + reset control. The page must display the title text 'RUBIK'S CUBE' (or 'Rubik's Cube'). All JavaScript must be syntactically valid.",
+  "difficulty": "hard",
+  "tags": [
+    "build",
+    "web-app",
+    "3d"
+  ],
+  "verifyCmd": "f=$(ls index.html *.html 2>/dev/null | head -1); [ -n \"$f\" ] || exit 1; grep -qi rubik \"$f\" || exit 1; { grep -qiE '<canvas|WebGL|three' \"$f\"; } || exit 1; ok=false; { grep -qiE 'rotat|face|sticker' \"$f\"; } && ok=true; for j in *.js; do [ -e \"$j\" ] || continue; node --check \"$j\" || exit 1; { grep -qiE 'rotat|face|sticker' \"$j\"; } && ok=true; done; $ok || exit 1; P=/tmp/uapv_$$_rubik; node -e 'const fs=require(\"fs\");const h=fs.readFileSync(process.argv[1],\"utf8\");let i=0;for(const m of h.matchAll(/<script([^>]*)>([\\s\\S]*?)<\\/script>/gi)){if(/\\bsrc\\s*=/.test(m[1]||\"\"))continue;const c=(m[2]||\"\").trim();if(!c)continue;i++;fs.writeFileSync(process.argv[2]+i+\".mjs\",c)}' \"$f\" \"$P\"; for k in \"${P}\"*.mjs; do [ -e \"$k\" ] || continue; node --check \"$k\" || exit 1; done",
+  "verifyTimeoutSec": 120,
+  "agentTimeoutSec": 1800
+}

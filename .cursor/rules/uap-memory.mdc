@@ -1,0 +1,23 @@
+<!-- UAP-MEMORY-BRIDGE:START (managed by `uap memory bridge`) -->
+## Memory — managed by UAP (unified, cross-agent)
+
+Your persistent memory is the **UAP memory system** — ONE store shared by every
+coding agent on this project, NOT a per-agent memory file. Use it, not a local one:
+
+- **Recall FIRST** on non-trivial work: `uap memory query "<topic>"` (semantic long-term search).
+- **Store** durable facts/decisions/lessons: `uap memory store "<fact>"`.
+- **Status**: `uap memory status`.
+
+Recent UAP memories (auto-mirrored — do not hand-edit; refresh with `uap memory bridge`):
+  - (lesson, i7) [deliver] NOT delivered after 5 turn(s), best 0% of gates — model opus-4.8 — task: Make the UAP deliver autoroute + project lock single-flig
+  - (lesson, i7) [deliver] NOT delivered after 5 turn(s), best 0% of gates — model opus-4.8 — task: Make the UAP deliver autoroute + project lock single-flig
+  - (goal, i10) UAP OPERATIONS FACTS (2026-08-04). (1) An enforcer edit reaches the RUNNING gate only via: edit in a worktree -> merge -> 'npm i -g .' from 
+  - (goal, i10) GATE/ENFORCER CHANGE METHOD (proven across PRs #645-#650): never reason from the code - measure three things per candidate input: (1) what t
+  - (goal, i10) MEMORY SYSTEM TRAP + RETENTION (2026-08-04): (1) 'uap memory store' writes to the CWD's agents/data/memory/short_term.db. The worktree polic
+  - (goal, i10) SESSION 2026-08-03/04 SHIPPED (v1.183.3 -> v1.184.4): PR #645 plan-gate writers | #646 engineering-principles feature (the original ask: app
+  - (goal, i9) DECISION: memory durability wired on branch 166 - store now upserts to a width-matched Qdrant collection, resolves the short-term DB against
+  - (goal, i9) DECISION: memory durability wired on branch 166 - uap memory store now upserts to the Qdrant agent_memory collection with search_document pr
+
+Read and write here so every agent compounds the same knowledge instead of siloed recall.
+<!-- UAP-MEMORY-BRIDGE:END -->
+

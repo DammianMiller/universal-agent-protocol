@@ -111,6 +111,10 @@ agents/data/
 runs/
 benchmarks/results/
 
+# Generated SWE-bench Pro instance suite (77MB, regenerated per A/B run —
+# see docs/ATTRIBUTION.md). Too large to track; kept locally when present.
+benchmarks/suites/swe-bench-pro-gen/
+
 # Slot cache (llama.cpp)
 .cache/slots/
 
@@ -155,5 +159,7 @@ dist
 # is already ignored above for the same reason).
 .cursor/hooks.json
 
-# Plugin manifest written by the opencode setup step.
+# Plugin manifest written by the opencode setup step, and the lockfile that
+# install regenerates from it.
 .opencode/package.json
+.opencode/package-lock.json
