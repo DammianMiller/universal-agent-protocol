@@ -156,7 +156,7 @@ export async function worktreeCommand(
       await cleanupWorktree(cwd, git, options.id!);
       break;
     case 'ensure':
-      await ensureWorktree(cwd, git, options.strict);
+      await ensureWorktree(cwd, git, options.strict, invokedFrom);
       break;
     case 'prune':
       await pruneStaleWorktrees(cwd, {
@@ -1008,7 +1008,12 @@ async function cleanupWorktree(cwd: string, git: SimpleGit, id: string): Promise
   }
 }
 
-async function ensureWorktree(cwd: string, _git: SimpleGit, strict?: boolean): Promise<void> {
+async function ensureWorktree(
+  cwd: string,
+  _git: SimpleGit,
+  strict?: boolean,
+  invokedFrom?: string
+): Promise<void> {
   const spinner = ora('Checking worktree workflow...').start();
 
   try {
@@ -1054,8 +1059,12 @@ async function ensureWorktree(cwd: string, _git: SimpleGit, strict?: boolean): P
       return;
     }
 
-    // Check if we're already in a worktree
-    const currentDir = cwd;
+    // Check if we're already in a worktree. The answer is about where the user
+    // INVOKED us from, not the anchored main checkout — after the 2026-08-13
+    // anchoring fix, `cwd` here is always the main root, so testing it made
+    // `ensure --strict` fail even from inside a healthy worktree and blocked
+    // the very workflow this gate enforces.
+    const currentDir = invokedFrom ?? cwd;
     // Resolve worktrees dir relative to project root (handle being inside a worktree)
     const projectRoot = existsSync(configPath) ? cwd : join(cwd, '..', '..');
     const worktreesDir = join(projectRoot, '.worktrees');

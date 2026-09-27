@@ -515,3 +515,70 @@ describe('vm-dom: ESM loaded as a classic script blames the LOADER, not the file
     expect(r.failureReason).not.toMatch(/module-system mismatch/i);
   });
 });
+
+describe('vm-dom: browser-faithful window globals (run 20260824T054426 regression)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-vmwin-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Regression for the 13-turn mission wedge: the vendored uPlot IIFE reads
+   * the BARE identifier `devicePixelRatio` at load (guarded only by
+   * `typeof window !== 'undefined'`). The sandbox defined it on the window
+   * object but not as a top-level global, and the classifier treated the
+   * camelCase ReferenceError as the app's own bug — so the executor spent the
+   * whole mission "fixing" a dashboard that boots fine in a real browser.
+   */
+  it('boots a uPlot-shaped vendor page: bare devicePixelRatio, CustomEvent dispatch, WebSocket, DOM surface', () => {
+    writeWebGame(
+      dir,
+      [
+        "var dpr = devicePixelRatio;", // bare camelCase window member (the uPlot read)
+        "var w = innerWidth, h = innerHeight;", // bare window geometry
+        "if (self !== window || parent !== window || top !== window) throw new Error('identity globals broken');",
+        "var heard = 0, docHits = 0;",
+        "window.addEventListener('dppxchange', function (e) {",
+        "  heard++;",
+        "  if (e.detail !== dpr) throw new Error('listener got bad detail');",
+        "});",
+        // window.dispatchEvent must fire ONLY the window bag — the harness's
+        // cross-bag fire() is for load/click probing, not for page dispatches.
+        "document.addEventListener('dppxchange', function () { docHits++; });",
+        "window.dispatchEvent(new CustomEvent('dppxchange', { detail: dpr }));", // uPlot's load-time watcher
+        "var ws = new WebSocket('ws://localhost/live');", // live-data socket at boot (core.js)
+        "var el = document.createElement('div');", // generic DOM surface on the element stub
+        "el.setAttribute('aria-label', 'x');",
+        "el.classList.add('open');",
+        "el.appendChild(document.createTextNode('t'));",
+        "if (heard !== 1) throw new Error('listener was not dispatched');",
+        "if (docHits !== 0) throw new Error('dispatchEvent leaked to the document bag');",
+        "requestAnimationFrame(function () {});",
+      ].join('\n')
+    );
+    const r = runVmDomHarness(dir);
+    expect(r.passed).toBe(true);
+    expect(r.via).toBe('vm-dom');
+  });
+
+  it('fails OPEN on an unstubbed camelCase browser global instead of hard-failing the app', () => {
+    // scrollX/scrollY are real browser globals the sandbox does not model. The
+    // old classifier hard-failed any camelCase undefined as the app's own bug;
+    // BROWSER_GLOBALS now covers these window members, so the verdict must be
+    // the inconclusive advisory, never a blocking 'runtime error'.
+    writeWebGame(dir, 'var x = scrollX + scrollY;\nrequestAnimationFrame(function () {});\n');
+    const r = runVmDomHarness(dir);
+    expect(r.passed).toBe(true);
+    expect(r.failureReason).toMatch(/inconclusive: 'scrollX' is not available in the harness/);
+  });
+
+  it('still hard-fails an app-own camelCase symbol (a real missing symbol is a real bug)', () => {
+    writeWebGame(dir, 'myMissingHelper();\n');
+    const r = runVmDomHarness(dir);
+    expect(r.passed).toBe(false);
+    expect(r.outputTail).toMatch(/myMissingHelper is not defined/);
+  });
+});

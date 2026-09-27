@@ -428,6 +428,14 @@ const BROWSER_GLOBALS = new Set([
   'crypto', 'OffscreenCanvas', 'WebGLRenderingContext', 'WebGL2RenderingContext',
   'getComputedStyle', 'customElements', 'Notification', 'Audio', 'XMLHttpRequest',
   'navigator', 'caches', 'BroadcastChannel', 'speechSynthesis', 'gtag', 'dataLayer',
+  // camelCase window members. Run 20260824T054426 wedged for 13 turns on the
+  // first one: the classifier treats any camelCase undefined as the app's own
+  // bug, but devicePixelRatio is a BROWSER global the sandbox didn't model, so
+  // the executor kept "fixing" a dashboard that boots fine in a real browser.
+  // These are environment limits, not app defects — fail open on them too.
+  'devicePixelRatio', 'innerWidth', 'innerHeight', 'outerWidth', 'outerHeight',
+  'scrollX', 'scrollY', 'pageXOffset', 'pageYOffset', 'self', 'top', 'parent',
+  'frames', 'scrollTo', 'scrollBy', 'postMessage', 'queueMicrotask', 'structuredClone',
 ]);
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'coverage', '.uap', 'agents']);
 
@@ -1601,9 +1609,29 @@ function buildDomSandbox(): any {
     width: 1280,
     height: 720,
     style: {},
+    dataset: {},
     getContext: () => ctxStub,
     addEventListener: reg(listeners.canvas),
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }),
+    removeEventListener: () => {},
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720, right: 1280, bottom: 720 }),
+    // DOM-generic members. The harness's element stub IS this object (every
+    // createElement/getElementById returns it), so dashboard-style pages that
+    // build UI nodes (uPlot legend rows, status dots) call these on it. Without
+    // them the smoke run TypeErrors on the first `el.setAttribute(...)` — an
+    // environment limit, but one that leaves the gate unable to give a real
+    // verdict instead of an "inconclusive" advisory.
+    classList: {
+      add() {},
+      remove() {},
+      toggle() {},
+      contains: () => false,
+    },
+    setAttribute() {},
+    getAttribute: () => null,
+    appendChild: (child: unknown) => child,
+    insertBefore: (child: unknown) => child,
+    removeChild: (child: unknown) => child,
+    remove() {},
   };
   const audioStub: unknown = new Proxy(
     {},
@@ -1634,6 +1662,16 @@ function buildDomSandbox(): any {
     innerHeight: 720,
     devicePixelRatio: 1,
     addEventListener: reg(listeners.window),
+    removeEventListener: () => {},
+    // uPlot-style vendor code dispatches events on window at load (e.g. its
+    // devicePixelRatio watcher dispatches 'dppxchange'). Fire only the window
+    // bag — this is window.dispatchEvent, not the harness's cross-bag
+    // synthetic fire() used for load/DOMContentLoaded/click probing.
+    dispatchEvent: (ev: { type: string } & Record<string, unknown>): boolean => {
+      const e = Object.assign({ preventDefault() {}, stopPropagation() {} }, ev);
+      (listeners.window[ev.type] || []).forEach((fn) => fn(e));
+      return true;
+    },
     requestAnimationFrame: (cb: (t: number) => void) => {
       raf.cb = cb;
       raf.everScheduled = true;
@@ -1648,11 +1686,20 @@ function buildDomSandbox(): any {
     },
     performance: { now: () => 0 },
   };
+  // Browser identity globals: these are window self-references, so aliasing
+  // them to win lets page code that reads `self`/`parent`/`top`/`frames`
+  // execute like a browser instead of tripping the classifier's fail-open
+  // path on the bare reference.
+  win.self = win;
+  win.top = win;
+  win.parent = win;
+  win.frames = win;
   const doc = {
     getElementById: () => canvas,
     querySelector: () => canvas,
     addEventListener: reg(listeners.document),
     createElement: () => canvas,
+    createTextNode: (t = '') => ({ data: t, textContent: t }),
     body: { appendChild() {}, style: {} },
   };
   const fire = (type: string, ev: Record<string, unknown> = {}): void => {
@@ -1687,10 +1734,48 @@ function buildDomSandbox(): any {
     this.addEventListener = () => {};
     this.removeEventListener = () => {};
   }
+  // Vendored chart libs construct bare `new CustomEvent(...)` (uPlot's
+  // dppxchange watcher). A constructor stub keeps them executing instead of
+  // tripping the classifier's fail-open path.
+  function CustomEventStub(
+    this: Record<string, unknown>,
+    type: string,
+    init?: { detail?: unknown; bubbles?: boolean; cancelable?: boolean }
+  ) {
+    this.type = type;
+    this.detail = init?.detail;
+    this.bubbles = init?.bubbles ?? false;
+    this.cancelable = init?.cancelable ?? false;
+    this.preventDefault = () => {};
+    this.stopPropagation = () => {};
+  }
+  // Dashboard-style pages connect a live-data socket at boot (the UAP console
+  // opens its WebSocket in core.js init). The smoke run should exercise that
+  // client code, not stop at it: an inert CONNECTING socket keeps the page
+  // executing while staying honest (a real socket never reaches OPEN
+  // synchronously, and no messages/onopen fire — a smoke run boots the
+  // client, it does not simulate the server).
+  function WebSocketStub(this: Record<string, unknown>, url: string) {
+    this.url = url;
+    this.readyState = 0;
+    this.onopen = null;
+    this.onmessage = null;
+    this.onclose = null;
+    this.onerror = null;
+    this.send = () => {};
+    this.close = () => {};
+    this.addEventListener = () => {};
+    this.removeEventListener = () => {};
+  }
+  // Apps compare against the static constants (ws.readyState === WebSocket.OPEN);
+  // without them those comparisons silently take the wrong branch.
+  Object.assign(WebSocketStub, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
   const common: Record<string, unknown> = {
     localStorage: makeStorage(),
     sessionStorage: makeStorage(),
     Image: ImageStub,
+    CustomEvent: CustomEventStub,
+    WebSocket: WebSocketStub,
     fetch: () =>
       Promise.resolve({
         ok: true,
@@ -1715,15 +1800,18 @@ function buildDomSandbox(): any {
     TextDecoder,
   };
   Object.assign(win, common);
+  // Browser semantics: globalThis === window — every window member is also a
+  // bare global. Spreading `...win` (which already absorbed `common` above)
+  // mirrors that, so vendored code reading bare `devicePixelRatio`,
+  // `innerWidth`, `addEventListener`, `new CustomEvent(...)` etc. executes
+  // instead of ReferenceError-ing (run 20260824T054426: uPlot's IIFE does
+  // `let l = devicePixelRatio` at load and killed the execution gate for
+  // 13 consecutive turns).
   return {
     window: win,
     document: doc,
     console,
-    requestAnimationFrame: win.requestAnimationFrame,
-    cancelAnimationFrame: win.cancelAnimationFrame,
-    AudioContext: win.AudioContext,
-    webkitAudioContext: win.webkitAudioContext,
-    performance: win.performance,
+    ...win,
     navigator: { userAgent: 'uap-execution-gate', language: 'en-US', platform: 'uap', maxTouchPoints: 0 },
     setTimeout,
     clearTimeout,
@@ -1734,7 +1822,6 @@ function buildDomSandbox(): any {
     isNaN,
     parseInt,
     parseFloat,
-    ...common,
     __raf: raf,
     __fire: fire,
     // Did the app do ANYTHING beyond defining things?
