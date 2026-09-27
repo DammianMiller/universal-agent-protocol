@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.16.2 (2026-09-27)
+
+- fix(delivery): user-path gate satisfiability + sanitizedEnv acceptance evidence
+
+
 ## v2.16.1 (2026-09-27)
 
 - fix(delivery): browser-faithful vm-dom sandbox + worktree ensure regression
