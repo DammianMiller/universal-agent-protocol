@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.16.3 (2026-09-27)
+
+- ci: migrate deploy-publish.yml to npm OIDC trusted publishing
+- chore: housekeeping — commit keep items, ignore generated suites
+- fix(delivery): env-probe hard-fails on sanitizedEnv regression
+
+
 ## v2.16.2 (2026-09-27)
 
 - fix(delivery): user-path gate satisfiability + sanitizedEnv acceptance evidence
