@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.16.4 (2026-09-27)
+
+- ci: workflow-level OIDC permissions + npm debug-log diagnostics for publish
+
+
 ## v2.16.3 (2026-09-27)
 
 - ci: migrate deploy-publish.yml to npm OIDC trusted publishing
