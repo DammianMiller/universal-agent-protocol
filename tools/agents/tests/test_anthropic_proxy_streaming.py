@@ -1737,6 +1737,114 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         self.assertEqual(malformed, openai_resp)
         self.assertEqual(len(fake_client.requests), 0)
 
+    def test_guardrails_skip_tools_stripped_breaker_turn(self):
+        # A STUCK-BREAK HARD turn ending in prose is the INTENDED exit, not an
+        # anomaly. Live 2026-09-29 08:43:40 (ses_f18850847): the model finally
+        # produced the prose exit and the unexpected_end_turn guardrail retried
+        # it with tool_choice=required, re-coercing the very loop the breaker
+        # exists to end. Both guardrails must yield on a suppressed turn.
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.suppress_text_tool_extraction = True
+        monitor.tool_turn_phase = "act"
+
+        # Prose end_turn + an active tool loop: exactly the shape the
+        # unexpected_end_turn guardrail would otherwise retry.
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": "The query keeps failing; I need operator input.",
+                        "tool_calls": [],
+                    },
+                }
+            ]
+        }
+        # A garbled structured call: exactly the shape the malformed-tool
+        # guardrail would otherwise spend a retry prefill repairing -- on a
+        # turn where conversion drops the call anyway.
+        garbled_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "Bash",
+                                    "arguments": '{"command": "ssh root@db psq',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        openai_body = {
+            "model": "test",
+            "tool_choice": "auto",
+            "messages": [{"role": "user", "content": "continue"}],
+        }
+        anthropic_body = {
+            "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+            "messages": [
+                {"role": "user", "content": "start"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "Bash",
+                            "input": {"command": "pwd"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "ok",
+                        }
+                    ],
+                },
+            ],
+        }
+        fake_client = _FakeClient([_FakeResponse({"choices": []})])
+        unexpected = asyncio.run(
+            proxy._apply_unexpected_end_turn_guardrail(
+                fake_client,
+                openai_resp,
+                openai_body,
+                anthropic_body,
+                monitor,
+                "session-stuck-break",
+            )
+        )
+        malformed = asyncio.run(
+            proxy._apply_malformed_tool_guardrail(
+                fake_client,
+                garbled_resp,
+                openai_body,
+                anthropic_body,
+                monitor,
+                "session-stuck-break",
+            )
+        )
+        self.assertEqual(unexpected, openai_resp)
+        self.assertEqual(malformed, garbled_resp)
+        self.assertEqual(
+            malformed["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+            '{"command": "ssh root@db psq',
+            "a suppressed turn must not repair a call it is about to drop",
+        )
+        self.assertEqual(len(fake_client.requests), 0)
+
     def test_unexpected_end_turn_guardrail_retries_review_auto_turn_in_active_loop(self):
         monitor = proxy.SessionMonitor(context_window=262144)
         monitor.tool_turn_phase = "review"

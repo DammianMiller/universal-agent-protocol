@@ -11783,6 +11783,19 @@ async def _apply_unexpected_end_turn_guardrail(
         logger.info("GUARDRAIL: skipped unexpected_end_turn retry on finalize turn")
         return openai_resp
 
+    # A tools-stripped breaker turn (STUCK-BREAK HARD / finalize-adjacent) ends
+    # in prose BY DESIGN -- observed live 2026-09-29 08:43:40, the model finally
+    # produced the prose exit and this guardrail treated it as an anomaly and
+    # retried with tool_choice=required, re-coercing the very loop the breaker
+    # exists to end (and burning a full prefill to do it).
+    if monitor.suppress_text_tool_extraction:
+        logger.info(
+            "GUARDRAIL: skipped unexpected_end_turn retry on a tools-stripped "
+            "breaker turn -- the prose exit is the intended outcome, not an "
+            "anomaly to re-coerce"
+        )
+        return openai_resp
+
     if not _is_unexpected_end_turn(openai_resp, anthropic_body):
         return openai_resp
 
@@ -11875,6 +11888,15 @@ async def _apply_malformed_tool_guardrail(
                 )
         else:
             logger.info("GUARDRAIL: finalize turn clean, no tool call XML detected")
+        return openai_resp
+
+    # A tools-stripped breaker turn drops whatever the backend resurrects at
+    # conversion time; repairing the resurrected call's arguments first would
+    # burn a retry prefill perfecting a call that is about to be discarded.
+    if monitor.suppress_text_tool_extraction:
+        logger.info(
+            "GUARDRAIL: skipped malformed-tool retry on a tools-stripped breaker turn"
+        )
         return openai_resp
 
     working_resp = openai_resp
