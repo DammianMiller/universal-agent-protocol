@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.16.6 (2026-09-29)
+
+- fix(proxy): guardrails yield on tools-stripped breaker turns
+
+
 ## v2.16.5 (2026-09-29)
 
 - fix(proxy): drop backend-resurrected STRUCTURED tool_calls on tools-stripped turns
