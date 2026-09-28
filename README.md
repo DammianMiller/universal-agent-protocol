@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-450%2B_suites-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
-`v2.11.0` · 367 TypeScript modules across 26 subsystems · 459 vitest suites (+ a ~1,200-test Python enforcer/proxy suite) · 9 agent harnesses
+`v2.16.6` · 367 TypeScript modules across 26 subsystems · 459 vitest suites (+ a ~1,200-test Python enforcer/proxy suite) · 9 agent harnesses
 
 [Quickstart](#quickstart) · [Why UAP?](#why-uap) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
 
