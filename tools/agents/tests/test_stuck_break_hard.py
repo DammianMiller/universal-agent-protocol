@@ -413,3 +413,80 @@ class TestSuppressedTurnIsBuffered(unittest.TestCase):
             self.skipTest("ambient proxy config already forces buffering here")
         self.assertFalse(proxy._should_buffer_turn(True, body, openai_body, self._monitor(False)))
         self.assertTrue(proxy._should_buffer_turn(True, body, openai_body, self._monitor(True)))
+
+
+class TestSuppressedStructuredToolCalls(unittest.TestCase):
+    """The STRUCTURED half of the hard break (live incident 2026-09-29 08:38).
+
+    The text-markup suppression scrubs tool calls written into the text body,
+    but the BACKEND can still parse the model's repeated markup into a
+    STRUCTURED tool_calls field on a tools-stripped turn -- observed on tabbyAPI
+    as finish=tool_calls with an EMPTY text body, re-served 30+ times at ~9
+    req/min. The conversion promoted each one straight back to tool_use, the
+    client re-executed the identical ssh call, and the loop ran for hours. On a
+    suppressed turn there are by construction no tools, so ANY structured call
+    is resurrection and must be dropped.
+    """
+
+    @staticmethod
+    def _resp(text="", finish="tool_calls"):
+        return {
+            "choices": [
+                {
+                    "finish_reason": finish,
+                    "message": {
+                        "role": "assistant",
+                        "content": text,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "bash",
+                                    "arguments": '{"command": "ssh root@db psql"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 0},
+        }
+
+    @staticmethod
+    def _text(out):
+        return "".join(b.get("text") or "" for b in out.get("content") or [])
+
+    def test_resurrected_call_is_dropped_and_turn_is_a_prose_end_turn(self):
+        out = proxy.openai_to_anthropic_response(
+            self._resp(), "qwen", suppress_text_tool_extraction=True
+        )
+        self.assertEqual(out["stop_reason"], "end_turn")
+        types = [b.get("type") for b in out["content"]]
+        self.assertNotIn("tool_use", types, "a suppressed turn must not carry tool_use")
+
+    def test_empty_body_gets_fallback_prose_not_a_blank_reply(self):
+        # The live incident shape: text_len=0, everything in tool_calls.
+        out = proxy.openai_to_anthropic_response(
+            self._resp(text=""), "qwen", suppress_text_tool_extraction=True
+        )
+        joined = self._text(out)
+        self.assertIn("repeated the same tool call", joined)
+        self.assertNotIn("ssh root@db psql", joined, "dropped args must not leak")
+
+    def test_model_prose_is_kept_when_the_resurrected_call_is_dropped(self):
+        out = proxy.openai_to_anthropic_response(
+            self._resp(text="The query keeps failing; I need operator input."),
+            "qwen",
+            suppress_text_tool_extraction=True,
+        )
+        self.assertIn("The query keeps failing", self._text(out))
+
+    def test_normal_turns_still_promote_structured_calls(self):
+        # The suppression must not leak onto the normal path, where serving a
+        # structured call is the whole point of the conversion.
+        out = proxy.openai_to_anthropic_response(
+            self._resp(), "qwen", suppress_text_tool_extraction=False
+        )
+        self.assertEqual(out["stop_reason"], "tool_use")
+        self.assertTrue(any(b.get("type") == "tool_use" for b in out["content"]))

@@ -12922,6 +12922,41 @@ def openai_to_anthropic_response(
     message = choice.get("message", {})
     finish = choice.get("finish_reason", "stop")
 
+    # Structured resurrection on a tools-stripped turn. The text-markup
+    # suppression above only scrubs tool calls written into the TEXT body --
+    # but the BACKEND can still parse the model's repeated <tool_call> into a
+    # STRUCTURED tool_calls field even with an empty tools list (observed live
+    # 2026-09-29 08:38, tabbyAPI: finish=tool_calls, text_len=0, the identical
+    # ssh call re-served 30+ times at ~9 req/min; the client re-executed it
+    # each pass and the loop never ended). On a suppressed turn there are, by
+    # construction, no tools, so ANY structured call is resurrection: drop it,
+    # force the finish back to prose, and let the fallback below carry the
+    # reply when the model wrote nothing else.
+    if suppress_text_tool_extraction and message.get("tool_calls"):
+        dropped = message.pop("tool_calls") or []
+        if finish in ("tool_calls", "function_call"):
+            choice["finish_reason"] = "stop"
+            finish = "stop"
+        _suppressed_content = message.get("content")
+        if _suppressed_content is None or (
+            isinstance(_suppressed_content, str) and not _suppressed_content.strip()
+        ):
+            message["content"] = STUCK_BREAK_PROSE_FALLBACK
+        logger.warning(
+            "STUCK-BREAK HARD: suppressed STRUCTURED tool_calls from the backend on "
+            "a tools-stripped turn (%d call(s), e.g. %s) -- the turn now ends in "
+            "prose as intended",
+            len(dropped),
+            next(
+                (
+                    (c.get("function") or {}).get("name", "?")
+                    for c in dropped
+                    if isinstance(c, dict)
+                ),
+                "?",
+            ),
+        )
+
     content = []
     # Surface Qwen's <think>...</think> output as Anthropic-style thinking
     # blocks (Anthropic extended-thinking API shape:
