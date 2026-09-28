@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.16.5 (2026-09-29)
+
+- fix(proxy): drop backend-resurrected STRUCTURED tool_calls on tools-stripped turns
+
+
 ## v2.16.4 (2026-09-27)
 
 - ci: workflow-level OIDC permissions + npm debug-log diagnostics for publish
