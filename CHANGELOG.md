@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.16.7 (2026-09-29)
+
+- fix(proxy): quote the repeated call's actual output in the STUCK-BREAK directive
+- docs(readme): sync version badge line to v2.16.6
+
+
 ## v2.16.6 (2026-09-29)
 
 - fix(proxy): guardrails yield on tools-stripped breaker turns
