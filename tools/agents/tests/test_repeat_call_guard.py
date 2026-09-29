@@ -226,3 +226,67 @@ class TestStreakSurvivesAFreshMonitor(unittest.TestCase):
                     [{"role": "assistant", "content": "plain text"}]):
             self.proxy._seed_tool_history_from_request(mon, bad)
         self.assertEqual(mon.tool_call_history, [])
+
+
+class TestDirectiveQuotesTheActualOutput(unittest.TestCase):
+    """Live 2026-09-29 (ses_f158cb463, qwen3.8): the advisory directive told the
+    model 'you already have that output' on a `uap memory query` returning "No
+    results" — and it was ignored 7 times, because a weak model does not
+    recognise an EMPTY result as an answer; it believes the missing value must
+    exist and keeps re-asking. The directive must SHOW the model the output it
+    keeps receiving, and say plainly that 'no results' IS the source's answer.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.proxy = load_proxy()
+
+    NO_RESULTS = "No results in short-term memory\n\nNo results in long-term memory"
+
+    @staticmethod
+    def looping_monitor(proxy, snippet):
+        mon = proxy.SessionMonitor(context_window=100000)
+        for _ in range(4):
+            mon.record_tool_calls(tool_names=["Bash"], fingerprint="Bash|uap memory query x")
+        mon.last_tool_result_snippet = snippet
+        return mon
+
+    def inject(self, mon):
+        body = {"messages": [{"role": "system", "content": "base"}], "tool_choice": "required"}
+        self.proxy._maybe_inject_stuck_break(body, mon)
+        return body["messages"][0]["content"]
+
+    def test_the_directive_quotes_the_repeated_calls_actual_output(self):
+        text = self.inject(self.looping_monitor(self.proxy, self.NO_RESULTS))
+        self.assertIn("No results in short-term memory", text)
+        self.assertIn("returns EXACTLY this every time", text)
+        # The trap named in words, not just implied by the quote.
+        self.assertIn("'no results' output IS this source's final answer", text)
+
+    def test_a_long_result_is_bounded_in_the_directive(self):
+        text = self.inject(self.looping_monitor(self.proxy, "x" * 5000))
+        self.assertLess(len(text), 2000, "a huge tool result must not bloat the directive")
+
+    def test_a_missing_snippet_keeps_the_directive_valid(self):
+        # No tool_result seen (e.g. the repeat was in the request seeds only):
+        # the directive must still fire, unquoted, and not crash.
+        text = self.inject(self.looping_monitor(self.proxy, ""))
+        self.assertIn("SUCCEEDED each time", text)
+        self.assertIn("will not change", text)
+        self.assertNotIn("returns EXACTLY this", text)
+
+    def test_the_snippet_is_captured_from_the_latest_tool_result_of_the_request(self):
+        # The capture path: the most recent tool_result text in the
+        # conversation becomes the monitor snippet, so the NEXT turn's
+        # directive quotes what the repeated call actually returned.
+        mon = self.proxy.SessionMonitor(context_window=100000)
+        msgs = [{"role": "user", "content": "find the slug"}]
+        for i in range(2):
+            msgs.append({"role": "assistant", "content": [
+                {"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                 "input": {"command": "uap memory query x"}}]})
+            msgs.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}",
+                 "content": self.NO_RESULTS}]})
+        self.proxy._record_last_assistant_tool_calls({"messages": msgs}, mon)
+        self.assertIn("No results in short-term memory", mon.last_tool_result_snippet)

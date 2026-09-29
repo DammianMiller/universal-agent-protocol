@@ -2494,6 +2494,15 @@ class SessionMonitor:
     # back into a structured tool_use, which would continue the very loop the
     # breaker is ending. Reset to False at the start of every request.
     suppress_text_tool_extraction: bool = False
+    # Bounded snippet of the most recent tool_result text seen in the request.
+    # Feeds the STUCK-BREAK repeat-call directive so the model is SHOWN the
+    # unchanged output instead of only being told it "already has" it — live
+    # 2026-09-29, a model re-ran `uap memory query "plane workspace slug pay2u"`
+    # 7 times ignoring the directive, because a "No results" output is not an
+    # answer a weak model recognises as final; it believes the missing value
+    # must exist and keeps re-asking. Quoting the output makes the futility
+    # concrete. Refreshed on every request from the conversation.
+    last_tool_result_snippet: str = ""
     # Tool-turn count at which the TURN-COUNT FINALIZE BREAKER last fired. The
     # count is derived from the (only-growing) conversation, so without this the
     # breaker would re-fire on EVERY turn once the ceiling is first crossed —
@@ -7265,15 +7274,27 @@ def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> N
     if reason.startswith(_REPEAT_CALL_REASON):
         # The call SUCCEEDS every time, so "stop retrying a failing action" and
         # the switch-channel advice would both be nonsense here. Name the real
-        # problem: the answer is already in hand and re-asking cannot change it.
+        # problem: the answer is already in hand and re-asking cannot change
+        # it. QUOTE the actual output — live 2026-09-29, "You already have that
+        # output" was ignored 7 times on a `uap memory query` returning "No
+        # results": the model does not recognise an empty result as an answer,
+        # so the directive must show it that the output IS the output.
+        snippet = (monitor.last_tool_result_snippet or "").strip()
+        quoted = (
+            f' It returns EXACTLY this every time: "{snippet[:300]}"' if snippet else ""
+        )
         directive = (
             "\n\nSTOP — you have issued the same tool call with the same "
             "arguments " + reason.rsplit("x", 1)[-1] + " times in a row. It "
             "SUCCEEDED each time and the result will not change by asking again. "
-            "You already have that output. Do NOT repeat it. Either take the "
-            "NEXT concrete action using what it told you, or — if you genuinely "
-            "cannot proceed — state the single blocking question in one sentence "
-            "and stop. Answer in plain text now if the work is done."
+            "You already have that output." + quoted + " Do NOT repeat it — "
+            "re-asking cannot produce new information, and an empty or "
+            "'no results' output IS this source's final answer. Either take the "
+            "NEXT concrete action using what it told you (proceeding WITHOUT "
+            "the missing information and stating your assumption if necessary), "
+            "or — if you genuinely cannot proceed — state the single blocking "
+            "question in one sentence and stop. Answer in plain text now if "
+            "the work is done."
         )
     else:
         directive = (
@@ -9093,6 +9114,9 @@ def _record_last_assistant_tool_calls(
                     _latest_err = any(_flags)
                 break
     monitor.note_tool_result_error(_latest_tr, _latest_err)
+    # Bounded raw snippet of the same result, for the STUCK-BREAK repeat-call
+    # directive (see SessionMonitor.last_tool_result_snippet).
+    monitor.last_tool_result_snippet = (_latest_tr or "")[:400]
     _seed_tool_history_from_request(monitor, messages)
     tool_fingerprints = []
     tool_targets: dict[str, str] = {}
