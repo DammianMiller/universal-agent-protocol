@@ -26,6 +26,27 @@
       }
     },
     {
+      "name": "exl3-server",
+      "systemd": {
+        "unit": "uap-exl3-server.service",
+        "scope": "user"
+      },
+      "budget": {
+        "vramMiB": 20480,
+        "note": "Production backend since 2026-09-23 (tabbyAPI, continuous batching; config /home/cogtek/dev/tabbyAPI/config.yml — kit start.sh env is the rollback path). Qwen3.8-27B EXL3 3.5bpw + DFlash2 draft, Q4 KV pool 147456 tok. OOM-prevention 2026-09-29: cache_size 204800 -> 147456 freed ~1.0 GiB (steady resident ~19.5 GiB; ~3.3 GiB free with ~1.6 GiB desktop consumers, vs ~1.8 GiB before). Proxy rail pin (114,688) keeps 2 sessions <= ~110k, still far under the pool.",
+        "execStartMustContain": [
+          "tabbyAPI/main.py"
+        ]
+      },
+      "headroom": {
+        "gpuMinFreeMiB": 1536
+      },
+      "restartBudget": {
+        "knownRestarts": 0,
+        "allowedNew": 0
+      }
+    },
+    {
       "name": "gsq-monitor",
       "systemd": {
         "unit": "uap-gsq-monitor.service",
