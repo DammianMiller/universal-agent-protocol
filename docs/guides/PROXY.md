@@ -190,6 +190,7 @@ set is below.
 | `PROXY_CONTEXT_WINDOW` (0 = auto) | Explicit local context window; 0 derives it from the live rail |
 | `PROXY_COUNT_TOKENS_SCALE` (auto) | Scales the reported token count so the client auto-compacts before the local rail overflows |
 | `PROXY_CONTEXT_PRUNE_THRESHOLD` (0.85) / `PROXY_CONTEXT_PRUNE_TARGET_FRACTION` (0.50) | Backstop pruning: prune at 85% of the window, land the session at ~50% |
+| `PROXY_PRUNE_SPIRAL_STREAK` (3) / `PROXY_PRUNE_SPIRAL_EPSILON` (0.01) | Prune circuit breaker fires only on a RISING post-prune floor (3 consecutive prunes each >1 point higher). A flat floor above the threshold is fixed system+tools overhead, not a death spiral — the breaker is held |
 
 ### Connection health & backpressure
 

@@ -64,6 +64,19 @@ Configuration (Environment Variables)
                                     conversation pruning activates (0.0-1.0)
                                     Default: 0.85
 
+    PROXY_PRUNE_SPIRAL_STREAK       Consecutive above-threshold prunes with a
+                                    RISING post-prune floor required before the
+                                    prune circuit breaker fires. A tool-heavy
+                                    client's fixed overhead (system + tool
+                                    schemas) can sit above the threshold
+                                    permanently; a flat floor is NOT a death
+                                    spiral. Default: 3
+
+    PROXY_PRUNE_SPIRAL_EPSILON      Minimum post-prune utilization rise
+                                    (fraction of window, e.g. 0.01 = 1 point)
+                                    for a prune to count toward the spiral
+                                    streak. Default: 0.01
+
 Usage
 -----
     # Basic usage (connects to llama.cpp on default port):
@@ -298,6 +311,28 @@ PROXY_CLOSEWAIT_REAP_INTERVAL = float(os.environ.get("PROXY_CLOSEWAIT_REAP_INTER
 PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
 PROXY_CONTEXT_PRUNE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.85")
+)
+# Prune circuit-breaker floor-trend discrimination (2026-09-30): a tool-heavy
+# client's FIXED overhead (system prompt + tool schemas — observed live:
+# opencode's 99 tools ≈ 66k est tokens in a 114,688-token window) can sit
+# permanently ABOVE PROXY_CONTEXT_PRUNE_THRESHOLD (0.42 in production), so
+# post-prune utilization can never get below the threshold no matter how many
+# messages are dropped. The breaker's old condition — "3+ consecutive prunes
+# and still above threshold" — read that permanent flat floor as a death
+# spiral and force-finalized healthy ~44% sessions every few turns (observed
+# live: 8 breaker fires in 10 minutes, each one ending the client's turn; the
+# operator symptom was "the client keeps stopping"). A REAL death spiral shows
+# a RISING post-prune floor turn over turn; a fixed-overhead floor is flat.
+# The breaker now fires only after PROXY_PRUNE_SPIRAL_STREAK consecutive
+# above-threshold prunes whose post-prune utilization rose by more than
+# PROXY_PRUNE_SPIRAL_EPSILON (fraction of the window). Slow sub-epsilon
+# spirals do not trip this breaker; they escalate to the >=90% critical
+# prune and the catastrophic raw-ctx finalize backstops instead.
+PROXY_PRUNE_SPIRAL_STREAK = int(
+    os.environ.get("PROXY_PRUNE_SPIRAL_STREAK", "3")
+)
+PROXY_PRUNE_SPIRAL_EPSILON = float(
+    os.environ.get("PROXY_PRUNE_SPIRAL_EPSILON", "0.01")
 )
 # Verbatim decision compaction (uplift 1.2): when context pressure triggers a
 # prune, first try per-tool-call keep/truncate/drop decisions that keep all
@@ -2410,6 +2445,14 @@ class SessionMonitor:
     pre_prune_input_tokens: int = 0
     prune_count: int = 0  # How many times pruning was triggered
     overflow_count: int = 0  # How many context overflow errors caught
+    # Prune circuit-breaker floor trend (2026-09-30): consecutive
+    # above-threshold prunes whose post-prune utilization ROSE (a real death
+    # spiral regrows faster than the pruner can cut), and the last post-prune
+    # utilization seen, to compute the delta. A flat floor is fixed overhead,
+    # not a spiral — see _prune_breaker_should_fire.
+    prune_spiral_streak: int = 0
+    last_post_prune_util: float = -1.0
+    prune_floor_logged: bool = False  # one-shot "floor is flat" operator notice
     # Monotonic: # of oldest middle msgs pruned (B3). Only meaningful for
     # legacy lossy-path turns — a successful verbatim compaction (uplift 1.2)
     # re-indexes the middle non-contiguously and RESETS this to 0, since a
@@ -3527,6 +3570,39 @@ def _prune_overhead_tokens(anthropic_body: dict) -> int:
     if tools:
         overhead_tokens += estimate_tokens(json.dumps(tools))
     return int(overhead_tokens * 1.5)  # Safety factor for template overhead
+
+
+def _prune_breaker_should_fire(post_util: float, monitor) -> bool:
+    """Death-spiral discriminator for the prune circuit breaker (2026-09-30).
+
+    Called once per request AFTER all prune passes, with the post-prune
+    utilization. Updates the monitor's floor-trend streak and returns whether
+    the breaker should fire.
+
+    Why trend, not just "still above threshold": a tool-heavy client's fixed
+    overhead (system + tool schemas; observed: ~66k est tokens of a 114,688
+    window against a 42% threshold) puts the post-prune floor PERMANENTLY
+    above the threshold. The old breaker condition (3+ consecutive prunes and
+    still above threshold) fired every few turns on that flat floor, forcing
+    finalize on healthy ~44% sessions — the operator-visible "the client
+    keeps stopping". A real death spiral (auto-compact transcript regrowth,
+    exploding tool results) shows a post-prune floor that RISES turn over turn
+    even as the pruner cuts; only that counts. Flat or falling floors reset
+    the streak.
+    """
+    prev = monitor.last_post_prune_util
+    monitor.last_post_prune_util = post_util
+    if post_util < PROXY_CONTEXT_PRUNE_THRESHOLD:
+        # Back under the threshold (real headroom recovered): reset the trend.
+        monitor.prune_spiral_streak = 0
+        return False
+    if prev >= 0 and post_util > prev + PROXY_PRUNE_SPIRAL_EPSILON:
+        monitor.prune_spiral_streak += 1
+    else:
+        # Flat (within epsilon), falling, or the first observation above the
+        # threshold: not spiral evidence.
+        monitor.prune_spiral_streak = 0
+    return monitor.prune_spiral_streak >= PROXY_PRUNE_SPIRAL_STREAK
 
 
 def _truncate_oversized_message_content(messages: list, budget_tokens: int) -> bool:
@@ -14429,6 +14505,12 @@ async def messages(request: Request):
         monitor.no_progress_streak = 0
         monitor.tool_starvation_streak = 0
         monitor.consecutive_no_write_turns = 0
+        # Prune-breaker floor trend too (2026-09-30, reviewer P2-1): a stale
+        # pre-compaction floor baseline must not contribute a phantom "rise"
+        # to the fresh epoch — the exact breaker false-positive class
+        # _prune_breaker_should_fire exists to prevent.
+        monitor.prune_spiral_streak = 0
+        monitor.last_post_prune_util = -1.0
         logger.info(
             "COMPACTION BOUNDARY: message count collapsed %d -> %d; reset "
             "tool-turn/anti-spin state for the fresh epoch",
@@ -14527,18 +14609,42 @@ async def messages(request: Request):
                     n_messages,
                     post_util * 100,
                 )
-            # Option 2: Circuit breaker — if 3+ consecutive prunes and still above,
-            # force finalize (drop tools, let model wrap up)
-            if monitor.prune_count >= 3 and post_util >= PROXY_CONTEXT_PRUNE_THRESHOLD:
+            # Option 2: Circuit breaker — fires only on a RISING post-prune
+            # floor (_prune_breaker_should_fire, 2026-09-30). The old "3+
+            # consecutive prunes and still above threshold" condition fired
+            # every few turns on tool-heavy clients whose fixed system+tools
+            # overhead alone exceeds the threshold (observed live: 66k est
+            # tokens of a 114,688 window at a 42% threshold), force-finalizing
+            # healthy ~44% sessions.
+            if _prune_breaker_should_fire(post_util, monitor):
                 logger.error(
-                    "PRUNE CIRCUIT BREAKER: %d consecutive prunes, still at %.1f%%. "
-                    "Forcing finalize to prevent death spiral.",
-                    monitor.prune_count,
+                    "PRUNE CIRCUIT BREAKER: post-prune floor rising for %d consecutive prunes "
+                    "(now %.1f%%, threshold %.1f%%). Forcing finalize to prevent death spiral.",
+                    monitor.prune_spiral_streak,
                     post_util * 100,
+                    PROXY_CONTEXT_PRUNE_THRESHOLD * 100,
                 )
                 monitor.set_tool_turn_phase("finalize", reason="prune_circuit_breaker")
                 monitor.tool_state_auto_budget_remaining = 1
                 monitor.reset_completion_recovery()
+            elif (
+                post_util >= PROXY_CONTEXT_PRUNE_THRESHOLD
+                and monitor.prune_spiral_streak == 0
+                and not monitor.prune_floor_logged
+            ):
+                # Above threshold with a FLAT floor (no rise this turn): fixed
+                # overhead, not a spiral. Tell the operator ONCE per session —
+                # the per-turn prune above still logs its own warning lines.
+                monitor.prune_floor_logged = True
+                logger.warning(
+                    "Post-prune utilization %.1f%% stays above the %.1f%% threshold "
+                    "with a FLAT floor — fixed system+tools overhead, not a death "
+                    "spiral; circuit breaker held. Consider raising "
+                    "PROXY_CONTEXT_PRUNE_THRESHOLD above the overhead floor for "
+                    "this client.",
+                    post_util * 100,
+                    PROXY_CONTEXT_PRUNE_THRESHOLD * 100,
+                )
 
     # Whether this upstream accepts chat_template_kwargs decides what
     # _set_thinking is allowed to write, so it must be answered BEFORE the body
