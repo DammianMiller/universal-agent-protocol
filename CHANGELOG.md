@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.16.9 (2026-10-02)
+
+- feat(policy): fail-close the plane-admin guard on shell calls
+
+
 ## v2.16.8 (2026-09-30)
 
 - fix(proxy): hold the prune circuit breaker on a flat overhead floor
