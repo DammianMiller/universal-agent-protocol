@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.16.8 (2026-09-30)
+
+- fix(proxy): hold the prune circuit breaker on a flat overhead floor
+
+
 ## v2.16.7 (2026-09-29)
 
 - fix(proxy): quote the repeated call's actual output in the STUCK-BREAK directive
