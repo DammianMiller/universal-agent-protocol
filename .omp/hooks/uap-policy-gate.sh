@@ -399,6 +399,9 @@ fail_closed() {
     schema_diff_gate)
       echo "[UAP policy gate] FAIL-CLOSED: this commit touches watched schema paths but the schema-diff enforcer could not run (${why}). Blocked so a broken/absent gate can't become a bypass. Restore it with: uap policy verify --repair (or uap policy install schema-diff-gate if the manifest is gone; npm run build if dist/ is missing). Operator override: UAP_SELF_PROTECT_OFF=1 in the environment." >&2
       ;;
+    plane_admin_protect)
+      echo "[UAP policy gate] FAIL-CLOSED: this shell command can mutate the plane-admin control surface but the plane_admin_protect enforcer could not run (${why}). Blocked so a broken/absent gate can't become a bypass. Restore it with: uap policy verify --repair (or uap policy install plane-admin-protect if the manifest is gone). Operator override: UAP_SELF_PROTECT_OFF=1 in the environment." >&2
+      ;;
     *)
       echo "[UAP policy gate] FAIL-CLOSED: this operation touches the enforcement control surface but the self-protect enforcer could not run (${why}). Blocked so a broken/absent gate can't become a bypass. (Operator override: UAP_SELF_PROTECT_OFF=1.)" >&2
       ;;
@@ -524,13 +527,43 @@ print("1" if (inv and not inert) else "0")
 # refused every commit and push in the session with no working remedy.
 [[ "${UAP_SELF_PROTECT_OFF:-}" == "1" ]] && COMMIT_OP=0
 
+# Is this a SHELL-EXECUTION tool call? plane_admin_protect guards the plane-admin
+# control surface (policy registration, the plane-admin rows the gate reads out of
+# policies.db, the .policy-tools/ enforcer copies), and that surface is reachable
+# almost exclusively through the shell: `uap policy install/verify`, `sqlite3
+# agents/data/memory/policies.db ...`, `rm -rf .policy-tools/...`. An Edit/Write
+# of an ordinary source file never invokes it, so arming the fail-closed net there
+# would turn a broken plane-admin enforcer into a blanket block on every edit in
+# the session -- the same over-reach the COMMIT_OP scoping exists to avoid for
+# schema_diff_gate. Keyed on the TOOL name rather than command text because the
+# enforcer's own activation test is tool-based: a shell tool is the only one it is
+# ever asked about.
+SHELL_OP=0
+case " $TOOL " in
+  *" Bash "*|*" bash "*|*" run_bash "*|*" BashTool "*|*" Shell "*|*" shell "*|*" Terminal "*|*" terminal "*|*" execute_command "*|*" run_command "*|*" exec "*|*" local_shell "*|*" command "*)
+    SHELL_OP=1
+    ;;
+esac
+# Same operator hatch as SEC_SENSITIVE/COMMIT_OP: UAP_SELF_PROTECT_OFF is
+# documented as clearing the whole fail-closed net, so it has to clear this arm
+# too -- otherwise the override named in the refusal is a no-op for exactly the
+# case that prints it.
+[[ "${UAP_SELF_PROTECT_OFF:-}" == "1" ]] && SHELL_OP=0
+
 # Which enforcers must fail CLOSED, and when. Called from `if`, never as the
 # left side of `&&`: this script runs under `set -e`, and `if` suspends it for
 # the whole condition.
+#
+# plane_admin_protect arms ONLY for shell-execution tools (SHELL_OP): its guarded
+# surface is mutable through the shell and nothing else, so a missing or errored
+# plane-admin enforcer on a Bash call is a live bypass of the admin controls,
+# while the same broken enforcer on an Edit is unrelated to that surface and must
+# keep failing open (the gate is fail-soft by design for what it is not guarding).
 must_fail_closed() {
   case "$1" in
     enforcement_self_protect) [[ "$SEC_SENSITIVE" == "1" ]] ;;
     schema_diff_gate)         [[ "$COMMIT_OP" == "1" ]] ;;
+    plane_admin_protect)      [[ "$SHELL_OP" == "1" ]] ;;
     *)                        false ;;
   esac
 }
