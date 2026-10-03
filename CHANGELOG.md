@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.16.10 (2026-10-03)
+
+- fix(proxy): exempt substantive final answers from the unexpected-end-turn retry
+- chore: bump version to 2.16.9
+- feat(policy): fail-close the plane-admin guard on shell calls
+- feat(policies): plane-admin-protect enforcer + canonical schema + tests
+- chore: bump version to 2.16.8
+- fix(proxy): hold the prune circuit breaker on a flat overhead floor
+
+
 ## v2.16.9 (2026-10-02)
 
 - feat(policy): fail-close the plane-admin guard on shell calls
