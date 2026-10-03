@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.18.1 (2026-10-03)
+
+- chore: gitignore the per-machine orchestrator continuity script
+- fix(systemd): unquote the orch script's :- defaults — literal quotes killed exec with 127
+
+
 ## v2.18.0 (2026-10-03)
 
 - feat(merge): deterministic merge gate — evidence, not testimony
