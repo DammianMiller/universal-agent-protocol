@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.18.0 (2026-10-03)
+
+- feat(merge): deterministic merge gate — evidence, not testimony
+
+
 ## v2.17.0 (2026-10-03)
 
 - feat(mission): durable mission orchestrator — a goal layer that outlives every process
