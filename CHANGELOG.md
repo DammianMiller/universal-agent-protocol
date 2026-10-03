@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.17.0 (2026-10-03)
+
+- feat(mission): durable mission orchestrator — a goal layer that outlives every process
+
+
 ## v2.16.13 (2026-10-03)
 
 - refactor(proxy): finalize the substantive-completion exemption family
