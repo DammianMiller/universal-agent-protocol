@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.16.12 (2026-10-03)
+
+- fix(proxy): exempt substantive completions from required_tool_miss
+
+
 ## v2.16.11 (2026-10-03)
 
 - fix(proxy): gate garbled-args structural checks on JSON parse failure
