@@ -10226,16 +10226,14 @@ def _is_garbled_tool_arguments(arguments_str: str) -> bool:
     """Detect garbled/degenerate tool call arguments.
 
     Returns True if the arguments string shows signs of degenerate generation:
-    - Runaway closing braces (}}}}})
-    - Repetitive digit patterns (000000, 398859738398859738)
-    - Extremely long digit strings
-    - Unbalanced braces suggesting truncated/corrupt JSON
+    - Repetitive digit patterns (000000, 398859738398859738) and long digit
+      runs (degenerate CONTENT, meaningful even inside valid JSON values)
+    - Structural corruption — runaway closing braces (}}}}}) and unbalanced
+      braces — only when the payload does not parse as JSON
     """
     if not arguments_str or arguments_str == "{}":
         return False
 
-    if _GARBLED_RUNAWAY_BRACES_RE.search(arguments_str):
-        return True
     if _GARBLED_REPETITIVE_DIGITS_RE.search(arguments_str):
         return True
     if _GARBLED_ZEROS_RE.search(arguments_str):
@@ -10243,11 +10241,31 @@ def _is_garbled_tool_arguments(arguments_str: str) -> bool:
     if _GARBLED_LONG_DIGITS_RE.search(arguments_str):
         return True
 
-    # Check brace balance — more than 2 unmatched braces suggests corruption
-    open_count = arguments_str.count("{")
-    close_count = arguments_str.count("}")
-    if abs(open_count - close_count) > 2:
-        return True
+    # Structural checks — ONLY meaningful for a payload that does not parse
+    # as JSON: a clean json.loads proves the arguments are not truncated, and
+    # braces inside JSON string VALUES are payload content, not structure.
+    # edit/write tool args legitimately carry partial code excerpts with
+    # unbalanced braces (observed live 2026-10-03: a Rust tail snippet with
+    # 3 closing braces and no opening braces in oldString tripped the raw
+    # balance check on a perfectly valid payload; the reject-retry loop that
+    # followed burned three session-contamination resets and a forced
+    # finalize mid-task). Runaway `}}}}}` gets the same gate: four or more
+    # consecutive closing braces are common inside minified JS/JSON string
+    # values, while the classic degenerate form (runaway closers appended
+    # after the JSON) does not parse and is still caught here.
+    try:
+        json.loads(arguments_str)
+    except (ValueError, TypeError, RecursionError):
+        # Unparseable: brace imbalance and runaway closers are genuine
+        # truncation/corruption signals here. RecursionError covers deeply
+        # nested degenerate input (the exact artifact family this classifier
+        # absorbs) that the C scanner rejects without raising ValueError.
+        if _GARBLED_RUNAWAY_BRACES_RE.search(arguments_str):
+            return True
+        open_count = arguments_str.count("{")
+        close_count = arguments_str.count("}")
+        if abs(open_count - close_count) > 2:
+            return True
 
     return False
 
