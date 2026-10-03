@@ -16,6 +16,7 @@ const lazy = {
   memory: () => import('../cli/memory.js').then((m) => m.memoryCommand),
   worktree: () => import('../cli/worktree.js').then((m) => m.worktreeCommand),
   mergeQueue: () => import('../cli/merge-queue.js').then((m) => m.mergeQueueCommand),
+  mergeGate: () => import('../cli/merge-gate.js').then((m) => m.mergeGateCommand),
   sync: () => import('../cli/sync.js').then((m) => m.syncCommand),
   droids: () => import('../cli/droids.js').then((m) => m.droidsCommand),
   coord: () => import('../cli/coord.js').then((m) => m.coordCommand),
@@ -461,6 +462,23 @@ program
           yes: options.yes ?? false,
           limit: parsedLimit,
           force: options.force ?? false,
+        });
+      })
+  )
+  .addCommand(
+    new Command('gate')
+      .description('Run the deterministic merge gate for a mission (provenance + green recompute + sorry-delta + gate-infra)')
+      .argument('<missionId>', 'Mission id from `uap mission list`')
+      .option('-r, --project-root <path>', 'Project root (default: cwd)')
+      .option('-b, --base <ref>', 'Base ref to diff against (default: master)')
+      .option('--allow-gate-infra', 'Acknowledge deliberate gate-infrastructure changes in this diff')
+      .option('--json', 'Print the findings as JSON')
+      .action(async (missionId: string, options) => {
+        (await lazy.mergeGate())(missionId, {
+          ...(options.projectRoot ? { projectRoot: options.projectRoot } : {}),
+          ...(options.base ? { base: options.base } : {}),
+          ...(options.allowGateInfra ? { allowGateInfra: true } : {}),
+          ...(options.json ? { json: true } : {}),
         });
       })
   );

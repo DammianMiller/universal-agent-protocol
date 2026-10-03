@@ -14,6 +14,8 @@
 import chalk from 'chalk';
 import { execFileSync } from 'child_process';
 import { loadOwnershipMap, assessConflict, type OwnershipMap } from '../coordination/ownership.js';
+import { gatePr } from './merge-gate.js';
+import { missionMarkerOf } from '../delivery/merge-gate.js';
 
 export interface QueueOptions {
   dryRun?: boolean;
@@ -34,10 +36,14 @@ export interface PullRequest {
   number: number;
   title: string;
   headRefName: string;
+  /** Head commit SHA — the candidate the gate-evidence artifact must bind to. */
+  headRefOid: string;
   isDraft: boolean;
   updatedAt: string;
   labels: string[];
   files: string[];
+  /** PR body — the mission-marker provenance surface (`[mission:#N:hash8]`). */
+  body: string;
 }
 
 /** Run `gh` and return stdout. Throws with a readable message on failure. */
@@ -61,27 +67,43 @@ function gh(args: string[], cwd?: string): string {
 export function fetchOpenPrs(cwd?: string): PullRequest[] {
   const raw = gh(
     ['pr', 'list', '--state', 'open', '--limit', '100', '--json',
-      'number,title,headRefName,isDraft,updatedAt,labels,files'],
+      'number,title,headRefName,headRefOid,isDraft,updatedAt,labels,files,body'],
     cwd
   );
   const parsed = JSON.parse(raw) as Array<{
     number: number;
     title: string;
     headRefName: string;
+    headRefOid?: string;
     isDraft: boolean;
     updatedAt: string;
     labels?: Array<{ name: string }>;
     files?: Array<{ path: string }>;
+    body?: string;
   }>;
   return parsed.map((p) => ({
     number: p.number,
     title: p.title,
     headRefName: p.headRefName,
+    headRefOid: p.headRefOid ?? '',
     isDraft: p.isDraft,
     updatedAt: p.updatedAt,
     labels: (p.labels ?? []).map((l) => l.name),
     files: (p.files ?? []).map((f) => f.path),
+    body: p.body ?? '',
   }));
+}
+
+/**
+ * Agent-cut PRs arrive on worktree-pattern branches (`NNN-<slug>` or
+ * `feature/NNN-<slug>`). One that carries NO mission marker bypasses the
+ * merge gate entirely — the evasion channel is cheap (the PR author writes
+ * the body), so the queue surfaces it loudly instead of silently trusting
+ * the omission (architect review F3). A warning, never a block: unmarked
+ * human PRs and docs/chore PRs are legitimate and common.
+ */
+export function isAgentStyleBranch(headRefName: string): boolean {
+  return /^\d+-/.test(headRefName) || /^feature\/\d+-/.test(headRefName);
 }
 
 /** Files touched by both PRs — the direct textual-conflict surface. */
@@ -211,11 +233,17 @@ export async function mergeQueueCommand(options: QueueOptions = {}): Promise<voi
   for (const [i, pr] of plan.entries()) {
     const others = plan.slice(i + 1);
     const conflicts = impactedBy(pr, others, ownership);
+    const marker = missionMarkerOf(`${pr.title}\n${pr.body}`);
+    const provenance = marker
+      ? chalk.cyan(` · mission #${marker.missionId} @ ${marker.hash8}`)
+      : isAgentStyleBranch(pr.headRefName)
+        ? chalk.yellow(' · unmarked agent-style PR — merge gate NOT applied')
+        : '';
     const note =
       conflicts.length > 0
         ? chalk.yellow(` → forces re-sync of ${conflicts.map((c) => `#${c.number}`).join(', ')}`)
         : '';
-    console.log(`  ${i + 1}. #${pr.number} ${pr.title} ${chalk.dim(`(${pr.files.length} files)`)}${note}`);
+    console.log(`  ${i + 1}. #${pr.number} ${pr.title} ${chalk.dim(`(${pr.files.length} files)`)}${provenance}${note}`);
   }
   console.log('');
 
@@ -252,6 +280,38 @@ export async function mergeQueueCommand(options: QueueOptions = {}): Promise<voi
         continue;
       }
       // 'none' (repo has no CI) and 'green' both proceed.
+    }
+
+    // Mission-linked PRs run the deterministic merge gate BEFORE landing: the
+    // deliver run's DONE report is a claim; the gate re-derives the verdict
+    // from the ledger + fresh run-state + the evidence artifact + the PR diff.
+    // `--force` does NOT skip this — a force flag is exactly the gate-off
+    // escape axiom-honesty exists to refuse. Deliberate gate-infra changes are
+    // acknowledged via the PR's `gate-infra` label, not by skipping the gate.
+    // The diff fetch is LAZY (marker-less PRs cost nothing) and a transport
+    // failure maps to a skip for THIS PR — never a crash of the whole batch.
+    const markerGate = gatePr(
+      cwd,
+      `${pr.title}\n${pr.body}`,
+      () => gh(['pr', 'diff', String(pr.number)], cwd),
+      pr.labels.some((l) => l.toLowerCase() === 'gate-infra'),
+      pr.headRefOid || undefined
+    );
+    if (markerGate.gate === 'fail') {
+      for (const reason of markerGate.reasons) {
+        console.log(chalk.red(`     ↳ merge gate: ${reason}`));
+      }
+      console.log(chalk.yellow(`  ⏭  #${pr.number} skipped — merge gate FAIL`));
+      skipped.push(`#${pr.number} (merge gate: ${markerGate.reasons.length} check(s) failed)`);
+      continue;
+    }
+    if (markerGate.gate === 'error') {
+      console.log(chalk.yellow(`  ⏭  #${pr.number} skipped — merge gate error: ${markerGate.reason}`));
+      skipped.push(`#${pr.number} (merge gate error)`);
+      continue;
+    }
+    if (markerGate.gate === 'pass') {
+      console.log(chalk.dim(`     ↳ merge gate PASS (mission provenance verified)`));
     }
 
     try {

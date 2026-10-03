@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evidence, not testimony — UAP merge gate</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='1' width='14' height='14' rx='3' fill='%230d1520'/%3E%3Cpath d='M8 3v6M5.5 11.5L8 14l2.5-2.5' stroke='%23ffb547' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  color-scheme: light dark;
+  --bg:#0d1520; --surface:#132031; --border:#22324a; --border-bright:#596b87;
+  --text:#e3ecf5; --text-dim:#92a6bb; --accent:#ffb547; --ok:#6fd3a0; --warn:#e8d36a;
+  --risk:#ff7b6b; --info:#7cc0f0;
+  --node-top:#22324a; --lift:rgb(0 0 0/.45); --halo:32%;
+  --accent-dim:rgb(255 181 71/.14);
+  --t-label:.75rem; --t-small:.875rem; --t-body:1rem; --t-lead:1.25rem;
+  --t-h2:1.625rem; --t-h1:clamp(2.25rem,5.5vw,4rem);
+  --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem; --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4.5rem;
+  --r-1:4px;
+  --ease:cubic-bezier(.16,1,.3,1); --fast:150ms; --med:300ms; --slow:500ms;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:#f2f6fa; --surface:#ffffff; --border:#d6e0ea; --border-bright:#818f9e;
+    --text:#0f1a26; --text-dim:#4d6074; --accent:#a34700; --ok:#1c7443; --warn:#776300;
+    --risk:#b0341e; --info:#145f99;
+    --node-top:#ffffff; --lift:rgb(18 22 20/.12); --halo:22%;
+    --accent-dim:rgb(163 71 0/.13);
+  }
+}
+html{font-size:17px; font-kerning:normal; font-synthesis:none; scroll-behavior:smooth}
+body{margin:0; background:var(--bg); color:var(--text);
+  font:400 var(--t-body)/1.55 "IBM Plex Sans",sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:64rem; margin:0 auto; padding:0 var(--s-5)}
+h1,h2{font-weight:600; letter-spacing:-.02em; text-wrap:balance; text-box:trim-both cap alphabetic}
+h1{font-size:var(--t-h1); line-height:1.05; margin:var(--s-3) 0 0}
+h2{font-size:var(--t-h2); line-height:1.15; letter-spacing:-.01em; margin:0; grid-column:4/13}
+p{margin:0 0 var(--s-4); max-width:65ch; text-wrap:pretty}
+.lead{font-size:var(--t-lead); color:var(--text-dim); line-height:1.45; margin:var(--s-4) 0 0; max-width:50ch}
+.lead b{color:var(--text); font-weight:600}
+.mono{font-family:"IBM Plex Mono",monospace}
+code{font-family:"IBM Plex Mono",monospace; font-size:.875em; background:var(--accent-dim); padding:.1em .3em; border-radius:var(--r-1)}
+a{color:var(--accent); text-underline-offset:.2em}
+.kicker{font-family:"IBM Plex Mono",monospace; font-size:var(--t-label); font-weight:600;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim); display:flex; align-items:center; gap:var(--s-3)}
+.kicker::before{content:""; width:2.25rem; height:2px; background:var(--accent)}
+.meta{font-family:"IBM Plex Mono",monospace; font-size:var(--t-small); color:var(--text-dim); margin:var(--s-4) 0 0}
+section{padding:var(--s-8) 0; scroll-margin-top:5rem}
+.swiss{display:grid; grid-template-columns:repeat(12,1fr); gap:var(--s-5); align-items:baseline;
+  border-top:1px solid var(--border); padding-top:var(--s-5); margin-bottom:var(--s-5)}
+.swiss .sl{grid-column:1/4; font-family:"IBM Plex Mono",monospace; font-size:var(--t-label);
+  font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim)}
+.body-8{grid-column:4/13; min-width:0}
+@media (max-width:64rem){ .swiss{display:block} h2{margin-top:var(--s-2)} .body-8{display:block} }
+figure{margin:0 0 var(--s-6)}
+.frame{background:var(--bg); border:1px solid var(--border); border-radius:var(--r-1);
+  padding:var(--s-5); position:relative; overflow:hidden;
+  background-image:
+    linear-gradient(var(--border) 1px,transparent 1px),
+    linear-gradient(90deg,var(--border) 1px,transparent 1px);
+  background-size:24px 24px; background-position:center;
+}
+.frame::before{content:""; position:absolute; inset:0; background:var(--bg); opacity:.85; pointer-events:none}
+.frame > *{position:relative}
+figcaption{font-size:var(--t-body); color:var(--text-dim); margin:var(--s-3) var(--s-1) 0; text-wrap:pretty}
+figcaption .fn{font-family:"IBM Plex Mono",monospace; font-size:var(--t-label); font-weight:600; color:var(--text); margin-right:.5em}
+.scroll{overflow-x:auto; scrollbar-width:thin}
+svg text{font-family:"IBM Plex Mono",monospace}
+svg .ve-svg{display:block; min-width:720px; margin:0 auto}
+.ve-n .sh{fill:url(#ve-node); stroke:var(--border-bright); stroke-width:1.5; rx:6}
+.ve-n text{fill:var(--text); font-size:14px; font-weight:600}
+.ve-n text.sub{fill:var(--text-dim); font-size:12px; font-weight:400}
+.ve-n.is-key .sh{fill:var(--accent-dim); stroke:var(--accent); stroke-width:2}
+.ve-e{fill:none; stroke:var(--text-dim); stroke-width:1.75; marker-end:url(#ve-ah)}
+.ve-e.is-async{stroke-dasharray:6 5}
+.ve-e.is-hot{stroke:var(--accent); stroke-width:2.75; marker-end:url(#ve-ah)}
+.ve-el{font-size:13px; fill:var(--text-dim); paint-order:stroke; stroke:var(--bg); stroke-width:5}
+.ve-el.acc{fill:var(--accent)}
+.ve-el.ok{fill:var(--ok)} .ve-el.risk{fill:var(--risk)}
+.store-lid{fill:var(--node-top); stroke:var(--border-bright); stroke-width:1.5}
+[data-ref]{border-bottom:1px dashed var(--border-bright); cursor:default}
+[data-ref]:hover,[data-ref]:focus{color:var(--accent); border-bottom-color:var(--accent); outline:none}
+.kpis{display:flex; flex-wrap:wrap; gap:1px; background:var(--border); border:1px solid var(--border); border-radius:var(--r-1)}
+.kpi{flex:1 1 14rem; background:var(--surface); padding:var(--s-4); min-width:0}
+.kpi .k{font-family:"IBM Plex Mono",monospace; font-size:var(--t-label); font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim)}
+.kpi .v{font-size:2.75rem; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:-.04em; line-height:1.1; margin:var(--s-1) 0}
+.kpi .v small{font-size:1rem; color:var(--text-dim); font-weight:400; letter-spacing:0}
+.cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(14.5rem,1fr)); gap:var(--s-4)}
+.card{background:var(--surface); border:1px solid var(--border); border-radius:var(--r-1); padding:var(--s-4); min-width:0}
+.card h3{margin:var(--s-2) 0 var(--s-3); font-size:var(--t-body); font-weight:600}
+.chip{display:inline-flex; align-items:center; gap:.4em; font-family:"IBM Plex Mono",monospace;
+  font-size:var(--t-label); font-weight:600; letter-spacing:.04em; border:1px solid currentColor;
+  border-radius:var(--r-1); padding:.15em .5em; color:var(--text-dim)}
+.chip.ok{color:var(--ok)} .chip.warn{color:var(--warn)} .chip.risk{color:var(--risk)}
+.chip.info{color:var(--info)} .chip.acc{color:var(--accent)}
+table{border-collapse:collapse; width:100%}
+th{font-family:"IBM Plex Mono",monospace; font-size:var(--t-label); font-weight:600; letter-spacing:.05em;
+  text-transform:uppercase; color:var(--text-dim); text-align:left; padding:var(--s-3) var(--s-4); background:var(--surface)}
+td{padding:var(--s-3) var(--s-4); border-top:1px solid var(--border); vertical-align:top}
+td code{background:none; padding:0; font-size:.8125rem}
+.callout{background:var(--surface); border-radius:var(--r-1); padding:var(--s-4); display:flex; gap:var(--s-4); align-items:flex-start}
+nav.toc{position:sticky; top:0; grid-column:1/4; align-self:start; padding:var(--s-5) 0; max-height:100vh; overflow:auto}
+nav.toc a{display:block; color:var(--text-dim); text-decoration:none; font-size:var(--t-small); padding:.35em 0; border-left:2px solid transparent; padding-left:var(--s-4)}
+nav.toc a.on{color:var(--accent); border-left-color:var(--accent)}
+.layout{display:grid; grid-template-columns:repeat(12,1fr); gap:var(--s-5)}
+@media (max-width:1000px){
+  nav.toc{position:sticky; top:0; z-index:5; grid-column:1/13; background:var(--bg);
+    border-bottom:1px solid var(--border); padding:var(--s-3) 0; margin:calc(-1 * var(--s-5)) calc(-1 * var(--s-5)) 0;
+    max-height:none; white-space:nowrap; overflow-x:auto; scrollbar-width:none}
+  nav.toc::-webkit-scrollbar{display:none}
+  nav.toc a{display:inline-block; border-left:none; padding:.35em .75em}
+}
+.ve-steps .parts .part{transition:opacity var(--med) var(--ease), transform var(--med) var(--ease)}
+.ve-steps[data-at="1"] .part[data-s="2"],.ve-steps[data-at="1"] .part[data-s="3"],.ve-steps[data-at="1"] .part[data-s="4"],
+.ve-steps[data-at="2"] .part[data-s="3"],.ve-steps[data-at="2"] .part[data-s="4"],
+.ve-steps[data-at="3"] .part[data-s="4"]{opacity:.12}
+.ve-steps:not([data-at]) .part{opacity:1}
+.ve-player{display:flex; align-items:center; gap:var(--s-3); margin:0 0 var(--s-3); flex-wrap:wrap}
+.ve-player button{font-family:"IBM Plex Mono",monospace; font-size:var(--t-small); background:var(--surface);
+  border:1px solid var(--border-bright); color:var(--text); border-radius:var(--r-1); padding:var(--s-2) var(--s-3); cursor:pointer}
+.ve-player button:hover,.ve-player button:focus-visible{border-color:var(--accent); outline:none}
+.ve-player input[type=range]{flex:1 1 12rem}
+.ve-cap{list-style:none; display:flex; gap:var(--s-6); margin:var(--s-3) 0 0; padding:0; font-size:var(--t-small); color:var(--text-dim)}
+.ve-cap li{display:none; max-width:30ch}
+.ve-cap li.on{display:block; color:var(--text)}
+.foot{font-size:var(--t-small); color:var(--text-dim)}
+::selection{background:var(--accent-dim)}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.js-motion .rise{opacity:0; transform:translateY(1rem)}
+.js-motion .rise.seen{opacity:1; transform:none; transition:opacity var(--slow) var(--ease), transform var(--slow) var(--ease)}
+@media print{ :root{color-scheme:light} body{background:#fff} nav.toc,.ve-player{display:none} .part{opacity:1!important} .frame{background-image:none} }
+</style>
+</head>
+<body>
+<svg width="0" height="0" aria-hidden="true"><defs>
+  <marker id="ve-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker>
+  <linearGradient id="ve-node" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--node-top)"/><stop offset="1" stop-color="var(--surface)"/></linearGradient>
+</defs></svg>
+
+<div class="wrap">
+<header style="padding:var(--s-7) 0 var(--s-6)">
+  <div class="kicker">UAP · Merge gate · PR&nbsp;2 of the Choir uplift</div>
+  <h1>Evidence, not testimony</h1>
+  <p class="lead">A deliver run's DONE report is a claim. The merge gate recomputes the verdict from recorded evidence — <b>deterministically, with no model calls</b> — before work becomes irreversible.</p>
+  <p class="meta">uap merge gate · uap merge queue · [mission:#N:hash8] · v2.17.0</p>
+</header>
+
+<div class="layout">
+<nav class="toc" aria-label="Sections"><a href="#model">The gate</a><a href="#pipeline">One PR through the gate</a><a href="#checks">The four checks</a><a href="#sorry">Sorry-delta</a><a href="#axiom">Axiom-honesty</a><a href="#wiring">Wiring</a><a href="#sources">Sources</a></nav>
+<div>
+
+<section id="model" class="rise">
+  <div class="swiss"><div class="sl">Architecture</div><h2>Between DONE and master, a recompute</h2></div>
+  <p>The mission orchestrator keeps a mission moving until a run reports DONE. The merge gate is the landing half: it sits between that report and <span class="mono" data-ref="master" tabindex="0">master</span> and re-derives the verdict from three stores — the <span class="mono" data-ref="ledger" tabindex="0">mission ledger</span>, the <span class="mono" data-ref="runstate" tabindex="0">run-state on disk</span>, and the <span class="mono" data-ref="diff" tabindex="0">diff being landed</span>. Nothing is taken from the run's own summary.</p>
+  <figure>
+    <div class="frame scroll">
+      <svg class="ve-svg" viewBox="0 0 960 420" role="img" aria-label="A deliver run reports DONE; the merge gate reads the ledger, the fresh run-state, and the PR diff; only a passing verdict reaches master; a failing verdict skips the PR with reasons.">
+        <g class="parts">
+          <g class="ve-n"><rect class="sh" x="40" y="60" width="200" height="70" rx="6"/><text x="140" y="90" text-anchor="middle">deliver run</text><text class="sub" x="140" y="110" text-anchor="middle">reports DONE — a claim</text></g>
+          <path class="ve-e" d="M240 95H380"/>
+          <text class="ve-el" x="255" y="85">testimony</text>
+          <g class="ve-n is-key" data-ref="diff"><rect class="sh" x="380" y="40" width="200" height="110" rx="6"/><text x="480" y="70" text-anchor="middle">merge gate</text><text class="sub" x="480" y="90" text-anchor="middle">pure decision core</text><text class="sub" x="480" y="108" text-anchor="middle">4 checks · 0 model calls</text></g>
+          <g class="ve-n" data-ref="ledger"><rect class="sh" x="380" y="220" width="200" height="60" rx="6"/><text x="480" y="245" text-anchor="middle">missions.db</text><text class="sub" x="480" y="263" text-anchor="middle">frozen hash · attempts</text></g>
+          <g class="ve-n" data-ref="runstate"><rect class="sh" x="660" y="220" width="220" height="60" rx="6"/><text x="770" y="245" text-anchor="middle">state.json</text><text class="sub" x="770" y="263" text-anchor="middle">read fresh, not cached</text></g>
+          <path class="ve-e is-async" d="M480 220V150"/>
+          <text class="ve-el" x="492" y="195">verifyAcceptanceHash</text>
+          <path class="ve-e is-async" d="M660 250H580"/>
+          <text class="ve-el" x="590" y="240">status · last iteration</text>
+          <path class="ve-e is-hot" d="M580 95H720"/>
+          <text class="ve-el acc" x="600" y="85">verdict PASS</text>
+          <g class="ve-n" data-ref="master"><rect class="sh" x="720" y="60" width="200" height="70" rx="6"/><text x="820" y="90" text-anchor="middle">master</text><text class="sub" x="820" y="110" text-anchor="middle">the merge lands</text></g>
+          <path class="ve-e" d="M480 150V190" style="stroke:var(--risk)"/>
+          <text class="ve-el risk" x="492" y="175">any FAIL → skip</text>
+          <g class="ve-n"><rect class="sh" x="380" y="330" width="200" height="60" rx="6"/><text x="480" y="355" text-anchor="middle">skipped + reasons</text><text class="sub" x="480" y="373" text-anchor="middle">never force-merged</text></g>
+        </g>
+      </svg>
+    </div>
+    <figcaption><span class="fn">Fig. 1</span>The gate re-derives the verdict from recorded evidence. A failing check skips the PR and lists every reason — the merge never lands past a red check.</figcaption>
+  </figure>
+  <div class="kpis rise">
+    <div class="kpi"><div class="k">Deterministic checks</div><div class="v" data-count="4">0</div><svg width="100" height="24" role="img" aria-label="four checks in a fixed order"><rect x="4" y="8" width="18" height="8" fill="var(--info)"/><rect x="28" y="8" width="18" height="8" fill="var(--info)"/><rect x="52" y="8" width="18" height="8" fill="var(--info)"/><rect x="76" y="8" width="18" height="8" fill="var(--accent)"/></svg></div>
+    <div class="kpi"><div class="k">Model calls</div><div class="v">0</div><svg width="100" height="24" role="img" aria-label="zero model calls"><path d="M8 12H92" stroke="var(--ok)" stroke-width="1.75" vector-effect="non-scaling-stroke"/></svg></div>
+    <div class="kpi"><div class="k">Escape hatches</div><div class="v">0</div><svg width="100" height="24" role="img" aria-label="no environment variable disables the gate"><path d="M8 12H92" stroke="var(--ok)" stroke-width="1.75" vector-effect="non-scaling-stroke"/></svg></div>
+    <div class="kpi"><div class="k">Acceptance required</div><div class="v" data-count="100">0<small>%</small></div><svg width="100" height="24" role="img" aria-label="the recorded acceptance fraction must be complete"><rect x="4" y="8" width="92" height="8" fill="var(--ok)"/></svg></div>
+  </div>
+</section>
+
+<section id="pipeline" class="rise">
+  <div class="swiss"><div class="sl">Pipeline</div><h2>One PR, four checks, one verdict</h2></div>
+  <figure class="ve-steps" data-at="">
+    <div class="ve-player">
+      <button data-go="-1" type="button">‹ Prev</button>
+      <button data-play type="button">Play</button>
+      <input type="range" min="1" max="4" value="4" step="1" aria-label="Gate check step">
+      <button data-go="1" type="button">Next ›</button>
+    </div>
+    <div class="frame scroll">
+      <svg class="ve-svg" viewBox="0 0 960 240" role="img" aria-label="Check one provenance compares the PR marker hash with the frozen hash. Check two green-recompute reads fresh run-state. Check three sorry-delta scans added lines and summaries. Check four axiom-honesty scans the diff for gate infrastructure.">
+        <g class="parts">
+          <g class="part" data-s="1"><rect x="20" y="20" width="220" height="44" rx="6" fill="none" stroke="var(--info)" stroke-width="1.5"/><text class="ve-el" x="30" y="40" fill="var(--info)">1 · PROVENANCE</text><text class="ve-el" x="30" y="58" fill="var(--text)">[mission:#N:hash8] == frozen?</text></g>
+          <g class="part" data-s="2"><rect x="260" y="20" width="220" height="44" rx="6" fill="none" stroke="var(--info)" stroke-width="1.5"/><text class="ve-el" x="270" y="40" fill="var(--info)">2 · GREEN-RECOMPUTE</text><text class="ve-el" x="270" y="58" fill="var(--text)">evidence artifact · gates green · no salvage</text></g>
+          <g class="part" data-s="3"><rect x="500" y="20" width="220" height="44" rx="6" fill="none" stroke="var(--info)" stroke-width="1.5"/><text class="ve-el" x="510" y="40" fill="var(--info)">3 · SORRY-DELTA</text><text class="ve-el" x="510" y="58" fill="var(--text)">stubs + apologies in ADDED lines</text></g>
+          <g class="part" data-s="4"><rect x="740" y="20" width="200" height="44" rx="6" fill="none" stroke="var(--accent)" stroke-width="2"/><text class="ve-el acc" x="750" y="40" fill="var(--accent)">4 · AXIOM-HONESTY</text><text class="ve-el" x="750" y="58" fill="var(--text)">gate-infra untouched</text></g>
+          <path class="ve-e part" data-s="2" d="M240 42H260" marker-end="none"/>
+          <path class="ve-e part" data-s="3" d="M480 42H500" marker-end="none"/>
+          <path class="ve-e part" data-s="4" d="M720 42H740" marker-end="none"/>
+          <g class="ve-n part" data-s="1"><rect class="sh" x="60" y="120" width="180" height="56" rx="6"/><text x="150" y="143" text-anchor="middle">replan after cut?</text><text class="sub" x="150" y="161" text-anchor="middle">old hash → FAIL</text></g>
+          <g class="ve-n part" data-s="2"><rect class="sh" x="300" y="120" width="180" height="56" rx="6"/><text x="390" y="143" text-anchor="middle">self-report?</text><text class="sub" x="390" y="161" text-anchor="middle">ignored — read state.json</text></g>
+          <g class="ve-n part" data-s="3"><rect class="sh" x="540" y="120" width="180" height="56" rx="6"/><text x="630" y="143" text-anchor="middle">"TODO" removed?</text><text class="sub" x="630" y="161" text-anchor="middle">fine — deletions skipped</text></g>
+          <g class="ve-n part" data-s="4"><rect class="sh" x="760" y="120" width="160" height="56" rx="6"/><text x="840" y="143" text-anchor="middle">real gate work?</text><text class="sub" x="840" y="161" text-anchor="middle">label: gate-infra</text></g>
+          <text class="ve-el part" data-s="4" x="20" y="215" fill="var(--text)">all four report — a failing PR sees every reason at once, not the first</text>
+        </g>
+      </svg>
+    </div>
+    <ol class="ve-cap">
+      <li data-n="1/4">Provenance: the PR's marker hash must equal the mission's CURRENT frozen hash — a replan after the PR was cut supersedes its criteria.</li>
+      <li data-n="2/4">Green recompute: the gate-evidence artifact for the sha being landed — every gate exit 0, no env hatches — plus a fresh delivered run-state whose pid matches the launch, and no open salvage.</li>
+      <li data-n="3/4">Sorry-delta: stub and apology markers in ADDED lines of production files; test files exempt — seams are stubbed by design.</li>
+      <li data-n="4/4">Axiom-honesty: the diff may not touch hooks, CI, enforcers, baselines, or the gate itself — without acknowledgment in plain sight.</li>
+    </ol>
+    <figcaption><span class="fn">Fig. 2</span>The four checks, in order. Step through them.</figcaption>
+  </figure>
+</section>
+
+<section id="checks" class="rise">
+  <div class="swiss"><div class="sl">The checks</div><h2>Each check asks one hard question</h2></div>
+  <div class="cards">
+    <div class="card"><span class="chip info">◆ provenance</span><h3>Built to the current criteria?</h3><svg viewBox="0 0 200 90" width="100%" role="img" aria-label="marker hash compared to frozen hash"><rect x="20" y="24" width="70" height="26" rx="4" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="2"/><text class="ve-el acc" x="55" y="41" text-anchor="middle" fill="var(--accent)">hash8</text><rect x="110" y="24" width="70" height="26" rx="4" fill="none" stroke="var(--border-bright)" stroke-width="1.5"/><text class="ve-el" x="145" y="41" text-anchor="middle">frozen</text><path class="ve-e" d="M90 37H108"/><text class="ve-el" x="20" y="72">replan ⇒ superseded ⇒ FAIL</text></svg></div>
+    <div class="card"><span class="chip info">◆ green-recompute</span><h3>Still true when re-read?</h3><svg viewBox="0 0 200 90" width="100%" role="img" aria-label="fresh state read versus cached report"><rect x="20" y="24" width="70" height="26" rx="4" fill="none" stroke="var(--border-bright)" stroke-width="1.5" stroke-dasharray="4 4"/><text class="ve-el" x="55" y="41" text-anchor="middle">claim</text><path class="ve-e is-hot" d="M90 37H108"/><rect x="110" y="24" width="70" height="26" rx="4" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="2"/><text class="ve-el acc" x="145" y="41" text-anchor="middle" fill="var(--accent)">state.json</text><text class="ve-el" x="20" y="72">status · last iteration · salvage</text></svg></div>
+    <div class="card"><span class="chip info">◆ sorry-delta</span><h3>Says done, reads undone?</h3><svg viewBox="0 0 200 90" width="100%" role="img" aria-label="a TODO in an added line fails"><rect x="20" y="24" width="160" height="26" rx="4" fill="none" stroke="var(--border-bright)" stroke-width="1.5"/><text class="ve-el" x="30" y="41" fill="var(--text)">+ // TODO: finish</text><path d="M150 24L176 50" stroke="var(--risk)" stroke-width="2.5"/><text class="ve-el risk" x="20" y="72">apologies + stubs ⇒ FAIL</text></svg></div>
+    <div class="card"><span class="chip acc">◆ axiom-honesty</span><h3>Rewriting the judge?</h3><svg viewBox="0 0 200 90" width="100%" role="img" aria-label="a diff touching enforcer hooks fails without acknowledgment"><rect x="20" y="24" width="160" height="26" rx="4" fill="none" stroke="var(--risk)" stroke-width="2"/><text class="ve-el risk" x="30" y="41" fill="var(--risk)">.codex/hooks/…</text><text class="ve-el" x="20" y="72">unless labeled gate-infra</text></svg></div>
+  </div>
+</section>
+
+<section id="sorry" class="rise">
+  <div class="swiss"><div class="sl">Sorry-delta</div><h2>Apologies are admissions, not summaries</h2></div>
+  <p>The sorry-delta scans two surfaces: the <b>added lines</b> of the diff (removed lines never count — deleting a TODO is progress) and the run's declared phase summaries. Two marker families:</p>
+  <div class="body-8">
+  <table class="scroll">
+    <thead><tr><th>Family</th><th>Markers</th><th>Where</th><th>Exempt</th></tr></thead>
+    <tbody>
+      <tr><td><code>stub</code></td><td><code>todo!()</code>, <code>NotImplementedError</code>, TODO/FIXME, placeholder implementations</td><td>added lines, non-test files</td><td><code>test/</code> and <code>*.test.ts</code> — seams are stubbed by design</td></tr>
+      <tr><td><code>apology</code></td><td><em>sorry</em>, <em>I couldn't</em>, <em>unable to complete</em>, <em>cannot fulfill</em></td><td>added lines + run summaries</td><td>nowhere — an apology in a summary is the run saying it did not finish</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="margin-top:var(--s-4)">The summaries are scanned in the <b>opposite direction of trust</b>: they are never evidence of completion, only evidence against it.</p>
+</section>
+
+<section id="axiom" class="rise">
+  <div class="swiss"><div class="sl">Axiom-honesty</div><h2>A PR may not weaken the gates that judge it</h2></div>
+  <p>The diff is matched against the gate system's own paths: enforcer hooks, CI workflows, policy enforcers, the quality baseline, the version-bump script, capacity policy — and the merge gate and queue themselves. Touching any of them fails the check <b>unless the change is acknowledged in plain sight</b>: a <code class="mono">gate-infra</code> PR label, or <code class="mono">--allow-gate-infra</code> on the CLI. A reviewer sees the label; the gate sees the diff.</p>
+  <div class="callout">
+    <span class="chip risk">◆ no escape</span>
+    <p style="margin:0"><b>There is no environment switch.</b> <code class="mono">UAP_*_OFF</code> is deliberately not consulted, and the queue's <code class="mono">--force</code> skips stale CI checks but never this gate — a force flag is exactly the gate-off escape axiom-honesty exists to refuse. This page's own PR was itself gated, under its own <code class="mono">gate-infra</code> label.</p>
+  </div>
+</section>
+
+<section id="wiring" class="rise">
+  <div class="swiss"><div class="sl">Wiring</div><h2>One CLI, one queue hook</h2></div>
+  <p>A PR opts in <b>by provenance</b>: only PRs whose title or body carries <code class="mono">[mission:#N:hash8]</code> are gated. Unmarked PRs — docs, chores — proceed as before; there is no ceremony to learn to game.</p>
+  <div class="body-8">
+  <table class="scroll">
+    <thead><tr><th>Surface</th><th>Command</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>Operator</td><td><code>uap merge gate 7</code></td><td>Runs all four checks for mission #7 against the working tree; <code>--json</code> for CI</td></tr>
+      <tr><td>Queue</td><td><code>uap merge queue --yes</code></td><td>Before landing a marked PR: gate runs; FAIL ⇒ skip with every reason listed</td></tr>
+      <tr><td>Acknowledgment</td><td><code>gate-infra</code> label</td><td>Deliberate gate-infrastructure changes, visible to reviewers</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figure>
+    <div class="frame scroll"><pre class="mono" style="margin:0;font-size:.8125rem;line-height:1.7"><code>🛡  Merge gate — mission #7 (14 changed file(s))
+
+  ✔ provenance        marker hash 5822fe54 matches frozen acceptance
+  ✔ green-recompute   fresh run-state: delivered + evidence artifact green, no open salvage
+  ✖ sorry-delta       stub markers: src/half.ts (TODO marker)
+  ✔ axiom-honesty     diff does not touch gate infrastructure
+
+  FAIL — mission #7 is not landable until every check passes</code></pre></div>
+    <figcaption><span class="fn">Fig. 3</span>Every check reports, so the operator fixes everything in one pass.</figcaption>
+  </figure>
+</section>
+
+<section id="sources" class="rise">
+  <div class="swiss"><div class="sl">Sources</div><h2>Where the decisions live</h2></div>
+  <div class="body-8">
+  <table class="scroll">
+    <thead><tr><th>Artifact</th><th>Path</th></tr></thead>
+    <tbody>
+      <tr><td>ADR (the decision record)</td><td><code>docs/architecture/adr/0004-deterministic-merge-gate.md</code></td></tr>
+      <tr><td>Operator guide</td><td><code>docs/guides/MISSIONS.md</code> (Merge gate section)</td></tr>
+      <tr><td>Pure decision core</td><td><code>src/delivery/merge-gate.ts</code></td></tr>
+      <tr><td>Evidence gathering + queue hook</td><td><code>src/cli/merge-gate.ts</code> · <code>src/cli/merge-queue.ts</code></td></tr>
+      <tr><td>Upstream inspiration</td><td>Choir (Weber-GeoML, arXiv 2609.31903) — merge-time recomputation</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<footer style="padding:var(--s-7) 0; border-top:1px solid var(--border)">
+  <p class="foot">Universal Agent Protocol · Deterministic merge gate · Companion page: <a href="mission-orchestrator.html">the mission orchestrator (PR&nbsp;1)</a></p>
+</footer>
+</div>
+</div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var motionOK = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* entrance */
+  document.documentElement.classList.add("js-motion");
+  if (motionOK){
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add("seen"); io.unobserve(e.target);} });
+    }, {threshold:.15});
+    document.querySelectorAll(".rise").forEach(function(el){ io.observe(el); });
+  } else {
+    document.querySelectorAll(".rise").forEach(function(el){ el.classList.add("seen"); });
+  }
+
+  /* count-up */
+  document.querySelectorAll("[data-count]").forEach(function(el){
+    var target = parseInt(el.getAttribute("data-count"),10), suffix = el.querySelector("small");
+    var suffixHTML = suffix ? suffix.outerHTML : "";
+    function render(v){ el.firstChild.nodeValue = String(v); }
+    if (!motionOK){ render(target); return; }
+    var t0 = null;
+    new IntersectionObserver(function(es, obs){
+      es.forEach(function(e){
+        if(!e.isIntersecting) return; obs.unobserve(el);
+        requestAnimationFrame(function step(ts){
+          if(!t0) t0 = ts;
+          var p = Math.min(1,(ts-t0)/900), eased = 1-Math.pow(1-p,3);
+          render(Math.round(target*eased));
+          if(p<1) requestAnimationFrame(step);
+        });
+      });
+    },{threshold:.4}).observe(el);
+  });
+
+  /* linked highlighting */
+  document.querySelectorAll("[data-ref]").forEach(function(el){
+    el.addEventListener("mouseenter", on); el.addEventListener("mouseleave", off);
+    el.addEventListener("focus", on); el.addEventListener("blur", off);
+  });
+  function on(){ toggle(this.getAttribute("data-ref"), true); }
+  function off(){ toggle(this.getAttribute("data-ref"), false); }
+  function toggle(ref, hot){
+    document.querySelectorAll("[data-ref='"+ref+"']").forEach(function(el){ el.style.color = hot ? "var(--accent)" : ""; });
+  }
+
+  /* stepper */
+  document.querySelectorAll("figure.ve-steps").forEach(function(fig){
+    var range = fig.querySelector("input[type=range]"), at = 4;
+    var caps = fig.querySelectorAll(".ve-cap li");
+    function show(n){
+      at = Math.max(1, Math.min(4, n));
+      fig.setAttribute("data-at", String(at));
+      range.value = String(at);
+      caps.forEach(function(li){ li.classList.toggle("on", li.getAttribute("data-n") === at+"/4"); });
+    }
+    fig.querySelectorAll("[data-go]").forEach(function(b){
+      b.addEventListener("click", function(){ show(at + parseInt(b.getAttribute("data-go"),10)); stop(); });
+    });
+    range.addEventListener("input", function(){ show(parseInt(range.value,10)); stop(); });
+    var timer = null;
+    var play = fig.querySelector("[data-play]");
+    function stop(){ if(timer){ clearInterval(timer); timer=null; play.textContent="Play"; } }
+    play.addEventListener("click", function(){
+      if (timer){ stop(); return; }
+      var next = at >= 4 ? 1 : at+1; show(next);
+      timer = setInterval(function(){ if(at>=4){ stop(); return; } show(at+1); }, 2600);
+      play.textContent = "Stop";
+    });
+  });
+
+  /* scroll spy */
+  var links = document.querySelectorAll("nav.toc a");
+  var secs = [];
+  links.forEach(function(a){ var s = document.querySelector(a.getAttribute("href")); if(s) secs.push([a,s]); });
+  if ("IntersectionObserver" in window){
+    var spy = new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if(!e.isIntersecting) return;
+        links.forEach(function(a){ a.classList.remove("on"); });
+        var hit = secs.find(function(pair){ return pair[1] === e.target; });
+        if (hit){ hit[0].classList.add("on");
+          try { history.replaceState(null, "", hit[0].getAttribute("href")); } catch(err) {}
+        }
+      });
+    }, {rootMargin:"-10% 0px -80% 0px"});
+    secs.forEach(function(pair){ spy.observe(pair[1]); });
+  }
+})();
+</script>
+</body>
+</html>

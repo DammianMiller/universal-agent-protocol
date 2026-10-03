@@ -116,6 +116,33 @@ operator — or an overseer agent — sees the escalation ask without watching
 the daemon. This is the Choir split: the orchestrator proposes; the overseer
 rules.
 
+## Merge gate (evidence, not testimony)
+
+A delivered run's DONE report is a claim. The merge gate is the last check
+between that claim and master — it recomputes the verdict from recorded
+evidence, deterministically, before work becomes irreversible:
+
+| Check | What it verifies |
+| --- | --- |
+| **provenance** | The PR's `[mission:#N:<hash8>]` marker matches the mission's CURRENT frozen acceptance (a replan after the PR was cut supersedes its criteria) — and the ledger itself still hashes intact |
+| **green-recompute** | The gate-evidence artifact for the exact sha being landed (all gates exited 0, no env hatches) — or, failing that, a fresh run-state read showing `delivered` with a passing final recorded iteration — and the run pid matches the launch; no salvage proposal awaits a ruling |
+| **sorry-delta** | No stub markers (`todo!()`, `NotImplementedError`, TODO/FIXME) in ADDED lines of production files, no apology phrasing in the run's summaries |
+| **axiom-honesty** | The diff does not touch gate infrastructure (hooks, CI, enforcers, baselines, this gate itself) without acknowledgment |
+
+```bash
+uap merge gate 7                 # run the gate for mission #7 (exit 1 on fail)
+uap merge gate 7 --json          # machine-readable findings
+uap merge gate 7 --allow-gate-infra   # only when the PR deliberately IS gate work
+```
+
+The merge queue runs this automatically before landing any PR whose title or
+body carries the mission marker; a gate failure skips the PR and lists every
+failed check. `--force` skips stale CI checks but never the gate, and there is
+no environment escape hatch. Deliberate gate-infrastructure changes are
+acknowledged with a `gate-infra` PR label, in plain sight of reviewers.
+
+Details and rationale: [ADR-0004](../architecture/adr/0004-deterministic-merge-gate.md).
+
 ## Where state lives
 
 | Store | Path |
@@ -128,9 +155,9 @@ rules.
 
 ## Design notes
 
-- **Frozen acceptance** is what makes "complete" checkable — later, the merge
-  gate (PR 2 of the Choir uplift) verifies a PR's criteria against the frozen
-  hash before any merge.
+- **Frozen acceptance** is what makes "complete" checkable — the merge gate
+  (see above) verifies a PR's criteria against the frozen hash before any
+  merge.
 - **Attempt dedupe** is per (mission, run, outcome, taskRef, observedAt), so
   re-observing the same terminal state cannot inflate the struggle metric —
   while a run that keeps failing after each resume accumulates and reaches
