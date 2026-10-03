@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.16.13 (2026-10-03)
+
+- refactor(proxy): finalize the substantive-completion exemption family
+
+
 ## v2.16.12 (2026-10-03)
 
 - fix(proxy): exempt substantive completions from required_tool_miss
