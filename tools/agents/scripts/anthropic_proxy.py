@@ -81,7 +81,12 @@ Configuration (Environment Variables)
                                     many characters is a legitimate final
                                     answer: the unexpected-end-turn retry is
                                     skipped and the client's loop ends
-                                    naturally. Content matching the deferral
+                                    naturally, and a `required` tool turn
+                                    returning such content is exempt from the
+                                    required_tool_miss streak, retries, and
+                                    forced-tool dampener (a finished model's
+                                    summary is a completion, not a miss).
+                                    Content matching the deferral
                                     phrases stays retried even when long —
                                     a capitulation is not a final answer.
                                     0 = always retry. Default: 800
@@ -9280,9 +9285,11 @@ def _final_answer_content_exempt(content) -> bool:
     """True when an end_turn's content is a substantive final answer.
 
     Shared by the unexpected-end-turn classifier (skip the retry so the
-    client's loop ends naturally) and the stream-path malformed_tool_streak
+    client's loop ends naturally), the stream-path malformed_tool_streak
     counter (a legitimate completion must not feed the forced-tool dampener
-    via the `end_turn + long text` branch). 2026-10-03.
+    via the `end_turn + long text` branch), and the required-tool-miss
+    classifier (a finished model's summary is a completion, not a miss).
+    2026-10-03.
     """
     if PROXY_END_TURN_FINAL_CHARS <= 0:
         return False
@@ -9308,6 +9315,34 @@ def _final_answer_content_exempt(content) -> bool:
     # (and already accepts its false-positive risk on no-tool turns), so the
     # exemption is gated on it rather than on new vocabulary.
     return not _DEFERRAL_PHRASE_RE.search(content)
+
+
+def _required_tool_miss_exempt(openai_resp: dict) -> bool:
+    """True when a required tool turn returned no tool calls but the response
+    is a substantive final answer, not a miss.
+
+    Same false-positive family as the unexpected-end-turn retry (mechanism #3)
+    and the garbled-args classifier (mechanism #4), observed live
+    2026-10-03 13:24-13:40: the tool state machine had forced
+    tool_choice=required for 32 consecutive turns; the model had FINISHED the
+    task (session summaries, "234 tests passing") and kept emitting exactly
+    that. Each summary was counted as required_tool_miss, retries demanded a
+    tool call, the streak fed the contamination breaker (3 resets), and the
+    forced-finalize branch — which clears malformed/invalid streaks but did
+    not clear required_tool_miss_streak — re-fired finalize on EVERY
+    subsequent request (contamination_resets 3→6, ~4 min of GPU burn) until
+    the client gave up. A finished model must be allowed to hand its summary
+    to the client: the loop ends naturally, exactly as with the end-turn
+    exemption.
+    """
+    if _openai_has_tool_calls(openai_resp):
+        return False
+    # Pass the RAW content (not _openai_message_text, whose str() fallback
+    # would stringify a list-parts content to its repr and defeat
+    # _final_answer_content_exempt's count-only-text-parts guard — a 400-char
+    # list payload measured as a 700-char repr). Mirrors _is_unexpected_end_turn.
+    _, message = _extract_openai_choice(openai_resp)
+    return _final_answer_content_exempt(message.get("content", ""))
 
 
 def _is_unexpected_end_turn(openai_resp: dict, anthropic_body: dict) -> bool:
@@ -11359,6 +11394,13 @@ def _classify_tool_response_issue(
     has_tool_calls = _openai_has_tool_calls(openai_resp)
     if not has_tool_calls:
         if required_tool_choice:
+            # Substantive-final-answer exemption (2026-10-03): a required turn
+            # that carries a real completion is the loop's natural end, not a
+            # miss — see _required_tool_miss_exempt. Passing it through lets
+            # the client finish instead of retrying the model into the
+            # contamination breaker.
+            if _required_tool_miss_exempt(openai_resp):
+                return ToolResponseIssue()
             return ToolResponseIssue(
                 kind="required_tool_miss",
                 reason="required tool turn returned no tool calls",
@@ -12112,7 +12154,11 @@ async def _apply_malformed_tool_guardrail(
 
     required_tool_choice = openai_body.get("tool_choice") == "required"
     has_tool_calls = _openai_has_tool_calls(working_resp)
-    if required_tool_choice and not has_tool_calls:
+    # Evaluated once and shared by the streak, dampener, and (via
+    # classification) retry gates — evaluation drift between sites is how
+    # this false-positive family propagates (one site fixed, another missed).
+    miss_exempt = _required_tool_miss_exempt(working_resp)
+    if required_tool_choice and not has_tool_calls and not miss_exempt:
         monitor.required_tool_miss_streak += 1
 
     issue = _classify_tool_response_issue(
@@ -12121,7 +12167,10 @@ async def _apply_malformed_tool_guardrail(
         required_tool_choice=required_tool_choice,
     )
     if not issue.has_issue():
-        if required_tool_choice and not has_tool_calls:
+        # A substantive completion is exempt from the miss classification, so
+        # it must not activate the forced-tool dampener either: relaxing
+        # tool_choice for a finished model is at best noise.
+        if required_tool_choice and not has_tool_calls and not miss_exempt:
             monitor.maybe_activate_forced_tool_dampener("required_tool_miss")
         if has_tool_calls:
             monitor.malformed_tool_streak = 0
@@ -12264,7 +12313,10 @@ async def _apply_malformed_tool_guardrail(
         retry_has_tool_calls = _openai_has_tool_calls(retry_working)
         retry_required = retry_body.get("tool_choice") == "required"
         if retry_required and not retry_has_tool_calls:
-            monitor.required_tool_miss_streak += 1
+            # Same substantive-completion exemption as the primary path —
+            # a retry that produced a real final answer is not a miss.
+            if not _required_tool_miss_exempt(retry_working):
+                monitor.required_tool_miss_streak += 1
 
         retry_issue = _classify_tool_response_issue(
             retry_working,
@@ -12529,6 +12581,13 @@ def _maybe_apply_session_contamination_breaker(
         monitor.contamination_resets += 1
         monitor.malformed_tool_streak = 0
         monitor.invalid_tool_call_streak = 0
+        # 2026-10-03: the finalize branch cleared the malformed/invalid streaks
+        # but NOT required_tool_miss_streak — and that very streak is a
+        # should_reset trigger, so once condemned, EVERY subsequent request
+        # re-forced finalize (observed: contamination_resets 3→6, four
+        # finalize turns in a row, each burning a full generation). Clear it
+        # so finalize fires ONCE per contamination episode.
+        monitor.required_tool_miss_streak = 0
         # Remove tools to force text-only response
         updated = dict(anthropic_body)
         updated.pop("tools", None)
