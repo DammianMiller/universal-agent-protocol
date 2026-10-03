@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { execFileSync } from 'child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -60,5 +61,48 @@ describe('installSystemdUserServices', () => {
 
     installSystemdUserServices(projectDir, { homeDir, force: true });
     expect(readFileSync(proxyEnvPath, 'utf-8')).toContain('PROXY_PORT=4000');
+  });
+
+  it('writes an orchestrator script whose node/cli assignments evaluate to the RAW paths (regression: inner single quotes made exec exit 127)', () => {
+    const projectDir = makeTempDir('uap-systemd-project-');
+    const homeDir = makeTempDir('uap-systemd-home-');
+
+    installSystemdUserServices(projectDir, { homeDir });
+
+    const script = readFileSync(
+      join(projectDir, 'scripts', 'run-orch-poll-continuity.sh'),
+      'utf-8'
+    );
+    // The `:-` defaults must be UNQUOTED: inside a double-quoted assignment,
+    // single quotes become literal characters and the exec fails with 127.
+    expect(script).not.toMatch(/:-'/);
+
+    // Functional check: bash must resolve the assignments to the exact paths.
+    // Only the UAP_* assignment lines are evaluated — the script's exec line
+    // must never run inside a test.
+    const assignments = script.split('\n').filter((l) => l.startsWith('UAP_')).join('\n');
+    const evalNode = execFileSync('bash', ['-c', assignments + '\necho "$UAP_NODE"'], { encoding: 'utf-8' });
+    expect(evalNode.trim()).toBe(process.execPath);
+    const evalCli = execFileSync('bash', ['-c', assignments + '\necho "$UAP_CLI"'], { encoding: 'utf-8' });
+    expect(evalCli.trim()).toBe(join(projectDir, 'dist', 'bin', 'cli.js'));
+  });
+
+  it('honors the UAP_ORCH_* override variables in the orchestrator script', () => {
+    const projectDir = makeTempDir('uap-systemd-project-');
+    const homeDir = makeTempDir('uap-systemd-home-');
+
+    installSystemdUserServices(projectDir, { homeDir });
+
+    const script = readFileSync(
+      join(projectDir, 'scripts', 'run-orch-poll-continuity.sh'),
+      'utf-8'
+    );
+    const assignments = script.split('\n').filter((l) => l.startsWith('UAP_')).join('\n');
+    const evalOverride = execFileSync(
+      'bash',
+      ['-c', `UAP_ORCH_NODE=/custom/node\n${assignments}\necho "$UAP_NODE"`],
+      { encoding: 'utf-8' }
+    );
+    expect(evalOverride.trim()).toBe('/custom/node');
   });
 });

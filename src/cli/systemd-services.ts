@@ -312,8 +312,12 @@ export function installSystemdUserServices(
   // Orchestrator daemon — the loop clock over the mission ledger. Node and
   // the CLI entrypoint are captured ABSOLUTE at install time: a systemd user
   // unit's PATH does not include nvm, so `node`/`uap` lookups would fail.
-  // Paths are single-quote-escaped for the bash script (security review P3).
-  const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+  //
+  // The `:-` defaults are deliberately UNQUOTED: inside a double-quoted
+  // assignment the enclosing quotes already make the expansion one word
+  // (spaces included), while single quotes would become LITERAL characters
+  // — `UAP_NODE="${X:-'/path'}"` yields a value starting with ' and the
+  // exec fails with 127 (observed live on first enable, 2026-10-03).
   const orchScriptPath = join(scriptsDir, 'run-orch-poll-continuity.sh');
   writeIfMissing(
     orchScriptPath,
@@ -322,8 +326,8 @@ export function installSystemdUserServices(
       'set -euo pipefail',
       '',
       'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
-      `UAP_NODE="\${UAP_ORCH_NODE:-${shellQuote(process.execPath)}}"`,
-      `UAP_CLI="\${UAP_ORCH_CLI:-${shellQuote(join(projectDir, 'dist', 'bin', 'cli.js'))}}"`,
+      `UAP_NODE="\${UAP_ORCH_NODE:-${process.execPath}}"`,
+      `UAP_CLI="\${UAP_ORCH_CLI:-${join(projectDir, 'dist', 'bin', 'cli.js')}}"`,
       '',
       '# The poll loop owns mission completion: every cycle re-decides what',
       '# each active mission needs (supervise / launch / relaunch / salvage).',
