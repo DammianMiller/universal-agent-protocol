@@ -49,7 +49,7 @@ function runClassifier(pythonBody: string): { out: string; status: number | null
 const harness = (source: string, scenario: string) => `
 import re
 
-PROXY_END_TURN_FINAL_CHARS = 800
+PROXY_FINAL_ANSWER_CHARS = 800
 
 ${sliceFunction(source, '_message_has_tool_result')}
 
@@ -168,12 +168,14 @@ print("OK")
   });
 
   it('wires the exemption into the classifier with the env knob and no repr-length trap', () => {
-    // Source-text guards: the exemption and its env knob must exist; content
-    // that is neither str nor list-of-parts must NOT be counted by length of
-    // its repr (which would always clear the threshold).
-    expect(source).toContain('PROXY_END_TURN_FINAL_CHARS');
+    // Source-text guards: the exemption and its env knob must exist (renamed
+    // 2026-10-03 to PROXY_FINAL_ANSWER_CHARS, old spelling kept as an env
+    // alias); content that is neither str nor list-of-parts must NOT be
+    // counted by length of its repr (which would always clear the threshold).
+    expect(source).toContain('PROXY_FINAL_ANSWER_CHARS');
+    expect(source).toContain('os.environ.get("PROXY_END_TURN_FINAL_CHARS")');
     expect(source).toContain('isinstance(part, dict)');
-    expect(source).toMatch(/if PROXY_END_TURN_FINAL_CHARS > 0:|PROXY_END_TURN_FINAL_CHARS <= 0/);
+    expect(source).toMatch(/if PROXY_FINAL_ANSWER_CHARS > 0:|PROXY_FINAL_ANSWER_CHARS <= 0/);
     // The exemption must stay gated on the deferral regex so a long
     // capitulation is never exempted as a final answer.
     expect(source).toMatch(/not _DEFERRAL_PHRASE_RE\.search\(content\)/);

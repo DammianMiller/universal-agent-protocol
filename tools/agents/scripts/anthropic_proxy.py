@@ -77,18 +77,22 @@ Configuration (Environment Variables)
                                     for a prune to count toward the spiral
                                     streak. Default: 0.01
 
-    PROXY_END_TURN_FINAL_CHARS      An end_turn whose content reaches this
-                                    many characters is a legitimate final
-                                    answer: the unexpected-end-turn retry is
-                                    skipped and the client's loop ends
-                                    naturally, and a `required` tool turn
-                                    returning such content is exempt from the
+    PROXY_FINAL_ANSWER_CHARS         Content reaching this many characters
+                                    is a legitimate final answer: the
+                                    unexpected-end-turn retry is skipped
+                                    and the client's loop ends naturally,
+                                    a `required` tool turn returning such
+                                    content is exempt from the
                                     required_tool_miss streak, retries, and
-                                    forced-tool dampener (a finished model's
+                                    forced-tool dampener, and the
+                                    recon-convergence no-write streak does
+                                    not advance on it (a finished model's
                                     summary is a completion, not a miss).
                                     Content matching the deferral
                                     phrases stays retried even when long —
                                     a capitulation is not a final answer.
+                                    Env alias: PROXY_END_TURN_FINAL_CHARS
+                                    (deprecated spelling, same knob).
                                     0 = always retry. Default: 800
 
 Usage
@@ -358,13 +362,22 @@ PROXY_PRUNE_SPIRAL_EPSILON = float(
 # 2026-10-03 01:00-03:00: "Task complete — recap delivered and one concrete
 # defect fixed", 2211 chars, followed by 96 retry cycles each producing the
 # identical `git status` no-op — two hours of churn the operator saw as
-# "keeps stopping or looping"). An end_turn whose CONTENT reaches this many
-# characters is a legitimate final answer: let the client's loop end. The
-# runaway case has empty content, so the threshold separates the two classes
-# cleanly. 0 restores the old always-retry behavior.
-PROXY_END_TURN_FINAL_CHARS = int(
-    os.environ.get("PROXY_END_TURN_FINAL_CHARS", "800")
+# "keeps stopping or looping"). Content reaching this many characters is a
+# legitimate final answer: let the client's loop end. The runaway case has
+# empty content, so the threshold separates the two classes cleanly. The
+# threshold now gates a family of exemptions — the end-turn retry, the
+# stream-path malformed-streak counter, the required-tool-miss classification
+# (2026-10-03 13:24-13:40 incident), and the recon-convergence no-write streak
+# — hence the rename from PROXY_END_TURN_FINAL_CHARS (still accepted as a
+# deprecated env alias). 0 restores the old always-retry behavior.
+PROXY_FINAL_ANSWER_CHARS = int(
+    os.environ.get("PROXY_FINAL_ANSWER_CHARS")
+    or os.environ.get("PROXY_END_TURN_FINAL_CHARS")
+    or "800"
 )
+# Deprecated alias (2026-10-03): existing env files and older tooling still
+# use the end-turn spelling; both knobs control the same threshold.
+PROXY_END_TURN_FINAL_CHARS = PROXY_FINAL_ANSWER_CHARS
 # Verbatim decision compaction (uplift 1.2): when context pressure triggers a
 # prune, first try per-tool-call keep/truncate/drop decisions that keep all
 # retained content VERBATIM; fall back to the lossy breadcrumb pruner only
@@ -9228,12 +9241,14 @@ def _record_last_assistant_tool_calls(
     tool_fingerprints = []
     tool_targets: dict[str, str] = {}
     assistant_had_text = False  # Fix B: did the last assistant turn emit prose?
+    assistant_prose = ""  # raw text of that prose, for the completion gate
     for msg in reversed(messages):
         if msg.get("role") != "assistant":
             continue
         content = msg.get("content")
         if isinstance(content, str) and content.strip():
             assistant_had_text = True
+            assistant_prose = content
         if isinstance(content, list):
             for block in content:
                 if (
@@ -9242,6 +9257,11 @@ def _record_last_assistant_tool_calls(
                     and str(block.get("text", "")).strip()
                 ):
                     assistant_had_text = True
+                    # Accumulate, never overwrite: a completion split across
+                    # several sub-threshold text blocks is still one
+                    # completion (parity with _final_answer_content_exempt's
+                    # own list handling, which joins text parts).
+                    assistant_prose += str(block.get("text", ""))
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     tool_fingerprints.append(_tool_call_fingerprint(block))
                     # Extract target key for read-only dedup (Option 3)
@@ -9272,8 +9292,12 @@ def _record_last_assistant_tool_calls(
     # Fix B: no tool call in the last assistant turn. A plain-text turn is still
     # a non-write turn, so advance the recon-convergence streak (previously it
     # only moved on tool turns, freezing the counter through prose-only stalls).
-    # Guard on real prose so an empty/absent assistant turn never inflates it.
-    if assistant_had_text:
+    # Guard on real prose so an empty/absent assistant turn never inflates it —
+    # EXCEPT a substantive final answer (architect follow-up 2026-10-03): a
+    # finished model's completion is not a stall signal, and counting it was
+    # the last site in the false-positive family that treats a completion as a
+    # miss. Same gate as the end-turn and required-miss exemptions.
+    if assistant_had_text and not _final_answer_content_exempt(assistant_prose):
         monitor.note_no_tool_turn()
     monitor.note_doubling_signal(
         "", _latest_tr, msg_count=len(messages), result_error=_latest_err
@@ -9291,7 +9315,7 @@ def _final_answer_content_exempt(content) -> bool:
     classifier (a finished model's summary is a completion, not a miss).
     2026-10-03.
     """
-    if PROXY_END_TURN_FINAL_CHARS <= 0:
+    if PROXY_FINAL_ANSWER_CHARS <= 0:
         return False
     if not isinstance(content, str):
         # OpenAI content-parts list: count only the text parts, never the
@@ -9307,7 +9331,7 @@ def _final_answer_content_exempt(content) -> bool:
             if isinstance(part, dict)
             and isinstance(part.get("text", ""), str)
         )
-    if len(content.strip()) < PROXY_END_TURN_FINAL_CHARS:
+    if len(content.strip()) < PROXY_FINAL_ANSWER_CHARS:
         return False
     # BUT a LONG DEFERRAL is not a final answer: a model that wrote 800+ chars
     # of "I need more cycles before acting" is stalling, not finishing, and
@@ -9336,6 +9360,13 @@ def _required_tool_miss_exempt(openai_resp: dict) -> bool:
     exemption.
     """
     if _openai_has_tool_calls(openai_resp):
+        return False
+    # A response truncated by max_tokens did not FINISH — its length says
+    # nothing about intent, and the truncation paths (truncated_tool_args
+    # downgrade, empty-max-tokens recovery) own that class. Mirrors
+    # _is_unexpected_end_turn, which only accepts stop/end_turn finishes.
+    choice, _ = _extract_openai_choice(openai_resp)
+    if (choice.get("finish_reason") or "").lower() == "length":
         return False
     # Pass the RAW content (not _openai_message_text, whose str() fallback
     # would stringify a list-parts content to its repr and defeat
@@ -10572,6 +10603,11 @@ class ToolResponseIssue:
     kind: str = ""
     reason: str = ""
     retry_hint: str = ""
+    # True when the response was exempted from required_tool_miss by the
+    # substantive-completion gate — set by _classify_tool_response_issue so
+    # the streak/dampener/retry sites read ONE evaluation instead of re-running
+    # the gate and risking site drift (2026-10-03, code-review follow-up).
+    exempt: bool = False
 
     def has_issue(self) -> bool:
         return bool(self.kind)
@@ -11398,9 +11434,10 @@ def _classify_tool_response_issue(
             # that carries a real completion is the loop's natural end, not a
             # miss — see _required_tool_miss_exempt. Passing it through lets
             # the client finish instead of retrying the model into the
-            # contamination breaker.
+            # contamination breaker. exempt=True carries the single evaluation
+            # to the streak/dampener/retry sites.
             if _required_tool_miss_exempt(openai_resp):
-                return ToolResponseIssue()
+                return ToolResponseIssue(exempt=True)
             return ToolResponseIssue(
                 kind="required_tool_miss",
                 reason="required tool turn returned no tool calls",
@@ -12154,23 +12191,24 @@ async def _apply_malformed_tool_guardrail(
 
     required_tool_choice = openai_body.get("tool_choice") == "required"
     has_tool_calls = _openai_has_tool_calls(working_resp)
-    # Evaluated once and shared by the streak, dampener, and (via
-    # classification) retry gates — evaluation drift between sites is how
-    # this false-positive family propagates (one site fixed, another missed).
-    miss_exempt = _required_tool_miss_exempt(working_resp)
-    if required_tool_choice and not has_tool_calls and not miss_exempt:
-        monitor.required_tool_miss_streak += 1
 
     issue = _classify_tool_response_issue(
         working_resp,
         anthropic_body,
         required_tool_choice=required_tool_choice,
     )
+    # The streak and dampener gates read issue.exempt — the ONE evaluation of
+    # the substantive-completion gate, done inside classification. Re-running
+    # the gate at each site risks evaluation drift, which is how this
+    # false-positive family propagates (one site fixed, another missed).
+    if required_tool_choice and not has_tool_calls and not issue.exempt:
+        monitor.required_tool_miss_streak += 1
+
     if not issue.has_issue():
         # A substantive completion is exempt from the miss classification, so
         # it must not activate the forced-tool dampener either: relaxing
         # tool_choice for a finished model is at best noise.
-        if required_tool_choice and not has_tool_calls and not miss_exempt:
+        if required_tool_choice and not has_tool_calls and not issue.exempt:
             monitor.maybe_activate_forced_tool_dampener("required_tool_miss")
         if has_tool_calls:
             monitor.malformed_tool_streak = 0
@@ -12312,17 +12350,20 @@ async def _apply_malformed_tool_guardrail(
 
         retry_has_tool_calls = _openai_has_tool_calls(retry_working)
         retry_required = retry_body.get("tool_choice") == "required"
-        if retry_required and not retry_has_tool_calls:
-            # Same substantive-completion exemption as the primary path —
-            # a retry that produced a real final answer is not a miss.
-            if not _required_tool_miss_exempt(retry_working):
-                monitor.required_tool_miss_streak += 1
-
         retry_issue = _classify_tool_response_issue(
             retry_working,
             anthropic_body,
             required_tool_choice=retry_required,
         )
+        # Same substantive-completion exemption as the primary path, read from
+        # the single classification evaluation (retry_issue.exempt) — a retry
+        # that produced a real final answer is not a miss.
+        if (
+            retry_required
+            and not retry_has_tool_calls
+            and not retry_issue.exempt
+        ):
+            monitor.required_tool_miss_streak += 1
 
         if not retry_issue.has_issue():
             # 2026-05-12: Fix #2 — do NOT reset malformed/invalid/miss streaks

@@ -64,10 +64,11 @@ function runClassifier(pythonBody: string): { out: string; status: number | null
 }
 
 const harness = (source: string, scenario: string) => `
+from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-PROXY_END_TURN_FINAL_CHARS = 800
+PROXY_FINAL_ANSWER_CHARS = 800
 PROXY_TOOL_ARGS_PREFLIGHT = True
 
 ${sliceAssignment(source, '_DEFERRAL_PHRASE_RE')}
@@ -189,13 +190,13 @@ print("OK")
     expect(status).toBe(0);
   });
 
-  it.skipIf(!havePython)('disables the exemption with PROXY_END_TURN_FINAL_CHARS=0', () => {
+  it.skipIf(!havePython)('disables the exemption with PROXY_FINAL_ANSWER_CHARS=0', () => {
     // 0 = always retry, the documented escape hatch — shared with the
     // end-turn exemption, so it must gate this one too.
     const scenario = `
 body = ${toolBody}
 ${sessionSummary}
-globals()["PROXY_END_TURN_FINAL_CHARS"] = 0
+globals()["PROXY_FINAL_ANSWER_CHARS"] = 0
 assert _required_tool_miss_exempt(resp) is False, "exemption active with knob at 0"
 issue = _classify_tool_response_issue(resp, body, required_tool_choice=True)
 assert issue.has_issue() and issue.kind == "required_tool_miss", "knob 0 did not restore required_tool_miss"
@@ -228,29 +229,143 @@ print("OK")
     expect(status).toBe(0);
   });
 
+  it.skipIf(!havePython)('does not exempt a max_tokens-truncated completion (finish_reason=length)', () => {
+    // A truncated response did not FINISH — its length says nothing about
+    // intent, and the truncation paths own that class (architect follow-up).
+    const scenario = `
+body = ${toolBody}
+${sessionSummary}
+resp["choices"][0]["finish_reason"] = "length"
+assert _required_tool_miss_exempt(resp) is False, "truncated response was exempted"
+issue = _classify_tool_response_issue(resp, body, required_tool_choice=True)
+assert issue.has_issue() and issue.kind == "required_tool_miss", "truncated completion was not classified required_tool_miss"
+print("OK")
+`;
+    const { out, status } = runClassifier(harness(source, scenario));
+    expect(out).toContain('OK');
+    expect(status).toBe(0);
+  });
+
+  it.skipIf(!havePython)('recon-convergence streak does not advance on a substantive completion', () => {
+    // The last same-family site (architect follow-up): a finished model's
+    // final answer must not count as a no-write stall turn.
+    const scenario = `
+${sliceFunction(source, '_record_last_assistant_tool_calls')}
+# --- minimal monitor + helpers for the sliced function ---
+def _extract_text(x):
+    return x if isinstance(x, str) else ""
+
+def _seed_tool_history_from_request(monitor, messages):
+    pass
+
+class Monitor:
+    def __init__(self):
+        self.no_tool_turns = 0
+        self.last_tool_result_snippet = ""
+    def note_tool_result_error(self, tr, err):
+        pass
+    def note_no_tool_turn(self):
+        self.no_tool_turns += 1
+    def note_doubling_signal(self, fp, tr, msg_count=0, result_error=None):
+        pass
+    def record_tool_calls(self, names, tool_targets=None, fingerprint=None):
+        pass
+
+summary_text = ("## Session summary\\nAll work complete: the actuator-id broadcast landed, " +
+                "234 tests passing, docs consolidated. Hand-off review remains.") * 7
+assert len(summary_text.strip()) >= 800, "scenario setup: summary must clear the threshold"
+done_body = {"messages": [
+    {"role": "user", "content": "do the work"},
+    {"role": "assistant", "content": summary_text},
+]}
+m = Monitor()
+_record_last_assistant_tool_calls(done_body, m)
+assert m.no_tool_turns == 0, "recon streak advanced on a substantive completion"
+
+stall_body = {"messages": [
+    {"role": "user", "content": "do the work"},
+    {"role": "assistant", "content": "Looking into it, will continue shortly."},
+]}
+m2 = Monitor()
+_record_last_assistant_tool_calls(stall_body, m2)
+assert m2.no_tool_turns == 1, "recon streak did not advance on a short prose stall"
+
+# Multi-block completion parity (architect P2): a summary split across two
+# sub-threshold text blocks must still be one completion, not a stall.
+split_body = {"messages": [
+    {"role": "user", "content": "do the work"},
+    {"role": "assistant", "content": [
+        {"type": "text", "text": "## Session summary\\nAll work complete: the actuator-id broadcast landed. " * 7},
+        {"type": "text", "text": "234 tests passing, docs consolidated. Hand-off review remains. " * 7},
+    ]},
+]}
+block_lens = [len(b["text"]) for b in split_body["messages"][1]["content"]]
+assert all(400 <= L < 800 for L in block_lens), "scenario setup: each block alone must sit below the threshold"
+m3 = Monitor()
+_record_last_assistant_tool_calls(split_body, m3)
+assert m3.no_tool_turns == 0, "recon streak advanced on a multi-block completion (last-block-wins bug)"
+print("OK")
+`;
+    const { out, status } = runClassifier(harness(source, scenario));
+    expect(out).toContain('OK');
+    expect(status).toBe(0);
+  });
+
+  it.skipIf(!havePython)('never exempts a malformed pseudo-tool payload by length alone', () => {
+    // The classification ordering is load-bearing: _is_malformed_tool_response
+    // runs BEFORE the exemption, so an 800+ char response carrying tool-XML
+    // markers is malformed_payload with exempt=False (the pre-fold code
+    // suppressed the miss streak for long malformed prose by length alone).
+    // The stub stands in for the real malformed detector; what this pins is
+    // the ordering: a malformed detection must win over the length gate.
+    const scenario = `
+body = ${toolBody}
+text = ("<function=edit> " + "let me rewrite the whole module with these changes applied carefully. " * 12 + " </function>")
+resp = {"choices": [{"finish_reason": "stop", "message": {"content": text, "tool_calls": None}}]}
+assert len(text.strip()) >= 800, "scenario setup: payload must clear the length threshold"
+def _is_malformed_tool_response(r, b):
+    return True  # the real detector would flag the <function=...> markers
+globals()["_is_malformed_tool_response"] = _is_malformed_tool_response
+issue = _classify_tool_response_issue(resp, body, required_tool_choice=True)
+assert issue.has_issue() and issue.kind == "malformed_payload", "malformed payload was not classified malformed"
+assert issue.exempt is False, "malformed payload was exempted by length"
+print("OK")
+`;
+    const { out, status } = runClassifier(harness(source, scenario));
+    expect(out).toContain('OK');
+    expect(status).toBe(0);
+  });
+
   it('wires the exemption into the streak, dampener, retry, and finalize sites (source guard)', () => {
-    // The classifier gate.
+    // The classifier sets exempt=True from the single gate evaluation.
     expect(source).toMatch(
-      /if _required_tool_miss_exempt\(openai_resp\):\s*\n\s*return ToolResponseIssue\(\)\s*\n\s*return ToolResponseIssue\(\s*\n\s*kind="required_tool_miss"/,
+      /if _required_tool_miss_exempt\(openai_resp\):\s*\n\s*return ToolResponseIssue\(exempt=True\)\s*\n\s*return ToolResponseIssue\(\s*\n\s*kind="required_tool_miss"/,
     );
-    // The primary streak-increment and dampener gates share ONE evaluation of
-    // the exemption (miss_exempt) — evaluation drift between sites is how
-    // this bug family propagates.
+    // The primary streak-increment and dampener gates read issue.exempt — one
+    // evaluation, no per-site re-runs (evaluation drift is how this bug family
+    // propagates).
     expect(source).toMatch(
-      /miss_exempt = _required_tool_miss_exempt\(working_resp\)\s*\n\s*if required_tool_choice and not has_tool_calls and not miss_exempt:\s*\n\s*monitor\.required_tool_miss_streak \+= 1/,
+      /issue = _classify_tool_response_issue\(\s*\n\s*working_resp,\s*\n\s*anthropic_body,\s*\n\s*required_tool_choice=required_tool_choice,\s*\n\s*\)\s*\n(?:\s*#[^\n]*\n)+(?:\s*#[^\n]*\n)*\s*if required_tool_choice and not has_tool_calls and not issue\.exempt:\s*\n\s*monitor\.required_tool_miss_streak \+= 1/,
     );
     expect(source).toMatch(
-      /if required_tool_choice and not has_tool_calls and not miss_exempt:\s*\n\s*monitor\.maybe_activate_forced_tool_dampener\("required_tool_miss"\)/,
+      /if required_tool_choice and not has_tool_calls and not issue\.exempt:\s*\n\s*monitor\.maybe_activate_forced_tool_dampener\("required_tool_miss"\)/,
     );
-    // The retry-path increment site must be gated identically (comments
-    // optional so comment cleanup cannot break the guard).
+    // The retry path reads retry_issue.exempt from its own single evaluation.
     expect(source).toMatch(
-      /retry_required = retry_body\.get\("tool_choice"\) == "required"\s*\n\s*if retry_required and not retry_has_tool_calls:\s*\n(?:\s*#[^\n]*\n)*\s*if not _required_tool_miss_exempt\(retry_working\):\s*\n\s*monitor\.required_tool_miss_streak \+= 1/,
+      /retry_issue = _classify_tool_response_issue\(\s*\n\s*retry_working,\s*\n\s*anthropic_body,\s*\n\s*required_tool_choice=retry_required,\s*\n\s*\)\s*\n(?:\s*#[^\n]*\n)*\s*if \(\s*\n\s*retry_required\s*\n\s*and not retry_has_tool_calls\s*\n\s*and not retry_issue\.exempt\s*\n\s*\):\s*\n\s*monitor\.required_tool_miss_streak \+= 1/,
     );
     // The forced-finalize branch must clear the required-miss streak too —
     // otherwise a condemned session re-forces finalize on every request.
     expect(source).toMatch(
       /reason="contamination_loop"\s*\)[\s\S]{0,900}monitor\.required_tool_miss_streak = 0/,
+    );
+    // The knob accepts the renamed spelling with the old env as fallback.
+    expect(source).toMatch(
+      /PROXY_FINAL_ANSWER_CHARS = int\(\s*\n\s*os\.environ\.get\("PROXY_FINAL_ANSWER_CHARS"\)\s*\n\s*or os\.environ\.get\("PROXY_END_TURN_FINAL_CHARS"\)\s*\n\s*or "800"\s*\n\)/,
+    );
+    // The recon-convergence Fix B gate consults the shared exemption.
+    expect(source).toMatch(
+      /if assistant_had_text and not _final_answer_content_exempt\(assistant_prose\):\s*\n\s*monitor\.note_no_tool_turn\(\)/,
     );
   });
 });
