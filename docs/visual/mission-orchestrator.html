@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Missions outlive every process — UAP mission orchestrator</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='1' width='14' height='14' rx='3' fill='%230d1520'/%3E%3Cpath d='M4 11V7l4-3 4 3v4' stroke='%23ffb547' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  color-scheme: light dark;
+  --bg:#0d1520; --surface:#132031; --border:#22324a; --border-bright:#596b87;
+  --text:#e3ecf5; --text-dim:#92a6bb; --accent:#ffb547; --ok:#6fd3a0; --warn:#e8d36a;
+  --risk:#ff7b6b; --info:#7cc0f0;
+  --node-top:#22324a; --lift:rgb(0 0 0/.45); --halo:32%;
+  --accent-dim:rgb(255 181 71/.14);
+  --t-label:.75rem; --t-small:.875rem; --t-body:1rem; --t-lead:1.25rem;
+  --t-h2:1.625rem; --t-h1:clamp(2.25rem,5.5vw,4rem);
+  --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem; --s-5:1.5rem; --s-6:2rem; --s-7:3rem; --s-8:4.5rem;
+  --r-1:4px;
+  --ease:cubic-bezier(.16,1,.3,1); --fast:150ms; --med:300ms; --slow:500ms;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:#f2f6fa; --surface:#ffffff; --border:#d6e0ea; --border-bright:#818f9e;
+    --text:#0f1a26; --text-dim:#4d6074; --accent:#a34700; --ok:#1c7443; --warn:#776300;
+    --risk:#b0341e; --info:#145f99;
+    --node-top:#ffffff; --lift:rgb(18 22 20/.12); --halo:22%;
+    --accent-dim:rgb(163 71 0/.13);
+  }
+}
+html{font-size:17px; font-kerning:normal; font-synthesis:none; scroll-behavior:smooth}
+body{margin:0; background:var(--bg); color:var(--text);
+  font:400 var(--t-body)/1.55 "IBM Plex Sans",sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:64rem; margin:0 auto; padding:0 var(--s-5)}
+h1,h2{font-weight:600; letter-spacing:-.02em; text-wrap:balance; text-box:trim-both cap alphabetic}
+h1{font-size:var(--t-h1); line-height:1.05; margin:var(--s-3) 0 0}
+h2{font-size:var(--t-h2); line-height:1.15; letter-spacing:-.01em; margin:0; grid-column:4/13}
+p{margin:0 0 var(--s-4); max-width:65ch; text-wrap:pretty}
+.lead{font-size:var(--t-lead); color:var(--text-dim); line-height:1.45; margin:var(--s-4) 0 0; max-width:50ch}
+.lead b{color:var(--text); font-weight:600}
+.mono{font-family:"IBM Plex Mono",monospace}
+code{font-family:"IBM Plex Mono",monospace; font-size:.875em; background:var(--accent-dim); padding:.1em .3em; border-radius:var(--r-1)}
+a{color:var(--accent); text-underline-offset:.2em}
+.kicker{font-family:"IBM Plex Mono",monospace; font-size:var(--t-label); font-weight:600;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim); display:flex; align-items:center; gap:var(--s-3)}
+.kicker::before{content:""; width:2.25rem; height:2px; background:var(--accent)}
+.meta{font-family:"IBM Plex Mono",monospace; font-size:var(--t-small); color:var(--text-dim); margin:var(--s-4) 0 0}
+section{padding:var(--s-8) 0; scroll-margin-top:5rem}
+.swiss{display:grid; grid-template-columns:repeat(12,1fr); gap:var(--s-5); align-items:baseline;
+  border-top:1px solid var(--border); padding-top:var(--s-5); margin-bottom:var(--s-5)}
+.swiss .sl{grid-column:1/4; font-family:"IBM Plex Mono",monospace; font-size:var(--t-label);
+  font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim)}
+.body-8{grid-column:4/13; min-width:0}
+@media (max-width:64rem){ .swiss{display:block} h2{margin-top:var(--s-2)} .body-8{display:block} }
+figure{margin:0 0 var(--s-6)}
+.frame{background:var(--bg); border:1px solid var(--border); border-radius:var(--r-1);
+  padding:var(--s-5); position:relative; overflow:hidden;
+  background-image:
+    linear-gradient(var(--border) 1px,transparent 1px),
+    linear-gradient(90deg,var(--border) 1px,transparent 1px);
+  background-size:24px 24px; background-position:center;
+}
+.frame::before{content:""; position:absolute; inset:0; background:var(--bg); opacity:.85; pointer-events:none}
+.frame > *{position:relative}
+figcaption{font-size:var(--t-body); color:var(--text-dim); margin:var(--s-3) var(--s-1) 0; text-wrap:pretty}
+figcaption .fn{font-family:"IBM Plex Mono",monospace; font-size:var(--t-label); font-weight:600; color:var(--text); margin-right:.5em}
+.scroll{overflow-x:auto; scrollbar-width:thin}
+svg text{font-family:"IBM Plex Mono",monospace}
+svg .ve-svg{display:block; min-width:720px; margin:0 auto}
+.ve-n .sh{fill:url(#ve-node); stroke:var(--border-bright); stroke-width:1.5; rx:6}
+.ve-n text{fill:var(--text); font-size:14px; font-weight:600}
+.ve-n text.sub{fill:var(--text-dim); font-size:12px; font-weight:400}
+.ve-n.is-key .sh{fill:var(--accent-dim); stroke:var(--accent); stroke-width:2}
+.ve-e{fill:none; stroke:var(--text-dim); stroke-width:1.75; marker-end:url(#ve-ah)}
+.ve-e.is-async{stroke-dasharray:6 5}
+.ve-e.is-hot{stroke:var(--accent); stroke-width:2.75; marker-end:url(#ve-ah)}
+.ve-el{font-size:13px; fill:var(--text-dim); paint-order:stroke; stroke:var(--bg); stroke-width:5}
+.ve-el.acc{fill:var(--accent)}
+.store-lid{fill:var(--node-top); stroke:var(--border-bright); stroke-width:1.5}
+[data-ref]{border-bottom:1px dashed var(--border-bright); cursor:default}
+[data-ref]:hover,[data-ref]:focus{color:var(--accent); border-bottom-color:var(--accent); outline:none}
+.kpis{display:flex; flex-wrap:wrap; gap:1px; background:var(--border); border:1px solid var(--border); border-radius:var(--r-1)}
+.kpi{flex:1 1 14rem; background:var(--surface); padding:var(--s-4); min-width:0}
+.kpi .k{font-family:"IBM Plex Mono",monospace; font-size:var(--t-label); font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim)}
+.kpi .v{font-size:2.75rem; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:-.04em; line-height:1.1; margin:var(--s-1) 0}
+.kpi .v small{font-size:1rem; color:var(--text-dim); font-weight:400; letter-spacing:0}
+.cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(14.5rem,1fr)); gap:var(--s-4)}
+.card{background:var(--surface); border:1px solid var(--border); border-radius:var(--r-1); padding:var(--s-4); min-width:0}
+.card h3{margin:var(--s-2) 0 var(--s-3); font-size:var(--t-body); font-weight:600}
+.chip{display:inline-flex; align-items:center; gap:.4em; font-family:"IBM Plex Mono",monospace;
+  font-size:var(--t-label); font-weight:600; letter-spacing:.04em; border:1px solid currentColor;
+  border-radius:var(--r-1); padding:.15em .5em; color:var(--text-dim)}
+.chip.ok{color:var(--ok)} .chip.warn{color:var(--warn)} .chip.risk{color:var(--risk)}
+.chip.info{color:var(--info)} .chip.acc{color:var(--accent)}
+table{border-collapse:collapse; width:100%}
+th{font-family:"IBM Plex Mono",monospace; font-size:var(--t-label); font-weight:600; letter-spacing:.05em;
+  text-transform:uppercase; color:var(--text-dim); text-align:left; padding:var(--s-3) var(--s-4); background:var(--surface)}
+td{padding:var(--s-3) var(--s-4); border-top:1px solid var(--border); vertical-align:top}
+td code{background:none; padding:0; font-size:.8125rem}
+.callout{background:var(--surface); border-radius:var(--r-1); padding:var(--s-4); display:flex; gap:var(--s-4); align-items:flex-start}
+nav.toc{position:sticky; top:0; grid-column:1/4; align-self:start; padding:var(--s-5) 0; max-height:100vh; overflow:auto}
+nav.toc a{display:block; color:var(--text-dim); text-decoration:none; font-size:var(--t-small); padding:.35em 0; border-left:2px solid transparent; padding-left:var(--s-4)}
+nav.toc a.on{color:var(--accent); border-left-color:var(--accent)}
+.layout{display:grid; grid-template-columns:repeat(12,1fr); gap:var(--s-5)}
+@media (max-width:1000px){
+  nav.toc{position:sticky; top:0; z-index:5; grid-column:1/13; background:var(--bg);
+    border-bottom:1px solid var(--border); padding:var(--s-3) 0; margin:calc(-1 * var(--s-5)) calc(-1 * var(--s-5)) 0;
+    max-height:none; white-space:nowrap; overflow-x:auto; scrollbar-width:none}
+  nav.toc::-webkit-scrollbar{display:none}
+  nav.toc a{display:inline-block; border-left:none; padding:.35em .75em}
+  nav.toc::after{content:""; position:fixed; inset:auto auto auto 0}
+}
+.ve-steps .parts .part{transition:opacity var(--med) var(--ease), transform var(--med) var(--ease)}
+.ve-steps[data-at="1"] .part[data-s="2"],.ve-steps[data-at="1"] .part[data-s="3"],.ve-steps[data-at="1"] .part[data-s="4"],
+.ve-steps[data-at="2"] .part[data-s="3"],.ve-steps[data-at="2"] .part[data-s="4"],
+.ve-steps[data-at="3"] .part[data-s="4"]{opacity:.12}
+.ve-steps:not([data-at]) .part{opacity:1}
+.ve-player{display:flex; align-items:center; gap:var(--s-3); margin:0 0 var(--s-3); flex-wrap:wrap}
+.ve-player button{font-family:"IBM Plex Mono",monospace; font-size:var(--t-small); background:var(--surface);
+  border:1px solid var(--border-bright); color:var(--text); border-radius:var(--r-1); padding:var(--s-2) var(--s-3); cursor:pointer}
+.ve-player button:hover,.ve-player button:focus-visible{border-color:var(--accent); outline:none}
+.ve-player input[type=range]{flex:1 1 12rem}
+.ve-cap{list-style:none; display:flex; gap:var(--s-6); margin:var(--s-3) 0 0; padding:0; font-size:var(--t-small); color:var(--text-dim)}
+.ve-cap li{display:none; max-width:30ch}
+.ve-cap li.on{display:block; color:var(--text)}
+.btn-row{display:flex; gap:var(--s-3); flex-wrap:wrap}
+.foot{font-size:var(--t-small); color:var(--text-dim)}
+details{border:1px solid var(--border); border-radius:var(--r-1); padding:var(--s-3) var(--s-4); background:var(--surface)}
+summary{cursor:pointer; font-family:"IBM Plex Mono",monospace; font-size:var(--t-small); font-weight:600}
+::selection{background:var(--accent-dim)}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.js-motion .rise{opacity:0; transform:translateY(1rem)}
+.js-motion .rise.seen{opacity:1; transform:none; transition:opacity var(--slow) var(--ease), transform var(--slow) var(--ease)}
+@media print{ :root{color-scheme:light} body{background:#fff} nav.toc,.ve-player{display:none} .part{opacity:1!important} .frame{background-image:none} }
+</style>
+</head>
+<body>
+<svg width="0" height="0" aria-hidden="true"><defs>
+  <marker id="ve-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker>
+  <linearGradient id="ve-node" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--node-top)"/><stop offset="1" stop-color="var(--surface)"/></linearGradient>
+</defs></svg>
+
+<div class="wrap">
+<header style="padding:var(--s-7) 0 var(--s-6)">
+  <div class="kicker">UAP · Mission orchestrator · PR&nbsp;1 of the Choir uplift</div>
+  <h1>A mission outlives every process</h1>
+  <p class="lead">A prompt becomes a mission with <b>frozen acceptance criteria</b>. A systemd daemon polls the mission ledger every 300&nbsp;s and keeps each mission moving — <b>across reboots, crashes, and session teardown</b> — until the criteria are met.</p>
+  <p class="meta">uap mission create · uap mission poll · uap-orchestrator.service · v2.17.0</p>
+</header>
+
+<div class="layout">
+<nav class="toc" aria-label="Sections"><a href="#model">The model</a><a href="#cycle">One poll cycle</a><a href="#decisions">Decision table</a><a href="#backoff">Backoff</a><a href="#salvage">Struggle &amp; salvage</a><a href="#freeze">Frozen acceptance</a><a href="#state">State on disk</a><a href="#sources">Sources</a></nav>
+<div>
+
+<section id="model" class="rise">
+  <div class="swiss"><div class="sl">Architecture</div><h2>The daemon owns the loop, not the run</h2></div>
+  <p>Deliver runs already survive their tool call, but nothing resumed them after a reboot or relaunched them after a crash. The mission layer fixes that: the <span class="mono" data-ref="ledger" tabindex="0">ledger</span> holds the goal, the <span class="mono" data-ref="daemon" tabindex="0">poll daemon</span> decides, and the <span class="mono" data-ref="run" tabindex="0">deliver run</span> does the work.</p>
+  <figure>
+    <div class="frame scroll">
+      <svg class="ve-svg" viewBox="0 0 960 400" role="img" aria-label="Operator creates a mission in the ledger; the orch poll daemon reads the ledger, launches or resumes a detached deliver run; the run writes its state file; the daemon supervises live runs and posts to the board.">
+        <g class="parts">
+          <!-- edges -->
+          <path class="ve-e" d="M240 105H360"/>
+          <text class="ve-el" x="252" y="95">creates + freezes</text>
+          <path class="ve-e" d="M600 200V135"/>
+          <text class="ve-el" x="612" y="192">writes</text>
+          <text class="ve-el" x="612" y="176">checkpoint</text>
+          <path class="ve-e" d="M590 250H480"/>
+          <text class="ve-el" x="497" y="240">run state + pid</text>
+          <path class="ve-e" d="M640 90V135"/>
+          <text class="ve-el" x="652" y="112">supervise once</text>
+          <path class="ve-e is-async" d="M560 70H400"/>
+          <text class="ve-el" x="410" y="60">mission:#N marker</text>
+          <!-- hot path: daemon drives the mission -->
+          <path class="ve-e is-hot part" data-s="3" d="M420 240V160"/>
+          <text class="ve-el acc part" data-s="3" x="432" y="205">launch / resume</text>
+          <!-- flow dots route -->
+          <path data-flow="poll" data-every="3000" d="M420 160V240H590V200V135H560" fill="none" stroke="none"/>
+          <g class="ve-dots" aria-hidden="true"></g>
+          <!-- nodes -->
+          <g class="ve-n"><rect class="sh" x="60" y="70" width="180" height="70" rx="6"/><text x="150" y="100" text-anchor="middle">operator</text><text class="sub" x="150" y="120" text-anchor="middle">uap mission create</text></g>
+          <g class="ve-n part" data-s="1" data-ref="ledger"><rect class="sh" x="360" y="70" width="240" height="70" rx="6"/><text x="480" y="100" text-anchor="middle">missions.db</text><text class="sub" x="480" y="120" text-anchor="middle">frozen acceptance · attempts</text></g>
+          <g class="ve-n is-key part" data-s="2" data-ref="daemon"><rect class="sh" x="300" y="240" width="180" height="70" rx="6"/><text x="390" y="270" text-anchor="middle">uap mission poll</text><text class="sub" x="390" y="290" text-anchor="middle">systemd · every 300 s</text></g>
+          <g class="ve-n part" data-s="2" data-ref="run"><rect class="sh" x="590" y="135" width="240" height="65" rx="6"/><text x="710" y="163" text-anchor="middle">uap deliver run</text><text class="sub" x="710" y="183" text-anchor="middle">detached · checkpointed</text></g>
+          <g class="ve-n part" data-s="4"><rect class="sh" x="590" y="245" width="180" height="55" rx="6"/><text x="680" y="268" text-anchor="middle">coordination</text><text class="sub" x="680" y="286" text-anchor="middle">board · salvage asks</text></g>
+          <g class="ve-n part" data-s="4"><rect class="sh" x="60" y="240" width="180" height="55" rx="6"/><text x="150" y="263" text-anchor="middle">salvage gate</text><text class="sub" x="150" y="281" text-anchor="middle">approve / reject</text></g>
+        </g>
+      </svg>
+    </div>
+    <figcaption><span class="fn">Fig. 1</span>The poll daemon is the loop clock: it reads the ledger, drives the deliver run, and reports. The run never drives itself.</figcaption>
+  </figure>
+  <div class="kpis rise">
+    <div class="kpi"><div class="k">Poll interval</div><div class="v" data-count="300">0<small>&nbsp;s</small></div><svg width="100" height="24" role="img" aria-label="one tick every 300 seconds"><polyline points="0,18 25,18 25,6 50,6 50,18 75,18 75,6 100,6" fill="none" stroke="var(--info)" stroke-width="1.75" vector-effect="non-scaling-stroke"/></svg></div>
+    <div class="kpi"><div class="k">Backoff cap</div><div class="v" data-count="1440">0<small>&nbsp;min</small></div><svg width="100" height="24" role="img" aria-label="backoff doubles to a cap of 1440 minutes"><polyline points="0,20 30,17 55,12 80,4 100,4" fill="none" stroke="var(--warn)" stroke-width="1.75" vector-effect="non-scaling-stroke"/></svg></div>
+    <div class="kpi"><div class="k">Struggle threshold</div><div class="v" data-count="3">0<small>&nbsp;fails</small></div><svg width="100" height="24" role="img" aria-label="escalation proposed after 3 failed attempts"><rect x="8" y="8" width="8" height="8" fill="var(--risk)"/><rect x="38" y="8" width="8" height="8" fill="var(--risk)"/><rect x="68" y="8" width="8" height="8" fill="var(--risk)"/></svg></div>
+    <div class="kpi"><div class="k">Launch grace</div><div class="v" data-count="10">0<small>&nbsp;min</small></div><svg width="100" height="24" role="img" aria-label="10 minute grace before a launch is retried"><rect x="0" y="10" width="60" height="6" fill="var(--border-bright)"/><rect x="60" y="10" width="40" height="6" fill="var(--accent)"/></svg></div>
+  </div>
+</section>
+
+<section id="cycle" class="rise">
+  <div class="swiss"><div class="sl">Poll cycle</div><h2>Discover, sync, decide, act — every 300&nbsp;s</h2></div>
+  <figure class="ve-steps" data-at="">
+    <div class="ve-player">
+      <button data-go="-1" type="button">‹ Prev</button>
+      <button data-play type="button">Play</button>
+      <input type="range" min="1" max="4" value="4" step="1" aria-label="Poll cycle step">
+      <button data-go="1" type="button">Next ›</button>
+    </div>
+    <div class="frame scroll">
+      <svg class="ve-svg" viewBox="0 0 960 260" role="img" aria-label="One poll cycle: discover links the run by its mission marker; sync records terminal states as attempts; decide applies the decision table; act supervises, relaunches, or closes.">
+        <g class="parts">
+          <g class="part" data-s="1"><rect x="20" y="20" width="220" height="40" rx="6" fill="none" stroke="var(--info)" stroke-width="1.5"/><text class="ve-el" x="30" y="42" fill="var(--info)">1 · DISCOVER</text><text class="ve-el" x="30" y="70" fill="var(--text)">run ← [mission:#N] marker</text></g>
+          <g class="part" data-s="2"><rect x="260" y="20" width="220" height="40" rx="6" fill="none" stroke="var(--info)" stroke-width="1.5"/><text class="ve-el" x="270" y="42" fill="var(--info)">2 · SYNC</text><text class="ve-el" x="270" y="70" fill="var(--text)">terminal run → attempt rows</text></g>
+          <g class="part" data-s="3"><rect x="500" y="20" width="220" height="40" rx="6" fill="none" stroke="var(--info)" stroke-width="1.5"/><text class="ve-el" x="510" y="42" fill="var(--info)">3 · DECIDE</text><text class="ve-el" x="510" y="70" fill="var(--text)">pure decision table</text></g>
+          <g class="part" data-s="4"><rect x="740" y="20" width="200" height="40" rx="6" fill="none" stroke="var(--accent)" stroke-width="2"/><text class="ve-el acc" x="750" y="42" fill="var(--accent)">4 · ACT</text><text class="ve-el" x="750" y="70" fill="var(--text)">supervise / relaunch / close</text></g>
+          <path class="ve-e part" data-s="2" d="M240 40H260" marker-end="none"/>
+          <path class="ve-e part" data-s="3" d="M480 40H500" marker-end="none"/>
+          <path class="ve-e part" data-s="4" d="M720 40H740" marker-end="none"/>
+          <!-- row 2: detail shapes -->
+          <g class="ve-n part" data-s="1"><rect class="sh" x="60" y="120" width="160" height="50" rx="6"/><text x="140" y="142" text-anchor="middle">run-4f2</text><text class="sub" x="140" y="160" text-anchor="middle">any status</text></g>
+          <path class="ve-e part" data-s="1" d="M220 145H320"/>
+          <g class="ve-n part" data-s="2"><rect class="sh" x="320" y="120" width="160" height="50" rx="6"/><text x="400" y="142" text-anchor="middle">attempts</text><text class="sub" x="400" y="160" text-anchor="middle">idempotent rows</text></g>
+          <path class="ve-e part" data-s="3" d="M480 145H600"/>
+          <g class="ve-n part is-key" data-s="3"><rect class="sh" x="600" y="120" width="160" height="50" rx="6"/><text x="680" y="142" text-anchor="middle">decision</text><text class="sub" x="680" y="160" text-anchor="middle">5-row table</text></g>
+          <path class="ve-e part" data-s="4" d="M760 145H860V95"/>
+          <text class="ve-el part" data-s="4" x="800" y="240" fill="var(--text)">a cycle never throws —</text>
+          <text class="ve-el part" data-s="4" x="800" y="258" fill="var(--text)">notes, not a dead daemon</text>
+        </g>
+      </svg>
+    </div>
+    <ol class="ve-cap">
+      <li data-n="1/4">Discover: link the fresh launch's run to its mission by the embedded marker. Any status — a short mission can deliver inside one interval.</li>
+      <li data-n="2/4">Sync: terminal run states become attempt rows. A running state whose pid is gone is recorded as interrupted.</li>
+      <li data-n="3/4">Decide: the pure decision table picks the actions from the ledger plus the run state.</li>
+      <li data-n="4/4">Act: supervise, relaunch, close, or wait — and the cycle survives its own errors.</li>
+    </ol>
+    <figcaption><span class="fn">Fig. 2</span>One poll cycle in four steps. Step through it.</figcaption>
+  </figure>
+</section>
+
+<section id="decisions" class="rise">
+  <div class="swiss"><div class="sl">Decision table</div><h2>Five run states, five moves</h2></div>
+  <p>Each card is the same drawing: the ledger's view of the run, and what the daemon does about it. The changed part carries the case's status color.</p>
+  <div class="cards">
+    <div class="card"><span class="chip info">◆ no run</span><h3>Launch fresh</h3><svg viewBox="0 0 200 90" width="100%" role="img" aria-label="no run: launch"><rect x="20" y="30" width="60" height="30" rx="4" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="2"/><text class="ve-el" x="50" y="49" text-anchor="middle" fill="var(--accent)">launch</text><rect x="120" y="30" width="60" height="30" rx="4" fill="none" stroke="var(--border-bright)" stroke-width="1.5" stroke-dasharray="4 4"/><text class="ve-el" x="150" y="49" text-anchor="middle">run</text><path class="ve-e" d="M80 45H118"/></svg><p style="font-size:.8125rem;color:var(--text-dim);margin:0">Within the 10&nbsp;min grace: wait — the launch is still registering.</p></div>
+    <div class="card"><span class="chip ok">● live</span><h3>Supervise once</h3><svg viewBox="0 0 200 90" width="100%" role="img" aria-label="running with live pid: supervise"><rect x="20" y="30" width="60" height="30" rx="4" fill="none" stroke="var(--border-bright)" stroke-width="1.5"/><text class="ve-el" x="50" y="49" text-anchor="middle">run</text><path class="ve-e" d="M80 45H118"/><rect x="120" y="30" width="60" height="30" rx="4" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="2"/><text class="ve-el" x="150" y="49" text-anchor="middle" fill="var(--accent)">watch</text><circle cx="50" cy="17" r="4" fill="var(--ok)"/></svg><p style="font-size:.8125rem;color:var(--text-dim);margin:0">One <code>runSupervisor</code> cycle. It watches — STOP/RETRY/ESCALATE by policy, never signals.</p></div>
+    <div class="card"><span class="chip risk">■ pid gone</span><h3>Mark interrupted, relaunch</h3><svg viewBox="0 0 200 90" width="100%" role="img" aria-label="running with dead pid: record interrupted and relaunch"><rect x="20" y="30" width="60" height="30" rx="4" fill="none" stroke="var(--risk)" stroke-width="1.5"/><text class="ve-el" x="50" y="49" text-anchor="middle" fill="var(--risk)">run?</text><path class="ve-e" d="M80 45H118"/><rect x="120" y="30" width="60" height="30" rx="4" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="2"/><text class="ve-el" x="150" y="49" text-anchor="middle" fill="var(--accent)">resume</text><path d="M50 12l5 5-5 5" stroke="var(--risk)" stroke-width="1.75" fill="none"/></svg><p style="font-size:.8125rem;color:var(--text-dim);margin:0">A crash that never marked itself. The state file says running; the pid says otherwise.</p></div>
+    <div class="card"><span class="chip warn">▲ terminal</span><h3>Salvage, then resume</h3><svg viewBox="0 0 200 90" width="100%" role="img" aria-label="interrupted or failed: salvage proposal then relaunch with backoff"><rect x="20" y="30" width="60" height="30" rx="4" fill="none" stroke="var(--warn)" stroke-width="1.5"/><text class="ve-el" x="50" y="49" text-anchor="middle" fill="var(--warn)">stopped</text><path class="ve-e" d="M80 45H118"/><rect x="120" y="30" width="60" height="30" rx="4" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="2"/><text class="ve-el" x="150" y="49" text-anchor="middle" fill="var(--accent)">resume</text><text class="ve-el" x="100" y="78" text-anchor="middle">salvage proposal first</text></svg><p style="font-size:.8125rem;color:var(--text-dim);margin:0">First relaunch is immediate. Repeated failures wait: 15, 30, 60&nbsp;min…</p></div>
+    <div class="card"><span class="chip ok">● delivered</span><h3>Close the mission</h3><svg viewBox="0 0 200 90" width="100%" role="img" aria-label="delivered run closes the mission"><rect x="20" y="30" width="60" height="30" rx="4" fill="none" stroke="var(--ok)" stroke-width="1.5"/><text class="ve-el" x="50" y="49" text-anchor="middle" fill="var(--ok)">green</text><path class="ve-e" d="M80 45H118"/><rect x="120" y="30" width="60" height="30" rx="4" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="2"/><text class="ve-el" x="150" y="49" text-anchor="middle" fill="var(--accent)">closed</text><text class="ve-el" x="100" y="78" text-anchor="middle">board note: delivered</text></svg><p style="font-size:.8125rem;color:var(--text-dim);margin:0">The run converged against the real gates. The mission is done.</p></div>
+  </div>
+</section>
+
+<section id="backoff" class="rise">
+  <div class="swiss"><div class="sl">Backoff</div><h2>First resume is immediate; repeats double</h2></div>
+  <p>A clean interruption is the healthy case, not a crash loop, so the first relaunch happens at once. Only <b>repeated</b> failures back off — the same lesson as the systemd start-rate limiter: back off, do not hammer.</p>
+  <figure>
+    <div class="frame scroll">
+      <svg class="ve-svg" viewBox="0 0 960 260" role="img" aria-label="Bar chart: wait before relaunch number 1 is zero minutes, then 15, 30, 60, 120 minutes, doubling to a cap of 1440 minutes.">
+        <g class="parts">
+          <text class="ve-el" x="40" y="30" fill="var(--text-dim)">minutes waited before relaunch</text>
+          <g>
+            <rect x="40" y="210" width="120" height="8" fill="var(--accent)"/><text class="ve-el" x="40" y="235">relaunch 1</text><text class="ve-el acc" x="170" y="205" fill="var(--accent)">0 — immediate</text>
+            <rect x="240" y="175" width="120" height="43" fill="var(--border-bright)"/><text class="ve-el" x="240" y="235">relaunch 2</text><text class="ve-el" x="370" y="180">15 min</text>
+            <rect x="440" y="135" width="120" height="83" fill="var(--border-bright)"/><text class="ve-el" x="440" y="235">relaunch 3</text><text class="ve-el" x="570" y="140">30 min</text>
+            <rect x="640" y="75" width="120" height="143" fill="var(--border-bright)"/><text class="ve-el" x="640" y="235">relaunch 4</text><text class="ve-el" x="770" y="80">60 min</text>
+            <rect x="840" y="30" width="60" height="188" fill="var(--warn)"/><text class="ve-el" x="812" y="235">…cap</text><text class="ve-el" x="812" y="55" fill="var(--warn)">1440</text>
+          </g>
+        </g>
+      </svg>
+    </div>
+    <figcaption><span class="fn">Fig. 3</span>Backoff after spent resumes. The cap is one day, so a wedged mission retries daily instead of hammering.</figcaption>
+  </figure>
+</section>
+
+<section id="salvage" class="rise">
+  <div class="swiss"><div class="sl">Struggle &amp; salvage</div><h2>The orchestrator proposes; the overseer rules</h2></div>
+  <p>Every failed attempt seeds a <span class="mono" data-ref="ledger" tabindex="0">salvage proposal</span>: what happened, what partial work exists, what to try next. Nothing schedules until a human — or an overseer agent — approves.</p>
+  <div class="callout" style="margin-bottom:var(--s-5)"><span class="chip warn">▲ struggling</span><p style="margin:0">Past <b>3 failures</b> on one task, the proposal turns into an escalation ask — posted to the collaboration board, still approval-gated: <code>uap mission salvage approve &lt;id&gt;</code>.</p></div>
+  <figure>
+    <div class="frame scroll">
+      <svg class="ve-svg" viewBox="0 0 960 200" role="img" aria-label="Attempt failures accumulate into the struggle metric; at three failures the daemon proposes escalation on the board; approval gates what runs next.">
+        <g class="parts">
+          <g class="ve-n"><rect class="sh" x="40" y="60" width="200" height="70" rx="6"/><text x="140" y="90" text-anchor="middle">attempt ledger</text><text class="sub" x="140" y="110" text-anchor="middle">fails per task ref</text></g>
+          <path class="ve-e" d="M240 95H360"/><text class="ve-el" x="255" y="85">3 fails</text>
+          <g class="ve-n"><rect class="sh" x="360" y="60" width="220" height="70" rx="6"/><text x="470" y="90" text-anchor="middle">salvage proposal</text><text class="sub" x="470" y="110" text-anchor="middle">failure + partial work</text></g>
+          <path class="ve-e is-async" d="M580 95H700"/><text class="ve-el" x="592" y="85">posts ask</text>
+          <g class="ve-n"><rect class="sh" x="700" y="60" width="220" height="70" rx="6"/><text x="810" y="90" text-anchor="middle">board + approval</text><text class="sub" x="810" y="110" text-anchor="middle">escalate / decompose</text></g>
+          <path class="ve-e" d="M810 130V175H140V135"/><text class="ve-el" x="430" y="168">approve → next run follows the ruling</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption><span class="fn">Fig. 4</span>The Choir split: the daemon drafts follow-ups from failure residue; the overseer decides what actually runs.</figcaption>
+  </figure>
+</section>
+
+<section id="freeze" class="rise">
+  <div class="swiss"><div class="sl">Frozen acceptance</div><h2>"Complete" means the hash matches</h2></div>
+  <p>Acceptance criteria are hashed at creation. The criteria travel inside every run instruction, so the acceptance judge grades the frozen text — not a paraphrase. Change requires an explicit replan that records the prior text, hash, and reason.</p>
+  <figure>
+    <div class="frame scroll">
+      <svg class="ve-svg" viewBox="0 0 960 210" role="img" aria-label="Acceptance text is hashed and frozen at mission creation. A replan supersedes it through a recorded revision.">
+        <g class="parts">
+          <g class="ve-n"><rect class="sh" x="40" y="60" width="240" height="80" rx="6"/><text x="160" y="90" text-anchor="middle">acceptance text</text><text class="sub" x="160" y="110" text-anchor="middle">"tests + tsc pass, no new debt"</text></g>
+          <path class="ve-e is-hot" d="M280 100H420"/><text class="ve-el acc" x="292" y="90">sha256 at create</text>
+          <g class="ve-n is-key"><rect class="sh" x="420" y="60" width="240" height="80" rx="6"/><text x="540" y="90" text-anchor="middle">frozen hash</text><text class="sub" x="540" y="110" text-anchor="middle">travels in every run</text></g>
+          <path class="ve-e is-async" d="M660 100H800"/><text class="ve-el" x="672" y="90">replan only</text>
+          <g class="ve-n"><rect class="sh" x="800" y="60" width="120" height="80" rx="6"/><text x="860" y="90" text-anchor="middle">revision</text><text class="sub" x="860" y="110" text-anchor="middle">prior + reason</text></g>
+          <path class="ve-e" d="M860 140V185H160V140"/><text class="ve-el" x="450" y="178">supersede recorded — never silent</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption><span class="fn">Fig. 5</span>Statement immutability, UAP edition. The merge gate (PR&nbsp;2) will check this same hash before any merge.</figcaption>
+  </figure>
+</section>
+
+<section id="state" class="rise">
+  <div class="swiss"><div class="sl">State on disk</div><h2>Everything the daemon needs survives a reboot</h2></div>
+  <div class="scroll" style="border:1px solid var(--border);border-radius:var(--r-1)">
+    <table>
+      <thead><tr><th>Store</th><th>Path</th><th>Keeps</th></tr></thead>
+      <tbody>
+        <tr><td>Mission ledger</td><td><code>.uap/missions.db</code></td><td>Goals, frozen hashes, attempts, salvage, replans (SQLite, WAL)</td></tr>
+        <tr><td>Run state</td><td><code>.uap/deliver-runs/&lt;runId&gt;/state.json</code></td><td>Checkpoint, phases, pid — resume picks up at the boundary</td></tr>
+        <tr><td>Supervisor</td><td><code>.uap/supervise/&lt;runId&gt;/</code></td><td>Decision state + events</td></tr>
+        <tr><td>Orch run logs</td><td><code>.uap/orch-logs/orch-&lt;stamp&gt;.log</code></td><td>Output of daemon-spawned runs</td></tr>
+        <tr><td>Stop latch</td><td><code>.uap/deliver-runs/STOP</code></td><td>Cooperative stop; the supervisor uses the same latch</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="sources" class="rise">
+  <div class="swiss"><div class="sl">Sources</div><h2>Where this lives in the repo</h2></div>
+  <ul style="line-height:1.9">
+    <li><code>src/mission/ledger.ts</code> — mission ledger service (frozen acceptance, attempts, salvage)</li>
+    <li><code>src/mission/poll-cycle.ts</code> — pure decision table (STRUGGLE_THRESHOLD, LAUNCH_GRACE_MS, backoff)</li>
+    <li><code>src/mission/poll-executor.ts</code> — seam-injected executor, run discovery, detached spawning</li>
+    <li><code>src/cli/mission.ts</code>, <code>src/cli/orch.ts</code> — command surfaces</li>
+    <li><code>src/cli/systemd-services.ts</code> — <code>uap-orchestrator.service</code> install</li>
+    <li><code>test/mission/</code> — 36 tests over ledger, decision table, executor</li>
+    <li><code>docs/guides/MISSIONS.md</code> — the operator guide</li>
+    <li>Choir (Weber&nbsp;GeoML, Apache-2.0) — the protocol this uplift borrows its loop-clock and gate ideas from</li>
+  </ul>
+</section>
+
+</div></div>
+<footer style="border-top:1px solid var(--border);margin-top:var(--s-8);padding:var(--s-6) 0 var(--s-8)">
+  <p class="foot">Universal Agent Protocol · mission orchestrator, v2.17.0 · one self-contained file, no build, no JS dependencies.</p>
+</footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var motionOK = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* entrance */
+  document.documentElement.classList.add("js-motion");
+  if (motionOK){
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add("seen"); io.unobserve(e.target);} });
+    }, {threshold:.15});
+    document.querySelectorAll(".rise").forEach(function(el){ io.observe(el); });
+  } else {
+    document.querySelectorAll(".rise").forEach(function(el){ el.classList.add("seen"); });
+  }
+
+  /* count-up */
+  document.querySelectorAll("[data-count]").forEach(function(el){
+    var target = parseInt(el.getAttribute("data-count"),10), suffix = el.querySelector("small");
+    var suffixHTML = suffix ? suffix.outerHTML : "";
+    function render(v){ el.firstChild.nodeValue = String(v); }
+    if (!motionOK){ render(target); return; }
+    var t0 = null;
+    new IntersectionObserver(function(es, obs){
+      es.forEach(function(e){
+        if(!e.isIntersecting) return; obs.unobserve(el);
+        requestAnimationFrame(function step(ts){
+          if(!t0) t0 = ts;
+          var p = Math.min(1,(ts-t0)/900), eased = 1-Math.pow(1-p,3);
+          render(Math.round(target*eased));
+          if(p<1) requestAnimationFrame(step);
+        });
+      });
+    },{threshold:.4}).observe(el);
+  });
+
+  /* linked highlighting */
+  document.querySelectorAll("[data-ref]").forEach(function(el){
+    el.addEventListener("mouseenter", on); el.addEventListener("mouseleave", off);
+    el.addEventListener("focus", on); el.addEventListener("blur", off);
+  });
+  function on(){ toggle(this.getAttribute("data-ref"), true); }
+  function off(){ toggle(this.getAttribute("data-ref"), false); }
+  function toggle(ref, hot){
+    document.querySelectorAll("[data-ref='"+ref+"']").forEach(function(el){ el.style.color = hot ? "var(--accent)" : ""; });
+  }
+
+  /* stepper */
+  document.querySelectorAll("figure.ve-steps").forEach(function(fig){
+    var range = fig.querySelector("input[type=range]"), at = 4;
+    var caps = fig.querySelectorAll(".ve-cap li");
+    function show(n){
+      at = Math.max(1, Math.min(4, n));
+      fig.setAttribute("data-at", String(at));
+      range.value = String(at);
+      caps.forEach(function(li){ li.classList.toggle("on", li.getAttribute("data-n") === at+"/4"); });
+    }
+    fig.querySelectorAll("[data-go]").forEach(function(b){
+      b.addEventListener("click", function(){ show(at + parseInt(b.getAttribute("data-go"),10)); stop(); });
+    });
+    range.addEventListener("input", function(){ show(parseInt(range.value,10)); stop(); });
+    var timer = null;
+    var play = fig.querySelector("[data-play]");
+    function stop(){ if(timer){ clearInterval(timer); timer=null; play.textContent="Play"; } }
+    play.addEventListener("click", function(){
+      if (timer){ stop(); return; }
+      var next = at >= 4 ? 1 : at+1; show(next);
+      timer = setInterval(function(){ if(at>=4){ stop(); return; } show(at+1); }, 2600);
+      play.textContent = "Stop";
+    });
+  });
+
+  /* scroll spy */
+  var links = document.querySelectorAll("nav.toc a");
+  var secs = [];
+  links.forEach(function(a){ var s = document.querySelector(a.getAttribute("href")); if(s) secs.push([a,s]); });
+  if ("IntersectionObserver" in window){
+    var spy = new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if(!e.isIntersecting) return;
+        links.forEach(function(a){ a.classList.remove("on"); });
+        var hit = secs.find(function(pair){ return pair[1] === e.target; });
+        if (hit){ hit[0].classList.add("on");
+          try { history.replaceState(null, "", hit[0].getAttribute("href")); } catch(err) {}
+        }
+      });
+    }, {rootMargin:"-10% 0px -80% 0px"});
+    secs.forEach(function(pair){ spy.observe(pair[1]); });
+  }
+
+  /* flow dots (only on screen + motion allowed) */
+  if (motionOK){
+    document.querySelectorAll("[data-flow]").forEach(function(route){
+      var every = parseInt(route.getAttribute("data-every"),10) || 3000;
+      var layer = route.closest("svg").querySelector(".ve-dots"); if(!layer) return;
+      var visible = false;
+      new IntersectionObserver(function(es){ es.forEach(function(e){ visible = e.isIntersecting; }); }).observe(route.closest("figure"));
+      var svg = route.closest("svg"), len = route.getTotalLength();
+      setInterval(function(){
+        if(!visible) return;
+        var dot = document.createElementNS("http://www.w3.org/2000/svg","circle");
+        dot.setAttribute("r","3.2"); dot.setAttribute("fill","var(--accent)");
+        layer.appendChild(dot);
+        var t0 = performance.now(), dur = 2200;
+        (function anim(now){
+          var p = Math.min(1,(now-t0)/dur);
+          var pt = route.getPointAtLength(len*p);
+          dot.setAttribute("cx",String(pt.x)); dot.setAttribute("cy",String(pt.y));
+          if(p<1) requestAnimationFrame(anim); else dot.remove();
+        })(t0);
+      }, every);
+    });
+  }
+})();
+</script>
+</body>
+</html>

@@ -51,6 +51,8 @@ const lazy = {
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   quality: () => import('../cli/quality.js').then((m) => m.qualityCommand),
   supervise: () => import('../cli/supervise.js').then((m) => m.superviseCommand),
+  mission: () => import('../cli/mission.js').then((m) => m.missionCommand),
+  orch: () => import('../cli/orch.js').then((m) => m.orchPollCommand),
   classify: () => import('../cli/classify.js').then((m) => m.classifyCommand),
   doctor: () => import('../cli/doctor.js').then((m) => m.doctorCommand),
   loops: () => import('../cli/loops.js').then((m) => m.loopsCommand),
@@ -637,6 +639,45 @@ program
   .action(async (runId, options) => {
     const cmd = await lazy.supervise();
     await cmd(runId, options);
+  });
+
+// Mission ledger — durable goals with frozen acceptance, driven to completion
+program
+  .command('mission [sub] [text...]')
+  .description('Durable missions with frozen acceptance criteria (see docs/guides/MISSIONS.md)')
+  .option('--acceptance <criteria>', 'Acceptance criteria text (create) or new criteria (replan)')
+  .option('--reason <why>', 'Why the acceptance criteria are being replanned')
+  .option('--preset <id>', 'Model preset the mission\'s runs should use')
+  .option('--launch', 'Launch the first deliver run immediately instead of waiting for the poll')
+  .option('--status <status>', 'Filter by status: active|paused|delivered|failed')
+  .option('--loop', 'poll subcommand: keep polling forever (daemon mode)')
+  .option('--interval <secs>', 'poll subcommand: seconds between cycles (default 300, min 10)')
+  .option('--json', 'Machine-readable JSON')
+  .option('--project-root <path>', 'Project root (default: cwd)')
+  .action(async (sub, text, options) => {
+    const cmd = await lazy.mission();
+    await cmd(sub ?? 'list', (text ?? []).join(' '), options);
+  });
+
+// Orchestrator poll — hidden alias: `uap mission poll` is the primary surface.
+// (Distinct from `uap orchestrator on|off`, which toggles the in-deliver
+// blackboard task orchestrator — a different feature with a similar name.)
+program
+  .command('orch', { hidden: true })
+  .description('Alias for `uap mission poll`')
+  .argument('poll', 'Run one poll cycle (or the daemon loop with --loop)')
+  .option('--loop', 'Keep polling forever (daemon mode)')
+  .option('--interval <secs>', 'Seconds between poll cycles (default 300, min 10)')
+  .option('--json', 'Machine-readable per-mission reports')
+  .option('--project-root <path>', 'Project root (default: cwd)')
+  .action(async (sub, options) => {
+    if (sub !== 'poll') {
+      console.error(`unknown orch subcommand '${sub}' (expected: poll — or use 'uap mission poll')`);
+      process.exitCode = 1;
+      return;
+    }
+    const cmd = await lazy.orch();
+    await cmd(options);
   });
 
 // Deterministic review support — pre-pass ruleset scan + UI capture binding

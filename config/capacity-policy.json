@@ -39,6 +39,21 @@
         "knownRestarts": 0,
         "allowedNew": 0
       }
+    },
+    {
+      "name": "mission-orchestrator",
+      "systemd": {
+        "unit": "uap-orchestrator.service",
+        "scope": "user"
+      },
+      "budget": {
+        "rssMiB": 512,
+        "note": "uap orch poll loop clock over the mission ledger (added 2026-10-03). Polls every 300s; RSS covers node + better-sqlite3."
+      },
+      "restartBudget": {
+        "knownRestarts": 0,
+        "allowedNew": 3
+      }
     }
   ]
 }

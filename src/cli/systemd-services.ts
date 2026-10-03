@@ -309,6 +309,60 @@ export function installSystemdUserServices(
     force
   );
 
+  // Orchestrator daemon — the loop clock over the mission ledger. Node and
+  // the CLI entrypoint are captured ABSOLUTE at install time: a systemd user
+  // unit's PATH does not include nvm, so `node`/`uap` lookups would fail.
+  // Paths are single-quote-escaped for the bash script (security review P3).
+  const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+  const orchScriptPath = join(scriptsDir, 'run-orch-poll-continuity.sh');
+  writeIfMissing(
+    orchScriptPath,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      '',
+      'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
+      `UAP_NODE="\${UAP_ORCH_NODE:-${shellQuote(process.execPath)}}"`,
+      `UAP_CLI="\${UAP_ORCH_CLI:-${shellQuote(join(projectDir, 'dist', 'bin', 'cli.js'))}}"`,
+      '',
+      '# The poll loop owns mission completion: every cycle re-decides what',
+      '# each active mission needs (supervise / launch / relaunch / salvage).',
+      'cd "$ROOT_DIR"',
+      'exec "$UAP_NODE" "$UAP_CLI" mission poll --loop --interval "${UAP_ORCH_POLL_INTERVAL:-300}"',
+      '',
+    ].join('\n'),
+    installed,
+    skipped,
+    force
+  );
+  chmodSync(orchScriptPath, 0o755);
+
+  const orchServicePath = join(userServiceDir, 'uap-orchestrator.service');
+  writeIfMissing(
+    orchServicePath,
+    [
+      '[Unit]',
+      'Description=UAP Mission Orchestrator (durable goal loop clock)',
+      'After=network-online.target uap-anthropic-proxy.service',
+      'Wants=network-online.target',
+      '',
+      '[Service]',
+      'Type=simple',
+      `WorkingDirectory=${projectDir}`,
+      `ExecStart=${orchScriptPath}`,
+      'Restart=always',
+      'RestartSec=10',
+      'TimeoutStopSec=20',
+      '',
+      '[Install]',
+      'WantedBy=default.target',
+      '',
+    ].join('\n'),
+    installed,
+    skipped,
+    force
+  );
+
   return {
     installed,
     skipped,
