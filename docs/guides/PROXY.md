@@ -191,6 +191,7 @@ set is below.
 | `PROXY_COUNT_TOKENS_SCALE` (auto) | Scales the reported token count so the client auto-compacts before the local rail overflows |
 | `PROXY_CONTEXT_PRUNE_THRESHOLD` (0.85) / `PROXY_CONTEXT_PRUNE_TARGET_FRACTION` (0.50) | Backstop pruning: prune at 85% of the window, land the session at ~50% |
 | `PROXY_PRUNE_SPIRAL_STREAK` (3) / `PROXY_PRUNE_SPIRAL_EPSILON` (0.01) | Prune circuit breaker fires only on a RISING post-prune floor (3 consecutive prunes each >1 point higher). A flat floor above the threshold is fixed system+tools overhead, not a death spiral — the breaker is held |
+| `PROXY_END_TURN_FINAL_CHARS` (800) | An end_turn whose content reaches this many characters is a legitimate final answer: the unexpected-end-turn retry is skipped and the client's loop ends naturally (thinking-runaway stalls have empty content). Content matching the deferral phrases ("I need more cycles…") stays retried even when long — a capitulation is not a final answer. 0 = always retry |
 
 ### Connection health & backpressure
 

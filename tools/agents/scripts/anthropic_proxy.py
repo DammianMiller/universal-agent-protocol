@@ -77,6 +77,15 @@ Configuration (Environment Variables)
                                     for a prune to count toward the spiral
                                     streak. Default: 0.01
 
+    PROXY_END_TURN_FINAL_CHARS      An end_turn whose content reaches this
+                                    many characters is a legitimate final
+                                    answer: the unexpected-end-turn retry is
+                                    skipped and the client's loop ends
+                                    naturally. Content matching the deferral
+                                    phrases stays retried even when long —
+                                    a capitulation is not a final answer.
+                                    0 = always retry. Default: 800
+
 Usage
 -----
     # Basic usage (connects to llama.cpp on default port):
@@ -333,6 +342,23 @@ PROXY_PRUNE_SPIRAL_STREAK = int(
 )
 PROXY_PRUNE_SPIRAL_EPSILON = float(
     os.environ.get("PROXY_PRUNE_SPIRAL_EPSILON", "0.01")
+)
+# Substantive-final-answer exemption for the unexpected-end-turn retry
+# (2026-10-03): the retry exists for thinking-runaway stalls — an end_turn
+# with EMPTY or near-empty content mid-loop (reproduced 2026-09-17: 5917
+# reasoning chars, finish=length, 0 tool_calls). It had NO completion signal,
+# so a model that GENUINELY finished and wrote its final answer was also
+# "unexpected": the retry coerced it back into a tool call, and a finished
+# model under coercion emits a degenerate no-op call (observed live
+# 2026-10-03 01:00-03:00: "Task complete — recap delivered and one concrete
+# defect fixed", 2211 chars, followed by 96 retry cycles each producing the
+# identical `git status` no-op — two hours of churn the operator saw as
+# "keeps stopping or looping"). An end_turn whose CONTENT reaches this many
+# characters is a legitimate final answer: let the client's loop end. The
+# runaway case has empty content, so the threshold separates the two classes
+# cleanly. 0 restores the old always-retry behavior.
+PROXY_END_TURN_FINAL_CHARS = int(
+    os.environ.get("PROXY_END_TURN_FINAL_CHARS", "800")
 )
 # Verbatim decision compaction (uplift 1.2): when context pressure triggers a
 # prune, first try per-tool-call keep/truncate/drop decisions that keep all
@@ -9250,6 +9276,40 @@ def _record_last_assistant_tool_calls(
     return ""
 
 
+def _final_answer_content_exempt(content) -> bool:
+    """True when an end_turn's content is a substantive final answer.
+
+    Shared by the unexpected-end-turn classifier (skip the retry so the
+    client's loop ends naturally) and the stream-path malformed_tool_streak
+    counter (a legitimate completion must not feed the forced-tool dampener
+    via the `end_turn + long text` branch). 2026-10-03.
+    """
+    if PROXY_END_TURN_FINAL_CHARS <= 0:
+        return False
+    if not isinstance(content, str):
+        # OpenAI content-parts list: count only the text parts, never the
+        # repr of the list (which would always exceed the threshold). A
+        # part whose "text" is not a str is skipped, not joined — a
+        # malformed backend payload must not abort the turn with a
+        # TypeError mid-classification.
+        if not isinstance(content, list):
+            return False
+        content = " ".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict)
+            and isinstance(part.get("text", ""), str)
+        )
+    if len(content.strip()) < PROXY_END_TURN_FINAL_CHARS:
+        return False
+    # BUT a LONG DEFERRAL is not a final answer: a model that wrote 800+ chars
+    # of "I need more cycles before acting" is stalling, not finishing, and
+    # must still be herded back to work. The deferral regex already exists
+    # (and already accepts its false-positive risk on no-tool turns), so the
+    # exemption is gated on it rather than on new vocabulary.
+    return not _DEFERRAL_PHRASE_RE.search(content)
+
+
 def _is_unexpected_end_turn(openai_resp: dict, anthropic_body: dict) -> bool:
     choices = openai_resp.get("choices") or []
     if not choices:
@@ -9265,6 +9325,16 @@ def _is_unexpected_end_turn(openai_resp: dict, anthropic_body: dict) -> bool:
         return False
 
     if "tools" not in anthropic_body:
+        return False
+
+    # Substantive-final-answer exemption (2026-10-03): an end_turn that CARRIES
+    # a real final answer is the agentic loop's natural end, not a stall. The
+    # thinking-runaway this retry exists for produces empty content, so content
+    # length separates the classes. Without this, a finished model gets coerced
+    # back into a degenerate no-op tool call every turn (observed live:
+    # "Task complete ... Summary:" 2211 chars -> 96 retry cycles of the
+    # identical `git status` no-op over two hours).
+    if _final_answer_content_exempt(msg.get("content", "")):
         return False
 
     has_tool_results = _conversation_has_tool_results(anthropic_body)
@@ -14018,7 +14088,14 @@ async def stream_anthropic_response(
         and not tool_calls_by_index
         and (
             finish_reason == "max_tokens"
-            or (finish_reason == "end_turn" and len(accumulated_text) > 512)
+            or (
+                finish_reason == "end_turn"
+                and len(accumulated_text) > 512
+                # A substantive final answer is a completion, not a malformed
+                # payload: don't feed it to the forced-tool dampener (the
+                # same exemption the unexpected-end-turn retry uses).
+                and not _final_answer_content_exempt(accumulated_text)
+            )
         )
     ):
         monitor.malformed_tool_streak += 1
