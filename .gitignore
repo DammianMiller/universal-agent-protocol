@@ -163,3 +163,8 @@ dist
 # install regenerates from it.
 .opencode/package.json
 .opencode/package-lock.json
+
+# Generated per-machine by `installSystemdUserServices` (absolute node/cli
+# paths at install time). Not committed: tracked continuity scripts are the
+# upstream pair; this one embeds this machine's nvm paths.
+scripts/run-orch-poll-continuity.sh
