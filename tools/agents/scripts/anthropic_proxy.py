@@ -2544,7 +2544,7 @@ class SessionMonitor:
     session_id: str = ""  # owning session id (set by get_session_monitor)
     mandate_deliver_fires: int = 0  # monotonic count of forced deliver-routings (mandate)
     mandate_deliver_active: bool = False  # THIS turn is pinned to deliver (beats recon convergence)
-    tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
+    tool_starvation_streak: int = 0  # breaker FIRES since the last compaction reset (not per turn)
     last_request_msg_count: int = 0  # Message count of the previous request (compaction-boundary detection)
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
     invalid_tool_call_streak: int = 0  # consecutive invalid tool arg payloads
@@ -3124,6 +3124,61 @@ class SessionMonitor:
     def guardrail_streak(self) -> int:
         """Highest current streak among malformed/invalid tool outputs."""
         return max(self.malformed_tool_streak, self.invalid_tool_call_streak)
+
+    def reset_forcing_loop(self) -> None:
+        """Reset the forcing-loop family to a clean per-turn baseline.
+
+        2026-10-04 follow-up to the starvation-breaker fix (PR #830): the
+        membership of this family lives HERE, not in four hand-maintained
+        reset blocks (fresh user text, no-tool-result conversations, the
+        compaction boundary, the contamination hard reset). Members and why:
+
+          consecutive_forced_count, no_progress_streak -- the forcing loop
+          is PER-TURN state; a stale count crossing a fresh user text
+          false-fired the TOOL STARVATION BREAKER ~once per user turn for
+          hours (fixed 2026-10-04).
+
+        Deliberately NOT members (each with its own lifecycle):
+          consecutive_no_write_turns -- PER-TASK state (recon exploration
+          streak), reset at the same four boundary sites INLINE, not here:
+          it is not forcing-loop state, and an ack-shaped fresh text must
+          not clear it (see the fresh_user_text branch). Its four reset
+          sites and rationale are documented at those sites.
+          malformed/invalid/required_tool_miss streaks -- output QUALITY is
+          cross-turn evidence; a new user message says nothing about the
+          model's tool-call formatting.
+          forced_auto_cooldown_turns -- the dampener is a REMEDY for the
+          quality streaks, and quality is cross-turn, so the cooldown
+          carries across mid-episode user acks ("keep going" must not cut
+          the recovery window short). It also cannot re-arm right after a
+          reset: activation needs consecutive_forced_count >= min_forced,
+          which the reset just zeroed. It clears only at a brand-new
+          conversation (the n_msgs <= 1 block) and the emergency
+          contamination reset.
+          deferral_streak -- the capitulation loop it breaks SPANS user
+          acks (model asks for more cycles, user says yes, model asks
+          again), so a per-turn reset would make that breaker unreachable
+          in exactly its true-positive case.
+          tool_starvation_streak -- per-EPOCH session telemetry: counts
+          breaker fires since the last compaction reset (the compaction
+          boundary clears it), not per-turn severity.
+          recon_hard_fires -- monotonic session counter, never reset.
+          catastrophic_ctx_streak -- consecutive-turn utilization streak;
+          resets the moment utilization drops below the finalize ratio,
+          so it is per-turn-consecutive, not monotonic.
+
+        Two more semantic classes reset the member pair INLINE by design,
+        and a grep for "consecutive_forced_count = 0" will find them:
+        consequence/consume-on-fire clears (breaker fire, dampener
+        release, finalize paths, analysis routing) zero the pair after an
+        ACTION was taken, which is a different event from a boundary reset.
+        And the four boundary call sites here are gated behind
+        PROXY_TOOL_STATE_MACHINE (pre-existing posture, unchanged): with
+        the state machine off, the consumers still run and the stale-state
+        false-fire class returns.
+        """
+        self.consecutive_forced_count = 0
+        self.no_progress_streak = 0
 
     def consume_forced_auto_turn(self) -> bool:
         """Consume one dampener turn that temporarily sets tool_choice=auto."""
@@ -6957,23 +7012,34 @@ def _resolve_state_machine_tool_choice(
     if latest_user_text and not last_user_has_tool_result:
         monitor.tool_call_history = []
         monitor.reset_doubling()
-        # 2026-10-04 fix (recurring false TOOL STARVATION BREAKER): the
-        # forcing loop is PER-TURN state, so its progress counter resets on
-        # EVERY fresh user text, not only after a compaction collapse. The
-        # old `n_msgs <= 1` guard let consecutive_forced_count survive a
-        # completed turn: a turn that ended with a legitimate text summary
-        # under a forced act-phase left the count at >= threshold, and the
-        # FIRST request of the NEXT user turn then matched the breaker
-        # condition (count >= threshold AND last-assistant-was-text-only --
-        # the previous turn's summary), stripping that request's tools.
-        # Observed live firing roughly once per user turn for hours
-        # (starvation_streak 1-2, 13:03..15:52 on 2026-10-04). The
-        # output-QUALITY streaks below stay sticky across fresh user text on
-        # purpose: a new user message is not evidence about the model's
-        # tool-call formatting.
-        monitor.consecutive_forced_count = 0
-        monitor.no_progress_streak = 0
+        # 2026-10-04 fix (recurring false TOOL STARVATION BREAKER, fired ~once
+        # per user turn for hours): the forcing loop is PER-TURN state. The
+        # family membership and each member's lifecycle live in
+        # SessionMonitor.reset_forcing_loop -- reset there, never here.
+        monitor.reset_forcing_loop()
+        # The recon exploration streak is PER-TASK, not per-turn (added
+        # 2026-10-04 with the reset_forcing_loop extraction): the previous
+        # task's read-forever streak is not evidence about the NEW
+        # deliverable, and a stale streak fired the recon convergence
+        # directive on the new task's first request -- the same
+        # stale-state-crossing-a-boundary class as the breaker fix above.
+        # Agent-driven resends carry tool_results and cannot reach this
+        # branch, so genuine same-task recon loops keep counting. One
+        # accepted trade-off: a MID-TASK human ack ("ok", "standing by")
+        # also lands here and would clear a same-task streak — so the
+        # existing _is_no_task_user_text classifier gates the reset: only
+        # fresh text that plausibly starts NEW work clears the streak.
+        # Reviewer P3 (security, 2026-10-04): without the gate, a model
+        # could end each threshold-1 turn soliciting an ack and keep the
+        # convergence directive unreachable forever.
+        if not _is_no_task_user_text(latest_user_text):
+            monitor.consecutive_no_write_turns = 0
         if n_msgs <= 1:
+            # Brand-new conversation only. forced_auto_cooldown_turns is
+            # sticky across mid-episode acks on purpose (see
+            # reset_forcing_loop's docstring) but a 1-message request is a
+            # fresh conversation surface, where the old cooldown describes
+            # a model state that no longer applies.
             monitor.forced_auto_cooldown_turns = 0
             monitor.malformed_tool_streak = 0
             monitor.invalid_tool_call_streak = 0
@@ -7005,12 +7071,22 @@ def _resolve_state_machine_tool_choice(
             monitor.tool_call_history = []
             monitor.reset_doubling()
             # Same per-turn reset as fresh_user_text (see the 2026-10-04 fix
-            # there): a conversation with no tool results cannot be in a
-            # forcing loop, so the loop-progress counter must not carry in.
-            # Output-quality streaks stay sticky under the n_msgs guard.
-            monitor.consecutive_forced_count = 0
-            monitor.no_progress_streak = 0
+            # there, and SessionMonitor.reset_forcing_loop for the family
+            # membership): a conversation with no tool results cannot host a
+            # MID-LOOP starvation episode -- genuine ones resend with
+            # tool_results and never reach this branch -- so a stale forcing
+            # count from a prior turn carries no signal here, only the
+            # false-fire. The recon streak resets under the same ack gate as
+            # fresh_user_text (latest_user_text is empty in most
+            # no-tool-result conversations, and an empty text is not an ack,
+            # so the gate usually passes here). Output-quality streaks stay
+            # sticky under the n_msgs guard.
+            monitor.reset_forcing_loop()
+            if not _is_no_task_user_text(latest_user_text):
+                monitor.consecutive_no_write_turns = 0
             if n_msgs <= 1:
+                # Brand-new conversation only (see the fresh_user_text
+                # branch for why the cooldown is otherwise sticky).
                 monitor.forced_auto_cooldown_turns = 0
                 monitor.malformed_tool_streak = 0
                 monitor.invalid_tool_call_streak = 0
@@ -8795,7 +8871,7 @@ def build_openai_request(
             monitor.no_progress_streak = 0
             monitor.reset_tool_turn_state(reason="tool_starvation_breaker")
             logger.warning(
-                "TOOL STARVATION BREAKER: stripped tools after %d forced turns with no tool output (starvation_streak=%d)",
+                "TOOL STARVATION BREAKER: stripped tools after %d forced turns with no tool output (starvation_streak=%d; the streak counts fires since the last compaction reset, not per-turn severity)",
                 PROXY_TOOL_STARVATION_THRESHOLD,
                 monitor.tool_starvation_streak,
             )
@@ -12760,12 +12836,21 @@ def _maybe_apply_session_contamination_breaker(
     forced_before = monitor.consecutive_forced_count
     required_miss_before = monitor.required_tool_miss_streak
     monitor.contamination_resets += 1
+    # Emergency tier: the conversation itself is rewritten, so BOTH the
+    # forcing-loop family (via its one policy point) and the output-quality
+    # streaks clear -- the n_msgs stickiness that protects quality streaks
+    # at ordinary turn boundaries does not apply to a hard reset. The
+    # dampener cooldown clears with them: the model state it was remedying
+    # belonged to the collapsed transcript.
+    monitor.reset_forcing_loop()
+    monitor.forced_auto_cooldown_turns = 0
     monitor.malformed_tool_streak = 0
     monitor.invalid_tool_call_streak = 0
     monitor.required_tool_miss_streak = 0
-    monitor.no_progress_streak = 0
-    monitor.consecutive_forced_count = 0
-    monitor.forced_auto_cooldown_turns = 0
+    # The recon streak belongs to the collapsed transcript (per-TASK state,
+    # reset at turn boundaries since 2026-10-04); the rewritten conversation
+    # is a fresh task surface.
+    monitor.consecutive_no_write_turns = 0
     monitor.reset_tool_turn_state(reason=f"contamination_guardrail_reset_{log_reason}")
     if attractor_detected:
         logger.warning(
@@ -14714,8 +14799,15 @@ async def messages(request: Request):
     prev_msg_count = getattr(monitor, "last_request_msg_count", 0)
     if prev_msg_count >= 8 and n_messages <= prev_msg_count // 2:
         monitor.reset_tool_turn_state(reason="compaction_boundary")
-        monitor.consecutive_forced_count = 0
-        monitor.no_progress_streak = 0
+        # The forcing-loop family via its one policy point (2026-10-04
+        # extraction). forced_auto_cooldown_turns deliberately does NOT
+        # clear here -- the dampener remedies cross-turn output quality,
+        # which survives a compaction (see reset_forcing_loop's
+        # docstring). Test coverage note: this site is inline in the
+        # request handler and unreachable from the build_openai_request
+        # test seam, so its wiring is inspection-verified -- the method
+        # it calls IS pinned by test_reset_forcing_loop_membership_is_exact.
+        monitor.reset_forcing_loop()
         monitor.tool_starvation_streak = 0
         monitor.consecutive_no_write_turns = 0
         # Prune-breaker floor trend too (2026-09-30, reviewer P2-1): a stale

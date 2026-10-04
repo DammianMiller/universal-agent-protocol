@@ -3618,6 +3618,99 @@ class TestToolStarvationBreaker(unittest.TestCase):
         # not the previous turn's streak surviving (that would be >= 5).
         self.assertLessEqual(monitor.consecutive_forced_count, 1)
 
+    def test_fresh_user_text_keeps_an_active_dampener_cooldown(self):
+        """2026-10-04 follow-up classification: forced_auto_cooldown_turns
+        is deliberately STICKY across fresh user text. The dampener is a
+        remedy for a tool-output QUALITY collapse, and quality is
+        cross-turn evidence -- "keep going" is a mid-episode ack that must
+        not cut the recovery window short, and the dampener cannot re-arm
+        after a reset (activation needs consecutive_forced_count >=
+        min_forced). The cooldown clears only at a brand-new conversation
+        or the contamination hard reset."""
+        monitor = proxy.SessionMonitor()
+        monitor.forced_auto_cooldown_turns = 2
+        body = self._make_body_with_fresh_user_text()
+        proxy.build_openai_request(body, monitor)
+        # One auto turn may be consumed by the release path; what must NOT
+        # happen is the cooldown being zeroed by the fresh_user_text reset.
+        self.assertEqual(monitor.forced_auto_cooldown_turns, 1)
+
+    def test_fresh_user_text_resets_the_recon_exploration_streak(self):
+        """2026-10-04 follow-up: the recon exploration streak is PER-TASK
+        state. The previous task's read-forever streak is not evidence
+        about the NEW deliverable, and a stale streak fired the recon
+        convergence directive on the new task's first request. Genuine
+        recon loops stay within a turn (their resends carry tool_results
+        and never hit the fresh_user_text branch), so they keep counting."""
+        monitor = proxy.SessionMonitor()
+        monitor.consecutive_no_write_turns = max(1, proxy.PROXY_RECON_CONVERGENCE_THRESHOLD)
+        body = self._make_body_with_fresh_user_text()
+        proxy.build_openai_request(body, monitor)
+        self.assertEqual(monitor.consecutive_no_write_turns, 0)
+
+    def test_fresh_user_text_keeps_the_deferral_streak_sticky(self):
+        """The deliberate exception (see SessionMonitor.reset_forcing_loop's
+        docstring): the capitulation loop the deferral break exists for
+        SPANS user acks — model asks for more cycles, user says yes, model
+        asks again. A per-turn reset would make that breaker unreachable in
+        exactly its true-positive case, so the deferral streak carries."""
+        monitor = proxy.SessionMonitor()
+        monitor.deferral_streak = 2
+        body = self._make_body_with_fresh_user_text()
+        proxy.build_openai_request(body, monitor)
+        self.assertEqual(monitor.deferral_streak, 2)
+
+    def test_reset_forcing_loop_membership_is_exact(self):
+        """Pins the family membership at its policy point: the two per-turn
+        members reset, and everything with a different lifecycle (quality
+        streaks, dampener cooldown, deferral streak, session telemetry,
+        and the per-TASK recon streak — which is reset inline at the four
+        boundary sites, ack-gated, never here) is untouched by this method.
+        A future symmetry-cleanup that widens this method must update this
+        test and the docstring together."""
+        monitor = proxy.SessionMonitor()
+        monitor.consecutive_forced_count = 5
+        monitor.no_progress_streak = 3
+        monitor.forced_auto_cooldown_turns = 2
+        monitor.consecutive_no_write_turns = 7
+        monitor.malformed_tool_streak = 1
+        monitor.invalid_tool_call_streak = 1
+        monitor.required_tool_miss_streak = 1
+        monitor.deferral_streak = 4
+        monitor.tool_starvation_streak = 2
+        monitor.reset_forcing_loop()
+        self.assertEqual(monitor.consecutive_forced_count, 0)
+        self.assertEqual(monitor.no_progress_streak, 0)
+        self.assertEqual(monitor.forced_auto_cooldown_turns, 2)
+        self.assertEqual(monitor.consecutive_no_write_turns, 7)
+        self.assertEqual(monitor.malformed_tool_streak, 1)
+        self.assertEqual(monitor.invalid_tool_call_streak, 1)
+        self.assertEqual(monitor.required_tool_miss_streak, 1)
+        self.assertEqual(monitor.deferral_streak, 4)
+        self.assertEqual(monitor.tool_starvation_streak, 2)
+
+    def test_mid_task_ack_does_not_clear_the_recon_exploration_streak(self):
+        """The ack gate on the per-TASK recon reset (security review,
+        2026-10-04): "ok" is an ack continuing the SAME task, not new work
+        — without the gate, a model could end each threshold-1 turn
+        soliciting an ack and keep the convergence directive unreachable
+        forever. The existing _is_no_task_user_text classifier decides."""
+        monitor = proxy.SessionMonitor()
+        monitor.consecutive_no_write_turns = max(1, proxy.PROXY_RECON_CONVERGENCE_THRESHOLD)
+        body = self._make_body_with_fresh_user_text()
+        body["messages"][-1] = {"role": "user", "content": "ok"}
+        proxy.build_openai_request(body, monitor)
+        # The streak survived the ack (it did not reset to 0) AND kept
+        # counting — the previous assistant prose turn is itself a
+        # no-write turn (Fix B), so the count grows within this build.
+        # Either fact alone would pass; together they pin that the ack gate
+        # kept the counter live for the SAME task.
+        self.assertGreaterEqual(
+            monitor.consecutive_no_write_turns,
+            max(1, proxy.PROXY_RECON_CONVERGENCE_THRESHOLD),
+        )
+        self.assertNotEqual(monitor.consecutive_no_write_turns, 0)
+
 
 class TestPruningImprovements(unittest.TestCase):
     """Tests for pruning death spiral fixes."""
