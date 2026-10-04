@@ -74,6 +74,12 @@ A fabricated GREEN is precisely what let the original incident run all day, so
 every probe fails open and any that could not run is listed explicitly as
 `unverified (probe unavailable)`.
 
+`GREEN` means the sampled evidence is **present and nothing crossed a
+threshold**. An early draft required a finding to exist before the rollup
+could say GREEN — and since only multi-rail llama.cpp emits an info finding
+(`shared-pool`), a healthy single-rail or strata stack read UNKNOWN,
+indistinguishable from a blind probe for monitors parsing `--json`.
+
 `UNKNOWN` requires *all* sampled signals to be missing — no usable throughput
 trend, no checkpoint or reuse samples, no KV or VRAM reading. Losing one of
 them does not suppress the rest. An **actionable finding always wins**:

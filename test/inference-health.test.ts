@@ -283,6 +283,52 @@ describe('assessInference — the incident it was written for', () => {
     expect(assessInference({ prefill: [], checkpoints: [] }).health).toBe('UNKNOWN');
   });
 
+  it('says GREEN when evidence is present and nothing crossed a threshold', () => {
+    // 2026-10-04: GREEN previously required a FINDING to exist, and only
+    // multi-rail llama.cpp emitted one (the shared-pool info) — so a healthy
+    // single-rail stack read UNKNOWN, indistinguishable from a blind probe
+    // for every monitor parsing --json. Sampled evidence + no findings is
+    // an honest GREEN.
+    const r = assessInference({
+      ...degraded,
+      rails: 1, // single rail: no shared-pool info finding either
+      ctxCheckpoints: 4,
+      kvBitsPerValue: 8.125,
+      generationTimeouts: 0,
+      prefill: [
+        ...Array.from({ length: 6 }, (_, i) => sample(1_000 + i, 20_000, 700)),
+        ...Array.from({ length: 6 }, (_, i) => sample(9_000 + i, 20_000, 760)),
+      ],
+      checkpoints: [{ incoming: 44_039, reusable: 43_528, restored: 43_000 }],
+    });
+    expect(r.findings).toHaveLength(0);
+    expect(r.health).toBe('GREEN');
+  });
+
+  it('says GREEN for a healthy strata stack — the backend that exposed the gap', () => {
+    // The live 2026-10-04 strata box: healthy trend, healthy reuse tail,
+    // comfortable VRAM — and the report read UNKNOWN "no problems detected"
+    // because strata emits no info finding. Evidence present + no findings
+    // must read GREEN.
+    const r = assessInference({
+      backend: 'strata',
+      prefill: [
+        ...Array.from({ length: 6 }, (_, i) => sample(1_000 + i, 20_000, 900)),
+        ...Array.from({ length: 6 }, (_, i) => sample(9_000 + i, 20_000, 950)),
+      ],
+      decode: [
+        ...Array.from({ length: 6 }, (_, i) => ({ at: i, tokens: 20_000, tokensPerSecond: 48 })),
+        ...Array.from({ length: 6 }, (_, i) => ({ at: i + 6, tokens: 20_000, tokensPerSecond: 50 })),
+      ],
+      reuse: Array.from({ length: 10 }, (_, i) => ({ at: i, incoming: 39_000, reused: 38_500 })),
+      vramFreeMiB: 954,
+      kvBitsPerValue: 8,
+      checkpoints: [],
+    });
+    expect(r.findings).toHaveLength(0);
+    expect(r.health).toBe('GREEN');
+  });
+
   it('never masks an actionable finding behind an UNKNOWN rollup', () => {
     // Timeouts are counted from the PROXY journal, so they can fire with none
     // of the sampled signals (trend/checkpoints/KV) present. An earlier

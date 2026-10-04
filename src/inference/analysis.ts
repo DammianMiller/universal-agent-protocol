@@ -529,12 +529,19 @@ export function assessInference(
 
   const worst = findings.reduce<InferenceHealth>(
     (acc, f) => (rank[f.health] > rank[acc] ? f.health : acc),
-    findings.length > 0 ? 'GREEN' : 'UNKNOWN',
+    'GREEN',
   );
   // No evidence at all is UNKNOWN, never a fabricated GREEN — the same
   // fail-open posture the capacity doctor uses.
   //
-  // But "no evidence" is about the SAMPLED signals (trend, checkpoints, KV).
+  // But "no evidence" is about the SAMPLED signals (trend, checkpoints, KV,
+  // decode, reuse, VRAM). When they ARE present and nothing crossed a
+  // threshold, GREEN is the honest verdict: the 2026-10-03 draft left a
+  // healthy single-rail stack at UNKNOWN (GREEN previously required a
+  // finding to exist, and only multi-rail llama.cpp emitted one — the
+  // shared-pool info), which made a working strata backend indistinguishable
+  // from a blind probe for every monitor parsing --json.
+  //
   // A finding that fired is itself evidence, so an actionable one must never
   // be masked by an UNKNOWN rollup: generation timeouts are counted from the
   // proxy journal and can fire with none of the sampled signals present,
@@ -547,7 +554,7 @@ export function assessInference(
     (snap.decode?.length ?? 0) === 0 &&
     (snap.reuse?.length ?? 0) === 0 &&
     snap.vramFreeMiB === undefined;
-  const health: InferenceHealth = actionable || !noSampledEvidence ? worst : 'UNKNOWN';
+  const health: InferenceHealth = noSampledEvidence && !actionable ? 'UNKNOWN' : worst;
 
   return snap.backend !== undefined
     ? { health, findings, trend, checkpoints, backend: snap.backend, decodeTrend, reuse }
