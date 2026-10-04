@@ -45,7 +45,11 @@ describe('T1: recordTaskFeedback in TaskCoordinator', () => {
     // A cold `await import()` of this heavy module (pulls in the embeddings/DB
     // stack) can exceed the 5s default when the full suite runs it under CPU
     // pressure — a load artifact, not a real hang. Give it realistic headroom.
-    20000
+    // 2026-10-04: raised 20s -> 60s after four consecutive full-suite timeouts
+    // on a box whose live strata inference stack was saturating the CPU
+    // (the module imports in <1s in isolation every time). The timeout only
+    // guards "callable and does not throw" — it is not a performance gate.
+    60000
   );
 });
 
