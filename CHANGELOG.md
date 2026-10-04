@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.19.1 (2026-10-04)
+
+- fix(proxy): reset the forcing-loop counters on every fresh user turn
+
+
 ## v2.19.0 (2026-10-04)
 
 - feat(inference): strata backend support in inference health + capacity doctor
