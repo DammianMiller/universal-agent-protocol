@@ -3540,6 +3540,84 @@ class TestToolStarvationBreaker(unittest.TestCase):
         result = proxy.build_openai_request(body, monitor)
         self.assertIn("tools", result)
 
+    def _make_body_with_fresh_user_text(self):
+        """A COMPLETED turn followed by a new user prompt: the last
+        assistant message is the previous turn's text summary (the honest
+        end-of-work case the 2026-10-04 false fires were made of), and the
+        latest user message is fresh text with n_msgs > 1."""
+        return {
+            "model": "qwen3.5",
+            "messages": [
+                {"role": "user", "content": "first task"},
+                {"role": "assistant", "content": [{"type": "text", "text": "## Summary of progress"}]},
+                {"role": "user", "content": "second task"},
+            ],
+            "tools": [{"name": "Bash", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}}],
+        }
+
+    def test_fresh_user_text_resets_the_forcing_loop_counter(self):
+        """The 2026-10-04 live bug: a turn that ended with a legitimate text
+        summary under a forced act-phase left consecutive_forced_count at the
+        threshold, so the FIRST request of the NEXT user turn hit the
+        starvation breaker (count >= threshold AND last-assistant-text-only,
+        i.e. the PREVIOUS turn's summary) and had its tools stripped — firing
+        roughly once per user turn for hours. The forcing loop is per-TURN
+        state; a fresh user text must reset it."""
+        monitor = proxy.SessionMonitor()
+        monitor.consecutive_forced_count = proxy.PROXY_TOOL_STARVATION_THRESHOLD
+        body = self._make_body_with_fresh_user_text()
+        result = proxy.build_openai_request(body, monitor)
+        self.assertIn("tools", result)
+        self.assertEqual(monitor.tool_starvation_streak, 0)
+        # The stale threshold count was reset (the breaker never fired), and
+        # the NEW turn's own act-phase forcing started counting from 1 within
+        # this same request build — 1, not threshold+1, proves the reset.
+        self.assertLessEqual(monitor.consecutive_forced_count, 1)
+
+    def test_fresh_user_text_keeps_output_quality_streaks_sticky(self):
+        """Only the loop-progress counters reset on fresh user text. A new
+        user message is not evidence about the model's tool-call FORMATTING,
+        so the malformed/invalid/required-miss streaks stay sticky — a user
+        typing "go on" must not clear a model's record of emitting broken
+        tool calls."""
+        monitor = proxy.SessionMonitor()
+        monitor.consecutive_forced_count = proxy.PROXY_TOOL_STARVATION_THRESHOLD
+        monitor.malformed_tool_streak = 3
+        monitor.invalid_tool_call_streak = 2
+        monitor.required_tool_miss_streak = 4
+        body = self._make_body_with_fresh_user_text()
+        proxy.build_openai_request(body, monitor)
+        self.assertEqual(monitor.malformed_tool_streak, 3)
+        self.assertEqual(monitor.invalid_tool_call_streak, 2)
+        self.assertEqual(monitor.required_tool_miss_streak, 4)
+
+    def test_no_tool_results_conversation_resets_the_forcing_loop_counter(self):
+        """The second reset path of the 2026-10-04 fix: a conversation with
+        no tool results anywhere cannot be in a forcing loop, so the loop
+        counter must not carry in even when there is NO fresh user text to
+        trigger the fresh_user_text branch (here: the last user message is
+        empty, e.g. a pure non-text block). Before the fix the stale count
+        from the previous turn stripped tools on this request too."""
+        monitor = proxy.SessionMonitor()
+        monitor.consecutive_forced_count = proxy.PROXY_TOOL_STARVATION_THRESHOLD
+        body = self._make_body_with_tools()
+        # Overwrite the tail: no tool_result blocks anywhere (that is the
+        # fixture's default) and an EMPTY last user message, so neither
+        # fresh_user_text nor active_loop can fire.
+        body["messages"] = [
+            {"role": "user", "content": "first task"},
+            {"role": "assistant", "content": [{"type": "text", "text": "## Summary of progress"}]},
+            {"role": "user", "content": ""},
+        ]
+        result = proxy.build_openai_request(body, monitor)
+        self.assertIn("tools", result)
+        self.assertEqual(monitor.tool_starvation_streak, 0)
+        # Reset proven the same way as the fresh_user_text test: the stale
+        # threshold count is gone, and the at-most-1 remainder is this new
+        # request's own act-phase forcing counted within the same build —
+        # not the previous turn's streak surviving (that would be >= 5).
+        self.assertLessEqual(monitor.consecutive_forced_count, 1)
+
 
 class TestPruningImprovements(unittest.TestCase):
     """Tests for pruning death spiral fixes."""

@@ -6957,10 +6957,24 @@ def _resolve_state_machine_tool_choice(
     if latest_user_text and not last_user_has_tool_result:
         monitor.tool_call_history = []
         monitor.reset_doubling()
+        # 2026-10-04 fix (recurring false TOOL STARVATION BREAKER): the
+        # forcing loop is PER-TURN state, so its progress counter resets on
+        # EVERY fresh user text, not only after a compaction collapse. The
+        # old `n_msgs <= 1` guard let consecutive_forced_count survive a
+        # completed turn: a turn that ended with a legitimate text summary
+        # under a forced act-phase left the count at >= threshold, and the
+        # FIRST request of the NEXT user turn then matched the breaker
+        # condition (count >= threshold AND last-assistant-was-text-only --
+        # the previous turn's summary), stripping that request's tools.
+        # Observed live firing roughly once per user turn for hours
+        # (starvation_streak 1-2, 13:03..15:52 on 2026-10-04). The
+        # output-QUALITY streaks below stay sticky across fresh user text on
+        # purpose: a new user message is not evidence about the model's
+        # tool-call formatting.
+        monitor.consecutive_forced_count = 0
+        monitor.no_progress_streak = 0
         if n_msgs <= 1:
             monitor.forced_auto_cooldown_turns = 0
-            monitor.consecutive_forced_count = 0
-            monitor.no_progress_streak = 0
             monitor.malformed_tool_streak = 0
             monitor.invalid_tool_call_streak = 0
             monitor.required_tool_miss_streak = 0
@@ -6990,10 +7004,14 @@ def _resolve_state_machine_tool_choice(
         if not has_tool_results:
             monitor.tool_call_history = []
             monitor.reset_doubling()
+            # Same per-turn reset as fresh_user_text (see the 2026-10-04 fix
+            # there): a conversation with no tool results cannot be in a
+            # forcing loop, so the loop-progress counter must not carry in.
+            # Output-quality streaks stay sticky under the n_msgs guard.
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
             if n_msgs <= 1:
                 monitor.forced_auto_cooldown_turns = 0
-                monitor.consecutive_forced_count = 0
-                monitor.no_progress_streak = 0
                 monitor.malformed_tool_streak = 0
                 monitor.invalid_tool_call_streak = 0
                 monitor.required_tool_miss_streak = 0
