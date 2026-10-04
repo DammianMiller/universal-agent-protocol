@@ -54,6 +54,24 @@
         "knownRestarts": 0,
         "allowedNew": 3
       }
+    },
+    {
+      "name": "strata-server",
+      "http": {
+        "url": "http://127.0.0.1:8080",
+        "kind": "strata",
+        "metricsMustMatch": {
+          "kv": "int8",
+          "max_context": 131072
+        }
+      },
+      "budget": {
+        "note": "The local Qwen3.8 backend since 2026-10-04 (the gsq-rco llama-server above is its retired predecessor, unit kept for rotation). Unit-less: launched by /home/cogtek/dev/strata/run-iq3_xxs.sh (flash-next IQ3_XXS pack, --expert-cache auto, --vram-reserve-mib 1200, --spec 4, --kv int8, --max-context 131072, single rail). No restartBudget: with no unit, NRestarts does not exist; liveness IS the /metrics probe. metricsMustMatch pins the two load-bearing numbers the note mentions — kv kind and pool size — so a relaunch with different flags reads as RED, the execStartMustContain doctrine applied to a service with no ExecStart."
+      },
+      "headroom": {
+        "gpuMinFreeMiB": 200,
+        "_headroom_comment": "200, not the 600 the llama.cpp-era entries use: strata deliberately fills the card (--vram-reserve-mib 1200 is its OWN internal headroom, reported reserve-aware at /metrics), and the measured steady state with the desktop sharing the GPU is ~245 MiB free. A 600 floor would hold the doctor permanently RED at the operator's chosen operating point and train everyone to ignore it. 200 still alerts when something NEW eats the card or strata loses its reserve."
+      }
     }
   ]
 }

@@ -32,6 +32,55 @@ the project, then `~/.config/uap/capacity-policy.json`.
 }
 ```
 
+## HTTP-probed services (no systemd unit)
+
+Since 2026-10-04 a service may declare an **`http`** probe instead of
+`systemd` — exactly one of the two, never both (which one would be the
+truth?). This exists for the strata serve layer, the local Qwen3.8 backend:
+launched by a plain script and reparented to `systemd --user`, it has no
+unit to show, no `NRestarts`, no `MemoryCurrent` — before this, `uap doctor`
+simply could not see the backend at all.
+
+```json
+{
+  "name": "strata-server",
+  "http": {
+    "url": "http://127.0.0.1:8080",
+    "kind": "strata",
+    "metricsMustMatch": { "kv": "int8", "max_context": 131072 }
+  },
+  "budget": { "note": "…which flags run-iq3_xxs.sh launches it with…" },
+  "headroom": { "gpuMinFreeMiB": 600 }
+}
+```
+
+- **Liveness** is "it answers `/metrics` as the declared kind". Not answering
+  at all is DARK (absent, not degraded); the probe tool failing (no curl,
+  timeout) is UNKNOWN — the same fail-open posture as a missing `systemctl`.
+  A server that answers but is *not* the declared document (a llama.cpp
+  Prometheus body behind the port, say) is DARK too: that is exactly the
+  wrong-engine misroute this check exists to catch.
+- **`http.metricsMustMatch`** is `execStartMustContain` for a service with no
+  ExecStart: `engine.<key>` values that must equal the live document. A
+  missing key is RED (unverified, not quietly compliant), a mismatch is RED
+  (configuration drift). Put the load-bearing numbers from the `note` here —
+  kv kind and pool size — or they will drift the way `note` did.
+- **`headroom`** works exactly as for unit services (one shared
+  nvidia-smi probe per run). There is no RSS budget or restartBudget: with
+  no unit there is no `MemoryCurrent` and no `NRestarts`; liveness IS the
+  probe. Declaring `budget.rssMiB` or `restartBudget` on an http service is
+  now a **parse error**, not a silently-ignored field — a budget that cannot
+  be verified is the anti-pattern this policy exists to prevent.
+- **URL validation is strict** — http(s) base URL only, no userinfo, query,
+  fragment, or path — because the probe passes it to curl as a positional
+  argument. That is the same first-wall doctrine as the unit-name charset.
+  The URL must also be **canonical**: a raw spelling that only *looks*
+  parseable (percent-encoded dot-segments, `/a/..`, a bare `?`, leading
+  whitespace) is rejected, because curl must fetch exactly the form that
+  was validated.
+
+## Fields
+
 - **budget** — what the service is configured to stay inside (free-text
   `note` records the provenance: which incident, which flag).
   - `budget.vramMiB` declares the service's *own* allocator limit (e.g.

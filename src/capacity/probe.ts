@@ -1,5 +1,6 @@
 /**
- * Host probes for the capacity doctor: systemd unit state and GPU headroom.
+ * Host probes for the capacity doctor: systemd unit state, HTTP liveness for
+ * unit-less services, and GPU headroom.
  * execFileSync with argument arrays only (no shell); every probe fails soft
  * to an unavailable flag — the health computation decides what that means.
  */
@@ -14,6 +15,7 @@ import {
   type Health,
   type ServiceReport,
 } from './policy.js';
+import { sanitizeServerText } from '../inference/probe.js';
 
 export type ProbeState = ServiceReport['probed'];
 
@@ -93,18 +95,112 @@ export function loadPolicy(projectDir: string, explicitPath?: string): { policy:
   );
 }
 
+/** Result of an HTTP service probe: liveness plus the engine facts the
+ * metricsMustMatch drift check compares. Null = the probe could not run
+ * (curl missing, timeout) — UNKNOWN, never a guess. */
+export interface HttpProbeState {
+  activeState: string;
+  subState: string;
+  detail?: string;
+  metrics?: Record<string, string | number>;
+}
+
+/**
+ * Probe a unit-less service over HTTP: fetch <url>/metrics with curl and
+ * parse it as the declared kind's document. curl (not node fetch) because
+ * runDoctor is synchronous and every other probe here shells out the same
+ * way — argv array, no shell, timeout, output bounded.
+ *
+ * The URL comes from the validated policy (http/https, no userinfo, base
+ * path only, and canonicalized so what was validated is what is fetched),
+ * so it can never start with a dash. NO `-f`: a 4xx/5xx body must reach the
+ * parser and classify as unrecognized (DARK — "answering but wrong") rather
+ * than turning into a probe failure (UNKNOWN — "tool missing"), which would
+ * split one situation across two verdicts.
+ */
+export function probeHttpService(
+  url: string,
+  kind: 'strata',
+  deps?: { exec?: (cmd: string, args: string[]) => string },
+): HttpProbeState | null {
+  const exec = deps?.exec ?? ((cmd, args) =>
+    execFileSync(cmd, args, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: PROBE_TIMEOUT_MS,
+      maxBuffer: 8 * 1024 * 1024,
+    }));
+  let body: string;
+  try {
+    body = exec('curl', [
+      '-sS',
+      '--max-time',
+      `${PROBE_TIMEOUT_MS / 1000}`,
+      '--max-filesize',
+      '8388608',
+      `${url.replace(/\/$/, '')}/metrics`,
+    ]);
+  } catch {
+    return null;
+  }
+  if (kind !== 'strata') return null; // the only /metrics shape we can parse
+  try {
+    const doc: unknown = JSON.parse(body);
+    const engine = (doc as { engine?: Record<string, unknown> } | null)?.engine;
+    if (typeof engine !== 'object' || engine === null) return unrecognized();
+    const metrics: Record<string, string | number> = {};
+    for (const [k, v] of Object.entries(engine)) {
+      if (typeof v === 'string' || typeof v === 'number') metrics[k] = v;
+    }
+    const model = typeof engine.model === 'string' ? engine.model : undefined;
+    if (model === undefined) return unrecognized();
+    // The model string is SERVER-PROVIDED and reaches the terminal via the
+    // doctor's GREEN reason — strip ANSI/C0 before it ever leaves the probe
+    // (CWE-117; shared helper with the inference health path).
+    return { activeState: 'active', subState: 'serving', detail: sanitizeServerText(model), metrics };
+  } catch {
+    return unrecognized();
+  }
+}
+
+/** curl got a body but it is not the expected document: the service is
+ * ANSWERING, which is absent-shaped (DARK), not probe-unavailable (UNKNOWN).
+ * A wrong engine behind the port is exactly the misroute this exists to
+ * catch. */
+function unrecognized(): HttpProbeState {
+  return { activeState: 'unrecognized', subState: 'answered, but not the declared document' };
+}
+
 export interface DoctorDeps {
   probeSystemd: typeof probeSystemd;
   probeGpuFreeMiB: typeof probeGpuFreeMiB;
+  probeHttp?: typeof probeHttpService;
 }
 
 /** Probe every declared service and compute its health. Deps are injectable
  * so the matrix is testable without a host. */
-export function runDoctor(policy: CapacityPolicy, deps: DoctorDeps = { probeSystemd, probeGpuFreeMiB }): ServiceReport[] {
+export function runDoctor(
+  policy: CapacityPolicy,
+  deps: DoctorDeps = { probeSystemd, probeGpuFreeMiB, probeHttp: probeHttpService },
+): ServiceReport[] {
   // One GPU probe per run, shared across services (nvidia-smi is not cheap).
   const gpuFree = deps.probeGpuFreeMiB();
+  const probeHttp = deps.probeHttp ?? probeHttpService;
   return policy.services.map((svc) => {
-    const sys = deps.probeSystemd(svc.systemd.unit, svc.systemd.scope);
+    if (svc.http) {
+      const http = probeHttp(svc.http.url, svc.http.kind);
+      const probed: ProbeState = {
+        ...(http ?? {}),
+        gpuFreeMiB: gpuFree ?? undefined,
+      };
+      const { health, reasons } = computeHealth(svc, probed, {
+        systemd: false,
+        gpu: gpuFree !== null,
+        http: http !== null,
+      });
+      return { name: svc.name, health, reasons, probed };
+    }
+    const sys = svc.systemd ? deps.probeSystemd(svc.systemd.unit, svc.systemd.scope) : null;
     const probed: ProbeState = { ...(sys ?? {}), gpuFreeMiB: gpuFree ?? undefined };
     const { health, reasons } = computeHealth(svc, probed, {
       systemd: sys !== null,

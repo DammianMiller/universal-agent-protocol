@@ -16,13 +16,55 @@ uap inference health --json         # for monitors and dashboards
 uap inference health --strict       # exit 1 on WARN or RED
 ```
 
+## Two backends, auto-detected
+
+Since 2026-10-04 the local Qwen3.8 backend is the **strata serve layer**
+(one rail, a 131072-cell int8 pool, MTP speculative decoding, no systemd
+unit). The command fetches `/metrics` once and classifies the backend: a
+JSON document with an `engine` block is strata; Prometheus text with
+`llamacpp:` counters is a llama.cpp server. `--backend llamacpp|strata`
+forces the choice.
+
+The strata path reads two sources:
+
+- **`/metrics` (JSON)** — the `engine` block gives pool size, KV kind and
+  reserve-aware free VRAM; `live` gives the in-flight request; `requests` is
+  a bounded ring of completed requests (observed: 12) with real timestamps.
+- **the serve log** (`--strata-log` or `$UAP_STRATA_LOG`, e.g.
+  `/home/cogtek/dev/strata/strata-iq3_xxs.log`) — one `strata serve: prompt
+  …` line per completed request, for the process's whole life. These lines
+  carry **no timestamps**, so samples use a monotonic line-index clock: good
+  enough for the early/recent trend split (the log is one process's life),
+  never windowable by `--since`/`--until`. A replay therefore uses the
+  timestamped ring only, **filtered to the requested window** — an unfiltered
+  ring would analyse the current process's last few requests under the
+  REPLAY banner — and honestly reports thin samples.
+
+Strata adds checks the llama.cpp path cannot have (its journal never logs
+decode rate):
+
+| Check | Code | Why it exists |
+| --- | --- | --- |
+| Decode throughput decay | `decode-decay` | Decode speed depends on prompt DEPTH, so samples bucket by depth — the same compare-like-with-like rule prefill uses. |
+| Prefix-cache failure | `cache-miss` | Strata reports reuse as a fact (`R reused`); under half the prompt served from cache means the conversation cache is not tracking. One honest 0% turn right after a client compaction does not fire it — the mean over the window must be low. |
+| VRAM headroom | `vram-headroom` | The backend's own reserve-aware free-VRAM reading, catching another process eating the card from under it. |
+
+The 2026-10-04 bug worth remembering: an *inactive* systemd unit still
+reports its `ExecStart` to `systemctl`, and the old probe trusted it — the
+dead gsq-rco unit's `-c 229376` printed as the live pool while strata served
+131072. Unit flags now count only when the unit is ACTIVE; `/slots` is the
+live geometry otherwise.
+
 ## What it looks at
 
 | Check | Code | Why it exists |
 | --- | --- | --- |
 | Prefill throughput decay | `prefill-decay` | A long-lived process can get slower without failing. Only visible when samples are bucketed by prompt size. |
-| Checkpoint starvation | `checkpoint-starved` | `--ctx-checkpoints` is **per slot**. Too few, and the checkpoint cannot track a growing conversation, so the same prefix is re-prefilled every turn. |
-| KV pinned at the VBR floor | `kv-at-floor` | The pool is saturated and the cache has silently dropped to its lowest quality tier. |
+| Checkpoint starvation | `checkpoint-starved` | `--ctx-checkpoints` is **per slot**. Too few, and the checkpoint cannot track a growing conversation, so the same prefix is re-prefilled every turn. (llama.cpp only — strata has no checkpoint allowance.) |
+| KV pinned at the VBR floor | `kv-at-floor` | The pool is saturated and the cache has silently dropped to its lowest quality tier. (llama.cpp VBR only — strata's int8 KV is a fixed tier, no floor to pin at.) |
+| Decode throughput decay | `decode-decay` | Strata: same decay question for decode, bucketed by depth. |
+| Prefix-cache failure | `cache-miss` | Strata: the conversation cache re-reading most of the prompt. |
+| VRAM headroom | `vram-headroom` | Strata: the backend's own free-VRAM reading under the floor. |
 | Client-visible timeouts | `generation-timeouts` | The symptom users actually feel, counted from the proxy journal. |
 | Window spans a restart | `spans-restart` | A trend across a restart compares two process lifetimes, not decay within one. |
 | Rail/pool geometry | `shared-pool` | Informational (never a fault). Under `--kv-unified` the pool is *shared*, so N rails each believing they own it is an overcommit waiting to happen. |
@@ -32,12 +74,12 @@ A fabricated GREEN is precisely what let the original incident run all day, so
 every probe fails open and any that could not run is listed explicitly as
 `unverified (probe unavailable)`.
 
-`UNKNOWN` requires *all three* sampled signals to be missing — no usable
-throughput trend, no checkpoint samples, and no KV reading. Losing one of them
-does not suppress the rest. An **actionable finding always wins**: timeouts are
-counted from the proxy journal and can fire with none of the sampled signals
-present, and a RED finding must never be masked by an `UNKNOWN` rollup — which
-would let it pass `--strict` with exit 0.
+`UNKNOWN` requires *all* sampled signals to be missing — no usable throughput
+trend, no checkpoint or reuse samples, no KV or VRAM reading. Losing one of
+them does not suppress the rest. An **actionable finding always wins**:
+timeouts are counted from the proxy journal and can fire with none of the
+sampled signals present, and a RED finding must never be masked by an
+`UNKNOWN` rollup — which would let it pass `--strict` with exit 0.
 
 ## Why prompt-size bucketing matters
 
@@ -98,6 +140,15 @@ are **dropped, not shown**. They describe the process running *now*, not the
 one in the window. An early version did attribute the current
 `--ctx-checkpoints 4` to a window in which it had been `1`, and recommended
 the wrong remedy as a result.
+
+Strata replays have one extra rule: the ring is the only timestamped source,
+so it is **filtered to the window** — an early version analysed the current
+process's last dozen requests under the REPLAY banner. Draft records carry no
+timestamp, so a strata replay shows no acceptance rate, and an unparseable
+window expression is disclosed in `unverified (probe unavailable)` rather
+than silently widening the window. A live (non-replay) run against the serve
+log cannot apply `--since` (the log has no timestamps) and says so in the
+same list.
 
 ## Reading the output
 

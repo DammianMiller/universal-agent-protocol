@@ -35,6 +35,31 @@ export interface PrefillSample {
   tokensPerSecond: number;
 }
 
+/** The shape `analyzeTrend` needs: a throughput reading with the workload
+ * quantity that determines how comparable it is (prompt size for prefill,
+ * prompt DEPTH for decode). Structural supertype of PrefillSample, so
+ * existing callers pass unchanged; strata decode samples reuse it with
+ * `tokens` = depth, which is what makes decode buckets compare like-with-like. */
+export interface TrendSample {
+  at: number;
+  /** The quantity whose size determines the bucket — NOT always "tokens
+   * transferred" (see the decode case above). */
+  tokens: number;
+  tokensPerSecond: number;
+}
+
+/** A turn's prefix-cache reuse accounting. Used by the strata backend, which
+ * reports reuse as a FACT (tokens served from cache), not a counterfactual.
+ * `at` is the strata sample clock: line index for log samples, epoch ms for
+ * ring samples — comparable within one source, never across sources. */
+export interface ReuseSample {
+  at: number;
+  /** Prompt tokens the client sent. */
+  incoming: number;
+  /** Tokens served from the cache. */
+  reused: number;
+}
+
 /** A turn's cache/checkpoint divergence accounting. */
 export interface CheckpointSample {
   /** Prompt tokens the client sent. */
@@ -48,7 +73,7 @@ export interface CheckpointSample {
 export interface InferenceSnapshot {
   /** Seconds the server process has been running, when known. */
   uptimeSeconds?: number;
-  /** Parallel rails (`-np`). */
+  /** Parallel rails (`-np`), or /slots length on strata. */
   rails?: number;
   /** Shared KV pool size in cells (`-c`). Under --kv-unified this is TOTAL. */
   poolCells?: number;
@@ -65,6 +90,20 @@ export interface InferenceSnapshot {
   generationTimeouts?: number;
   /** Distinct server PIDs seen in the window. >1 means it spans a restart. */
   processCount?: number;
+  /**
+   * Strata-backend fields. All optional so the llama.cpp path constructs the
+   * snapshot exactly as before.
+   */
+  /** Which backend produced this snapshot — the report says so out loud. */
+  backend?: 'llamacpp' | 'strata';
+  /** Model id the backend advertises (strata /metrics engine.model). */
+  engineModel?: string;
+  /** Decode throughput per request, bucketed by prompt DEPTH. */
+  decode?: TrendSample[];
+  /** Per-request prefix-cache reuse (strata reports reuse as a fact). */
+  reuse?: ReuseSample[];
+  /** Backend-reported free VRAM in MiB (strata engine.vram_free_mib). */
+  vramFreeMiB?: number;
 }
 
 export interface Thresholds {
@@ -79,6 +118,15 @@ export interface Thresholds {
   kvFloorSlack: number;
   /** Any timeout in the window is at least a WARN. */
   timeoutsWarn: number;
+  /** Mean prefix-cache reuse fraction below which the cache is failing. */
+  reuseWarn: number;
+  /** Backend-reported free VRAM below which we warn (OOM territory). */
+  vramHeadroomWarnMiB: number;
+  /** How many recent reuse samples the cache-miss check looks at. The cache
+   * question is "is it tracking NOW", not "did every conversation since the
+   * process start reuse well" — a 23h log legitimately contains dozens of
+   * cold-start turns. */
+  reuseTailSamples: number;
 }
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
@@ -92,6 +140,22 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   checkpointRecoveryWarn: 0.5,
   kvFloorSlack: 0.15,
   timeoutsWarn: 1,
+  // Strata's own healthy conversations reuse 90%+ of the prefix
+  // (observed 2026-10-04: 38270/38659 = 99%). Under half means most turns
+  // re-read the whole prompt — the compaction/checkpoint starvation analog.
+  reuseWarn: 0.5,
+  // The strata reserve-aware floor. NOTE this is NOT the capacity policy's
+  // gpuMinFreeMiB (200 for the strata entry): that one is HOST-wide free
+  // VRAM from nvidia-smi; this one is strata's own /metrics reading, which
+  // already respects its --vram-reserve-mib 1200. Both floors being 600 in
+  // the first draft was a coincidence, not a coupling — tune them
+  // independently.
+  vramHeadroomWarnMiB: 600,
+  // Observed live 2026-10-04: a whole-process mean (39% over 4400 requests)
+  // fired a WARN that was really dozens of legitimate cold-start turns from
+  // OTHER sessions; the active session's recent turns reuse 95-99%. The tail
+  // is the signal.
+  reuseTailSamples: 50,
 };
 
 /** Prompt-size buckets. Prefill tok/s is strongly size-dependent, so an
@@ -128,19 +192,23 @@ export interface TrendResult {
 }
 
 /**
- * Compare early-life against recent prefill throughput WITHIN a size bucket.
+ * Compare early-life against recent throughput WITHIN a size bucket.
  *
  * Splitting the samples in half and averaging each side would be wrong: if
  * the workload's prompt sizes drift (and they do — conversations grow), the
  * mean moves for reasons that have nothing to do with the server. So pick the
  * bucket that has enough samples on BOTH sides and compare only within it.
+ *
+ * Generic over TrendSample: prefill samples carry prompt size in `tokens`,
+ * strata decode samples carry prompt DEPTH — the quantity that determines
+ * comparability is whatever the caller puts there.
  */
 export function analyzeTrend(
-  samples: PrefillSample[],
+  samples: TrendSample[],
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
 ): TrendResult {
   if (samples.length < thresholds.minSamplesPerEra * 2) {
-    return { earlyCount: 0, recentCount: 0, note: 'not enough prefill samples for a trend' };
+    return { earlyCount: 0, recentCount: 0, note: 'not enough samples for a trend' };
   }
 
   // Bucket FIRST, then split each bucket at its OWN median time.
@@ -158,7 +226,7 @@ export function analyzeTrend(
   // collapse, invisible, while the report showed a benign 0.78. A bucket's own
   // chronology is what "did this get slower" means; the other buckets' arrival
   // times are irrelevant to it.
-  const byBucket = new Map<string, PrefillSample[]>();
+  const byBucket = new Map<string, TrendSample[]>();
   for (const r of samples) {
     // A NaN or negative reading is a parse artefact, not a measurement.
     if (!Number.isFinite(r.tokensPerSecond) || r.tokensPerSecond < 0) continue;
@@ -228,6 +296,27 @@ export function analyzeCheckpoints(samples: CheckpointSample[]): CheckpointResul
   };
 }
 
+export interface ReuseResult {
+  /** Mean fraction of the sent prompt served from cache. */
+  fraction?: number;
+  /** Mean tokens re-read per turn that a healthy cache would have supplied. */
+  wastedTokens?: number;
+  samples: number;
+}
+
+/** Mean prefix-cache reuse over the strata samples. Strata reports reuse as a
+ * fact, so there is no reusable-vs-restored split — the health question is
+ * simply "is the cache tracking the conversation". */
+export function analyzeReuse(samples: ReuseSample[]): ReuseResult {
+  const real = samples.filter((s) => s.incoming > 0);
+  if (real.length === 0) return { samples: 0 };
+  return {
+    fraction: real.reduce((a, s) => a + s.reused / s.incoming, 0) / real.length,
+    wastedTokens: real.reduce((a, s) => a + Math.max(0, s.incoming - s.reused), 0) / real.length,
+    samples: real.length,
+  };
+}
+
 export interface Finding {
   health: Exclude<InferenceHealth, 'UNKNOWN'>;
   /** Stable id so monitors can match on it without parsing prose. */
@@ -242,6 +331,11 @@ export interface InferenceReport {
   findings: Finding[];
   trend: TrendResult;
   checkpoints: CheckpointResult;
+  /** Strata-backend additions; undefined for the llama.cpp path so existing
+   * monitors keep their parsed shape working. */
+  backend?: 'llamacpp' | 'strata';
+  decodeTrend?: TrendResult;
+  reuse?: ReuseResult;
 }
 
 /** Name the other slowed buckets, so a single headline number does not read
@@ -354,6 +448,85 @@ export function assessInference(
     });
   }
 
+  // 7. Decode decay (strata): the same bucketed early/recent comparison over
+  //    decode samples, with depth as the bucketing quantity. This is the
+  //    signal llama.cpp journals cannot give — they never log decode rate.
+  //    "Sampled window" rather than "process's life": the sample set may be
+  //    the whole serve log (a process lifetime) or the bounded /metrics
+  //    ring (a dozen recent requests), and the message must not claim more
+  //    coverage than the samples carry.
+  const decodeTrend = snap.decode !== undefined ? analyzeTrend(snap.decode, thresholds) : undefined;
+  if (decodeTrend?.ratio !== undefined) {
+    const pct = Math.round((1 - decodeTrend.ratio) * 100);
+    if (decodeTrend.ratio < thresholds.degradeRatioRed) {
+      findings.push({
+        health: 'RED',
+        code: 'decode-decay',
+        message:
+          `decode in the ${decodeTrend.bucket}-depth bucket fell ${pct}% across the sampled window ` +
+          `(${Math.round(decodeTrend.earlyMean!)} -> ${Math.round(decodeTrend.recentMean!)} tok/s)` +
+          alsoAffected(decodeTrend),
+        remedy: 'restart the strata serve layer; if it returns within days, check the expert cache and KV residency',
+      });
+    } else if (decodeTrend.ratio < thresholds.degradeRatioWarn) {
+      findings.push({
+        health: 'WARN',
+        code: 'decode-decay',
+        message:
+          `decode in the ${decodeTrend.bucket}-depth bucket is down ${pct}% ` +
+          `(${Math.round(decodeTrend.earlyMean!)} -> ${Math.round(decodeTrend.recentMean!)} tok/s)` +
+          alsoAffected(decodeTrend),
+        remedy: 'watch it; a restart restores throughput if the decay continues',
+      });
+    }
+  }
+
+  // 8. Prefix-cache failure (strata): recent turns re-reading most of the
+  //    prompt. Only the TAIL counts: the question is whether the cache is
+  //    tracking the conversation NOW, and a whole-process mean mixes in
+  //    every legitimate cold start since the process began — measured on the
+  //    live 2026-10-04 log, that mean (39%) fired on a stack whose active
+  //    session was reusing 99%. A single 0% turn right after a client
+  //    compaction must not fire this on its own, hence the mean over the tail.
+  //    Samples are SORTED by `at` first: the log source is oldest-first, but
+  //    the /metrics ring is NEWEST-first, and slicing an unsorted array takes
+  //    the first N by position — the OLDEST half of a ring, inverting exactly
+  //    the current-vs-cold-start signal the tail exists for.
+  const reuse =
+    snap.reuse !== undefined
+      ? analyzeReuse(
+          [...snap.reuse]
+            .sort((a, b) => a.at - b.at)
+            .slice(Math.max(0, snap.reuse.length - thresholds.reuseTailSamples)),
+        )
+      : undefined;
+  if (reuse?.fraction !== undefined && reuse.fraction < thresholds.reuseWarn) {
+    findings.push({
+      health: reuse.wastedTokens! > 20_000 ? 'RED' : 'WARN',
+      code: 'cache-miss',
+      message:
+        `the prefix cache is re-reading ${Math.round((1 - reuse.fraction) * 100)}% of prompts ` +
+        `(~${Math.round(reuse.wastedTokens!).toLocaleString()} tokens re-read per turn)`,
+      remedy:
+        'a fresh or just-compacted conversation legitimately re-reads; sustained misses mean the ' +
+        'conversation cache is not tracking — check conversation_cache slots and restart if it persists',
+    });
+  }
+
+  // 9. VRAM headroom (strata's own reserve-aware reading). The capacity
+  //    doctor checks the HOST-wide number; this one catches another process
+  //    eating the card from under strata.
+  if (snap.vramFreeMiB !== undefined && snap.vramFreeMiB < thresholds.vramHeadroomWarnMiB) {
+    findings.push({
+      health: 'WARN',
+      code: 'vram-headroom',
+      message:
+        `strata reports only ${snap.vramFreeMiB} MiB free (reserve-aware) — below the ` +
+        `${thresholds.vramHeadroomWarnMiB} MiB headroom floor`,
+      remedy: 'something is eating the card (another model process, a vision request); free it or lower --max-context',
+    });
+  }
+
   const worst = findings.reduce<InferenceHealth>(
     (acc, f) => (rank[f.health] > rank[acc] ? f.health : acc),
     findings.length > 0 ? 'GREEN' : 'UNKNOWN',
@@ -368,8 +541,15 @@ export function assessInference(
   // which let a RED finding pass --strict with exit 0.
   const actionable = findings.some((f) => f.health !== 'GREEN');
   const noSampledEvidence =
-    trend.ratio === undefined && checkpoints.samples === 0 && snap.kvBitsPerValue === undefined;
+    trend.ratio === undefined &&
+    checkpoints.samples === 0 &&
+    snap.kvBitsPerValue === undefined &&
+    (snap.decode?.length ?? 0) === 0 &&
+    (snap.reuse?.length ?? 0) === 0 &&
+    snap.vramFreeMiB === undefined;
   const health: InferenceHealth = actionable || !noSampledEvidence ? worst : 'UNKNOWN';
 
-  return { health, findings, trend, checkpoints };
+  return snap.backend !== undefined
+    ? { health, findings, trend, checkpoints, backend: snap.backend, decodeTrend, reuse }
+    : { health, findings, trend, checkpoints };
 }

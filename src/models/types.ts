@@ -208,23 +208,24 @@ export const ModelPresets: Record<string, ModelConfig> = {
   },
   'qwen38-27b': {
     id: 'qwen38-27b',
-    name: 'Qwen 3.8 27B (local)',
+    name: 'Qwen3.8 Flash-Next (local strata)',
     provider: 'custom',
     apiModel: 'qwen3.8-27b',
     // Route through the anthropic-proxy (:4000) for the tool/finalize
-    // guardrails, not the inference server's :8080 raw.
+    // guardrails, not the strata layer's :8080 raw.
     //
-    // CORRECTED 2026-09-21. This entry described ninfer-serve — "NOT llama.cpp",
-    // "--max-concurrency 1", "serves none of the llama.cpp endpoints". All of
-    // that is superseded: the backend is buun-llama-cpp (b1261) behind
-    // uap-gsq-rco-server.service, it serves /props, /slots and /metrics, and it
-    // runs TWO rails. Verify against /props before trusting any engine claim
-    // here; see docs/guides/INFERENCE_HEALTH.md.
+    // HISTORY: corrected 2026-09-21 (ninfer-serve -> buun-llama-cpp behind
+    // uap-gsq-rco-server.service, two rails), then SUPERSEDED 2026-10-04 —
+    // the backend is now the strata serve layer on :8080 (one rail, 131072
+    // pool, JSON /metrics; no systemd unit). `uap inference health`
+    // auto-detects it. Verify against /metrics before trusting any engine
+    // claim here; see docs/guides/INFERENCE_HEALTH.md.
     //
-    // `apiModel` is deliberately NOT the server's alias (qwen38-gsq-rco-27b).
-    // The endpoint below is the proxy, which is pinned local-only and routes on
-    // its own rules rather than the requested id — both spellings return 200.
-    // Pinning the live alias here would turn a backend switch
+    // `apiModel` is deliberately NOT the backend's alias
+    // (qwen3.8-flash-next-iq3_xxs). The endpoint below is the proxy, which is
+    // pinned local-only and routes on its own rules rather than the requested
+    // id — any spelling returns 200, which is also why stale client pins keep
+    // working. Pinning the live alias here would turn a backend switch
     // (~/.config/uap/model-switch.sh) into an outage, which is the same reason
     // the 'local-auto' entry below carries no pinned name at all.
     //
@@ -233,11 +234,10 @@ export const ModelPresets: Record<string, ModelConfig> = {
     // completion budget without ever appearing in the text — a tight max_tokens
     // yields an EMPTY answer with finish_reason=length, not a short one.
     endpoint: 'http://127.0.0.1:4000/v1',
-    // The PER-SESSION cap, not the server's pool. The server runs -c 229376
-    // with --kv-unified, so that 229376 is ONE SHARED pool across both rails
-    // and -np does NOT divide it; the qwen38 model profile caps a session at
-    // half of it so two concurrent agents fit. 131072 stood here from the
-    // single-rail era and is now ABOVE that cap — a client sizing to it would
+    // The PER-SESSION cap, not the server's pool. Strata serves one rail
+    // with a 131072-cell pool; the qwen38 model profile caps a session at
+    // 114688 — deliberately BELOW the pool so a session at the cap leaves the
+    // engine its own working room. A client sizing to the pool itself would
     // aim past what its own session is allowed.
     maxContextTokens: 114688,
     costPer1MInput: 0,
@@ -249,20 +249,26 @@ export const ModelPresets: Record<string, ModelConfig> = {
     // READ THIS BEFORE TRUSTING THE NUMBER. It is a FALLBACK, and on the live
     // path it loses. resolveSessionTokenBudget (src/delivery/context-budget.ts)
     // ranks discovery ABOVE the preset, and discovery (`/v1/context`) reports
-    // the SHARED POOL (229376), not this per-session cap — because the cap is
-    // opt-in via the `x-uap-model-profile` header and NOTHING in src/ sends it
-    // (opencode, codex and claude-local do; UAP's own clients do not). So a
-    // deliver run on this box resolves 229376 * 0.7 = 160563 against a 114688
-    // cap. Under-claiming here is still the safe direction — every consumer
-    // clamps downward — but do not read this constant as evidence that
-    // anything is enforcing the cap on UAP's own traffic. Tracked separately.
+    // the WHOLE POOL (131072 on strata), not this per-session cap — because the
+    // cap is opt-in via the `x-uap-model-profile` header and NOTHING in src/
+    // sends it (opencode, codex and claude-local do; UAP's own clients do not).
+    // So a deliver run on this box resolves 131072 * 0.7 = 91750 against a
+    // 114688 cap — under the cap by accident of the smaller strata pool, not
+    // by enforcement. Under-claiming here is still the safe direction — every
+    // consumer clamps downward — but do not read this constant as evidence
+    // that anything is enforcing the cap on UAP's own traffic. Tracked
+    // separately. (Pre-strata the same arithmetic resolved 229376 * 0.7 =
+    // 160563, ABOVE the cap; the 2026-10-04 backend change flipped the
+    // inequality, and the gap is untracked either way.)
     modelContextBudget: 113664,
   },
   // NOTE: this entry keeps 131072/130048 while 'qwen38-27b' above dropped to
   // the per-session cap. Deliberate: 'local-auto' resolves whatever backend is
-  // serving and sends no profile header either, so it gets the full shared pool
-  // and 131072 is conservative against it. Do not "align" the two — they are
-  // derived from different models of the same endpoint on purpose.
+  // serving and sends no profile header either, so it gets the full pool
+  // (exactly 131072 on strata — the number now names the pool rather than
+  // sitting conservatively under it) and no guardrail applies. Do not
+  // "align" the two — they are derived from different models of the same
+  // endpoint on purpose.
   'local-auto': {
     id: 'local-auto',
     name: 'Local model (auto-detected)',

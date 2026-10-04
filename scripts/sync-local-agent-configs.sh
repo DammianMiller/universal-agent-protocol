@@ -39,13 +39,13 @@ DRY_RUN="${DRY_RUN:-0}"
 # --- the single source of truth for every client ---------------------------
 PROXY_URL="http://127.0.0.1:4000"
 DIRECT_URL="http://127.0.0.1:8080"
-MODEL_ALIAS="qwen38-gsq-rco-27b"
+MODEL_ALIAS="qwen38-gsq-rco-27b"   # strata ignores requested ids; key kept for client session continuity
 PROFILE_NAME="qwen38"
 PROFILE_HEADER="x-uap-model-profile"
-CTX_SESSION=114688      # per-session half of the 229376 shared 2-rail pool
-CTX_POOL=229376         # whole pool; only the guardrail-free direct path sees it
-MAX_OUTPUT=32768        # matches the proxy tool-turn cap
-RAILS=2
+CTX_SESSION=114688      # per-session cap: below the 131072 pool so a session at cap leaves the engine working room
+CTX_POOL=131072          # whole pool (strata, one rail); only the guardrail-free direct path sees it
+MAX_OUTPUT=32768         # matches the proxy tool-turn cap
+RAILS=1                 # strata runs ONE rail over the 131072 pool; admission 1 follows (2026-10-04)
 
 PROXY_ENV="$HOME/.config/uap/anthropic-proxy.env"
 OC_GLOBAL="$HOME/.config/opencode/opencode.json"

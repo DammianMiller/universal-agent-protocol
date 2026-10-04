@@ -757,7 +757,9 @@ describe('the CLI contract monitors depend on', () => {
   it('--json emits a pinned reportVersion and the findings', async () => {
     const { out } = await capture({ json: true });
     const parsed = JSON.parse(out);
-    expect(parsed.reportVersion).toBe(1);
+    // v2 (2026-10-04) adds the strata fields additively: backend, engineModel,
+    // decodeTrend, reuse, drafts, vramFreeMiB. A v1 monitor keeps parsing.
+    expect(parsed.reportVersion).toBe(2);
     expect(parsed.health).toBe('RED');
     expect(parsed.findings.map((f: { code: string }) => f.code)).toContain('prefill-decay');
   });

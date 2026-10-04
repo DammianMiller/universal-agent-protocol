@@ -5,21 +5,20 @@
  * Carried over from QWEN36_PROFILE unchanged EXCEPT for concurrency, which is
  * not a preference here but a property of the server.
  *
- * CORRECTED 2026-09-21. This header said the model was served by
- * `ninfer-serve --max-concurrency 1` and that there was ONE rail. That engine
- * is not what runs: the backend is buun-llama-cpp behind
- * uap-gsq-rco-server.service with `-np 2`, and the proxy was raised to match
- * (PROXY_CONCURRENCY_LIMIT / UAP_MODEL_SLOTS / PROXY_SESSION_ADMISSION_LIMIT
- * all 2). The reasoning below still holds, only the number changed: slots must
- * track what the server and proxy will actually run in parallel. Declaring
- * MORE than that does not get more in flight — it gets one running and the
- * rest queued, the extra slots buy latency and a longer wedge window rather
- * than throughput, and the adaptive controller then reads the queueing delay
- * as backpressure and throttles a server that was never saturated.
+ * HISTORY: corrected 2026-09-21 (ninfer-serve -> buun-llama-cpp, 1 -> 2
+ * rails), then SUPERSEDED 2026-10-04 — the backend is now the strata serve
+ * layer on :8080 (flash-next IQ3_XXS pack), which runs ONE rail over a
+ * 131072-cell pool. Slots drop 2 -> 1 for the same reason they rose 1 -> 2:
+ * slots must track what the server and proxy will actually run in parallel.
+ * Declaring MORE than that does not get more in flight — it gets one running
+ * and the rest queued, the extra slots buy latency and a longer wedge window
+ * rather than throughput, and the adaptive controller then reads the
+ * queueing delay as backpressure and throttles a server that was never
+ * saturated.
  *
- * Whether the second rail EARNS anything is a separate question from whether
- * it exists: check llamacpp:n_busy_slots_per_decode in /metrics (>1 means
- * requests genuinely overlapped), or `uap inference health`.
+ * Whether a future second strata rail EARNS anything is a separate question
+ * from whether it exists: `uap inference health` (backend strata) answers it
+ * once one does.
  *
  * Everything else is deliberately identical to the qwen36 seed: nothing has
  * been re-measured on 3.8 yet, and the tuning loop's job is to beat this seed,
@@ -41,10 +40,10 @@ export const QWEN38_PROFILE: FlagConfig = {
   'handsfree.enabled': true,
   'handsfree.intensity': 'aggressive',
   UAP_HANDSFREE_STAGNATION_LIMIT: 6,
-  // Concurrency: TWO rails (see the header) — matches `-np 2` on the server
-  // and the proxy's concurrency/admission limits. Adaptive stays on so a
-  // genuinely overloaded server still backs off.
-  'modelConcurrency.slots': 2,
+  // Concurrency: ONE rail (see the header) — matches the strata server's
+  // single slot and the proxy's concurrency/admission limits. Adaptive stays
+  // on so a genuinely overloaded server still backs off.
+  'modelConcurrency.slots': 1,
   'modelConcurrency.adaptive': true,
   // Memory: bigger short-term window + pattern RAG compensate for weak planning.
   'memory.shortTerm.maxEntries': 80,

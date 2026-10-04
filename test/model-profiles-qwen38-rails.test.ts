@@ -1,57 +1,59 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-
 /**
- * Guards the 2-rail invariants for the local Qwen3.8 stack.
+ * Guards the geometry invariants for the local Qwen3.8 stack — strata era.
  *
- * Context (2026-09-20): uap-gsq-rco-server.service runs `-np 2 -c 229376` and
- * the fork forces `--kv-unified`, so 229376 is ONE SHARED POOL — `/slots`
- * reports n_ctx=229376 for BOTH slots and either rail may address all of it.
- * The proxy auto-detects that number and hands it to every session, so the
- * only thing stopping two concurrent agents from demanding 2x the pool is the
- * qwen38 profile's per-session `context_window`.
+ * Context (2026-10-04): the backend is the strata serve layer on :8080 —
+ * ONE rail, a 131072-cell pool (kv int8, fixed tier), no systemd unit. Its
+ * predecessor (2026-09-20) was buun-llama-cpp behind
+ * uap-gsq-rco-server.service with `-np 2 -c 229376`, a SHARED pool; that unit
+ * is now INACTIVE but still installed, and `systemctl show` still reports its
+ * ExecStart — which is exactly how `uap inference health` came to print a
+ * stale 229,376-cell pool for the live 131,072 backend.
  *
- * An earlier version of this file asserted `SERVER_POOL / SERVER_RAILS` where
- * both operands were constants declared HERE — a profile-internal consistency
- * check that could never detect the drift it was written for (the unit's own
- * history shows -np going 4→3→2→1→2 and -c going 393216→262144→229376 inside
- * two weeks). The geometry is now READ FROM THE UNIT, so a hand-transcription
- * error fails instead of passing quietly.
+ * The chain therefore no longer runs through the unit file (it would tie the
+ * profile to a DEAD process). It runs through the LIVE backend: /slots and
+ * /props on :8080 when reachable (this machine), degrading to
+ * profile-INTERNAL consistency elsewhere (CI). Same doctrine as before: read
+ * the geometry from reality, never transcribe it here — the history shows -np
+ * going 4→3→2→1→2 and backends changing twice in six weeks.
  */
 
 const ROOT = resolve(__dirname, '..');
 const readJson = (p: string) => JSON.parse(readFileSync(resolve(ROOT, p), 'utf8'));
 
-const PROFILE_PATH = 'config/model-profiles/qwen38.json';
-const UNIT_PATH = resolve(homedir(), '.config/systemd/user/uap-gsq-rco-server.service');
+const BACKEND_URL = 'http://127.0.0.1:8080';
 
-/** Parse the real geometry out of the systemd unit's ExecStart. */
-function unitGeometry(): { pool: number; rails: number } | null {
-  if (!existsSync(UNIT_PATH)) return null;
-  const flags = readFileSync(UNIT_PATH, 'utf8')
-    .split('\n')
-    .filter((l) => !l.trimStart().startsWith('#'))
-    .join('\n');
-  const pool = /(?:^|\s)-c\s+(\d+)/.exec(flags);
-  const rails = /(?:^|\s)-np\s+(\d+)/.exec(flags);
-  if (!pool || !rails) return null;
-  return { pool: Number(pool[1]), rails: Number(rails[1]) };
+/** Probe the live backend once: /slots for pool+rail count, /props for the
+ * advertised alias. Null when unreachable — the live-chain tests skip, same
+ * posture the old unit-file tests had for absent units. Both fetches carry
+ * an AbortSignal timeout so a wedged-but-listening socket skips the chain
+ * instead of hanging the whole suite at module load. */
+async function liveGeometry(): Promise<{ pool: number; rails: number; alias: string } | null> {
+  try {
+    const slotsRes = await fetch(`${BACKEND_URL}/slots`, { signal: AbortSignal.timeout(2000) });
+    if (!slotsRes.ok) return null;
+    const slots = (await slotsRes.json()) as Array<{ n_ctx?: number }>;
+    const propsRes = await fetch(`${BACKEND_URL}/props`, { signal: AbortSignal.timeout(2000) });
+    if (!propsRes.ok) return null;
+    const props = (await propsRes.json()) as { model_alias?: string };
+    if (!Array.isArray(slots) || typeof slots[0]?.n_ctx !== 'number' || !props.model_alias) {
+      return null;
+    }
+    return { pool: slots[0].n_ctx, rails: slots.length, alias: props.model_alias };
+  } catch {
+    return null;
+  }
 }
 
-const geom = unitGeometry();
+// Resolved once at module load (top-level await), so it.skipIf can branch on
+// the REAL reachability at registration time — a beforeAll would run after
+// every it() had already registered as runnable.
+const geom = await liveGeometry();
 
-describe('qwen38 profile — 2-rail context invariants', () => {
-  const profile = readJson(PROFILE_PATH);
-
-  it('caps a session at the pool divided by the rail count', () => {
-    // The load-bearing invariant, checked against the profile's own recorded
-    // geometry (which the unit-file test below ties back to reality).
-    const pool = profile.server_optimization.kv_capacity;
-    const rails = profile.server_optimization.parallel_rails;
-    expect(profile.context_window).toBe(pool / rails);
-  });
+describe('qwen38 profile — strata geometry invariants', () => {
+  const profile = readJson('config/model-profiles/qwen38.json');
 
   it('records the whole pool as capacity, not the per-session slice', () => {
     expect(profile.server_optimization.kv_capacity).toBe(
@@ -60,7 +62,17 @@ describe('qwen38 profile — 2-rail context invariants', () => {
     expect(profile.context_window).toBeLessThan(profile.server_optimization.kv_capacity);
   });
 
-  it('marks KV as shared, because VBR forces --kv-unified above one rail', () => {
+  it('keeps the session cap at or under the pool the rails can serve', () => {
+    // Strata (one rail, 131072 pool) keeps 114688 — deliberately BELOW the
+    // pool so a session at the cap leaves the engine its own working room.
+    // The cap may never EXCEED pool/rails: that is the overcommit the
+    // per-session cap exists to prevent (two 114688 sessions demanded
+    // 229376 cells from this 131072 pool under the 2-rail-era admission).
+    const servable = profile.server_optimization.kv_capacity / profile.server_optimization.parallel_rails;
+    expect(profile.context_window).toBeLessThanOrEqual(servable);
+  });
+
+  it('marks KV as shared — one pool the rail addresses in full', () => {
     expect(profile.concurrency.kv_capacity_shared).toBe(true);
   });
 
@@ -74,9 +86,10 @@ describe('qwen38 profile — 2-rail context invariants', () => {
   });
 
   it('keeps parallel requests equal to the rails it ships with', () => {
-    // Previously `toBeLessThanOrEqual(2)`, which PASSED at the exact value its
-    // own comment forbade. The profile, the proxy env written by
-    // scripts/sync-local-agent-configs.sh, and the rail count now move as one.
+    // The profile, the proxy env written by scripts/sync-local-agent-configs.sh,
+    // and the rail count move as one — 2 in the llama.cpp era, 1 in the strata
+    // era. A profile of 1 against a proxy still admitting 2 overcommits the
+    // 131072 pool.
     expect(profile.concurrency.max_parallel_requests).toBe(
       profile.server_optimization.parallel_rails,
     );
@@ -95,57 +108,73 @@ describe('qwen38 profile — 2-rail context invariants', () => {
   });
 });
 
-describe('qwen38 profile — matches the unit that is actually installed', () => {
-  const profile = readJson(PROFILE_PATH);
+describe('qwen38 profile — matches the backend that is actually serving', () => {
+  const profile = readJson('config/model-profiles/qwen38.json');
 
-  it.skipIf(geom === null)('records the unit\'s real pool size', () => {
+  it.skipIf(geom === null)('records the live pool size', () => {
     expect(profile.server_optimization.kv_capacity).toBe(geom!.pool);
   });
 
-  it.skipIf(geom === null)('records the unit\'s real rail count', () => {
+  it.skipIf(geom === null)('records the live rail count', () => {
     expect(profile.server_optimization.parallel_rails).toBe(geom!.rails);
   });
 
-  it.skipIf(geom === null)('derives the session cap from the unit, not a guess', () => {
-    expect(profile.context_window).toBe(geom!.pool / geom!.rails);
+  it.skipIf(geom === null)('derives the session cap under the servable pool, not a guess', () => {
+    expect(profile.context_window).toBeLessThanOrEqual(geom!.pool / geom!.rails);
+  });
+
+  it.skipIf(geom === null)('uses the model alias the backend advertises', () => {
+    expect(profile.model).toBe(geom!.alias);
   });
 });
 
 describe('qwen38 profile — describes the engine that is actually running', () => {
-  const profile = readJson(PROFILE_PATH);
+  const profile = readJson('config/model-profiles/qwen38.json');
   const blob = JSON.stringify(profile);
 
-  it('names the llama.cpp fork, not the retired ninfer engine', () => {
-    expect(profile._engine).toMatch(/llama/i);
-    // Not `^`-anchored: "llama.cpp shim over ninfer-serve" would have slipped
-    // past an anchored check.
-    expect(profile._engine).not.toMatch(/ninfer/i);
+  it('names the strata serve layer, not a retired engine', () => {
+    expect(profile._engine).toMatch(/strata/i);
+    // The 2026-10-04 correction explicitly supersedes the llama.cpp-era
+    // description; an unqualified present-tense llama.cpp claim is the exact
+    // class of drift this suite was written for.
+    expect(profile._engine).not.toMatch(/^buun-llama-cpp/i);
+    expect(profile._engine_history).toMatch(/SUPERSEDED 2026-10-04/);
   });
 
-  it('does not assert that llama.cpp endpoints are missing', () => {
+  it('does not assert that llama.cpp-shaped endpoints are missing', () => {
     // Guards the CLASS of claim, not one historical sentence.
     expect(blob).not.toMatch(/does not serve[^"]*\/(props|slots|metrics)/i);
     expect(blob).not.toMatch(/serves no \/slots/i);
   });
 
-  it('uses the model alias the server advertises', () => {
-    expect(profile.model).toBe('qwen38-gsq-rco-27b');
-  });
-
-  it('records the DFlash2 draft model rather than built-in MTP', () => {
+  it('records the strata MTP speculative path, not a separate draft model', () => {
     const spec = profile.server_optimization.speculative_decoding;
     expect(spec.enabled).toBe(true);
-    expect(spec.type).toBe('draft-dflash');
-    expect(spec.draft_model).toMatch(/DFlash2/);
+    expect(spec.type).toBe('mtp');
+    // The DFlash2 draft model belonged to the retired llama.cpp backend; it
+    // may survive only as dated history inside documentation keys.
+    const stripDocs = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(stripDocs);
+      if (v && typeof v === 'object') {
+        return Object.fromEntries(
+          Object.entries(v as Record<string, unknown>)
+            .filter(([k]) => !k.startsWith('_'))
+            .map(([k, val]) => [k, stripDocs(val)]),
+        );
+      }
+      return v;
+    };
+    expect(JSON.stringify(stripDocs(spec))).not.toMatch(/DFlash2/);
   });
 
-  it('routes through the guardrail proxy, not the inference server', () => {
+  it('routes through the guardrail proxy, not the inference port', () => {
     expect(profile.routing.endpoint).toBe('http://127.0.0.1:4000/v1');
   });
 
   it('does not quote a decode number without naming workload and depth', () => {
-    // A single rep on "count from 1 to 40" produced 72 tok/s at 90% draft
-    // acceptance; real code work is ~43 at ~71% and prose ~27 at ~34%.
+    // 47 is a mid-depth code-workload observation on strata; prose reached ~25
+    // and counting ~93 on the predecessor. One number is always a
+    // simplification — the comment must say so.
     const m = profile.measured;
     expect(m._decode_comment).toMatch(/depth/i);
     expect(m.decode_tokens_per_second).toBeLessThan(50);
@@ -153,12 +182,13 @@ describe('qwen38 profile — describes the engine that is actually running', () 
   });
 
   it('does not claim concurrent throughput it has not measured', () => {
+    // Moot at one rail, and kept null so no claim survives from the 2-rail era.
     expect(profile.measured.concurrent_2_rail_throughput).toBeNull();
   });
 });
 
 describe('project opencode config agrees with the profile', () => {
-  const profile = readJson(PROFILE_PATH);
+  const profile = readJson('config/model-profiles/qwen38.json');
   const oc = readJson('opencode.json');
   const proxyProvider = oc.provider['qwen-proxy'];
   const proxyModel = proxyProvider.models['Qwen3.8-27B'];
@@ -192,7 +222,7 @@ describe('project opencode config agrees with the profile', () => {
     expect(JSON.stringify(stripDocs(oc))).not.toMatch(/qwen35-a3b-iq4xs/);
   });
 
-  it('enables reasoning, since the server separates thinking output', () => {
+  it('enables reasoning, since the backend separates thinking output', () => {
     expect(proxyModel.reasoning).toBe(true);
   });
 

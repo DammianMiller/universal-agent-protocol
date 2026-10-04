@@ -10,6 +10,11 @@
  * throughput decaying over a long-lived process, context checkpoints too few
  * to track a growing conversation, and a KV cache quietly pinned at its
  * lowest quality tier.
+ *
+ * Two backends, auto-detected via /metrics: llama.cpp servers (Prometheus
+ * text) and the Strata serve layer (JSON; the local Qwen3.8 backend since
+ * 2026-10-04). The strata path reads its serve log for a process-lifetime
+ * decode/prefill trend — pass --strata-log or set $UAP_STRATA_LOG.
  */
 import chalk from 'chalk';
 import {
@@ -18,7 +23,8 @@ import {
   type InferenceHealth,
   type Thresholds,
 } from '../inference/analysis.js';
-import { collect, type ProbeDeps } from '../inference/probe.js';
+import { collect, redactUrl, type ProbeDeps } from '../inference/probe.js';
+import { draftAcceptanceRate } from '../inference/strata.js';
 
 export interface InferenceOptions {
   serverUnit?: string;
@@ -28,6 +34,10 @@ export interface InferenceOptions {
   until?: string;
   json?: boolean;
   strict?: boolean;
+  /** Force a backend instead of auto-detecting from /metrics. */
+  backend?: 'auto' | 'llamacpp' | 'strata';
+  /** Strata serve log path (default: $UAP_STRATA_LOG, if set). */
+  strataLogPath?: string;
 }
 
 const COLORS: Record<InferenceHealth, (s: string) => string> = {
@@ -58,20 +68,32 @@ export async function inferenceHealthCommand(
   const serverUnit = options.serverUnit ?? DEFAULTS.serverUnit;
   const proxyUnit = options.proxyUnit ?? DEFAULTS.proxyUnit;
   const baseUrl = options.url ?? DEFAULTS.url;
+  const strataLogPath = options.strataLogPath ?? process.env.UAP_STRATA_LOG;
 
-  const { snapshot, unit, slots, metrics, unavailable } = await collect(
-    { serverUnit, proxyUnit, baseUrl, since: options.since, until: options.until },
+  const { snapshot, unit, slots, metrics, strata, backend, unavailable } = await collect(
+    {
+      serverUnit,
+      proxyUnit,
+      baseUrl,
+      since: options.since,
+      until: options.until,
+      backend: options.backend,
+      strataLogPath,
+    },
     deps,
   );
   const report = assessInference(snapshot, thresholds);
 
   if (options.json) {
-    // reportVersion pins the shape before monitors start parsing it.
+    // reportVersion pins the shape before monitors start parsing it. v2 adds
+    // the strata fields (backend, engineModel, decodeTrend, reuse, drafts,
+    // vramFreeMiB) — all additive; a v1 monitor keeps parsing.
     console.log(
       JSON.stringify(
         {
-          reportVersion: 1,
+          reportVersion: 2,
           health: report.health,
+          backend,
           unit: { name: serverUnit, active: unit?.active, uptimeSeconds: unit?.uptimeSeconds },
           snapshot: {
             rails: snapshot.rails,
@@ -82,9 +104,19 @@ export async function inferenceHealthCommand(
             generationTimeouts: snapshot.generationTimeouts,
             prefillSamples: snapshot.prefill.length,
             checkpointSamples: snapshot.checkpoints.length,
+            decodeSamples: snapshot.decode?.length,
+            engineModel: snapshot.engineModel,
+            vramFreeMiB: snapshot.vramFreeMiB,
           },
           trend: report.trend,
+          decodeTrend: report.decodeTrend,
           checkpoints: report.checkpoints,
+          reuse: report.reuse,
+          drafts: strata
+            ? {
+                acceptanceRate: draftAcceptanceRate(strata.samples.drafts),
+              }
+            : undefined,
           findings: report.findings,
           metrics,
           unavailable,
@@ -95,18 +127,31 @@ export async function inferenceHealthCommand(
     );
   } else {
     const historical = Boolean(options.until);
-    console.log(chalk.bold(`inference health: ${serverUnit}`));
+    // engineModel is already sanitized at the probe boundary; the URL gets
+    // redactUrl here because --url is operator-supplied and may carry
+    // credentials (it would be echoed straight into a piped report).
+    const headline =
+      backend === 'strata'
+        ? `inference health: strata ${snapshot.engineModel ?? '(model unknown)'} @ ${redactUrl(baseUrl)}`
+        : `inference health: ${serverUnit}`;
+    console.log(chalk.bold(headline));
     if (historical) {
       // The journal window is in the past but /slots, uptime and the unit's
       // flags are read NOW. Printing them together would describe the wrong
       // process — during an incident review that is worse than silence.
       console.log(
         chalk.yellow(
-          `REPLAY  journal window ${options.since ?? '(default)'} .. ${options.until} — ` +
+          `REPLAY  window ${options.since ?? '(default)'} .. ${options.until} — ` +
             'live readings below are omitted; they describe the CURRENT process, not the window',
         ),
       );
       console.log(`${COLORS[report.health](report.health.padEnd(7))} findings for that window`);
+    } else if (backend === 'strata') {
+      console.log(
+        `${COLORS[report.health](report.health.padEnd(7))} strata serve layer on :8080` +
+          (slots?.slots ? `, ${slots.slots} rail(s)` : '') +
+          (strata?.live.state ? `, live state: ${strata.live.state}` : ''),
+      );
     } else {
       console.log(
         `${COLORS[report.health](report.health.padEnd(7))} ` +
@@ -117,10 +162,10 @@ export async function inferenceHealthCommand(
 
     if (!historical && snapshot.poolCells !== undefined) {
       const per =
-        snapshot.rails && snapshot.rails > 0
+        snapshot.rails && snapshot.rails > 1
           ? ` (${Math.floor(snapshot.poolCells / snapshot.rails).toLocaleString()}/rail if split)`
           : '';
-      console.log(chalk.dim(`  pool        ${snapshot.poolCells.toLocaleString()} cells shared${per}`));
+      console.log(chalk.dim(`  pool        ${snapshot.poolCells.toLocaleString()} cells${per}`));
     }
     if (!historical && snapshot.ctxCheckpoints !== undefined) {
       console.log(chalk.dim(`  checkpoints ${snapshot.ctxCheckpoints} per slot`));
@@ -130,6 +175,9 @@ export async function inferenceHealthCommand(
       console.log(
         chalk.dim(`  kv          ${snapshot.kvBitsPerValue} bpv${floor !== undefined ? ` (floor ${floor})` : ''}`),
       );
+    }
+    if (!historical && snapshot.vramFreeMiB !== undefined) {
+      console.log(chalk.dim(`  vram        ${snapshot.vramFreeMiB} MiB free (reserve-aware)`));
     }
 
     const t = report.trend;
@@ -145,6 +193,21 @@ export async function inferenceHealthCommand(
       console.log(chalk.dim(`  prefill     ${t.note}`));
     }
 
+    const d = report.decodeTrend;
+    if (d !== undefined) {
+      if (d.ratio !== undefined) {
+        const arrow = d.ratio < 1 ? '↓' : '↑';
+        console.log(
+          chalk.dim(
+            `  decode      ${Math.round(d.earlyMean!)} → ${Math.round(d.recentMean!)} tok/s ${arrow} ` +
+              `in the ${d.bucket}-depth bucket (n=${d.earlyCount}/${d.recentCount})`,
+          ),
+        );
+      } else if (d.note) {
+        console.log(chalk.dim(`  decode      ${d.note}`));
+      }
+    }
+
     if (report.checkpoints.recovery !== undefined) {
       console.log(
         chalk.dim(
@@ -152,6 +215,22 @@ export async function inferenceHealthCommand(
             `(~${Math.round(report.checkpoints.wastedTokens!).toLocaleString()} tok/turn re-prefilled)`,
         ),
       );
+    } else if (report.reuse !== undefined && report.reuse.samples > 0 && report.reuse.fraction !== undefined) {
+      // Tail-based, same semantics as the cache-miss finding: the question is
+      // whether the cache is tracking the CURRENT conversation, not the mean
+      // over every cold start since the process began.
+      console.log(
+        chalk.dim(
+          `  reuse       ${Math.round(report.reuse.fraction * 100)}% of prompts served from cache ` +
+            `(~${Math.round(report.reuse.wastedTokens ?? 0).toLocaleString()} tok/turn re-read, last ${report.reuse.samples} turn(s))`,
+        ),
+      );
+    }
+    if (strata) {
+      const acc = draftAcceptanceRate(strata.samples.drafts);
+      if (acc !== undefined) {
+        console.log(chalk.dim(`  drafts      ${Math.round(acc * 100)}% accepted (speculative decode)`));
+      }
     }
     if (!historical && metrics?.busySlotsPerDecode !== undefined) {
       console.log(

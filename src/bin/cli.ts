@@ -614,6 +614,8 @@ program
   .option('--url <url>', 'inference server base URL (default: http://127.0.0.1:8080)')
   .option('--since <expr>', 'journalctl --since window (default: the server process start)')
   .option('--until <expr>', 'journalctl --until bound — analyse a PAST incident window')
+  .addOption(new Option('--backend <kind>', 'Force a backend instead of auto-detecting from /metrics').choices(['auto', 'llamacpp', 'strata']))
+  .option('--strata-log <path>', 'Strata serve log (default: $UAP_STRATA_LOG) — the process-lifetime sample source')
   .option('--json', 'Emit machine-readable JSON')
   .option('--strict', 'Exit 1 when health is WARN or RED (CI/monitor gating)')
   .action(async (subcommand, options) => {

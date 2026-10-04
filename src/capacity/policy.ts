@@ -12,9 +12,35 @@
 export interface ServicePolicy {
   /** Display name. */
   name: string;
-  systemd: {
+  /**
+   * systemd probe source. Exactly one of `systemd` or `http` is required:
+   * services that run under a unit (the llama.cpp servers) are probed via
+   * systemctl; unit-less services (the strata serve layer, launched by a
+   * plain script and reparented to systemd --user) are probed over HTTP.
+   */
+  systemd?: {
     unit: string;
     scope: 'user' | 'system';
+  };
+  /**
+   * HTTP probe source for a service with no systemd unit. The doctor fetches
+   * `<url>/metrics`; for kind 'strata' it must parse as the strata JSON
+   * document (engine block with a model). Liveness is "it answers /metrics";
+   * configuration drift is checked via `metricsMustMatch` against the
+   * document's engine fields.
+   */
+  http?: {
+    /** Base URL; http(s) only, no userinfo, no query/fragment. */
+    url: string;
+    /** Parser kind — the only backend whose /metrics shape we know. */
+    kind: 'strata';
+    /**
+     * engine.<key> values that MUST match the live document, the
+     * execStartMustContain doctrine applied to a service with no ExecStart:
+     * a note saying "kv int8, 131072 context" drifts silently unless the
+     * load-bearing numbers live somewhere the doctor can compare them.
+     */
+    metricsMustMatch?: Record<string, string | number>;
   };
   /** Declared resource budget the service is configured to stay inside. */
   budget?: {
@@ -70,6 +96,10 @@ export interface ServiceReport {
     gpuFreeMiB?: number;
     /** The unit's ExecStart command line, when systemctl reported it. */
     execStart?: string;
+    /** HTTP-probe detail (e.g. the model id the service advertised). */
+    detail?: string;
+    /** engine.<key> values the HTTP probe read, for metricsMustMatch. */
+    metrics?: Record<string, string | number>;
   };
 }
 
@@ -104,13 +134,79 @@ export function parsePolicy(text: string, source = 'policy'): CapacityPolicy {
     }
     if (seen.has(svc.name)) throw new PolicyError(`${where}: duplicate service "${svc.name}"`);
     seen.add(svc.name);
-    if (typeof svc.systemd?.unit !== 'string' || !UNIT_NAME_RE.test(svc.systemd.unit)) {
-      throw new PolicyError(
-        `${where}: systemd.unit must match ${UNIT_NAME_RE} (no flags, whitespace, or leading dashes)`,
-      );
+    // Exactly one probe source. Both at once is ambiguous (which one is the
+    // truth?); neither is a service the doctor cannot check at all.
+    if (Boolean(svc.systemd) === Boolean(svc.http)) {
+      throw new PolicyError(`${where}: exactly one of "systemd" or "http" is required`);
     }
-    if (svc.systemd.scope !== 'user' && svc.systemd.scope !== 'system') {
-      throw new PolicyError(`${where}: systemd.scope must be "user" or "system"`);
+    if (svc.systemd) {
+      if (typeof svc.systemd.unit !== 'string' || !UNIT_NAME_RE.test(svc.systemd.unit)) {
+        throw new PolicyError(
+          `${where}: systemd.unit must match ${UNIT_NAME_RE} (no flags, whitespace, or leading dashes)`,
+        );
+      }
+      if (svc.systemd.scope !== 'user' && svc.systemd.scope !== 'system') {
+        throw new PolicyError(`${where}: systemd.scope must be "user" or "system"`);
+      }
+    }
+    if (svc.http) {
+      if (svc.http.kind !== 'strata') {
+        throw new PolicyError(`${where}: http.kind must be "strata" (the only known /metrics shape)`);
+      }
+      const url = svc.http.url;
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        throw new PolicyError(`${where}: http.url must be a valid URL`);
+      }
+      // The probe shells out to curl with the URL as a positional argument.
+      // Only http(s) with no userinfo/query/fragment can never smuggle flags
+      // or credentials; loopback is not REQUIRED (a remote model server is a
+      // legitimate declaration), but anything weird is rejected here.
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new PolicyError(`${where}: http.url must be http(s)`);
+      }
+      if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+        throw new PolicyError(`${where}: http.url must carry no userinfo, query, or fragment`);
+      }
+      if (parsed.pathname !== '/' && parsed.pathname !== '') {
+        throw new PolicyError(`${where}: http.url must be a base URL with no path`);
+      }
+      // CANONICAL, not just parseable. The WHATWG parser normalizes away
+      // what the RAW string preserves — %-encoded dot-segments (%2e%2e),
+      // literal dot-segments (/a/..), an empty query (?), leading
+      // whitespace — so a raw string can pass every field check above while
+      // curl fetches something other than the validated shape. Require the
+      // raw string to equal the parsed href modulo one trailing slash, so
+      // the form that was validated is the form that is fetched.
+      if (parsed.href !== url && parsed.href !== `${url}/`) {
+        throw new PolicyError(
+          `${where}: http.url must be canonical — "${url}" normalizes to "${parsed.href}", ` +
+            'and the probe must fetch exactly the form that was validated',
+        );
+      }
+      // Unit-only budgets on an http service would be SILENTLY ignored by
+      // computeHealth (no MemoryCurrent, no NRestarts). A declared budget
+      // that cannot be verified is the exact anti-pattern this policy
+      // exists to prevent, so reject at parse time instead.
+      if (svc.budget?.rssMiB !== undefined || svc.restartBudget !== undefined) {
+        throw new PolicyError(
+          `${where}: budget.rssMiB and restartBudget require a systemd unit ` +
+            '(MemoryCurrent and NRestarts do not exist for an http-probed service)',
+        );
+      }
+      const must = svc.http.metricsMustMatch;
+      if (must !== undefined) {
+        for (const [key, value] of Object.entries(must)) {
+          if (!/^[a-z0-9_]+$/i.test(key) || key.length === 0) {
+            throw new PolicyError(`${where}: http.metricsMustMatch keys must be engine field names`);
+          }
+          if (typeof value !== 'string' && typeof value !== 'number') {
+            throw new PolicyError(`${where}: http.metricsMustMatch.${key} must be a string or number`);
+          }
+        }
+      }
     }
     for (const [section, keys] of [
       ['budget', ['vramMiB', 'rssMiB']],
@@ -148,8 +244,15 @@ export function parsePolicy(text: string, source = 'policy'): CapacityPolicy {
 export function computeHealth(
   svc: ServicePolicy,
   probed: ServiceReport['probed'],
-  probeAvailable: { systemd: boolean; gpu: boolean },
+  probeAvailable: { systemd: boolean; gpu: boolean; http?: boolean },
 ): Pick<ServiceReport, 'health' | 'reasons'> {
+  if (svc.http) return computeHttpHealth(svc as ServicePolicy & { http: NonNullable<ServicePolicy['http']> }, probed, probeAvailable);
+  // parsePolicy guarantees exactly one source, but computeHealth is exported
+  // pure and can be handed a policy built in code — without this guard the
+  // unit references below would be lying to the type checker.
+  if (!svc.systemd) {
+    return { health: 'UNKNOWN', reasons: ['no probe source (systemd or http) declared'] };
+  }
   const reasons: string[] = [];
   if (!probeAvailable.systemd) {
     return { health: 'UNKNOWN', reasons: ['systemctl unavailable — cannot probe the unit'] };
@@ -229,5 +332,61 @@ export function computeHealth(
   if (reasons.length > 0) return { health: 'RED', reasons };
 
   reasons.push(`active (${probed.subState ?? 'running'}), all budgets inside policy`);
+  return { health: 'GREEN', reasons };
+}
+
+/**
+ * Health for an HTTP-probed service — the same declared-vs-probed doctrine
+ * with no unit to lean on: liveness is "it answers /metrics as the expected
+ * document", configuration is the metricsMustMatch comparison, and the host
+ * headroom check is shared with the systemd path.
+ */
+function computeHttpHealth(
+  svc: ServicePolicy & { http: NonNullable<ServicePolicy['http']> },
+  probed: ServiceReport['probed'],
+  probeAvailable: { systemd: boolean; gpu: boolean; http?: boolean },
+): Pick<ServiceReport, 'health' | 'reasons'> {
+  if (!probeAvailable.http) {
+    return {
+      health: 'UNKNOWN',
+      reasons: [`could not reach ${svc.http.url}/metrics — probe unavailable (curl missing or timed out)`],
+    };
+  }
+  // DARK: same doctrine as the systemd path — a service that is not answering
+  // is absent, not degraded.
+  if (probed.activeState !== 'active') {
+    return {
+      health: 'DARK',
+      reasons: [`service at ${svc.http.url} is not answering /metrics as ${svc.http.kind} — not serving`],
+    };
+  }
+
+  const reasons: string[] = [];
+  // Configuration drift: declared engine fields vs the live document. A
+  // declared key the document lacks is UNVERIFIED (RED), not silently
+  // passing — the same rule as execStartMustContain.
+  for (const [key, expected] of Object.entries(svc.http.metricsMustMatch ?? {})) {
+    const actual = probed.metrics?.[key];
+    if (actual === undefined) {
+      reasons.push(`metricsMustMatch declared engine.${key} but /metrics did not report it — configuration unverified`);
+    } else if (actual !== expected) {
+      reasons.push(
+        `engine.${key} is ${JSON.stringify(actual)}, policy declares ${JSON.stringify(expected)} — ` +
+          'the running configuration has drifted from the policy',
+      );
+    }
+  }
+  if (svc.headroom?.gpuMinFreeMiB !== undefined) {
+    if (!probeAvailable.gpu || probed.gpuFreeMiB === undefined) {
+      reasons.push('gpu headroom declared but nvidia-smi unavailable — headroom unverified');
+    } else if (probed.gpuFreeMiB < svc.headroom.gpuMinFreeMiB) {
+      reasons.push(
+        `GPU free ${probed.gpuFreeMiB} MiB below required headroom ${svc.headroom.gpuMinFreeMiB} MiB — OOM territory`,
+      );
+    }
+  }
+  if (reasons.length > 0) return { health: 'RED', reasons };
+
+  reasons.push(`serving ${probed.detail ? `(${probed.detail}) ` : ''}at ${svc.http.url}, all budgets inside policy`);
   return { health: 'GREEN', reasons };
 }

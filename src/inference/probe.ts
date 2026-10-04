@@ -6,7 +6,18 @@
  * UNKNOWN instead of inventing a GREEN. Same posture as src/capacity/probe.ts.
  */
 import { execFileSync } from 'node:child_process';
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import type { CheckpointSample, InferenceSnapshot, PrefillSample } from './analysis.js';
+import {
+  looksLikeStrataMetrics,
+  parseStrataEngine,
+  parseStrataLog,
+  parseStrataRequests,
+  strataKvBitsPerValue,
+  type StrataEngine,
+  type StrataLive,
+  type StrataSamples,
+} from './strata.js';
 
 const EXEC_TIMEOUT_MS = 10_000;
 
@@ -19,6 +30,8 @@ export interface ProbeDeps {
   exec?: (cmd: string, args: string[]) => string;
   /** Fetch a URL and return the body; throw on failure. */
   fetchText?: (url: string) => Promise<string>;
+  /** Read a local file and return its text; throw on failure. */
+  readTextFile?: (path: string) => string;
   now?: () => number;
 }
 
@@ -33,6 +46,26 @@ function defaultExec(cmd: string, args: string[]): string {
     // early/recent split silently degrades to sort stability.
     env: { ...process.env, LC_ALL: 'C' },
   });
+}
+
+/** Strata serve logs run to megabytes; cap the read the same way the HTTP
+ * probes cap response bodies. A log past this size keeps its RECENT tail,
+ * which is the half the trend cares about anyway. */
+const MAX_LOG_BYTES = 64 * 1024 * 1024;
+
+function defaultReadTextFile(path: string): string {
+  // Read the tail for oversized logs: stat first, seek back, then read.
+  const stat = statSync(path);
+  const start = stat.size > MAX_LOG_BYTES ? stat.size - MAX_LOG_BYTES : 0;
+  const fd = openSync(path, 'r');
+  try {
+    const len = stat.size - start;
+    const buf = Buffer.alloc(len);
+    const read = readSync(fd, buf, 0, len, start);
+    return buf.toString('utf8', 0, read);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** These endpoints answer in kilobytes. A hostile or wedged server streaming
@@ -93,6 +126,18 @@ export function redactUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** Strip ANSI escape sequences and C0 control characters from a
+ * SERVER-PROVIDED string before it reaches the terminal or a JSON report
+ * (CWE-117 — the strata engine model, live state, and unit details all
+ * cross a trust boundary; same doctrine as merge-gate's sanitize()). */
+export function sanitizeServerText(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return String(text)
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
 }
 
 /** Pull `-np`, `-c` and `--ctx-checkpoints` out of a systemd ExecStart blob. */
@@ -376,13 +421,10 @@ export function parseMetrics(text: string): MetricsInfo {
   };
 }
 
-export async function probeMetrics(baseUrl: string, deps?: ProbeDeps): Promise<MetricsInfo | null> {
-  const fetchText = deps?.fetchText ?? defaultFetchText;
-  try {
-    return parseMetrics(await fetchText(`${baseUrl.replace(/\/$/, '')}/metrics`));
-  } catch {
-    return null;
-  }
+export interface StrataInfo {
+  engine: StrataEngine;
+  live: StrataLive;
+  samples: StrataSamples;
 }
 
 export interface CollectOptions {
@@ -393,6 +435,16 @@ export interface CollectOptions {
   since?: string;
   /** journalctl --until expression — for analysing a PAST incident window. */
   until?: string;
+  /**
+   * Which backend kind is on `baseUrl`. 'auto' (default) fetches /metrics
+   * once and classifies: strata serves a JSON document with an engine block,
+   * llama.cpp serves Prometheus text with llamacpp: counters.
+   */
+  backend?: 'auto' | 'llamacpp' | 'strata';
+  /** Strata serve log path — the process-lifetime sample source (the
+   * /metrics requests ring is bounded and short). No default in-repo: the
+   * path is per-machine; the CLI wires $UAP_STRATA_LOG into it. */
+  strataLogPath?: string;
 }
 
 export interface Collected {
@@ -400,8 +452,98 @@ export interface Collected {
   unit: UnitState | null;
   slots: SlotsInfo | null;
   metrics: MetricsInfo | null;
+  /** Strata-only readings; null on the llama.cpp path. */
+  strata: StrataInfo | null;
+  /** Which backend produced the snapshot. */
+  backend: 'llamacpp' | 'strata' | 'auto-unresolved';
   /** Probes that could not run, so the report can say so out loud. */
   unavailable: string[];
+}
+
+/**
+ * Fetch + classify /metrics in one round trip. Strata's /metrics is JSON with
+ * an `engine.model`; llama.cpp's is Prometheus text. Anything else is neither.
+ */
+async function probeStrataMetrics(
+  baseUrl: string,
+  deps?: ProbeDeps,
+): Promise<{ strata: StrataInfo; raw: string } | { strata: null; raw: string | null }> {
+  const fetchText = deps?.fetchText ?? defaultFetchText;
+  let raw: string | null = null;
+  try {
+    raw = await fetchText(`${baseUrl.replace(/\/$/, '')}/metrics`);
+  } catch {
+    return { strata: null, raw: null };
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!looksLikeStrataMetrics(parsed)) return { strata: null, raw };
+    const { engine, live } = parseStrataEngine(parsed);
+    return {
+      strata: {
+        // engine.model and live.state are SERVER-PROVIDED and are printed
+        // by both the doctor and the inference headline — sanitize them at
+        // this boundary, the last point where the code knows their origin
+        // (CWE-117). JSON consumers get the sanitized values too.
+        engine: {
+          ...engine,
+          model: engine.model !== undefined ? sanitizeServerText(engine.model) : undefined,
+        },
+        live: {
+          ...live,
+          state: live.state !== undefined ? sanitizeServerText(live.state) : undefined,
+        },
+        samples: parseStrataRequests(parsed.requests),
+      },
+      raw,
+    };
+  } catch {
+    return { strata: null, raw };
+  }
+}
+
+/** Read + parse the strata serve log. Fails soft (null) like every probe. */
+export function probeStrataLog(path: string, deps?: ProbeDeps): StrataSamples | null {
+  const readTextFile = deps?.readTextFile ?? defaultReadTextFile;
+  try {
+    return parseStrataLog(readTextFile(path));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a journalctl-style window expression into epoch ms, for filtering
+ * the strata /metrics ring in a windowed replay. Supports the two grammars a
+ * caller can actually produce with this CLI: absolute "YYYY-MM-DD" or
+ * "YYYY-MM-DD HH:MM[:SS]" (local time, journalctl's own grammar) and
+ * relative "-<n><smhdwY>". Anything else returns undefined and the caller
+ * DISCLOSES the unapplied window rather than guessing a bound.
+ */
+export function parseWindowExpr(expr: string | undefined): number | undefined {
+  if (!expr || !expr.trim()) return undefined;
+  const e = expr.trim();
+  const rel = /^-(\d+)\s*([smhdwy])$/i.exec(e);
+  if (rel) {
+    const n = Number(rel[1]);
+    if (!Number.isFinite(n) || n < 0) return undefined;
+    const unitMs: Record<string, number> = {
+      s: 1_000,
+      m: 60_000,
+      h: 3_600_000,
+      d: 86_400_000,
+      w: 604_800_000,
+      y: 31_536_000_000,
+    };
+    return Date.now() - n * unitMs[rel[2].toLowerCase()];
+  }
+  const abs = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(e);
+  if (abs) {
+    const iso = `${abs[1]}T${abs[2] ?? '00'}:${abs[3] ?? '00'}:${abs[4] ?? '00'}`;
+    const t = Date.parse(iso);
+    return Number.isFinite(t) ? t : undefined;
+  }
+  return undefined;
 }
 
 export async function collect(opts: CollectOptions, deps?: ProbeDeps): Promise<Collected> {
@@ -412,42 +554,38 @@ export async function collect(opts: CollectOptions, deps?: ProbeDeps): Promise<C
   // and the report should not blame the wrong one.
   if (!unit) unavailable.push(validServerUnit ? 'systemctl' : `invalid unit name: ${opts.serverUnit}`);
 
-  const flags = unit?.execStart ? parseExecStartFlags(unit.execStart) : {};
-
-  // Default the window to this process's own lifetime: throughput decay is a
-  // property of ONE process, so mixing in a previous process's samples would
-  // manufacture a cliff at the restart boundary.
-  // journalctl accepts "YYYY-MM-DD HH:MM:SS"; the weekday prefix systemd adds
-  // is not part of that grammar, so strip to the core before passing it on.
-  const unitSince = unit?.activeEnterTimestamp
-    ? (/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/.exec(unit.activeEnterTimestamp)?.[1] ?? undefined)
-    : undefined;
-  // Normalised once, and with `||` not `??`: an empty --since is not nullish,
-  // so it used to reach journalctl verbatim. probeJournal guarded against that
-  // but countProxyTimeouts did not, so the prefill analysis proceeded while
-  // the timeout evidence silently vanished.
-  //
-  // With --until, `unitSince` must NOT be the fallback: it is the CURRENTLY
-  // running process's start, which for any past incident is LATER than the
-  // window's end. journalctl then gets since > until, returns nothing, and the
-  // report is a clean UNKNOWN with no hint the window was backwards.
-  const since = opts.since?.trim() || (opts.until ? '-24h' : unitSince) || '-24h';
-
-  const journal = probeJournal(opts.serverUnit, since, deps, opts.until);
-  if (!journal && validServerUnit) unavailable.push('journalctl');
-
-  const [slots, metrics, vbrFloor] = await Promise.all([
+  // Backend resolution: one /metrics fetch classifies strata vs llama.cpp,
+  // doubles as the strata engine probe, and runs CONCURRENTLY with the
+  // backend-agnostic /slots and /props probes — the old code fetched all
+  // three in parallel, and serialization here would have been a latency
+  // regression for every llama.cpp user.
+  const wanted = opts.backend ?? 'auto';
+  const [metricsProbe, slots, vbrFloor] = await Promise.all([
+    probeStrataMetrics(opts.baseUrl, deps),
     probeSlots(opts.baseUrl, deps),
-    probeMetrics(opts.baseUrl, deps),
     probeVbrFloor(opts.baseUrl, deps),
   ]);
+  const detected: 'strata' | 'llamacpp' | 'auto-unresolved' =
+    wanted === 'auto'
+      ? metricsProbe.strata !== null
+        ? 'strata'
+        : metricsProbe.raw !== null && /llamacpp:/.test(metricsProbe.raw)
+          ? 'llamacpp'
+          : 'auto-unresolved'
+      : wanted;
+  const backend: 'llamacpp' | 'strata' =
+    detected === 'strata' || (detected === 'auto-unresolved' && wanted === 'strata') ? 'strata' : 'llamacpp';
   if (!slots) unavailable.push(redactUrl(`${opts.baseUrl.replace(/\/$/, '')}/slots`));
-  if (!metrics) unavailable.push(redactUrl(`${opts.baseUrl.replace(/\/$/, '')}/metrics`));
+  if (detected === 'auto-unresolved' && wanted === 'auto' && metricsProbe.raw !== null) {
+    unavailable.push(
+      `${redactUrl(`${opts.baseUrl.replace(/\/$/, '')}/metrics`)} — neither a strata JSON document nor llama.cpp Prometheus text`,
+    );
+  }
 
   // Every other probe records its own failure. This one did not, and because
   // `undefined ?? 0` means "no finding", a failed read turned a RED incident
   // window into a confident GREEN that passed --strict with exit 0.
-  const timeouts = countProxyTimeouts(opts.proxyUnit, since, deps, opts.until);
+  const timeouts = countProxyTimeouts(opts.proxyUnit, sinceForWindow(opts, unit), deps, opts.until);
   if (timeouts === undefined) {
     unavailable.push(
       UNIT_NAME_RE.test(opts.proxyUnit)
@@ -455,6 +593,63 @@ export async function collect(opts: CollectOptions, deps?: ProbeDeps): Promise<C
         : `invalid proxy unit name: ${opts.proxyUnit}`,
     );
   }
+
+  if (backend === 'strata') {
+    return collectStrata({ opts, unit, slots, timeouts, unavailable, metricsProbe, detected: 'strata', deps });
+  }
+  return collectLlamacpp({
+    opts,
+    unit,
+    slots,
+    timeouts,
+    unavailable,
+    metricsProbe,
+    detected,
+    vbrFloor,
+    deps,
+  });
+}
+
+/**
+ * Resolve the journal window once, shared by both backends. With --until, the
+ * CURRENT process's start must NOT be the fallback: for any past incident it
+ * is LATER than the window's end, journalctl then gets since > until, returns
+ * nothing, and the report is a clean UNKNOWN with no hint the window was
+ * backwards. Normalised with `||` not `??` — an empty --since is not nullish.
+ */
+function sinceForWindow(opts: CollectOptions, unit: UnitState | null): string {
+  const unitSince = unit?.activeEnterTimestamp
+    ? (/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/.exec(unit.activeEnterTimestamp)?.[1] ?? undefined)
+    : undefined;
+  return opts.since?.trim() || (opts.until ? '-24h' : unitSince) || '-24h';
+}
+
+interface CollectContext {
+  opts: CollectOptions;
+  unit: UnitState | null;
+  slots: SlotsInfo | null;
+  timeouts: number | undefined;
+  unavailable: string[];
+  metricsProbe: Awaited<ReturnType<typeof probeStrataMetrics>>;
+  /** What detection (or the explicit --backend) concluded — passed through
+   * to Collected.backend so an unclassifiable server is reported as
+   * 'auto-unresolved' in --json rather than silently labelled 'llamacpp'. */
+  detected: 'llamacpp' | 'strata' | 'auto-unresolved';
+  deps?: ProbeDeps;
+}
+
+/** llama.cpp path — unchanged behaviour except that /metrics is fetched once
+ * (shared with backend detection) and ExecStart flags only count when the
+ * unit is actually ACTIVE. */
+async function collectLlamacpp(ctx: CollectContext & { vbrFloor: number | undefined }): Promise<Collected> {
+  const { opts, unit, slots, timeouts, unavailable, metricsProbe, vbrFloor } = ctx;
+  const flags = activeUnitFlags(unit);
+
+  const journal = probeJournal(opts.serverUnit, sinceForWindow(opts, unit), ctx.deps, opts.until);
+  if (!journal && UNIT_NAME_RE.test(opts.serverUnit)) unavailable.push('journalctl');
+
+  const metrics = metricsProbe.raw !== null ? parseMetrics(metricsProbe.raw) : null;
+  if (!metrics) unavailable.push(redactUrl(`${opts.baseUrl.replace(/\/$/, '')}/metrics`));
 
   // In a historical replay the live readings belong to a DIFFERENT process
   // than the journal window, so they are dropped rather than attributed to it.
@@ -476,7 +671,143 @@ export async function collect(opts: CollectOptions, deps?: ProbeDeps): Promise<C
     checkpoints: journal?.checkpoints ?? [],
     processCount: journal?.processCount,
     generationTimeouts: timeouts,
+    backend: 'llamacpp',
   };
 
-  return { snapshot, unit, slots, metrics, unavailable };
+  return {
+    snapshot,
+    unit,
+    slots,
+    metrics,
+    strata: null,
+    // 'auto-unresolved' passes through on a detection miss (disclosed in
+    // unavailable); the snapshot itself still describes the llama.cpp path
+    // that was taken.
+    backend: ctx.detected === 'llamacpp' ? 'llamacpp' : 'auto-unresolved',
+    unavailable,
+  };
+}
+
+/**
+ * ExecStart flags are only live truth when the unit is ACTIVE. An inactive
+ * unit still reports its ExecStart to systemctl, and the old code trusted it:
+ * on 2026-10-04, with uap-gsq-rco-server.service dead (its -c 229376 still
+ * probed) and strata serving a 131072 pool on :8080, `uap inference health`
+ * printed "pool 229,376 cells" for a backend that did not exist. The /slots
+ * fallback is the only live geometry for a unit-less backend.
+ */
+function activeUnitFlags(unit: UnitState | null): ReturnType<typeof parseExecStartFlags> {
+  return unit?.active === 'active' && unit.execStart ? parseExecStartFlags(unit.execStart) : {};
+}
+
+/** Strata path — /metrics engine + serve log for samples, /slots for rails. */
+async function collectStrata(ctx: CollectContext): Promise<Collected> {
+  const { opts, unit, slots, timeouts, unavailable, metricsProbe, deps } = ctx;
+  const strata = metricsProbe.strata;
+  if (!strata) {
+    // Explicitly requested but the server did not answer as strata.
+    unavailable.push(redactUrl(`${opts.baseUrl.replace(/\/$/, '')}/metrics`) + ' (strata)');
+    return {
+      snapshot: {
+        prefill: [],
+        checkpoints: [],
+        generationTimeouts: timeouts,
+        backend: 'strata',
+      },
+      unit,
+      slots,
+      metrics: null,
+      strata: null,
+      backend: 'strata',
+      unavailable,
+    };
+  }
+
+  // Samples: the serve log is the process-lifetime record (thousands of
+  // lines, no timestamps — `at` is a monotonic line index); the /metrics ring
+  // is timestamped but bounded (observed 12). Live view prefers the log;
+  // a windowed replay (--until) must use the ring, because log position is
+  // not wall time and cannot be windowed.
+  let samples: StrataSamples = strata.samples;
+  let logUsed = false;
+  if (!opts.until) {
+    if (opts.since?.trim()) {
+      // The log spans the whole process life and carries no timestamps, so a
+      // --since request CANNOT be honoured there. Say so instead of silently
+      // analysing a window the caller did not ask for.
+      unavailable.push(
+        `--since ${opts.since} was not applied: the strata serve log has no timestamps — the analysis covers the whole log`,
+      );
+    }
+    if (opts.strataLogPath && opts.strataLogPath.trim()) {
+      const fromLog = probeStrataLog(opts.strataLogPath, deps);
+      if (fromLog) {
+        if (fromLog.prefill.length > 0) {
+          samples = fromLog;
+          logUsed = true;
+        } else {
+          unavailable.push(`${opts.strataLogPath} — parsed, but no request lines`);
+        }
+      } else {
+        unavailable.push(opts.strataLogPath);
+      }
+    }
+  } else {
+    // Windowed replay: the ring carries real epoch ms, so the requested
+    // window CAN be applied — and must be, or a "past incident" replay would
+    // quietly analyse the CURRENT process's last few requests under the
+    // REPLAY banner, the exact wrong-process misattribution this command
+    // exists to prevent. An unparseable expression is disclosed, never
+    // silently ignored.
+    const sinceMs = parseWindowExpr(opts.since);
+    const untilMs = parseWindowExpr(opts.until);
+    if (untilMs === undefined) {
+      unavailable.push(`--until '${opts.until}' could not be parsed — ring samples left unfiltered`);
+    } else if (opts.since?.trim() && sinceMs === undefined) {
+      unavailable.push(`--since '${opts.since}' could not be parsed — lower bound not applied to ring samples`);
+    } else {
+      const inWindow = (at: number) =>
+        at <= untilMs && (sinceMs === undefined || at >= sinceMs);
+      samples = {
+        prefill: strata.samples.prefill.filter((s) => inWindow(s.at)),
+        decode: strata.samples.decode.filter((s) => inWindow(s.at)),
+        reuse: strata.samples.reuse.filter((s) => inWindow(s.at)),
+        // Draft records carry no timestamp, so they cannot be windowed; a
+        // replay drops them rather than reporting the CURRENT process's
+        // acceptance rate under the REPLAY banner.
+        drafts: [],
+      };
+    }
+  }
+
+  const snapshot: InferenceSnapshot = {
+    // Strata has no unit; the declared llama unit's uptime would describe a
+    // dead process. Uptime for strata comes from the log's own line count
+    // only implicitly, so leave it unset rather than attributing a wrong one.
+    uptimeSeconds: undefined,
+    rails: slots?.slots ?? 1,
+    poolCells: strata.engine.maxContext ?? slots?.nCtx,
+    kvBitsPerValue: strataKvBitsPerValue(strata.engine.kv),
+    // Fixed-tier KV (int8) has no degrade floor; undefined means no
+    // pinned-at-floor finding, which is correct — there is no floor to pin at.
+    kvFloorBitsPerValue: undefined,
+    prefill: samples.prefill,
+    checkpoints: [],
+    decode: samples.decode,
+    reuse: samples.reuse,
+    vramFreeMiB: strata.engine.vramFreeMiB,
+    engineModel: strata.engine.model,
+    generationTimeouts: timeouts,
+    backend: 'strata',
+  };
+  if (!logUsed && !opts.until) {
+    // The ring is bounded; a trend over it alone is usually too thin, and the
+    // operator should know WHY rather than read the note as "server broken".
+    unavailable.push(
+      `strata serve log (set --strata-log or $UAP_STRATA_LOG for a process-lifetime trend; ` +
+        `${samples.prefill.length} ring sample(s) used)`,
+    );
+  }
+
+  return { snapshot, unit, slots, metrics: null, strata: { ...strata, samples }, backend: 'strata', unavailable };
 }
