@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.19.3 (2026-10-04)
+
+- fix(inference): GREEN when evidence is present and nothing crossed a threshold
+
+
 ## v2.19.2 (2026-10-04)
 
 - test(config): cap vitest workers at 16 — worker RPC dies under full-suite load
