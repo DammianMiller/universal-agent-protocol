@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.19.2 (2026-10-04)
+
+- test(config): cap vitest workers at 16 — worker RPC dies under full-suite load
+- test: raise the T1 cold-import headroom to 60s under live-stack load
+- refactor(proxy): one policy point for the per-turn reset family
+
+
 ## v2.19.1 (2026-10-04)
 
 - fix(proxy): reset the forcing-loop counters on every fresh user turn
