@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.19.4 (2026-10-04)
+
+- fix(proxy): log progress during buffered non-stream waits
+
+
 ## v2.19.3 (2026-10-04)
 
 - fix(inference): GREEN when evidence is present and nothing crossed a threshold
