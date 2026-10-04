@@ -1827,6 +1827,21 @@ try:
     )
 except ValueError:
     PROXY_STREAM_HEARTBEAT_SECS = 0.0
+# Journal progress cadence for the same buffered wait. The heartbeat keeps the
+# CLIENT alive; this keeps the OPERATOR alive: a no-tool streaming turn served
+# via the guarded path (confidence-escalation buffering, tools-stripped breaker
+# turns, forced non-stream) can generate for minutes with zero journal output —
+# live 2026-10-04, opencode's client-side compaction summary (msgs=1, tools=0,
+# stream=True) buffered 11,099 output tokens over 281 s: the proxy looked idle,
+# the client looked hung, and nothing in the log distinguished a bug from a
+# long generation until the RESP line finally landed. One INFO line per this
+# many seconds of waiting. 0 disables.
+try:
+    PROXY_GUARDED_WAIT_LOG_SECS = float(
+        os.environ.get("PROXY_GUARDED_WAIT_LOG_SECS", "60")
+    )
+except ValueError:
+    PROXY_GUARDED_WAIT_LOG_SECS = 60.0
 PROXY_FORCED_TOOL_DAMPENER = os.environ.get(
     "PROXY_FORCED_TOOL_DAMPENER", "on"
 ).lower() not in {
@@ -13599,6 +13614,12 @@ async def _heartbeat_then_buffered(produce_coro, model: str, input_tokens: int =
     interval = PROXY_STREAM_HEARTBEAT_SECS if PROXY_STREAM_HEARTBEAT_SECS > 0 else 15.0
     thinking_heartbeat = PROXY_STREAM_THINKING_DELTAS and PROXY_PREFILL_HEARTBEAT_SECS > 0
     hb_thinking_open = False
+    # Operator-visible progress for the same wait the client heartbeats mask
+    # (2026-10-04 incident: a 281 s buffered compaction summary left the
+    # journal silent from REQ to RESP, reading as a hung proxy). One INFO line
+    # per PROXY_GUARDED_WAIT_LOG_SECS boundary crossed, never more.
+    waited_secs = 0.0
+    last_wait_log_boundary = 0
     task = asyncio.ensure_future(produce_coro)
     try:
         while True:
@@ -13608,6 +13629,17 @@ async def _heartbeat_then_buffered(produce_coro, model: str, input_tokens: int =
                 produced = await asyncio.wait_for(asyncio.shield(task), timeout=interval)
                 break
             except asyncio.TimeoutError:
+                waited_secs += interval
+                if PROXY_GUARDED_WAIT_LOG_SECS > 0:
+                    boundary = int(waited_secs // PROXY_GUARDED_WAIT_LOG_SECS)
+                    if boundary > last_wait_log_boundary:
+                        last_wait_log_boundary = boundary
+                        logger.info(
+                            "GUARDED-BUFFER WAIT: buffered non-stream turn still "
+                            "generating after %ds (model=%s input_tokens=%d) — "
+                            "client is receiving heartbeats, not hung",
+                            int(waited_secs), model, input_tokens,
+                        )
                 if thinking_heartbeat:
                     if not hb_thinking_open:
                         hb_thinking_open = True
@@ -14998,6 +15030,13 @@ async def messages(request: Request):
     use_guarded_non_stream = _should_buffer_turn(is_stream, body, openai_body, monitor)
     if use_guarded_non_stream:
         async def _produce_guarded():
+            # Covers the full buffered lifetime including any concurrency-queue
+            # wait: from the first upstream attempt to the served response.
+            # Reported in the "served ... (buffered %ds)" log line below so a
+            # long buffered turn is legible after the fact (2026-10-04: a
+            # client-compaction summary buffered 281 s and the only end-line
+            # evidence was the RESP timestamp).
+            t_guarded = time.monotonic()
             strict_body = dict(openai_body)
             strict_body["stream"] = False
 
@@ -15224,15 +15263,18 @@ async def messages(request: Request):
             )
             if PROXY_FORCE_NON_STREAM:
                 logger.info(
-                    "FORCED NON-STREAM: served stream response via guarded non-stream path"
+                    "FORCED NON-STREAM: served stream response via guarded non-stream path (buffered %ds)",
+                    int(time.monotonic() - t_guarded),
                 )
             elif PROXY_MALFORMED_TOOL_STREAM_STRICT and _has_tool_definitions(body):
                 logger.info(
-                    "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
+                    "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path (buffered %ds)",
+                    int(time.monotonic() - t_guarded),
                 )
             else:
                 logger.info(
-                    "REQUIRED TOOL STREAM GUARDRAIL: served stream response via guarded non-stream path"
+                    "REQUIRED TOOL STREAM GUARDRAIL: served stream response via guarded non-stream path (buffered %ds)",
+                    int(time.monotonic() - t_guarded),
                 )
 
             anthropic_resp = await _maybe_apply_recipe(anthropic_resp, body, openai_body, client)

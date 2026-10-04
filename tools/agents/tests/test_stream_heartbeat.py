@@ -107,5 +107,82 @@ class TestStreamHeartbeat(unittest.TestCase):
         self.assertIn("kaboom", out)
 
 
+class TestGuardedWaitProgressLog(unittest.TestCase):
+    """Journal progress during the buffered wait (2026-10-04 incident).
+
+    A no-tool streaming turn served via the guarded path can buffer for
+    minutes (live: an 11,099-token client-compaction summary over 281 s) with
+    the journal silent from REQ to RESP — the proxy read as hung and the only
+    evidence was the RESP timestamp. `_heartbeat_then_buffered` now logs one
+    INFO line per PROXY_GUARDED_WAIT_LOG_SECS of waiting so a long buffered
+    generation is legible while it happens.
+    """
+
+    def setUp(self):
+        self._hb = proxy.PROXY_STREAM_HEARTBEAT_SECS
+        self._log_secs = proxy.PROXY_GUARDED_WAIT_LOG_SECS
+        proxy.PROXY_STREAM_HEARTBEAT_SECS = 0.05
+        proxy.PROXY_GUARDED_WAIT_LOG_SECS = 0.06
+
+    def tearDown(self):
+        proxy.PROXY_STREAM_HEARTBEAT_SECS = self._hb
+        proxy.PROXY_GUARDED_WAIT_LOG_SECS = self._log_secs
+
+    @staticmethod
+    def _response():
+        return {
+            "id": "msg_z",
+            "model": "m",
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn",
+            "usage": {"output_tokens": 1},
+        }
+
+    def test_slow_produce_logs_wait_progress(self):
+        async def produce():
+            await asyncio.sleep(0.2)  # > 2 log boundaries at 0.06s
+            return self._response()
+
+        with self.assertLogs("uap.anthropic_proxy", level="INFO") as cm:
+            out = "".join(asyncio.run(_collect(produce())))
+        self.assertIn("done", out)  # stream still completes normally
+        wait_logs = [l for l in cm.output if "GUARDED-BUFFER WAIT" in l]
+        self.assertGreaterEqual(len(wait_logs), 2)
+        self.assertIn("still generating after", wait_logs[0])
+        self.assertIn("test-model", wait_logs[0])
+
+    def test_progress_logs_once_per_boundary_not_per_heartbeat(self):
+        async def produce():
+            await asyncio.sleep(0.22)  # ~4 heartbeats, ~3 boundaries
+            return self._response()
+
+        with self.assertLogs("uap.anthropic_proxy", level="INFO") as cm:
+            asyncio.run(_collect(produce()))
+        wait_logs = [l for l in cm.output if "GUARDED-BUFFER WAIT" in l]
+        # 0.22s of waiting at 0.06s boundaries: 2-4 lines, one per boundary
+        # crossed — NOT one per 0.05s heartbeat.
+        self.assertGreaterEqual(len(wait_logs), 2)
+        self.assertLessEqual(len(wait_logs), 4)
+
+    def test_fast_produce_logs_no_wait_progress(self):
+        async def produce():
+            return self._response()
+
+        with self.assertNoLogs("uap.anthropic_proxy", level="INFO"):
+            out = "".join(asyncio.run(_collect(produce())))
+        self.assertIn("done", out)
+
+    def test_wait_progress_log_disabled(self):
+        proxy.PROXY_GUARDED_WAIT_LOG_SECS = 0.0
+
+        async def produce():
+            await asyncio.sleep(0.15)
+            return self._response()
+
+        with self.assertNoLogs("uap.anthropic_proxy", level="INFO"):
+            out = "".join(asyncio.run(_collect(produce())))
+        self.assertIn("done", out)
+
+
 if __name__ == "__main__":
     unittest.main()
