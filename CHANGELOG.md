@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.19.0 (2026-10-04)
+
+- feat(inference): strata backend support in inference health + capacity doctor
+
+
 ## v2.18.1 (2026-10-03)
 
 - chore: gitignore the per-machine orchestrator continuity script
