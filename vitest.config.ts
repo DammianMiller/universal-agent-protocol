@@ -12,6 +12,17 @@ export default defineConfig({
     // load, flaking the version-bump gate. 15s is generous headroom for
     // contention while still failing a genuinely hung test.
     testTimeout: 15000,
+    // Same disease one level up (2026-10-04): with ~32 tinypool workers on a
+    // 32-core box that is ALSO running the live strata inference stack, the
+    // worker RPC (onTaskUpdate) times out and kills a whole FILE — observed
+    // as "5705 tests passing, 1 file failed" on eight consecutive
+    // version-bump runs. Cap the worker count: CI boxes rarely have more
+    // cores than this, so nothing changes there, while the dev box's
+    // thundering herd halves. minWorkers must be set too — vitest defaults
+    // it to the full CPU count and a default-min above an explicit max
+    // is a hard RangeError, not a clamp.
+    minWorkers: 4,
+    maxWorkers: 16,
     include: ['test/**/*.test.ts'],
     exclude: ['**/.worktrees/**', 'test/benchmarks/**', 'node_modules/**', 'benchmark-results/**'],
     watch: false,
