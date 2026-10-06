@@ -14,6 +14,8 @@
 import { spawnSync } from 'child_process';
 import { existsSync, readFileSync, readdirSync, lstatSync } from 'fs';
 import { join, resolve, sep } from 'path';
+import { runGateProcessSync } from './gate-spawn.js';
+import { detectExtractionMiss } from './self-gate.js';
 import { synthesizeExecutionRung } from './execution-gate.js';
 
 /**
@@ -154,6 +156,13 @@ export interface RungResult {
   exitCode: number | null;
   /** Why the rung failed; undefined when it passed or was skipped */
   failureReason?: RungFailureReason;
+  /**
+   * True (failing rungs only) when the gate's own output says it could not
+   * PARSE the artifact's output — computed over the FULL combined output, not
+   * the truncated tail (a long dump can push the wording out of the tail and
+   * the gate-repair route would never fire). See self-gate detectExtractionMiss.
+   */
+  extractionMiss?: boolean;
   durationMs: number;
   /** Tail of combined stdout+stderr, truncated for prompt injection */
   outputTail: string;
@@ -1436,11 +1445,12 @@ export function runRung(
       outputTail: `declared gate cwd '${rung.cwd}' escapes the project root — refusing to run it`,
     };
   }
-  const res = spawnSync(rung.command, rung.args, {
+  // Grouped execution: a timed-out gate kills its whole process TREE (see
+  // gate-spawn.ts — the orphaned-grandchildren incident), not just the
+  // direct child.
+  const res = runGateProcessSync(rung.command, rung.args, {
     cwd: declaredCwd,
-    encoding: 'utf-8',
-    timeout: rung.timeoutMs,
-    maxBuffer: 16 * 1024 * 1024,
+    timeoutMs: rung.timeoutMs,
     env: sanitizedEnv(),
   });
 
@@ -1496,6 +1506,12 @@ export function runRung(
   const wantOutcomes = Boolean(rung.baselinePassing?.length) || captureOutcomes;
   const parsedOutcomes = wantOutcomes ? parseTestOutcomes(combined, rung.id) : null;
 
+  // Full-output extraction-miss detection (U3): a failing gate whose own
+  // text says it could not extract an expected value from the artifact.
+  // Computed here over `combined` (pre-truncation) so the loop's gate-repair
+  // route cannot be starved by tail truncation (review quality F9).
+  const extractionMiss = !passed ? detectExtractionMiss(combined) !== null : undefined;
+
   return {
     id: rung.id,
     name: rung.name,
@@ -1503,6 +1519,7 @@ export function runRung(
     skipped: false,
     exitCode,
     failureReason,
+    ...(extractionMiss ? { extractionMiss } : {}),
     durationMs,
     outputTail: passed ? '' : truncateTail(combined, tailChars),
     ...(parsedOutcomes

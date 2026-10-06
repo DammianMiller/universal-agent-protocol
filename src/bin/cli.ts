@@ -869,6 +869,8 @@ program
   .option('--gates <ids>', 'Comma-separated gate subset (build,typecheck,test,lint)')
   .option('--no-self-gate', 'Disable the self-authored acceptance gate fallback (on by default when no project gates are detected)')
   .option('--force-self-gate', 'Author a task-specific acceptance gate even when project gates exist')
+  .option('--self-gate-timeout <ms>', 'Per-run budget for the self-authored acceptance gate, in ms (default 300000; env UAP_SELF_GATE_TIMEOUT_MS). Cold cargo/npm builds routinely exceed the old 120s default.')
+  .option('--no-write-narrowing', 'Disable per-turn write narrowing (U1: after stagnation, restrict writes to the files the failing gates named). Env UAP_DELIVER_NO_WRITE_NARROWING=1 does the same.')
   .option('--allow-noop', 'Permit delivery without any tree change (disables the anti-no-op acceptance rail for missions that genuinely require none)')
   .option('--pending [file]', 'Deterministically apply the edit intents recorded by the delivery gate (.uap/pending-deliver.jsonl) — exact-anchor replay, no model — then run the required gates once and exit')
   .option('--force', 'Run even when the trivial-mission guard would refuse: under the escalate delivery posture a mission that reads as a small single-file edit is refused (make it directly) unless two red gates say direct edits are not working')
@@ -936,6 +938,19 @@ program
     // Explicit --max-turns is a hard cap downstream; the commander default
     // ('5') is indistinguishable by value, so record the option's source.
     options.maxTurnsExplicit = command.getOptionValueSource?.('maxTurns') === 'cli';
+    // Commander exposes --self-gate-timeout as a string; deliver wants ms.
+    // Fail FAST on a non-numeric/non-positive value (review security F8): a
+    // silent fallback to the 300s default would leave the operator believing
+    // their 30s budget was in force.
+    if (options.selfGateTimeout !== undefined) {
+      const ms = Number(options.selfGateTimeout);
+      if (!Number.isFinite(ms) || ms <= 0) {
+        console.error(`--self-gate-timeout must be a positive number of milliseconds (got '${String(options.selfGateTimeout)}')`);
+        process.exitCode = 1;
+        process.exit(1);
+      }
+      options.selfGateTimeoutMs = ms;
+    }
     const cmd = await lazy.deliver();
     await cmd((instructionParts ?? []).join(' '), options);
   });

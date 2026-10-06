@@ -32,6 +32,7 @@ import { fetchModelWithRetry, isEndpointUnreachable, ENDPOINT_UNREACHABLE, TRANS
 import { resolveRequestCredential } from '../models/openai-compat-client.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename, isTestFilePath } from './applier.js';
+import { SELF_GATE_REL_PATH } from './self-gate.js';
 import { additiveTestEditRefusal, protectedTestRefusal } from './test-oracle-additive.js';
 import { estimateMessagesTokens, formatBudgetStop } from './context-budget.js';
 import { sanitizedEnv } from './sanitized-env.js';
@@ -360,6 +361,16 @@ export interface AgenticExecutorOptions {
    * (permissive) — IaC writes are allowed unless explicitly protected.
    */
   protectIac?: boolean;
+  /**
+   * Per-turn write narrowing (U1/U3): the convergence loop sets `.current` to
+   * this turn's allowed-write set (undefined = unbounded) before each executor
+   * session. write_file/edit_file/edit_range refuse writes outside it — and an
+   * allowlisted path is the sanctioned exception through the gate-config
+   * block (a diagnosed gate-repair turn editing .uap-deliver/verify.sh).
+   * The executor is constructed once per run; the ref is the seam that carries
+   * per-turn state into it.
+   */
+  writeAllowlistRef?: { current: ReadonlySet<string> | undefined };
   /** Optional sink for a structured trace of what the agent did. */
   onEvent?: (event: AgenticEvent) => void;
   /**
@@ -1772,6 +1783,29 @@ export function repeatReadNote(
   return null;
 }
 
+/**
+ * Write-narrowing helpers (U1/U3). The loop sets a per-turn allowlist when a
+ * run stagnates against gates that NAME files (stop letting the model polish
+ * the wrong ones) or when a diagnosed gate-repair turn must touch exactly the
+ * gate script. Membership is case-tolerant; the exemption semantics live at
+ * the call sites.
+ */
+function allowlistHit(rel: string, allow: ReadonlySet<string> | undefined): boolean {
+  return Boolean(allow && (allow.has(rel) || allow.has(rel.toLowerCase())));
+}
+
+function allowlistRefusal(
+  pathLabel: string,
+  rel: string,
+  allow: ReadonlySet<string> | undefined
+): string | null {
+  if (!allow || allowlistHit(rel, allow)) return null;
+  return (
+    `ERROR: ${pathLabel} — THIS TURN ONLY THESE FILES MAY BE EDITED: ${[...allow].join(', ')}. ` +
+    'Fix the files the failing gates named; writes to anything else are rejected.'
+  );
+}
+
 export function runTool(
   projectRoot: string,
   name: string,
@@ -1792,7 +1826,14 @@ export function runTool(
   writeLedger?: Set<string>,
   // Content-hash dedup context (see stateHashReference). Optional — callers
   // that omit it (tests, one-off dispatches) simply get no result collapsing.
-  stateHash?: { store: StateHashStore; round: number; turn: number }
+  stateHash?: { store: StateHashStore; round: number; turn: number },
+  // Per-turn write narrowing (U1/U3): when set, only these project-relative
+  // POSIX paths may be written this turn. The executor is constructed once
+  // per run; the loop updates the ref between turns and the dispatcher
+  // passes its value here at call time. An allowlisted path is EXEMPT from
+  // the gate-config block (the sanctioned gate-repair turn) but never from
+  // protectedFiles/contractFiles.
+  writeAllowlist?: ReadonlySet<string>
 ): string {
   let pathNote = '';
   // Contain/repair garbled tool-call paths against the known project root before
@@ -1894,6 +1935,12 @@ export function runTool(
     }
     if (name === 'write_file') {
       const abs = safePath(projectRoot, String(args.path));
+      // Per-turn narrowing (U1/U3): first guard in the chain — the turn
+      // contract is checked before any content judgment.
+      const wRel = relative(projectRoot, abs).split(/[\\/]/).join('/');
+      const wRefusal = allowlistRefusal(String(args.path), wRel, writeAllowlist);
+      if (wRefusal) return wRefusal;
+      const wAllowed = allowlistHit(wRel, writeAllowlist);
       // Truncated-emit guard: a weak model re-emitting a whole large file hits
       // its output ceiling mid-class and the stump poisons the tree — every
       // later judge turn then rejects "code cuts off" while the model keeps
@@ -1910,7 +1957,13 @@ export function runTool(
           'use edit_file to change only the parts that need changing, or write the file in smaller pieces.'
         );
       }
-      const internal = agentInternalReason(projectRoot, abs, true);
+      // The sanctioned gate-repair write (U3): exactly the self-gate script,
+      // allowlisted this turn by a DIAGNOSED extraction-miss repair. It is the
+      // one exception to the agent-internal spec guard below (review quality
+      // F1: without it the gate-repair route was dead in agentic mode) and to
+      // the protected-SEGMENT block (never to basenames/configs/protectedFiles).
+      const gateScriptWrite = wAllowed && wRel === SELF_GATE_REL_PATH;
+      const internal = gateScriptWrite ? null : agentInternalReason(projectRoot, abs, true);
       if (internal) return internal;
       if (protectedFiles.has(protectedKey(projectRoot, abs))) {
         // Additive carve-out: a mission may legitimately ADD tests to a
@@ -1942,7 +1995,15 @@ export function runTool(
       // applier, so enforce the same blocklist here or the model can rig the
       // (tiered) gates by writing tsconfig/compose/Dockerfile/*.tf/etc.
       const rel = relative(projectRoot, abs).split(/[\\/]/).join('/');
-      const blocked = protectedWritePathReason(rel, protectGateConfigs, protectIac);
+      // Allowlist exemption = SEGMENTS ONLY, and only for the sanctioned
+      // gate-script write (applier parity — review X3: this previously exempted
+      // the whole reason for ANY allowlisted path, which gate output steers).
+      const blocked = protectedWritePathReason(
+        rel,
+        protectGateConfigs,
+        protectIac,
+        gateScriptWrite
+      );
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
@@ -2070,18 +2131,23 @@ export function runTool(
         return `ERROR: ${String(args.path)} is a LOCKED CONTRACT file — build against it, do not modify it.`;
       }
       const rel = relative(projectRoot, abs).split(/[\\/]/).join('/');
+      const eRefusal = allowlistRefusal(String(args.path), rel, writeAllowlist);
+      if (eRefusal) return eRefusal;
+      const eAllowed = allowlistHit(rel, writeAllowlist);
+      const gateScriptEdit = eAllowed && rel === SELF_GATE_REL_PATH;
       if (protectedTestEdit && !isTestFilePath(rel)) {
         return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
       }
-      const blocked = protectedWritePathReason(rel, protectGateConfigs, protectIac);
+      const blocked = protectedWritePathReason(rel, protectGateConfigs, protectIac, gateScriptEdit);
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
       // The agent-internal guard write_file has, which edit_file did NOT: without
       // it the surgical path could edit `.uap/`, `.git/` and node_modules while
       // the whole-file path refused — the recommended escape route was also the
-      // bypass. Found reviewing the batch-edit change (harness plan A4).
-      const internalEdit = agentInternalReason(projectRoot, abs, true);
+      // bypass. Found reviewing the batch-edit change (harness plan A4). The
+      // sanctioned gate-repair write is the one exception (applier parity).
+      const internalEdit = gateScriptEdit ? null : agentInternalReason(projectRoot, abs, true);
       if (internalEdit) return internalEdit;
       if (!existsSync(abs)) {
         return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.`;
@@ -2221,14 +2287,18 @@ export function runTool(
         return `ERROR: ${String(args.path)} is a LOCKED CONTRACT file — build against it, do not modify it.`;
       }
       const rel = relative(projectRoot, abs).split(/[\\/]/).join('/');
+      const rRefusal = allowlistRefusal(String(args.path), rel, writeAllowlist);
+      if (rRefusal) return rRefusal;
+      const rAllowed = allowlistHit(rel, writeAllowlist);
+      const gateScriptRange = rAllowed && rel === SELF_GATE_REL_PATH;
       if (protectedTestRange && !isTestFilePath(rel)) {
         return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
       }
-      const blocked = protectedWritePathReason(rel, protectGateConfigs, protectIac);
+      const blocked = protectedWritePathReason(rel, protectGateConfigs, protectIac, gateScriptRange);
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
-      const internal = agentInternalReason(projectRoot, abs, true);
+      const internal = gateScriptRange ? null : agentInternalReason(projectRoot, abs, true);
       if (internal) return internal;
       if (!existsSync(abs)) {
         return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.`;
@@ -2846,7 +2916,8 @@ export function createAgenticExecutor(
               opts.writeLedger,
               // Recovered writes mutate files too — the store must hear about
               // them or the next read could collapse to a stale reference.
-              { store: stateHashStore, round, turn }
+              { store: stateHashStore, round, turn },
+              opts.writeAllowlistRef?.current
             );
             opts.onEvent?.({
               round,
@@ -3004,7 +3075,8 @@ export function createAgenticExecutor(
           sweep,
           protectIac,
           opts.writeLedger,
-          { store: stateHashStore, round, turn }
+          { store: stateHashStore, round, turn },
+          opts.writeAllowlistRef?.current
         );
         // #2a: per-tool-call progress — refresh the deliver heartbeat now, not
         // just at turn end, so wedge-detection tracks real intra-turn activity.

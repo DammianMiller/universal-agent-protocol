@@ -423,6 +423,85 @@ describe('edit_file tool (P1, plan D3)', () => {
   });
 });
 
+describe('write-allowlist + sanctioned gate-repair writes (U1/U3)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agx-allowlist-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'bench.ts'), 'export const bench = 1;\n');
+    mkdirSync(join(dir, '.uap-deliver'), { recursive: true });
+    writeFileSync(join(dir, '.uap-deliver', 'verify.sh'), 'echo original-gate\n');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const call = (name: string, args: object, id = 't1') =>
+    ({ content: null, tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
+
+  it('refuses a write outside the narrowed set with the allowed files named', async () => {
+    mockChatSequence([
+      call('write_file', { path: 'src/other.ts', content: 'export const other = 1;\n' }),
+      call('finish', { summary: 'done' }, 't2'),
+    ]);
+    const writeAllowlistRef = { current: new Set<string>(['src/bench.ts']) as ReadonlySet<string> | undefined };
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1', writeAllowlistRef });
+    await exec('fix the bench');
+    // The refusal text rides the tool result back into the conversation; the
+    // observable contract is the tree: the out-of-set write never lands.
+    expect(existsSync(join(dir, 'src', 'other.ts'))).toBe(false);
+  });
+
+  it('allows a write to an allowlisted file', async () => {
+    mockChatSequence([
+      call('write_file', { path: 'src/bench.ts', content: 'export const bench = 2;\n' }),
+      call('finish', { summary: 'done' }, 't2'),
+    ]);
+    const writeAllowlistRef = { current: new Set<string>(['src/bench.ts']) as ReadonlySet<string> | undefined };
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1', writeAllowlistRef });
+    await exec('fix the bench');
+    expect(readFileSync(join(dir, 'src', 'bench.ts'), 'utf-8')).toContain('bench = 2');
+  });
+
+  it('sanctioned gate-repair write reaches the gate script through the protected segment', async () => {
+    mockChatSequence([
+      call('write_file', { path: '.uap-deliver/verify.sh', content: '#!/bin/bash\nnode src/bench.ts\nexit $?\n' }),
+      call('finish', { summary: 'repaired the extraction' }, 't2'),
+    ]);
+    const writeAllowlistRef = { current: new Set<string>(['.uap-deliver/verify.sh']) as ReadonlySet<string> | undefined };
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1', writeAllowlistRef });
+    await exec('repair the gate');
+    const gate = readFileSync(join(dir, '.uap-deliver', 'verify.sh'), 'utf-8');
+    expect(gate).toContain('node src/bench.ts'); // the repaired write landed
+    expect(gate).not.toContain('original-gate'); // the old content is gone
+  });
+
+  it('the gate script stays protected when the allowlist does NOT name it (no laundering)', async () => {
+    mockChatSequence([
+      call('write_file', { path: '.uap-deliver/verify.sh', content: 'exit 0\n' }),
+      call('finish', { summary: 'tried to rig' }, 't2'),
+    ]);
+    const writeAllowlistRef = { current: new Set<string>(['src/bench.ts']) as ReadonlySet<string> | undefined };
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1', writeAllowlistRef });
+    await exec('fix the bench');
+    // Refused by the allowlist first (not gate-named), and even an allowlist
+    // minted from gate output could only exempt the segment for the exact
+    // gate-script path — never a general unlock.
+    expect(readFileSync(join(dir, '.uap-deliver', 'verify.sh'), 'utf-8')).toContain('original-gate');
+  });
+
+  it('no allowlist: the gate script is protected as before (default unchanged)', async () => {
+    mockChatSequence([
+      call('write_file', { path: '.uap-deliver/verify.sh', content: 'exit 0\n' }),
+      call('finish', { summary: 'tried' }, 't2'),
+    ]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('do things');
+    expect(readFileSync(join(dir, '.uap-deliver', 'verify.sh'), 'utf-8')).toContain('original-gate');
+  });
+});
+
 describe('isSuspectedGutting (P3 anti-gutting)', () => {
   it('flags gutting a substantial file to under 35% of its size', () => {
     // The real incident: deliver.ts ~120000 bytes -> ~20000 (17%).

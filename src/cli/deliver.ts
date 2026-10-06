@@ -38,6 +38,7 @@ import { classifyComplexity, tierToRouting } from '../models/complexity.js';
 import { promptSelectionFromConfig } from '../self-tuning/prompt-variants.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { applyPendingIntents } from '../delivery/pending-intents.js';
+import { prescribedReplayPreflight } from '../delivery/prescribed-replay.js';
 import { runAcceptanceGate } from '../delivery/acceptance-judge.js';
 import { buildMissionAcceptanceGate, resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import {
@@ -415,8 +416,17 @@ export interface DeliverOptions {
   gates?: string;
   /** `--no-self-gate` sets this false; default (undefined) keeps the fallback on. */
   selfGate?: boolean;
+  /** Write narrowing (U1): refuse writes outside the gate-named set after
+   * stagnation. `--no-write-narrowing` / UAP_DELIVER_NO_WRITE_NARROWING=1 disables. */
+  writeNarrowing?: boolean;
   /** `--force-self-gate`: author an acceptance gate even when project gates exist. */
   forceSelfGate?: boolean;
+  /** `--self-gate-timeout <ms>`: per-run budget for the self-authored gate
+   * (authoring smoke runs + per-turn verification). Default 300s; env
+   * UAP_SELF_GATE_TIMEOUT_MS. A cold cargo/npm build at the 120s default
+   * burned a real run's whole authoring budget to one ETIMEDOUT
+   * (20261005T060243). */
+  selfGateTimeoutMs?: number;
   /** `--acceptance`: after objective gates pass, judge spec behavioral completeness
    *  via the LLM and feed unmet criteria back so the loop completes the spec. */
   acceptance?: boolean;
@@ -2549,6 +2559,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // can extend it before reconvergence runs.
   const sharedProtectedFiles: Set<string> =
     options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>();
+  // Per-turn write-narrowing seam (U1/U3): the loop updates `.current` between
+  // turns (stagnation narrowing / sanctioned gate-repair); both executors and
+  // the loop config hold THIS reference so the once-constructed executors can
+  // still be steered per-turn.
+  const sharedWriteAllowlistRef: { current: ReadonlySet<string> | undefined } = { current: undefined };
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
         projectRoot,
@@ -2564,6 +2579,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // the file-block applier where this protection otherwise lives).
         protectGateConfigs: options.protectTests !== false,
         protectIac,
+        writeAllowlistRef: sharedWriteAllowlistRef,
         // run_bash is an uncontained host shell unsandboxed — allow it only
         // under `uap sandbox` (auto-detected) or an explicit opt-in (audit X3).
         allowBash: options.allowBash === true || process.env.UAP_DELIVER_ALLOW_BASH === '1',
@@ -2587,6 +2603,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         writeLedger: agenticWriteLedger,
         protectedFiles: sharedProtectedFiles,
         protectGateConfigs: options.protectTests !== false,
+        writeAllowlistRef: sharedWriteAllowlistRef,
         allowBash: options.allowBash === true || process.env.UAP_DELIVER_ALLOW_BASH === '1',
         onEvent: (e) =>
           console.log(
@@ -2620,7 +2637,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     console.log(chalk.cyan('⚖ self-gate: authoring a task-specific acceptance check…'));
     // Author the gate with the blind executor — it is a single-shot script
     // write, not a task to solve agentically.
-    const sg = await authorAcceptanceGate({ instruction, projectRoot, executor: gateAuthorExecutor });
+    const sg = await authorAcceptanceGate({
+      instruction,
+      projectRoot,
+      executor: gateAuthorExecutor,
+      // --self-gate-timeout / UAP_SELF_GATE_TIMEOUT_MS. The option existed but
+      // was never passed — the 120s default was unreachable at runtime.
+      timeoutMs: options.selfGateTimeoutMs,
+    });
     for (const note of sg.notes) console.log(chalk.dim(`    ${note}`));
     if (!sg.rung) {
       // A failed self-gate is survivable only when a real acceptance judge will
@@ -3111,6 +3135,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // Best-of-N with git-worktree isolation when available: candidates verify
     // CONCURRENTLY in their own trees (clean git repo required; falls back to
     // the sequential shared-tree path otherwise).
+    // Per-turn write narrowing (U1/U3): the loop updates this ref between
+    // turns; the agentic executors consult it at every write. Runtime
+    // opt-out: --no-write-narrowing / UAP_DELIVER_NO_WRITE_NARROWING=1
+    // (review quality F3/arch F5 — an operator hitting a false-positive
+    // narrowing on a legitimately slow-converging run needs a switch).
+    disableWriteNarrowing:
+      options.writeNarrowing === false || process.env.UAP_DELIVER_NO_WRITE_NARROWING === '1',
+    writeAllowlistRef: agentic ? sharedWriteAllowlistRef : undefined,
     explorer: candidates
       ? {
           candidates,
@@ -4112,6 +4144,24 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
 
   let result: DeliveryResult;
   try {
+    // Prescribed-replay preflight (U2): a mission that prescribes the
+    // pending-intent mechanism ("replay the recorded intent rather than
+    // rewriting it") gets it executed deterministically BEFORE turn 1 — a
+    // model told to replay can simply not do it (observed live,
+    // 20261006T042017: 12 rounds hand-rewriting content that was recorded).
+    // Applies pending intents at every log level, and restores mission-named
+    // files the tree has clobbered from the applied log (fresh runs only).
+    // Deliberately the LAST preflight (review quality F4): it mutates the
+    // tree (applies + consumes intents), so it must not run before
+    // fail()-capable validation that could abort the run mid-mutation.
+    // Skipped for --pending (that path IS the manual replay) and --dry-run.
+    if (!options.dryRun && options.pending === undefined) {
+      const replay = prescribedReplayPreflight(projectRoot, instruction, {
+        resume: Boolean(resumeState),
+      });
+      for (const n of replay.notes) console.log(chalk.cyan(`⚙ replay preflight: ${n}`));
+    }
+
     // P1 — Lazy-UAP: measured on the brutal suite, scaffold-from-turn-1 both
     // wastes tokens on tasks the model can one-shot AND can regress clean
     // one-shots. So: one bare turn (no seeds/critic/practices/exploration,

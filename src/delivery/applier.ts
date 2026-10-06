@@ -76,6 +76,23 @@ export interface ApplyOptions {
    * (permissive) — IaC writes are allowed unless explicitly protected.
    */
   protectIac?: boolean;
+  /**
+   * When set, ONLY these project-relative paths ('/'-separated) may be
+   * written this turn; every other block is rejected with a reason naming the
+   * allowed set. Set by the convergence loop on stagnation (the failing gates
+   * named files; stop letting the model polish the wrong ones) and for
+   * sanctioned gate-repair turns.
+   *
+   * A path in the allowlist EXEMPTS that one path from the protected-segment
+   * gate-config block: the loop only sets the allowlist after diagnosing
+   * exactly which file must change (a broken acceptance gate's repair turn),
+   * which is the sanctioned path into `.uap-deliver/verify.sh` — the general
+   * block stays for everything else, so the exception cannot be widened into
+   * "the model rewrites its own gate to exit 0". protectedFiles (test
+   * oracles) are NOT exemptible: no narrowing context makes rewriting the
+   * oracle legitimate.
+   */
+  writeAllowlist?: ReadonlySet<string>;
 }
 
 export type Applier = (
@@ -256,12 +273,24 @@ export function listGateConfigFiles(
 export function protectedWritePathReason(
   relPath: string,
   protectGateConfigs = true,
-  protectIac = false
+  protectIac = false,
+  /**
+   * Sanctioned gate-repair turn (U3): the ONE exemption the write-allowlist
+   * grants — the protected-SEGMENT block lifts so the diagnosed repair can
+   * reach .uap-deliver/verify.sh. Basenames, gate-config and IaC blocks stay:
+   * no narrowing context makes rewriting a runner config or executed script
+   * legitimate. Review X3/F1: the agentic path previously exempted the WHOLE
+   * reason for any allowlisted path; this param pins both paths to the SAME
+   * narrow semantics.
+   */
+  segmentExempt = false
 ): string | null {
   const segments = relPath.split(/[\\/]/);
-  for (const seg of segments) {
-    if (PROTECTED_SEGMENTS.has(seg.toLowerCase())) {
-      return `writes into ${seg} are not allowed`;
+  if (!segmentExempt) {
+    for (const seg of segments) {
+      if (PROTECTED_SEGMENTS.has(seg.toLowerCase())) {
+        return `writes into ${seg} are not allowed`;
+      }
     }
   }
   const base = segments[segments.length - 1].toLowerCase();
@@ -281,6 +310,21 @@ export function protectedWritePathReason(
   // remain writable — those are legitimate fixture modules.
   if (protectGateConfigs && segments.length === 1 && base === 'conftest.py') {
     return 'writes to the repo-root conftest.py are not allowed (it controls pytest collection — gate-rigging by indirection); put fixtures in a nested tests/conftest.py';
+  }
+  return null;
+}
+
+/**
+ * The protected segment a path contains (anywhere in it), or null. Shared by
+ * the loop's write-restriction composition (U1) and failing-file extraction
+ * so model-steerable gate output can never launder a protected path
+ * (`.github/workflows/x.sh`, `.husky/pre-commit`) into a sanctioned write
+ * target — both must derive from the SAME protected-segment list the applier
+ * enforces (review X3/F1, arch F1).
+ */
+export function containsProtectedSegment(relPath: string): string | null {
+  for (const seg of relPath.split(/[\\/]/)) {
+    if (PROTECTED_SEGMENTS.has(seg.toLowerCase())) return seg;
   }
   return null;
 }
@@ -636,12 +680,28 @@ function validatePath(
     return 'path escapes the project root';
   }
 
+  // Write narrowing (U1/U3): when the loop restricts this turn's writable
+  // set (stagnation with gate-named files, or a sanctioned gate-repair turn),
+  // a block outside it is refused with the allowed list spelled out. An
+  // allowlisted path is EXEMPT from the protected-segment block below — that
+  // is the sanctioned path into .uap-deliver/verify.sh for a diagnosed gate
+  // repair — but never from protectedFiles: no narrowing context makes
+  // rewriting a test oracle legitimate.
+  const allow = options?.writeAllowlist;
+  const relPosix = rel.split(sep).join('/');
+  const allowHit = Boolean(allow && (allow.has(relPosix) || allow.has(relPosix.toLowerCase())));
+  if (allow && !allowHit) {
+    return `this turn only these files may be edited: ${[...allow].join(', ')}`;
+  }
+
   // Block protected segments anywhere in the path (case-insensitive), and
   // protected basenames. Closes config/hook/CI-driven code execution.
   const segments = rel.split(sep);
-  for (const seg of segments) {
-    if (PROTECTED_SEGMENTS.has(seg.toLowerCase())) {
-      return `writes into ${seg} are not allowed`;
+  if (!allowHit) {
+    for (const seg of segments) {
+      if (PROTECTED_SEGMENTS.has(seg.toLowerCase())) {
+        return `writes into ${seg} are not allowed`;
+      }
     }
   }
   const base = segments[segments.length - 1].toLowerCase();
