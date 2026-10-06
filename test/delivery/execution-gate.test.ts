@@ -54,8 +54,14 @@ function writeWebGame(dir: string, gameJs: string): void {
  * showed; on a loaded CI runner it timed out and failed the build for a reason
  * unrelated to the code under test (observed: PR #601). The gate is the
  * component that decides when to give up, so the test budget must exceed its.
+ *
+ * 90s was still not enough on GitHub's 4-core runners under the full 16-worker
+ * suite: the master deploy-publish runs for v2.19.0-v2.19.4 all failed at the
+ * 90s mark (same test, ~16s on a dev machine), which blocked every npm publish
+ * since 2.16.7. Keep the dev budget tight; give CI a ceiling the runner can
+ * actually honour.
  */
-const GATE_TEST_TIMEOUT_MS = 90_000;
+const GATE_TEST_TIMEOUT_MS = process.env.CI ? 300_000 : 90_000;
 
 describe('detectArtifactType / findWebEntryDir', () => {
   let dir: string;

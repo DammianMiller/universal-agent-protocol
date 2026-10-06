@@ -29,6 +29,16 @@ import { createServer, type Server } from 'http';
 import { loadPlaywrightDriver } from '../../src/delivery/playwright-driver.js';
 import { runVmDomHarness, runExecutionGate } from '../../src/delivery/execution-gate.js';
 
+/**
+ * Test budget for the browser round-trips. 120s covers a dev machine easily
+ * (each verdict lands in well under a minute) but not GitHub's 4-core runners
+ * under the full 16-worker suite: the master deploy-publish run for v2.19.3
+ * failed `does not fail a healthy WebGL page` at the 120s mark, unrelated to
+ * the code under test. Keep the dev budget tight; give CI a ceiling the runner
+ * can actually honour.
+ */
+const WEBGL_TEST_TIMEOUT_MS = process.env.CI ? 300_000 : 120_000;
+
 const VALID = '#version 300 es\nin vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0); }';
 // Missing the statement terminator — a genuine GLSL syntax error.
 const BROKEN = '#version 300 es\nin vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0)  }';
@@ -113,7 +123,7 @@ describe('WebGL2 in the execution gate', () => {
     // The whole point: the stub failed this case, which is what made the run
     // unconvergeable. A valid shader must not look broken.
     expect(errs).toEqual([]);
-  }, 120_000);
+  }, WEBGL_TEST_TIMEOUT_MS);
 
   it('reports the REAL compiler message for a broken shader', async () => {
     const errs = await errorsFor(BROKEN);
@@ -125,7 +135,7 @@ describe('WebGL2 in the execution gate', () => {
     // unactionable. The message has to carry the compiler's own diagnostic.
     expect(joined).not.toContain('undefined');
     expect(joined).toMatch(/ERROR:\s*\d+:\d+/);
-  }, 120_000);
+  }, WEBGL_TEST_TIMEOUT_MS);
 
   it('degrades to null rather than throwing when playwright is absent', async () => {
     // The gate has a stub rung behind this one; an optional dependency going
@@ -244,7 +254,7 @@ requestAnimationFrame(function loop(){ requestAnimationFrame(loop); });
     expect(r.passed).toBe(false);
     // The compiler's own words, verbatim — a summary would be another percentage.
     expect(`${r.failureReason} ${r.outputTail}`).toMatch(/gl_FragColor|Shader compile error/i);
-  }, 120_000);
+  }, WEBGL_TEST_TIMEOUT_MS);
 
   it('does not fail a healthy WebGL page', async () => {
     const dir = project(`<html><body><canvas id="c"></canvas><script>
@@ -265,7 +275,7 @@ requestAnimationFrame(function loop(){
 
     const r = await runExecutionGate(dir, { entry: 'index.html' });
     expect(`${r.failureReason ?? ''} ${r.outputTail ?? ''}`).not.toMatch(/Shader compile error/i);
-  }, 120_000);
+  }, WEBGL_TEST_TIMEOUT_MS);
 });
 
 describe('a WebGL page whose shaders do not compile', () => {
@@ -326,7 +336,7 @@ requestAnimationFrame(function loop(){
     const r = await runExecutionGate(project(SILENT_BAD_SHADER), { entry: 'index.html' } as never);
     expect(r.passed).toBe(false);
     expect(r.failureReason).toMatch(/shader|program/i);
-  }, 120_000);
+  }, WEBGL_TEST_TIMEOUT_MS);
 
   it("reports the driver's own message, with the line number", async () => {
     if (!(await haveBrowser())) return; // no browser on this machine
@@ -336,14 +346,14 @@ requestAnimationFrame(function loop(){
     // `undefined` is what the vm-dom stub produced 50 times, and it is
     // unactionable — the whole reason this rung exists.
     expect(r.outputTail).not.toMatch(/FAILED:\s*undefined/);
-  }, 120_000);
+  }, WEBGL_TEST_TIMEOUT_MS);
 
   it('does NOT fail a WebGL page whose shaders compile', async () => {
     // The control that keeps this honest. Measured 12/12 clean before shipping;
     // the pixel-reading version it replaced failed this 10 times in 12.
     const r = await runExecutionGate(project(PAINTS), { entry: 'index.html' } as never);
     expect(`${r.failureReason ?? ''} ${r.outputTail ?? ''}`).not.toMatch(/shader compile FAILED|program link FAILED/);
-  }, 120_000);
+  }, WEBGL_TEST_TIMEOUT_MS);
 });
 
 describe('when the browser rung is the only judge', () => {
@@ -383,7 +393,7 @@ requestAnimationFrame(function loop(){
     expect(r.passed).toBe(false);
     // Verbatim: the number is the whole diagnosis.
     expect(r.outputTail).toContain('FBO incomplete: 36054');
-  }, 120_000);
+  }, WEBGL_TEST_TIMEOUT_MS);
 
   it('leaves an ordinary page alone, where vm-dom DID judge it', async () => {
     // Not a WebGL page, so vm-dom judged it and this rung is not the sole
@@ -399,5 +409,5 @@ requestAnimationFrame(function loop(){
 </script></body></html>`);
     const r = await runExecutionGate(dir, { entry: 'index.html' });
     expect(r.passed).toBe(true);
-  }, 120_000);
+  }, WEBGL_TEST_TIMEOUT_MS);
 });

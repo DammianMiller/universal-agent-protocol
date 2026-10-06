@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.19.5 (2026-10-06)
+
+- test(delivery): give CI runners a gate-timeout ceiling they can honour
+- fix(proxy): log progress during buffered non-stream waits (v2.19.4) (#833)
+
+
 ## v2.19.4 (2026-10-04)
 
 - fix(proxy): log progress during buffered non-stream waits
