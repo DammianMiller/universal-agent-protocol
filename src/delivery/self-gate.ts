@@ -19,16 +19,39 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, readdirSync, writeFileSync, chmodSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, chmodSync } from 'fs';
 import { basename, join } from 'path';
 import type { GateRung } from './verifier-ladder.js';
 import type { LoopExecutor } from './convergence-loop.js';
 import { sanitizedEnv } from './sanitized-env.js';
+import { runGateProcess } from './gate-spawn.js';
 
 const GATE_DIR = '.uap-deliver';
 const GATE_FILE = 'verify.sh';
+/** Project-relative path of the self-authored gate (loop + applier use it). */
+export const SELF_GATE_REL_PATH = `${GATE_DIR}/${GATE_FILE}`;
 const DEFAULT_ATTEMPTS = 3;
-const DEFAULT_TIMEOUT_MS = 120_000;
+/** Cold toolchains are the norm at authoring time (a fresh cargo/npm build
+ * easily exceeds 2 minutes), and a gate-authoring timeout used to be
+ * indistinguishable from a vacuous one. 300s default; override with
+ * --self-gate-timeout / UAP_SELF_GATE_TIMEOUT_MS. */
+const DEFAULT_TIMEOUT_MS = 300_000;
+/** Env override for the per-run gate timeout (ms). */
+export const SELF_GATE_TIMEOUT_ENV = 'UAP_SELF_GATE_TIMEOUT_MS';
+
+/**
+ * Resolve the effective gate timeout: explicit option > environment > default.
+ * The option existed from the start but nothing ever passed it — the CLI had
+ * no flag and the 120s default was unreachable at runtime (deliver run
+ * 20261005T060243 burned its authoring budget to ETIMEDOUT on a cold cargo
+ * build that needed ~3 minutes).
+ */
+export function resolveSelfGateTimeout(timeoutMs?: number): number {
+  if (timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0) return timeoutMs;
+  const env = Number(process.env[SELF_GATE_TIMEOUT_ENV]);
+  if (Number.isFinite(env) && env > 0) return env;
+  return DEFAULT_TIMEOUT_MS;
+}
 
 export interface SelfGateOptions {
   instruction: string;
@@ -208,6 +231,13 @@ function buildAuthorPrompt(
     '    so use plain RELATIVE paths. NEVER anchor to the script location',
     '    (no ROOT="$(dirname "$0")", no BASH_SOURCE) — the script is stored',
     '    OUTSIDE the artifact tree and such anchors make every check miss.',
+    '  - parses the artifact output the way the artifact ACTUALLY prints it:',
+    '    run the artifact once first if you can, and extract values with',
+    '    sed/awk on the real line format. When a check fails because a value',
+    '    cannot be extracted from the output, print the actual line you tried',
+    '    to parse in the failure message (echo the raw output line) — an',
+    '    extraction that silently reports "not extractable" is indistinguish-',
+    '    able from the work not being done.',
     '',
     'CRITICAL: the script must FAIL right now, on the current unsolved repo,',
     'and only PASS once the task has actually been done. Do not write a check',
@@ -218,28 +248,34 @@ function buildAuthorPrompt(
   ].join('\n');
 }
 
-/** Run the candidate gate against the current repo state. */
-function runGate(
+/** Run the candidate gate against the current repo state (grouped: a timeout
+ * kills the gate's whole process tree, not just the bash parent — see
+ * gate-spawn.ts for the live incident that motivated this). */
+async function runGate(
   scriptPath: string,
   projectRoot: string,
   timeoutMs: number
-): { exitCode: number | null; spawnError: boolean; outputTail: string } {
-  const r = spawnSync('bash', [scriptPath], {
+): Promise<{ exitCode: number | null; spawnError: boolean; timedOut: boolean; outputTail: string }> {
+  const r = await runGateProcess('bash', [scriptPath], {
     cwd: projectRoot,
-    timeout: timeoutMs,
-    encoding: 'utf-8',
+    timeoutMs,
     // Model-authored gate script: strip host/provider secrets (audit).
     env: sanitizedEnv(),
   });
-  if (r.error) {
-    return { exitCode: null, spawnError: true, outputTail: String(r.error.message).slice(-500) };
+  if (r.spawnError !== undefined || r.timedOut) {
+    return {
+      exitCode: null,
+      spawnError: true,
+      timedOut: r.timedOut,
+      outputTail: (r.timedOut ? `GATE TIMEOUT: the script exceeded its ${timeoutMs}ms budget` : r.stderr).slice(-500),
+    };
   }
   // Keep BOTH ends. A tool-usage error (see detectBrokenGate) is printed by the
   // FIRST failing command, which in a long gate scrolls far out of a tail-only
   // window — the broken-gate check would then never see the evidence it needs.
-  const raw = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  const raw = `${r.stdout}${r.stderr}`;
   const out = raw.length > 1000 ? `${raw.slice(0, 500)}\n[...]\n${raw.slice(-500)}` : raw;
-  return { exitCode: r.status, spawnError: false, outputTail: out };
+  return { exitCode: r.status, spawnError: false, timedOut: false, outputTail: out };
 }
 
 /**
@@ -283,6 +319,92 @@ const BROKEN_GATE_SIGNALS: ReadonlyArray<{ re: RegExp; what: string }> = [
  */
 export function detectBrokenGate(output: string): string | null {
   for (const sig of BROKEN_GATE_SIGNALS) {
+    if (sig.re.test(output)) return sig.what;
+  }
+  return null;
+}
+
+/**
+ * Signals that a gate FAILED TO PARSE the artifact's real output — distinct
+ * from the artifact not producing the expected values.
+ *
+ * The distinction only becomes load-bearing at VERIFY time, when the work
+ * gates are green and the artifact demonstrably runs: a gate that says
+ * "p50 tick time not reported" against a report that prints "tick p50:
+ * text 9.930ms binary 0.987ms" is an extraction bug in the gate, not a
+ * failing mission. Observed live (deliver run 20261006T042017, rust-pg-ext
+ * M1 bench): the authored verify.sh held five extraction patterns that
+ * could never match the real report format (`test bench_tests` vs the
+ * actual `test bench::bench_tests`, `zone_rows` vs "zone rows", and a
+ * number regex that grabbed the "50" out of "p50"), and every turn scored
+ * as a mission failure while the artifact itself was green.
+ *
+ * These patterns are NOT authoring-time rejections: on the unsolved repo
+ * "value not extractable" is often the CORRECT failure (the artifact does
+ * not exist yet). They route to a gate-repair turn only when the rest of
+ * the ladder is green (see convergence-loop gate-repair detection).
+ */
+const EXTRACTION_MISS_SIGNALS: ReadonlyArray<{ re: RegExp; what: string }> = [
+  { re: /\b(?:not extractable|could not extract|failed to extract)\b/i, what: 'a value could not be extracted from program output' },
+  { re: /\bvalues? not extractable\b/i, what: 'expected values were not extractable from program output' },
+  { re: /\b(?:p50|p99|throughput|payload|headroom|alloc)[^\n]{0,40}\bnot reported\b/i, what: 'a reported metric was not found in the program output' },
+  { re: /\bmissing from [a-z]+ output\b/i, what: 'an expected item is missing from the program output' },
+];
+
+/**
+ * Is the REPAIRED gate script still a gate? (U3, review X2/arch F2)
+ *
+ * A gate-repair turn sanctions one model rewrite of the script it is judged
+ * by. Without a post-repair check, a weak model repairs `GATE 4 FAIL: p50
+ * not reported` into `exit 0` and the next ladder pass reports "delivered"
+ * over a gate that can no longer discriminate done from not-done. This
+ * re-runs the STATIC authoring-time properties on the repaired script:
+ * it must exist, parse, actually execute the artifact, and not be trivially
+ * passing. A repaired gate that fails here reverts the pass (the loop treats
+ * the repair turn as failed, not the mission as delivered).
+ *
+ * Returns the reason the repaired script is unsound, or null when it is.
+ */
+export function repairedGateIsSound(projectRoot: string): string | null {
+  const scriptPath = join(projectRoot, GATE_DIR, GATE_FILE);
+  let script = '';
+  try {
+    if (!existsSync(scriptPath)) return 'the gate script is missing after the repair turn';
+    script = readFileSync(scriptPath, 'utf-8');
+  } catch (err) {
+    return `the repaired gate script could not be read (${err instanceof Error ? err.message : String(err)})`;
+  }
+  if (!script.trim()) return 'the repaired gate script is empty';
+  const parse = scriptParses(script);
+  if (!parse.ok) return `the repaired gate script does not parse (${parse.error ?? 'syntax error'})`;
+  const never = neverExecutesReason(script, projectRoot);
+  if (never) return `the repaired gate never executes the artifact (${never})`;
+  if (triviallyPassingScript(script)) {
+    return 'the repaired gate is trivially passing (vacuous) — it can no longer discriminate done from not-done';
+  }
+  return null;
+}
+
+/**
+ * A gate whose every effect is a no-fail construct cannot fail, so it cannot
+ * grade anything. Conservative: only flags bodies whose commands are all
+ * `exit 0` / `true` / `:` / comments / shebangs / blank. A script with any
+ * other command in it is assumed capable of failing.
+ */
+function triviallyPassingScript(script: string): boolean {
+  const commands = script
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith('#'))
+    .map((l) => l.replace(/\s*&&\s*(?:true|:)\s*$/, '').trim())
+    .filter((l) => l.length > 0);
+  if (commands.length === 0) return true; // nothing but comments/blanks
+  return commands.every((c) => /^(?:exit\s+0|true|:|echo\b[^|;&]*)$/.test(c));
+}
+
+/** Why the gate could not parse the artifact's output, or null. */
+export function detectExtractionMiss(output: string): string | null {
+  for (const sig of EXTRACTION_MISS_SIGNALS) {
     if (sig.re.test(output)) return sig.what;
   }
   return null;
@@ -371,7 +493,7 @@ export function neverExecutesReason(script: string, projectRoot?: string): strin
 export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfGateResult> {
   const { instruction, projectRoot, executor } = opts;
   const attempts = opts.maxAuthorAttempts ?? DEFAULT_ATTEMPTS;
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = resolveSelfGateTimeout(opts.timeoutMs);
   const notes: string[] = [];
 
   const gateDir = join(projectRoot, GATE_DIR);
@@ -444,7 +566,17 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
     }
     producedAny = true;
 
-    const run = runGate(scriptPath, projectRoot, timeoutMs);
+    const run = await runGate(scriptPath, projectRoot, timeoutMs);
+    if (run.timedOut) {
+      // A budget overrun at authoring time is a gate that cannot be judged,
+      // not one that failed: conflating the two burned a real run's whole
+      // authoring budget to a single unexplained ETIMEDOUT (20261005T060243).
+      notes.push(`attempt ${attempt}: gate TIMED OUT after ${timeoutMs}ms — regenerate a leaner script or raise the budget (--self-gate-timeout / ${SELF_GATE_TIMEOUT_ENV})`);
+      priorFeedback =
+        `the script exceeded its ${timeoutMs}ms runtime budget. Drop expensive steps (cold builds, ` +
+        'full test suites) from the gate or narrow them to the deliverable.';
+      continue;
+    }
     if (run.spawnError) {
       notes.push(`attempt ${attempt}: gate failed to run (${run.outputTail.slice(0, 80)})`);
       priorFeedback = 'the script could not execute (syntax/interpreter error)';

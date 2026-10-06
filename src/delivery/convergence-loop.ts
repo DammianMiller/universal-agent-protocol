@@ -35,7 +35,7 @@ import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js
 import { baselinePath } from './capability-profile.js';
 import { mergeRedetectedRungs, detectRungs, runLadder } from './verifier-ladder.js';
 import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
-import { applyFileBlocks, listGateConfigFiles } from './applier.js';
+import { applyFileBlocks, listGateConfigFiles, containsProtectedSegment } from './applier.js';
 import { snapshotProtection } from './spec-imports.js';
 import {
   captureIntegrity,
@@ -44,7 +44,9 @@ import {
   oracleConsistencyCheck,
   oracleConsistencyFeedback,
 } from './integrity.js';
-import { appendMissingFilesNote } from './mission-files.js';
+import { appendMissingFilesNote, missingMissionFiles } from './mission-files.js';
+import { extractFailingFiles, editsMissedFailingFiles } from './failing-files.js';
+import { detectExtractionMiss, repairedGateIsSound, SELF_GATE_REL_PATH } from './self-gate.js';
 import { resolvePrinciplesSection } from '../principles/index.js';
 import type { StrategySeed } from './explorer.js';
 import { exploreAndCommit } from './explorer.js';
@@ -111,6 +113,28 @@ export interface PromptContext {
    * always bound to the real constants regardless of any selection.
    */
   promptSelection?: Record<string, string>;
+  /**
+   * Source files the previous turn's failing gates NAMED (compiler/tool
+   * locations, project-relative). Rendered at the TOP of the repair prompt so
+   * the executor cannot lose them in a truncated gate dump — the live failure
+   * (run 20261006T042017) was 12 rounds spent editing a file the gates never
+   * mentioned while every dump named the real one.
+   */
+  failingFiles?: string[];
+  /** True when the previous turn wrote files but NONE of the failing set —
+   * the executor is polishing the wrong file. Escalates the banner. */
+  wrongFileTurn?: boolean;
+  /** When set, ONLY these project-relative paths may be written this turn
+   * (stagnation narrowing or a sanctioned gate-repair turn). The prompt states
+   * it and the applier/executor enforce it. */
+  writeRestriction?: string[];
+  /**
+   * A diagnosed acceptance-gate extraction bug (see detectExtractionMiss):
+   * the gate cannot parse the artifact's real output, so this turn must repair
+   * the gate script itself rather than the (already-green) artifact. Carries
+   * the reason.
+   */
+  gateRepair?: string;
 }
 
 export type PromptBuilder = (context: PromptContext) => string;
@@ -539,6 +563,25 @@ export interface ConvergenceConfig {
    * the hand-authored default prompt (byte-identical).
    */
   promptSelection?: Record<string, string>;
+  /**
+   * Error-anchored steering (U1): when a turn stagnates (no gate progress for
+   * STAGNATION_NARROW_AFTER turns) AND the failing gates name concrete source
+   * files, the loop narrows the next turn's writable set to those files (plus
+   * mission-named files that are still missing). The prompt says so, the
+   * file-block applier rejects other writes, and — when writeAllowlistRef is
+   * wired to an agentic executor — its write tools refuse them too. Default ON;
+   * false restores the unbounded behavior.
+   */
+  disableWriteNarrowing?: boolean;
+  /**
+   * Mutable ref shared with an agentic executor: each turn the loop sets
+   * `.current` to this turn's allowed-write set (or undefined when writes are
+   * unbounded) BEFORE invoking the executor. The executor's write_file/
+   * edit_file consult it at call time — the executor is constructed once per
+   * run, the narrowing is per-turn, so the ref is the only seam that carries
+   * per-turn state into a once-constructed executor.
+   */
+  writeAllowlistRef?: { current: ReadonlySet<string> | undefined };
 }
 
 /**
@@ -558,7 +601,12 @@ export interface LoopCheckpoint {
     applyError?: string;
     previousFiles?: string[];
     critique?: string[];
-  };
+    failingFiles?: string[];
+    wrongFileTurn?: boolean;
+    gateRepair?: string;
+  }
+  /** One gate-repair turn per run — a resume must not mint a second. */
+  gateRepairDone?: boolean;
   bestSoFar: number;
   bestAcceptance: number;
   stagnantTurns: number;
@@ -593,6 +641,13 @@ const STAGNATION_LIMIT = 4;
  */
 const NO_APPLY_ABORT_LIMIT = 3;
 const DEFAULT_PREVIOUS_OUTPUT_CHARS = 3_000;
+/**
+ * Stagnant turns (no gate progress) after which write-narrowing kicks in when
+ * the failing gates name concrete files: at that point the executor has had
+ * STAGNATION_NARROW_AFTER free attempts, and the live failure mode it guards
+ * against (12 rounds editing the wrong file) argues for force, not hint.
+ */
+const STAGNATION_NARROW_AFTER = 2;
 
 const OUTPUT_CONTRACT = [
   'You are an autonomous software delivery agent. Complete the task by emitting complete file contents.',
@@ -722,6 +777,39 @@ export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
+  // Error-anchored steering: the files the failing gates NAMED go at the very
+  // top of the repair context, before any gate dump can bury them. A wrong-file
+  // turn (writes that touched none of the failing set) gets the louder form —
+  // the live failure this guards against was 12 rounds of edits to a file the
+  // gates never mentioned.
+  if (ctx.gateRepair) {
+    sections.push('');
+    sections.push(`ACCEPTANCE GATE REPAIR — the gate itself is broken, not the work: ${ctx.gateRepair}.`);
+    sections.push(
+      'The other gates are green and the artifact runs, so this turn you must fix the gate ' +
+        `script's extraction (${SELF_GATE_REL_PATH}): run the artifact, read its ACTUAL output format, ` +
+        'and re-write the failing checks to parse the real lines. On a check failure, print the ' +
+        'raw output line you tried to parse. Do not touch the artifact or the source.'
+    );
+  }
+  if (ctx.failingFiles && ctx.failingFiles.length > 0) {
+    sections.push('');
+    if (ctx.wrongFileTurn) {
+      sections.push(
+        `YOU EDITED THE WRONG FILE. Every failing gate points at: ${ctx.failingFiles.join(', ')}. ` +
+          'Fix THOSE files — the failure locations above are where the errors live.'
+      );
+    } else {
+      sections.push(`THE FAILING FILES — fix these: ${ctx.failingFiles.join(', ')}`);
+    }
+  }
+  if (ctx.writeRestriction && ctx.writeRestriction.length > 0) {
+    sections.push('');
+    sections.push(
+      `THIS TURN ONLY THESE FILES MAY BE EDITED: ${ctx.writeRestriction.join(', ')}. ` +
+        'Writes to anything else will be rejected.'
+    );
+  }
   if (ctx.previousFiles && ctx.previousFiles.length > 0) {
     sections.push(`Files you emitted: ${ctx.previousFiles.join(', ')}`);
   }
@@ -1177,6 +1265,10 @@ export class ConvergenceLoop {
     let bestSoFar = -1;
     let bestAcceptance = -1;
     let stagnantTurns = 0;
+    // One sanctioned acceptance-gate repair turn per run (U3): a second
+    // extraction miss after a repair turn means the repair itself failed and
+    // the loop should stop trying.
+    let gateRepairDone = false;
     // Consecutive turns that both left the tree byte-identical AND failed to
     // improve the best gate score. A flat score alone can still be real work (a
     // turn that rewrites a file without moving the needle), so the tree
@@ -1449,6 +1541,7 @@ export class ConvergenceLoop {
       bestSoFar = resume.bestSoFar ?? -1;
       bestAcceptance = resume.bestAcceptance ?? -1;
       stagnantTurns = resume.stagnantTurns ?? 0;
+      gateRepairDone = resume.gateRepairDone ?? false;
       // Restore the no-progress breaker counters so a resumed run keeps its
       // stall detection instead of restarting it. Clamped to sane ranges — the
       // run-state file is untrusted (repo content can plant values).
@@ -1519,10 +1612,50 @@ export class ConvergenceLoop {
         }
       }
 
+      // Write-narrowing (U1) and gate-repair turns (U3): after
+      // STAGNATION_NARROW_AFTER stagnant turns with gates that NAME files,
+      // this turn may only edit those (plus still-missing mission files). A
+      // diagnosed gate-repair turn narrows to the gate script alone — the
+      // sanctioned exception that lets the model fix its gate's extraction
+      // without opening the protected segment generally.
+      let writeRestriction: string[] | undefined = prevContext.gateRepair
+        ? [SELF_GATE_REL_PATH]
+        : undefined;
+      if (
+        !writeRestriction &&
+        !this.config.disableWriteNarrowing &&
+        stagnantTurns >= STAGNATION_NARROW_AFTER &&
+        prevContext.failingFiles &&
+        prevContext.failingFiles.length > 0
+      ) {
+        const missing = missingMissionFiles(this.config.projectRoot, instruction);
+        // Protected-segment paths are dropped BEFORE composition (review
+        // X3/arch F1): the candidates come from gate output and mission prose
+        // the MODEL influences, and an allowlisted protected path is exempt
+        // from the segment block. Without this filter a stagnated run can
+        // mint sanctioned writes into `.github/`/`.husky/`/`.uap/` paths. The
+        // one sanctioned protected-segment target (the gate script) is set
+        // ONLY by the diagnosed gate-repair branch above, never here.
+        const candidates = [...prevContext.failingFiles, ...missing].filter(
+          (f) => containsProtectedSegment(f) === null
+        );
+        writeRestriction = [...new Set(candidates)];
+        if (writeRestriction.length === 0) writeRestriction = undefined;
+      }
+      // The agentic executor consults this ref at every write (it is
+      // constructed once per run; the narrowing is per-turn).
+      if (this.config.writeAllowlistRef) {
+        this.config.writeAllowlistRef.current = writeRestriction ? new Set(writeRestriction) : undefined;
+      }
+      const turnApplyOptions: ApplyOptions | undefined = writeRestriction
+        ? { ...(applyOptions ?? {}), writeAllowlist: new Set(writeRestriction) }
+        : applyOptions;
+
       const prompt = this.promptBuilder({
         instruction: activeInstruction,
         turn,
         ...prevContext,
+        writeRestriction,
         guidance,
         autonomous: this.config.autonomous,
         acceptanceContract: this.config.acceptanceContract,
@@ -1530,8 +1663,8 @@ export class ConvergenceLoop {
       });
 
       const outcome = explorerSettings
-        ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor, ladderRunner, applyOptions)
-        : await this.runSingleTurn(prompt, rungs, executor, ladderRunner, applyOptions);
+        ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor, ladderRunner, turnApplyOptions)
+        : await this.runSingleTurn(prompt, rungs, executor, ladderRunner, turnApplyOptions);
 
       // Anti-no-op rail bookkeeping: fold this turn's applier writes into the
       // run-wide union BEFORE the acceptance judge consults it.
@@ -1584,6 +1717,31 @@ export class ConvergenceLoop {
           reladder = rejudged.ladder;
           acceptanceMet = rejudged.acceptanceMet ?? acceptanceMet;
           outcome.ladder = reladder;
+        }
+      }
+
+      // Post-repair sanity check (U3, review X2/arch F2): a PASS that follows
+      // a sanctioned gate-repair turn must survive the repaired script's own
+      // authoring-time properties — a repaired gate that no longer executes
+      // the artifact, or is trivially passing, is a rigged gate, not a
+      // delivered mission. Guards EVERY pass after the repair, not just the
+      // repair turn's own (the rigged gate usually passes one turn LATER,
+      // after prevContext.gateRepair has been consumed). Reverts the pass.
+      if (gateRepairDone && outcome.ladder?.passed) {
+        const unsound = repairedGateIsSound(this.config.projectRoot);
+        if (unsound) {
+          const reason =
+            `GATE REPAIR REJECTED: ${unsound}. The repaired gate script can no longer ` +
+            `discriminate done from not-done — this run does NOT count as delivered.`;
+          outcome.ladder = {
+            ...outcome.ladder,
+            passed: false,
+            score: 0,
+            feedback: reason,
+            results: outcome.ladder.results.map((r) =>
+              r.id === 'acceptance' ? { ...r, passed: false, outputTail: reason } : r
+            ),
+          };
         }
       }
 
@@ -1685,16 +1843,16 @@ export class ConvergenceLoop {
         maxTurns = Math.max(maxTurns, Math.min(directive.raiseMaxTurns, maxTurnsCeiling));
       }
 
-      // Persist-until-delivered: extend the budget one turn at a time while we
-      // are at the edge of it, below the ceiling, and still making progress.
-      // Stop extending (let the loop end) once progress stalls — an
-      // unattended run must converge or give up, never spin forever.
-      if (untilDelivered) {
-        // Progress = a better objective score OR more acceptance criteria met.
-        // Without the acceptance term, an objective-green run pins score at 1.0,
-        // so acceptance-driven completion would always read as "stagnant" and the
-        // loop would give up after STAGNATION_LIMIT turns regardless of real
-        // spec progress.
+      // Stagnation tracking (U1 write-narrowing input): maintained
+      // UNCONDITIONALLY now, not only under untilDelivered. Progress = a
+      // better objective score OR more acceptance criteria met. Without the
+      // acceptance term, an objective-green run pins score at 1.0, so
+      // acceptance-driven completion would always read as "stagnant" and the
+      // narrow-after-2 steering would fire against a run that was converging.
+      // (The live wrong-file failure, 20261006T042017, ran WITHOUT
+      // untilDelivered — stagnation steering that only counts under that flag
+      // would have done nothing, which is why this moved out of the branch.)
+      {
         const objectiveProgress = record.score > bestSoFar;
         const acceptanceProgress = acceptanceMet !== undefined && acceptanceMet > bestAcceptance;
         if (objectiveProgress || acceptanceProgress) {
@@ -1704,6 +1862,12 @@ export class ConvergenceLoop {
         } else {
           stagnantTurns++;
         }
+      }
+      // Persist-until-delivered: extend the budget one turn at a time while we
+      // are at the edge of it, below the ceiling, and still making progress.
+      // Stop extending (let the loop end) once progress stalls — an
+      // unattended run must converge or give up, never spin forever.
+      if (untilDelivered) {
         // Extend only at the budget edge, below the ceiling, while improving.
         // When stagnant, we simply stop extending and the loop ends.
         if (turn === maxTurns && maxTurns < maxTurnsCeiling && stagnantTurns < STAGNATION_LIMIT) {
@@ -1862,6 +2026,47 @@ export class ConvergenceLoop {
         }
       }
 
+      // Error-anchored steering (U1): pull the concrete files the failing
+      // gates named out of the dumps, and flag a turn whose writes touched
+      // none of them — the executor editing the wrong file while the gate
+      // output holds the answer is the live failure this exists for.
+      const failingFiles =
+        outcome.ladder && !outcome.ladder.passed
+          ? extractFailingFiles(outcome.ladder.results, this.config.projectRoot)
+          : undefined;
+      const wrongFileTurn = failingFiles
+        ? editsMissedFailingFiles(outcome.filesApplied, failingFiles)
+        : false;
+
+      // Gate-repair detection (U3): the self-authored acceptance gate failed
+      // only because it cannot PARSE the artifact's output (extraction-miss
+      // signals) while every other executed rung is green. The artifact is
+      // done; the gate is broken; a repair turn beats scoring the mission
+      // failed. The sanctioned write exception for the gate script flows from
+      // here (writeRestriction = [SELF_GATE_REL_PATH]).
+      let gateRepair: string | undefined;
+      if (outcome.ladder && !outcome.ladder.passed && !gateRepairDone) {
+        const acceptance = outcome.ladder.results.find(
+          (r) => r.id === 'acceptance' && !r.passed && !r.skipped
+        );
+        const othersFailed = outcome.ladder.results.some(
+          (r) => r.id !== 'acceptance' && !r.passed && !r.skipped
+        );
+        if (acceptance && !othersFailed) {
+          // Full-output detection when the rung pre-computed it (a long
+          // acceptance dump can push the wording out of the truncated tail —
+          // review quality F9); the tail guess is the fallback.
+          const miss =
+            (acceptance as { extractionMiss?: boolean }).extractionMiss === true
+              ? 'the gate could not extract an expected value from the program output'
+              : detectExtractionMiss(acceptance.outputTail ?? '');
+          if (miss) {
+            gateRepair = miss;
+            gateRepairDone = true; // one repair turn per run; a second miss means the repair failed
+          }
+        }
+      }
+
       prevContext = {
         previousOutput: outcome.executorError
           ? undefined
@@ -1875,6 +2080,9 @@ export class ConvergenceLoop {
         practices,
         principles,
         protectedFiles: protectedList,
+        failingFiles: failingFiles && failingFiles.length > 0 ? failingFiles : undefined,
+        wrongFileTurn: wrongFileTurn || undefined,
+        gateRepair,
       };
 
       // Durable runs: persist serializable loop state so an interrupted run
@@ -1890,7 +2098,13 @@ export class ConvergenceLoop {
               applyError: prevContext.applyError,
               previousFiles: prevContext.previousFiles,
               critique: prevContext.critique,
+              failingFiles: prevContext.failingFiles,
+              wrongFileTurn: prevContext.wrongFileTurn,
+              gateRepair: prevContext.gateRepair,
             },
+            // One repair turn per run — a resumed run must not mint a second
+            // (review quality F8).
+            gateRepairDone,
             bestSoFar,
             bestAcceptance,
             stagnantTurns,
