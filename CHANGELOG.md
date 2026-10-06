@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.21.0 (2026-10-06)
+
+- chore(config): qwen38 profile follows the live backend alias (Swift 1.5 swap)
+- feat(deliver): steer the loop by failure evidence (U1-U4)
+
+
 ## v2.20.0 (2026-10-06)
 
 - feat(proxy): Ollama-compatible surface on PROXY_OLLAMA_PORT (v2.20.0)
