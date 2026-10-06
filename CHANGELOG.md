@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.21.1 (2026-10-07)
+
+- chore(config): qwen38 profile follows the live backend alias (IQ3_S swap)
+
+
 ## v2.21.0 (2026-10-06)
 
 - chore(config): qwen38 profile follows the live backend alias (Swift 1.5 swap)
