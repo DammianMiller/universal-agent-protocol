@@ -21,8 +21,14 @@ export default defineConfig({
     // thundering herd halves. minWorkers must be set too — vitest defaults
     // it to the full CPU count and a default-min above an explicit max
     // is a hard RangeError, not a clamp.
+    //
+    // (2026-10-06) "rarely" was wrong for GitHub's 4-core runners: 16
+    // tinypool workers on 4 cores over-subscribe exactly the same way, and
+    // the PR #834 CI run died on a paired-bench.test.ts worker-RPC timeout
+    // with zero failing tests. Give CI one worker per core; keep the dev
+    // cap at 16.
     minWorkers: 4,
-    maxWorkers: 16,
+    maxWorkers: process.env.CI ? 4 : 16,
     include: ['test/**/*.test.ts'],
     exclude: ['**/.worktrees/**', 'test/benchmarks/**', 'node_modules/**', 'benchmark-results/**'],
     watch: false,
