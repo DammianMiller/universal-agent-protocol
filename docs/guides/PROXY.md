@@ -41,6 +41,54 @@ the "keep a small model from wedging" logic lives.
 | `GET /health` | Liveness (probes the upstream; stays unauthenticated) |
 | `GET /v1/context` | Per-session token-usage / utilization / guardrail telemetry (dashboards & debug) |
 
+### Ollama-compatible surface (`PROXY_OLLAMA_PORT`, default 11434)
+
+The same proxy also serves the Ollama wire protocol on a **second port**
+(default `11434`, Ollama's well-known port — the one Ollama-native tooling
+auto-discovers and cannot be re-pointed). Set `PROXY_OLLAMA_PORT=0` to disable
+it (do that on a box running a real Ollama, which owns 11434); if the port is
+busy at startup the surface disables itself and the Anthropic/OpenAI surface
+carries on unaffected.
+
+| Route | Purpose |
+|---|---|
+| `GET /api/version` | Ollama discovery handshake |
+| `GET /api/tags` | Model list — backend-served ids only (the Anthropic-protocol Claude ids are not leaked here) |
+| `POST /api/show` | Model card (404s unknown ids like real Ollama) |
+| `GET /api/ps` | Running-model list (the backend stays loaded; capacity policy owns that) |
+| `POST /api/chat` | Chat — messages, options, tools (OpenAI tool schema) |
+| `POST /api/generate` | Text generation — prompt + optional system |
+
+Every request runs the **full guardrail path** (admission control, rail
+budgeting, loop detection, tool narrowing, malformed-tool retry, context
+pruning) — an Ollama client gets the same treatment an Anthropic client does.
+The tradeoff matches the OpenAI-compatible surface: streaming is buffered
+through the guardrails, then emitted as Ollama NDJSON (one content line plus a
+final `done: true` line), not token-by-token.
+
+Options map only where they survive both translation hops — `temperature`,
+`top_p`, `top_k`, `stop`, and `num_predict` → `max_tokens`. Everything else is
+dropped honestly rather than accepted and silently ignored: Ollama's
+`format` (structured output) is not carried by the underlying pipeline yet
+(wiring `response_format` through is a tracked contract change), `num_ctx`
+would fight the rail budget, and `min_p`/`repeat_penalty`/`seed` are not
+forwarded by the second hop. `keep_alive`/`raw`/`template` are lifecycle
+features with no local equivalent.
+
+Two auth behaviors to know about when `PROXY_AUTH_TOKEN` is set: the
+discovery routes above stay unauthenticated (Ollama clients probe them before
+any credential could be presented), but `POST /api/chat`, `POST /api/generate`
+and `POST /api/show` gate exactly like `/v1/messages` — and since most
+Ollama-native tooling has no way to configure a bearer token, auth-on
+realistically means Ollama clients stop at a 401. On the default loopback
+deployment (no token) everything works.
+
+If the port is busy at startup (typically a real Ollama), the surface
+disables itself and the Anthropic/OpenAI surface carries on unaffected — the
+error lands in this proxy's journal. The reverse ordering has the opposite
+signature: if this proxy binds 11434 first, a later-started real Ollama is the
+one that fails to bind, and its error shows up in Ollama's logs, not ours.
+
 ---
 
 ## Lifecycle: `uap proxy`
