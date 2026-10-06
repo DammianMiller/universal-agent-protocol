@@ -106,6 +106,10 @@ Usage
     # Custom proxy port:
     PROXY_PORT=5000 python anthropic_proxy.py
 
+    # Ollama-compatible surface on the well-known port (default; 0 disables —
+    # set that on a box running a real Ollama, which owns 11434):
+    PROXY_OLLAMA_PORT=11434 python anthropic_proxy.py
+
     # Via npx (after npm install):
     npx uap-anthropic-proxy
 
@@ -126,6 +130,8 @@ import json
 import logging
 import os
 import re
+import socket
+import stat
 import sys
 import time
 import uuid
@@ -139,7 +145,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 import uvicorn
@@ -287,6 +293,12 @@ ANTHROPIC_API_BASE = os.environ.get(
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_PASSTHROUGH_MODELS = os.environ.get("ANTHROPIC_PASSTHROUGH_MODELS", "")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4000"))
+# The Ollama-compatible surface: the SAME app served on a SECOND port so
+# Ollama-native tooling (which auto-discovers localhost:11434 and cannot be
+# pointed at a path-prefixed alternative) works against this proxy. 0 disables
+# it — set that on a box running a real Ollama, which owns 11434 by convention.
+# See the "Ollama-compatible surface" section near the end of this file.
+PROXY_OLLAMA_PORT = int(os.environ.get("PROXY_OLLAMA_PORT", "11434"))
 # Bind loopback by DEFAULT (security audit: an unauthenticated 0.0.0.0 listener
 # let any LAN host drive the local model and reach cloud passthrough). To run
 # the proxy as a shared LAN service, set PROXY_HOST=0.0.0.0 AND set
@@ -5749,7 +5761,14 @@ async def _pool_timeout_handler(request: Request, exc: httpx.PoolTimeout):
 
 # Open paths that never require the shared secret (liveness / discovery), so a
 # LAN health check or an SDK model-list probe works without the token.
-_PROXY_AUTH_OPEN_PATHS = frozenset({"/health", "/", "/v1/models"})
+# /api/version, /api/tags and /api/ps stay open for the same reason /v1/models
+# does: Ollama clients probe them BEFORE their first real request, and a 401 on
+# discovery breaks them before any credential could even be presented. The
+# model-serving /api routes (/api/chat, /api/generate, /api/show) are NOT open
+# — they carry the same content as /v1/messages and gate identically.
+_PROXY_AUTH_OPEN_PATHS = frozenset(
+    {"/health", "/", "/v1/models", "/api/version", "/api/tags", "/api/ps"}
+)
 
 
 # OUTERMOST — and it must be registered AFTER the auth middleware below to BE
@@ -15727,47 +15746,29 @@ async def messages_anthropic(request: Request):
     return await messages(request)
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: Request):
-    """OpenAI-compatible chat/completions endpoint for clients like Forge
-    that require the OpenAI API shape.
+async def _guarded_openai_completion(
+    request: Request, openai_body: dict
+) -> tuple[dict | None, int, str | None]:
+    """Run an OpenAI Chat Completions body through the guarded Anthropic
+    pipeline and return the OpenAI-shaped response.
 
-    FULL GUARDRAIL PATH: Converts the OpenAI request to Anthropic format,
-    runs the full /v1/messages pipeline (loop detection, tool narrowing,
-    cycle breaking, malformed tool retry, context pruning, etc.), then
-    converts the Anthropic response back to OpenAI format.
+    Shared core of BOTH dual-protocol inbound surfaces: the OpenAI route
+    (/v1/chat/completions) and the Ollama surface (/api/chat, /api/generate).
+    Everything except the protocol framing lives here, so the surfaces cannot
+    drift apart in guardrail coverage — an Ollama client gets the same
+    admission control, rail budgeting, loop detection, tool narrowing,
+    malformed-tool retry and context pruning an Anthropic client gets.
 
-    Streaming is down-converted to a single final OpenAI SSE chunk sequence
-    built from the completed Anthropic response (not token-by-token from
-    upstream). This preserves guardrails at the cost of stream granularity.
+    Returns (openai_response, http_status, error_message). On failure the
+    response is None and exactly one of status/error carries the cause.
     """
-    body_bytes = await request.body()
-    try:
-        openai_body = json.loads(body_bytes) if body_bytes else {}
-    except (ValueError, TypeError):
-        return Response(
-            content=b'{"error":{"message":"invalid JSON","type":"invalid_request_error"}}',
-            status_code=400,
-            media_type="application/json",
-        )
-
-    requested_stream = bool(openai_body.get("stream", False))
     model = openai_body.get("model", "default")
-    client_id = resolve_client_id(request)
-
-    logger.info(
-        "CHAT (guarded): client=%s model=%s stream=%s msgs=%d tools=%d",
-        client_id,
-        model,
-        requested_stream,
-        len(openai_body.get("messages", [])),
-        len(openai_body.get("tools", []) or []),
-    )
 
     # Convert OpenAI request -> Anthropic request
     anthropic_body = openai_to_anthropic_request(openai_body)
-    # Force non-streaming through the pipeline; we re-stream at the end if the
-    # client wanted streaming. This keeps guardrail logic simpler/consistent.
+    # Force non-streaming through the pipeline; callers re-stream from the
+    # completed response in whatever dialect they serve. This keeps guardrail
+    # logic simpler/consistent.
     anthropic_body["stream"] = False
 
     # Build a synthetic Request that the existing messages() handler can consume
@@ -15819,19 +15820,63 @@ async def chat_completions(request: Request):
         anthropic_resp_dict = inner_resp
 
     if anthropic_resp_dict is None or "content" not in anthropic_resp_dict:
-        # Upstream error: forward as-is in OpenAI error shape
         err_msg = "upstream returned no message"
         if isinstance(anthropic_resp_dict, dict) and "error" in anthropic_resp_dict:
             err_msg = anthropic_resp_dict["error"].get("message", err_msg)
+        return None, status_code, err_msg
+
+    anthropic_resp_dict.setdefault("model", model)
+    return anthropic_to_openai_response(anthropic_resp_dict), 200, None
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    """OpenAI-compatible chat/completions endpoint for clients like Forge
+    that require the OpenAI API shape.
+
+    FULL GUARDRAIL PATH: Converts the OpenAI request to Anthropic format,
+    runs the full /v1/messages pipeline (loop detection, tool narrowing,
+    cycle breaking, malformed tool retry, context pruning, etc.), then
+    converts the Anthropic response back to OpenAI format.
+
+    Streaming is down-converted to a single final OpenAI SSE chunk sequence
+    built from the completed Anthropic response (not token-by-token from
+    upstream). This preserves guardrails at the cost of stream granularity.
+    """
+    body_bytes = await request.body()
+    try:
+        openai_body = json.loads(body_bytes) if body_bytes else {}
+    except (ValueError, TypeError):
         return Response(
-            content=json.dumps({"error": {"message": err_msg, "type": "upstream_error"}}).encode(),
-            status_code=status_code if status_code >= 400 else 502,
+            content=b'{"error":{"message":"invalid JSON","type":"invalid_request_error"}}',
+            status_code=400,
             media_type="application/json",
         )
 
-    # Ensure model field is set for response
-    anthropic_resp_dict.setdefault("model", model)
-    openai_resp = anthropic_to_openai_response(anthropic_resp_dict)
+    requested_stream = bool(openai_body.get("stream", False))
+    model = openai_body.get("model", "default")
+    client_id = resolve_client_id(request)
+
+    logger.info(
+        "CHAT (guarded): client=%s model=%s stream=%s msgs=%d tools=%d",
+        client_id,
+        model,
+        requested_stream,
+        len(openai_body.get("messages", [])),
+        len(openai_body.get("tools", []) or []),
+    )
+
+    openai_resp, status_code, err_msg = await _guarded_openai_completion(
+        request, openai_body
+    )
+    if openai_resp is None:
+        return Response(
+            content=json.dumps(
+                {"error": {"message": err_msg, "type": "upstream_error"}}
+            ).encode(),
+            status_code=status_code if status_code >= 400 else 502,
+            media_type="application/json",
+        )
 
     if not requested_stream:
         return Response(
@@ -16091,6 +16136,557 @@ def _model_entry(model_id: str) -> dict:
     return entry
 
 
+# ===========================================================================
+# Ollama-compatible surface (/api/*) — PROXY_OLLAMA_PORT, default 11434
+# ===========================================================================
+# The proxy already speaks two inbound dialects (Anthropic Messages on
+# /v1/messages, OpenAI Chat Completions on /v1/chat/completions), both
+# normalised through the same guarded pipeline. Ollama clients are a third
+# dialect: their own discovery handshake (/api/version, /api/tags, /api/show),
+# their own NDJSON streaming, and their own field vocabulary — but the
+# semantics underneath are identical. So this surface is a pure translation
+# layer: Ollama request -> OpenAI request -> _guarded_openai_completion ->
+# OpenAI response -> Ollama response. Every guardrail (admission, rail
+# budgeting, loop detection, tool narrowing, malformed-tool retry, context
+# pruning) therefore applies to Ollama clients too.
+#
+# The known tradeoff, identical to the OpenAI inbound surface: streaming is
+# buffered through the guardrails and re-emitted as Ollama NDJSON afterwards
+# (one content line + one final line), not token-by-token from upstream. A
+# client sees its reply appear all at once; correctness of the guardrails is
+# preserved. Token-granular streaming would require bypassing the pipeline.
+#
+# Served from the SAME process on a SECOND port (Ollama's well-known 11434)
+# because Ollama tooling auto-discovers localhost:11434 and offers no way to
+# point it at a path-prefixed alternative. Same process, not a second one, is
+# the whole point: a second process would carry its own admission table and
+# rail semaphore, silently doubling the concurrency budget the backend was
+# sized for.
+
+_OLLAMA_API_VERSION = "0.12.6"  # the Ollama release whose wire shape this mirrors
+_OLLAMA_START_ISO = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _ollama_error(status: int, message: str) -> Response:
+    return Response(
+        content=json.dumps({"error": message}).encode(),
+        status_code=status,
+        media_type="application/json",
+    )
+
+
+def _ollama_content_to_text(content) -> str:
+    """Ollama message content: a plain string, or (newer clients) a list of
+    typed parts. Images have no rail in this pipeline — extract text only."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return "" if content is None else str(content)
+
+
+def _ollama_options_to_openai(options) -> dict:
+    """Translate Ollama's `options` object to OpenAI Chat Completions fields.
+
+    Deliberately minimal: only what survives BOTH translation hops. The second
+    hop (openai_to_anthropic_request) forwards temperature/top_p/top_k/stop/
+    max_tokens, so those are mapped and NOTHING else — an Ollama client's
+    min_p/repeat_penalty/seed are dropped here rather than accepted and
+    silently ignored mid-pipeline (the honest drop also keeps this function
+    truthful about what it claims to do). num_ctx is dropped for a different
+    reason: the rail budget owns context sizing, and forwarding a client's
+    num_ctx would silently fight the admission controller."""
+    if not isinstance(options, dict) or not options:
+        return {}
+    out: dict = {}
+    for src, dst in (("temperature", "temperature"), ("top_p", "top_p"), ("top_k", "top_k")):
+        if src in options:
+            out[dst] = options[src]
+    if "num_predict" in options:
+        try:
+            out["max_tokens"] = max(1, int(options["num_predict"]))
+        except (TypeError, ValueError):
+            pass
+    stop = options.get("stop")
+    if isinstance(stop, str) and stop:
+        out["stop"] = [stop]
+    elif isinstance(stop, list) and stop:
+        out["stop"] = [str(s) for s in stop]
+    return out
+
+
+def _finish_common_ollama_fields(body: dict) -> dict:
+    """Fields shared by the /api/chat and /api/generate request builders:
+    option mapping, tools passthrough, and the buffered stream decision (the
+    pipeline always runs non-stream; callers re-emit)."""
+    fields: dict = {}
+    fields.update(_ollama_options_to_openai(body.get("options")))
+    if isinstance(body.get("tools"), list) and body["tools"]:
+        fields["tools"] = body["tools"]
+        fields["tool_choice"] = body.get("tool_choice") or "auto"
+    # Ollama's `format` field (structured output) is accepted and DROPPED:
+    # the second translation hop (openai_to_anthropic_request) does not carry
+    # response_format, so wiring it through is a pipeline contract change that
+    # deserves its own schema-diff pass — not something to fake acceptance of.
+    # keep_alive / raw / template are Ollama lifecycle features with no local
+    # equivalent: the backend stays loaded (capacity policy owns that) and the
+    # chat template is the backend's own.
+    fields["stream"] = False
+    return fields
+
+
+def ollama_chat_to_openai_request(body: dict) -> dict:
+    """Ollama /api/chat body -> OpenAI Chat Completions body."""
+    messages = []
+    # Deterministic tool-call ids for replayed assistant turns. Ollama
+    # associates a tool result with its call by ORDER within the message list;
+    # OpenAI (and the Anthropic hop after it) pairs by id. Without explicit
+    # ids, the second hop mints random ids while the tool results carry "" —
+    # pairs that can never match.
+    pending_call_ids: list[str] = []
+    for m in body.get("messages") or []:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role") or "user"
+        content = _ollama_content_to_text(m.get("content"))
+        # Ollama roles map onto the OpenAI four. An unknown role is demoted
+        # to user rather than rejected — clients invent roles, and dropping
+        # the text would silently lose conversation history.
+        if role not in ("system", "user", "assistant", "tool"):
+            role = "user"
+        entry: dict = {"role": role, "content": content}
+        if role == "assistant" and isinstance(m.get("tool_calls"), list) and m["tool_calls"]:
+            # Conversation replay of a prior tool call. Ollama carries the
+            # arguments as an object; OpenAI as a JSON string.
+            rebuilt = []
+            pending_call_ids = []
+            for i, tc in enumerate(m["tool_calls"]):
+                fn = (tc or {}).get("function", {}) or {}
+                args = fn.get("arguments", "")
+                if not isinstance(args, str):
+                    try:
+                        args = json.dumps(args)
+                    except (TypeError, ValueError):
+                        args = "{}"
+                call_id = f"call_{len(messages)}_{i}"
+                pending_call_ids.append(call_id)
+                rebuilt.append(
+                    {
+                        "id": call_id,
+                        "function": {"name": fn.get("name", ""), "arguments": args},
+                    }
+                )
+            entry["tool_calls"] = rebuilt
+        elif role == "tool" and pending_call_ids:
+            # Consume the ids in order: this tool result answers the oldest
+            # still-unpaired call, which is how Ollama ordered them.
+            entry["tool_call_id"] = pending_call_ids.pop(0)
+        messages.append(entry)
+    openai_body: dict = {
+        "model": body.get("model") or FALLBACK_LOCAL_MODEL_ID,
+        "messages": messages,
+    }
+    openai_body.update(_finish_common_ollama_fields(body))
+    return openai_body
+
+
+def ollama_generate_to_openai_request(body: dict) -> dict:
+    """Ollama /api/generate body -> OpenAI Chat Completions body.
+
+    generate() has no messages array — just prompt (+ optional system). The
+    pipeline has no notion of raw completion mode, so the prompt rides as a
+    user turn. Tools are accepted because some clients pass them to generate;
+    a tool-call finish then surfaces in the Ollama response text as the
+    serialized call rather than being dropped."""
+    messages = []
+    system = body.get("system")
+    if isinstance(system, str) and system.strip():
+        messages.append({"role": "system", "content": system})
+    prompt = body.get("prompt")
+    messages.append({"role": "user", "content": "" if prompt is None else str(prompt)})
+    openai_body: dict = {
+        "model": body.get("model") or FALLBACK_LOCAL_MODEL_ID,
+        "messages": messages,
+    }
+    openai_body.update(_finish_common_ollama_fields(body))
+    return openai_body
+
+
+def _ollama_done_reason(finish_reason) -> str:
+    return "length" if finish_reason == "length" else "stop"
+
+
+def _ollama_now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _ollama_usage_lines(usage: dict, duration_ns: int) -> dict:
+    """The trailing count block shared by every Ollama response shape.
+    Real Ollama reports nanosecond durations and token counts; our numbers
+    come from the guarded pipeline's usage accounting."""
+    usage = usage or {}
+    return {
+        "total_duration": duration_ns,
+        "load_duration": 0,
+        "prompt_eval_count": usage.get("prompt_tokens", 0),
+        "prompt_eval_duration": 0,
+        "eval_count": usage.get("completion_tokens", 0),
+        "eval_duration": duration_ns,
+    }
+
+
+def openai_to_ollama_chat_response(
+    openai_resp: dict, requested_model: str, duration_ns: int
+) -> dict:
+    """OpenAI Chat Completions response -> Ollama /api/chat response."""
+    choice = (openai_resp.get("choices") or [{}])[0] or {}
+    message = choice.get("message", {}) or {}
+    ollama_message: dict = {
+        "role": "assistant",
+        "content": message.get("content") or "",
+    }
+    if isinstance(message.get("tool_calls"), list) and message["tool_calls"]:
+        tool_calls = []
+        for tc in message["tool_calls"]:
+            fn = (tc or {}).get("function", {}) or {}
+            args = fn.get("arguments", "")
+            if isinstance(args, str):
+                # Ollama carries arguments as an object; OpenAI as a string.
+                # An unparseable string stays a string — a mangled call beats
+                # a silently dropped one.
+                try:
+                    args = json.loads(args) if args.strip() else {}
+                except (ValueError, TypeError):
+                    pass
+            tool_calls.append(
+                {"function": {"name": fn.get("name", ""), "arguments": args}}
+            )
+        ollama_message["tool_calls"] = tool_calls
+    resp = {
+        "model": requested_model,
+        "created_at": _ollama_now_iso(),
+        "message": ollama_message,
+        "done": True,
+        "done_reason": _ollama_done_reason(choice.get("finish_reason")),
+    }
+    resp.update(_ollama_usage_lines(openai_resp.get("usage"), duration_ns))
+    return resp
+
+
+def openai_to_ollama_generate_response(
+    openai_resp: dict, requested_model: str, duration_ns: int
+) -> dict:
+    """OpenAI Chat Completions response -> Ollama /api/generate response."""
+    choice = (openai_resp.get("choices") or [{}])[0] or {}
+    message = choice.get("message", {}) or {}
+    text = message.get("content") or ""
+    if isinstance(message.get("tool_calls"), list) and message["tool_calls"]:
+        # generate() has no tool contract; surface the call as text rather
+        # than lose it.
+        text += "\n" + json.dumps({"tool_calls": message["tool_calls"]})
+    resp = {
+        "model": requested_model,
+        "created_at": _ollama_now_iso(),
+        "response": text,
+        "done": True,
+        "done_reason": _ollama_done_reason(choice.get("finish_reason")),
+    }
+    resp.update(_ollama_usage_lines(openai_resp.get("usage"), duration_ns))
+    return resp
+
+
+async def _emit_ollama_ndjson(resp: dict, chunk_fields: dict):
+    """Buffered Ollama streaming: one content line, then the final line.
+
+    The pipeline completed before this generator starts, so both lines are
+    emitted back-to-back — a client sees the reply arrive at once. The line
+    split exists so stream-mode clients (which parse NDJSON line-by-line and
+    wait for done:true) terminate correctly.
+
+    chunk_fields names the payload key(s) of this dialect ("message" for
+    /api/chat, "response" for /api/generate). The final line carries the same
+    key EMPTY, exactly like real Ollama — a client concatenating payload
+    fields across lines sees the content exactly once."""
+    chunk = {"model": resp["model"], "created_at": resp["created_at"], "done": False}
+    chunk.update(chunk_fields)
+    yield (json.dumps(chunk) + "\n").encode()
+    final = dict(resp)
+    for k in chunk_fields:
+        if k == "message":
+            final["message"] = {"role": "assistant", "content": ""}
+        else:
+            final[k] = ""
+    final["done"] = True
+    yield (json.dumps(final) + "\n").encode()
+
+
+_OLLAMA_META_CACHE: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
+_OLLAMA_META_TTL_SECS = 60.0
+
+
+async def _ollama_model_meta(model_id: str) -> dict:
+    """Best-effort card data for /api/tags, /api/show, /api/ps.
+
+    Real Ollama reads these from its blob store. We mirror what the backend
+    actually exposes (llama.cpp /props: model path -> file size + mtime) and
+    leave unknowables as stable placeholders instead of inventing
+    plausible-looking numbers — a fabricated parameter_size would show up in
+    clients' model pickers as fact.
+
+    The result is cached per model id (60s): these are discovery endpoints,
+    some of them unauthenticated, and a 1:1 request -> upstream probe would
+    make them an amplifier against the backend. The upstream-provided path is
+    validated as an existing regular FILE before stat results are reflected
+    to clients — the backend is inside the trust boundary, but an open
+    endpoint should not become a generic filesystem oracle for it."""
+    now = time.monotonic()
+    hit = _OLLAMA_META_CACHE.get(model_id)
+    if hit is not None and now - hit[0] < _OLLAMA_META_TTL_SECS:
+        return hit[1]
+    meta = {"modified_at": _OLLAMA_START_ISO, "size": 0}
+    try:
+        if http_client:
+            r = await http_client.get(
+                LLAMA_CPP_BASE.replace("/v1", "/props"), timeout=5.0
+            )
+            if r.status_code == 200:
+                props = r.json() or {}
+                path = props.get("model_path") or ""
+                if isinstance(path, str) and path:
+                    st = os.stat(path)
+                    if stat.S_ISREG(st.st_mode):
+                        meta["size"] = st.st_size
+                        meta["modified_at"] = time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)
+                        )
+    except Exception as exc:
+        # Best-effort by design (the card degrades to placeholders), but a
+        # silently misconfigured upstream is invisible without this line —
+        # e.g. an LLAMA_CPP_BASE without the /v1 suffix breaks the .replace.
+        logger.debug("OLLAMA: /props metadata miss for %s: %s", model_id, exc)
+    _OLLAMA_META_CACHE[model_id] = (now, meta)
+    while len(_OLLAMA_META_CACHE) > 16:
+        _OLLAMA_META_CACHE.popitem(last=False)
+    return meta
+
+
+def _ollama_digest(model_id: str) -> str:
+    """Stable pseudo-digest. Real Ollama's digest addresses a content blob;
+    the equivalent truth here is 'this backend serving this model id'. The
+    sha256: prefix matches real Ollama — some clients parse on the colon."""
+    return "sha256:" + hashlib.sha256(f"uap-strata::{model_id}".encode()).hexdigest()
+
+
+def _ollama_family(model_id: str) -> str:
+    lower = (model_id or "").lower()
+    for fam in (
+        "qwen3",
+        "qwen2",
+        "qwen",
+        "llama3",
+        "llama",
+        "gemma",
+        "mistral",
+        "phi",
+        "deepseek",
+        "codestral",
+    ):
+        if lower.startswith(fam):
+            return fam
+    return "llama"
+
+
+def _ollama_quantization_level(model_id: str) -> str:
+    m = re.search(
+        r"(iq\d+[a-z0-9_]*|q\d+_[a-z0-9]+|f16|bf16|fp16|f32)", model_id or "", re.IGNORECASE
+    )
+    return m.group(1).upper() if m else ""
+
+
+def _ollama_details(model_id: str) -> dict:
+    return {
+        "parent_model": "",
+        "format": "gguf",
+        "family": _ollama_family(model_id),
+        "families": [_ollama_family(model_id)],
+        "parameter_size": "",
+        "quantization_level": _ollama_quantization_level(model_id),
+    }
+
+
+async def _ollama_served_model_ids() -> tuple[str, ...]:
+    """Backend-served ids only. The Claude contract ids that /v1/models
+    advertises for Anthropic-protocol SDK compatibility are protocol fictions
+    — they must not leak into an Ollama client's model picker, where a client
+    would select them and send them to /api/chat as if they were real."""
+    served = await _upstream_model_ids_cached() or ()
+    local = tuple(m for m in served if m not in ADVERTISED_CLAUDE_MODEL_IDS)
+    return local or (FALLBACK_LOCAL_MODEL_ID,)
+
+
+@app.get("/api/version")
+async def ollama_version():
+    return {"version": _OLLAMA_API_VERSION}
+
+
+@app.get("/api/tags")
+async def ollama_tags():
+    """Ollama model discovery. Served ids only — see _ollama_served_model_ids."""
+    # Same rationale as /v1/models: refresh the rail before answering, because
+    # this is the first thing Ollama clients call and they cache the list.
+    await _maybe_recheck_context_window()
+    models_out = []
+    for mid in await _ollama_served_model_ids():
+        meta = await _ollama_model_meta(mid)
+        models_out.append(
+            {
+                "name": mid,
+                "model": mid,
+                "modified_at": meta["modified_at"],
+                "size": meta["size"],
+                "digest": _ollama_digest(mid),
+                "details": _ollama_details(mid),
+            }
+        )
+    return {"models": models_out}
+
+
+@app.post("/api/show")
+async def ollama_show(request: Request):
+    """Ollama model card. An unknown model 404s like real Ollama, because
+    clients use this to validate a model id they remembered."""
+    try:
+        body = json.loads(await request.body() or b"{}")
+    except (ValueError, TypeError):
+        return _ollama_error(400, "invalid JSON body")
+    if not isinstance(body, dict):
+        return _ollama_error(400, "body must be a JSON object")
+    requested = body.get("model") or ""
+    served = await _ollama_served_model_ids()
+    if requested and requested not in served:
+        return _ollama_error(404, f"model '{requested}' not found")
+    model_id = requested or served[0]
+    meta = await _ollama_model_meta(model_id)
+    details = _ollama_details(model_id)
+    parameters: dict = {}
+    window = _effective_context_window() if _context_window_measured else 0
+    if window > 0:
+        # The honest number: the measured rail, not the backend's raw n_ctx.
+        parameters["num_ctx"] = window
+    family = details["family"]
+    return {
+        "modelfile": (
+            "# Modelfile synthesised by the UAP proxy for the live backend.\n"
+            f"FROM {model_id}\n"
+        ),
+        "parameters": parameters,
+        "template": "{{ .System }} {{ .Prompt }}",
+        "details": details,
+        "model_info": {
+            "general.architecture": family,
+            f"{family}.context_length": window or 0,
+            "general.file_size": meta["size"],
+        },
+    }
+
+
+@app.get("/api/ps")
+async def ollama_ps():
+    """Running-model list. The backend stays loaded (capacity policy owns
+    that), so a far-future expiry is the honest answer — models do not
+    unload after Ollama's default keep_alive here."""
+    models_out = []
+    for mid in await _ollama_served_model_ids():
+        meta = await _ollama_model_meta(mid)
+        entry = {
+            "name": mid,
+            "model": mid,
+            "size": meta["size"],
+            "digest": _ollama_digest(mid),
+            "details": _ollama_details(mid),
+            "expires_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 86400)
+            ),
+            "size_vram": meta["size"],
+        }
+        models_out.append(entry)
+    return {"models": models_out}
+
+
+@app.post("/api/chat")
+async def ollama_chat(request: Request):
+    """Ollama /api/chat: full guardrail path, Ollama wire shape."""
+    try:
+        body = json.loads(await request.body() or b"{}")
+    except (ValueError, TypeError):
+        return _ollama_error(400, "invalid JSON body")
+    if not isinstance(body, dict):
+        return _ollama_error(400, "body must be a JSON object")
+    # Ollama defaults to streaming.
+    requested_stream = bool(body.get("stream", True))
+    requested_model = body.get("model") or FALLBACK_LOCAL_MODEL_ID
+    client_id = resolve_client_id(request)
+    openai_body = ollama_chat_to_openai_request(body)
+    logger.info(
+        "OLLAMA chat: client=%s model=%s stream=%s msgs=%d tools=%d",
+        client_id,
+        requested_model,
+        requested_stream,
+        len(openai_body.get("messages", [])),
+        len(openai_body.get("tools", []) or []),
+    )
+    t0 = time.monotonic()
+    openai_resp, status, err = await _guarded_openai_completion(request, openai_body)
+    duration_ns = int((time.monotonic() - t0) * 1e9)
+    if openai_resp is None:
+        return _ollama_error(status if status >= 400 else 502, err or "upstream returned no message")
+    resp = openai_to_ollama_chat_response(openai_resp, requested_model, duration_ns)
+    if not requested_stream:
+        return Response(content=json.dumps(resp).encode(), media_type="application/json")
+    return StreamingResponse(
+        _emit_ollama_ndjson(resp, {"message": resp["message"]}),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.post("/api/generate")
+async def ollama_generate(request: Request):
+    """Ollama /api/generate: full guardrail path, Ollama wire shape."""
+    try:
+        body = json.loads(await request.body() or b"{}")
+    except (ValueError, TypeError):
+        return _ollama_error(400, "invalid JSON body")
+    if not isinstance(body, dict):
+        return _ollama_error(400, "body must be a JSON object")
+    requested_stream = bool(body.get("stream", True))
+    requested_model = body.get("model") or FALLBACK_LOCAL_MODEL_ID
+    client_id = resolve_client_id(request)
+    openai_body = ollama_generate_to_openai_request(body)
+    logger.info(
+        "OLLAMA generate: client=%s model=%s stream=%s prompt_len=%d",
+        client_id,
+        requested_model,
+        requested_stream,
+        len(str(body.get("prompt") or "")),
+    )
+    t0 = time.monotonic()
+    openai_resp, status, err = await _guarded_openai_completion(request, openai_body)
+    duration_ns = int((time.monotonic() - t0) * 1e9)
+    if openai_resp is None:
+        return _ollama_error(status if status >= 400 else 502, err or "upstream returned no message")
+    resp = openai_to_ollama_generate_response(openai_resp, requested_model, duration_ns)
+    if not requested_stream:
+        return Response(content=json.dumps(resp).encode(), media_type="application/json")
+    return StreamingResponse(
+        _emit_ollama_ndjson(resp, {"response": resp["response"]}),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/v1/models")
 async def models():
     """Return available model list.
@@ -16265,21 +16861,154 @@ def _assert_bind_is_authenticated(host: str, token: str) -> None:
     )
 
 
+def _ollama_port_bindable(host: str, port: int) -> bool:
+    """True when the Ollama surface can bind its port.
+
+    A real Ollama is the likeliest collision (it owns 11434 by convention),
+    and uvicorn exits the whole process on a bind failure — which must never
+    take the primary Anthropic surface down with it. This check is advisory;
+    the race after it (a port grabbed between this check and the companion's
+    bind) is contained by _serve_companion_guarded below, which turns a
+    companion SystemExit into a log line and keeps the primary serving."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+        return True
+    except OSError:
+        return False
+
+
+class _CompanionListener(uvicorn.Server):
+    """The second uvicorn server for the Ollama port.
+
+    uvicorn installs signal handlers per Server.serve() call: two servers would
+    hand SIGTERM to whichever installed last and leave the other listening,
+    hanging systemd stops. The companion installs none and instead mirrors
+    the primary's should_exit, so one SIGTERM stops both ports. lifespan="off"
+    (set by the caller) matters even more — the app's startup handlers own the
+    http client and the session monitors, and a second lifespan would run
+    them twice against shared state."""
+
+    @contextmanager
+    def capture_signals(self):
+        yield
+
+
+async def _run_proxy_servers() -> None:
+    """Serve the app on PROXY_PORT, plus the Ollama surface port when enabled.
+
+    One process, two listeners, one asyncio loop: the Ollama surface shares
+    the app object — and with it the admission table, rail semaphore and every
+    guardrail — with the Anthropic surface."""
+    primary = uvicorn.Server(
+        uvicorn.Config(
+            app, host=PROXY_HOST, port=PROXY_PORT, log_level=PROXY_LOG_LEVEL.lower()
+        )
+    )
+    primary_task = asyncio.ensure_future(primary.serve())
+    tasks: list = [primary_task]
+    ollama_enabled = PROXY_OLLAMA_PORT > 0
+    if ollama_enabled and PROXY_OLLAMA_PORT == PROXY_PORT:
+        # The advisory bind check cannot catch this one: it runs before the
+        # primary has bound, so it would pass for the primary's own port and
+        # the companion would later die on EADDRINUSE.
+        logger.error(
+            "OLLAMA: PROXY_OLLAMA_PORT=%d equals PROXY_PORT — Ollama surface "
+            "disabled. Pick a different port or set 0.",
+            PROXY_OLLAMA_PORT,
+        )
+        ollama_enabled = False
+    if ollama_enabled:
+        if not _ollama_port_bindable(PROXY_HOST, PROXY_OLLAMA_PORT):
+            logger.error(
+                "OLLAMA: port %d is busy (a real Ollama?) — Ollama surface "
+                "disabled, Anthropic/OpenAI surface unaffected. Set "
+                "PROXY_OLLAMA_PORT=0 to silence this.",
+                PROXY_OLLAMA_PORT,
+            )
+        else:
+            companion = _CompanionListener(
+                uvicorn.Config(
+                    app,
+                    host=PROXY_HOST,
+                    port=PROXY_OLLAMA_PORT,
+                    log_level=PROXY_LOG_LEVEL.lower(),
+                    log_config=None,  # the primary already owns logging config
+                    lifespan="off",  # app startup must not run twice
+                )
+            )
+
+            async def _serve_companion_guarded() -> None:
+                # uvicorn handles a bind failure with sys.exit(1) INSIDE
+                # serve(). SystemExit is a BaseException: it is NOT contained
+                # by gather(return_exceptions=True) — it tears the process
+                # down and takes the primary with it. Contain it here so a
+                # companion failure only ever disables the Ollama surface.
+                try:
+                    await companion.serve()
+                except BaseException as exc:  # containment is the point
+                    logger.error(
+                        "OLLAMA: companion listener died (%s: %s) — Ollama "
+                        "surface disabled, Anthropic/OpenAI surface "
+                        "unaffected.",
+                        type(exc).__name__,
+                        exc,
+                    )
+
+            companion_task = asyncio.ensure_future(_serve_companion_guarded())
+
+            async def _tie_companion() -> None:
+                # The companion cannot see signals (it installs no handlers).
+                # Mirror the primary two ways: when SIGTERM sets the primary's
+                # should_exit, and when the primary task ENDS for any other
+                # reason (crash) — one surface must never outlive the other,
+                # or the process would hang half-alive on systemd stops.
+                while not primary_task.done() and not primary.should_exit:
+                    await asyncio.sleep(0.25)
+                companion.should_exit = True
+
+            logger.info(
+                "OLLAMA: serving /api/* on %s:%d (guarded, same process)",
+                PROXY_HOST,
+                PROXY_OLLAMA_PORT,
+            )
+            tasks.append(companion_task)
+            tasks.append(_tie_companion())
+    # return_exceptions: a companion bind failure (the advisory check raced)
+    # must not cancel the primary. A primary failure still exits the process,
+    # because _tie_companion flags the companion and every task then ends —
+    # and the raise below restores the pre-change contract that a dead
+    # primary aborts startup non-zero (Restart=on-failure reads that).
+    await asyncio.gather(*tasks, return_exceptions=True)
+    if not primary_task.cancelled() and primary_task.exception() is not None:
+        raise primary_task.exception()
+
+
 if __name__ == "__main__":
     # Config discovery is silent by design (it fails open so a missing file can
     # never stop the proxy). Say what it found, so a miss is visible in the
     # journal instead of showing up later as unexplained default behaviour.
     logger.info(
-        "proxy env: %s | auth=%s | bind=%s:%d",
+        "proxy env: %s | auth=%s | bind=%s:%d | ollama=%s",
         f"loaded {_PROXY_ENV_FILE_LOADED}" if _PROXY_ENV_FILE_LOADED else "no proxy.env found",
         "enabled" if PROXY_AUTH_TOKEN else "DISABLED",
         PROXY_HOST,
         PROXY_PORT,
+        f"port {PROXY_OLLAMA_PORT}" if PROXY_OLLAMA_PORT > 0 else "off",
     )
     _assert_bind_is_authenticated(PROXY_HOST, PROXY_AUTH_TOKEN)
-    uvicorn.run(
-        app,
-        host=PROXY_HOST,
-        port=PROXY_PORT,
-        log_level=PROXY_LOG_LEVEL.lower(),
-    )
+    if PROXY_OLLAMA_PORT > 0:
+        asyncio.run(_run_proxy_servers())
+    else:
+        # Legacy single-port path kept byte-identical to the pre-Ollama
+        # launcher ON PURPOSE: PROXY_OLLAMA_PORT=0 deployments must not
+        # start exercising the gather/tie machinery just because it exists
+        # (blast-radius minimization; a lifecycle regression in the dual path
+        # must not reproduce in single-port setups).
+        uvicorn.run(
+            app,
+            host=PROXY_HOST,
+            port=PROXY_PORT,
+            log_level=PROXY_LOG_LEVEL.lower(),
+        )
