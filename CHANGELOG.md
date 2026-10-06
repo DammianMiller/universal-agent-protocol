@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.20.0 (2026-10-06)
+
+- feat(proxy): Ollama-compatible surface on PROXY_OLLAMA_PORT (v2.20.0)
+- test(config): one worker per core under CI — 16 on 4 cores starves worker RPC
+
+
 ## v2.19.5 (2026-10-06)
 
 - test(delivery): give CI runners a gate-timeout ceiling they can honour
