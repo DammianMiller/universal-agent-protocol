@@ -248,3 +248,43 @@ describe('project opencode config agrees with the profile', () => {
     expect(direct.limit.context).toBe(profile.server_optimization.kv_capacity);
   });
 });
+
+describe('client sync tooling follows the profile, not transcribed ids', () => {
+  const readText = (p: string) => readFileSync(resolve(ROOT, p), 'utf8');
+
+  it('derives the client model id from the profile instead of hardcoding one', () => {
+    // 2026-10-07: the installer shipped MODEL_ALIAS="qwen38-gsq-rco-27b" as a
+    // literal, so every harness advertised an id no longer served (the engine
+    // tolerates any id, which is why it kept working — and why nobody
+    // noticed). The profile is the one place a backend swap updates; the
+    // installer must read it so a re-run converges every harness.
+    const script = readText('scripts/sync-local-agent-configs.sh');
+    expect(script).toMatch(/model-profiles\/\$\{PROFILE_NAME\}\.json/);
+    expect(script).toContain('["model"]');
+    // The alias must come from the profile read, never a transcribed constant
+    // (retired ids may appear only in migration rules, not as the alias).
+    expect(script).not.toMatch(/MODEL_ALIAS="qwen/);
+  });
+
+  it('keeps the bench script on the served alias too', () => {
+    const bench = readText('scripts/bench-decode-reps.sh');
+    expect(bench).toMatch(/model-profiles\/qwen38\.json/);
+    expect(bench).not.toContain('qwen38-gsq-rco-27b');
+    expect(bench).not.toContain('qwen35-a3b-iq4xs');
+    // The last-resort fallback must not transcribe a model id either — it
+    // would rot silently at the next backend swap.
+    expect(bench).not.toMatch(/MODEL="q/);
+  });
+
+  it('expects the sandbox test to read the alias from the profile, not transcribe it', () => {
+    // The sandbox test may name retired ids in FIXTURES — that is what a
+    // migration fixture is — but its EXPECTATIONS must be profile-derived,
+    // or the test goes stale on the next backend swap exactly like the
+    // rails assertions did (they expected 2 rails into the 1-rail era).
+    const sandbox = readText('scripts/test-sync-sandbox.sh');
+    expect(sandbox).toMatch(/model-profiles\/qwen38\.json/);
+    expect(sandbox).not.toMatch(/=="qwen38-gsq-rco-27b"/);
+    expect(sandbox).not.toMatch(/=="qwen35-a3b-iq4xs"/);
+    expect(sandbox).toMatch(/parallel_rails/);
+  });
+});

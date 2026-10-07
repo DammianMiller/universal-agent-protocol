@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.21.3 (2026-10-07)
+
+- fix(scripts): derive every harness's model id from the qwen38 profile
+
+
 ## v2.21.2 (2026-10-07)
 
 - fix(policy): resolve Edit targets across harness key conventions in self-protect and the policy gate

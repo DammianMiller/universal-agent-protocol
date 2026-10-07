@@ -8,7 +8,12 @@
 set -uo pipefail
 
 URL="${URL:-http://127.0.0.1:8080/v1/chat/completions}"
-MODEL="${MODEL:-qwen38-gsq-rco-27b}"
+# The id follows the profile (the one place a backend swap updates) — never a
+# transcribed constant. The engine ignores requested ids, but the request log
+# should show the id actually served.
+MODEL="${MODEL:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["model"])' \
+  "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/model-profiles/qwen38.json" 2>/dev/null || true)}"
+[ -n "$MODEL" ] || MODEL="uap-bench-fallback"   # never rots; the engine ignores requested ids
 REPS="${REPS:-3}"
 MAXTOK="${MAXTOK:-220}"
 
