@@ -252,7 +252,14 @@ except Exception: a = {}
 markers = ("/.policy-tools/", "/src/policies/", "/policies/", "/.uap.json",
            ".uap.json", "/.uap/", "anthropic-proxy.env", "uap-policy-gate.sh",
            "uap-reactor-prompt.sh", "pre-tool-use")
-target = a.get("file_path") or a.get("path") or a.get("target") or ""
+# Key list matches the one at the top of this script (worktree resolution):
+# harnesses disagree on the arg name (file_path vs filePath vs target/…), and
+# an op whose path key this list misses scores SEC_SENSITIVE=0 — arming
+# neither the fail-closed net nor the fastpath skip. Observed live: opencode
+# sends filePath (camelCase), so a trivial agent edit to .uap.json was
+# fast-pathed around the self-protect enforcer. Widening only TIGHTENS.
+target = (a.get("file_path") or a.get("filePath") or a.get("path")
+          or a.get("target") or a.get("filename") or a.get("file") or "")
 cmd = a.get("command") or ""
 # Scan the COMMAND as well as file_path. Only file_path was checked, so for
 # every Bash call SEC_SENSITIVE was 0 unless the command set a bypass var --
