@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.21.2 (2026-10-07)
+
+- fix(policy): resolve Edit targets across harness key conventions in self-protect and the policy gate
+- chore(config): qwen38 profile follows the live backend alias (IQ3_S swap) (#837)
+
+
 ## v2.21.1 (2026-10-07)
 
 - chore(config): qwen38 profile follows the live backend alias (IQ3_S swap)
