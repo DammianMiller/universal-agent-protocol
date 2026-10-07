@@ -734,7 +734,15 @@ def main() -> None:
     op, args = parse_cli()
 
     if op in EDIT_OPS:
-        target = args.get("file_path") or args.get("path") or args.get("target") or ""
+        # Key list widened for opencode, which sends camelCase `filePath`.
+        # It previously landed on the fail-open "no file path in args" branch,
+        # so agent edits to protected files (.uap.json, enforcers, hooks) were
+        # allowed whenever the caller used a different key convention — the
+        # gate armed its fail-closed net, then this enforcer blinked first and
+        # allowed. Widening only ever BLOCKS: every added key names a file the
+        # agent is editing, not one it is merely reading.
+        target = (args.get("file_path") or args.get("filePath") or args.get("path")
+                  or args.get("target") or args.get("filename") or args.get("file") or "")
         if not target:
             emit(True, "no file path in args")
         rp = Path(target).resolve()

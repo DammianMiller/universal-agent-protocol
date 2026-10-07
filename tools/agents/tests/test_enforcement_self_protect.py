@@ -37,6 +37,25 @@ class SelfProtectTest(unittest.TestCase):
         rc, out = run("Edit", {"file_path": str(REPO / ".uap.json")})
         self.assertEqual(rc, 2)
 
+    def test_blocks_edit_to_uap_json_camel_case(self):
+        # opencode sends camelCase `filePath`. The extraction previously read
+        # only file_path/path/target, so this shape landed on the fail-open
+        # "no file path in args" branch and the edit was ALLOWED — observed
+        # live: a looping client repeatedly tried to strip a policy flag from
+        # .uap.json and every attempt sailed past this enforcer.
+        rc, out = run("Edit", {"filePath": str(REPO / ".uap.json"), "oldString": "x", "newString": "y"})
+        self.assertEqual(rc, 2)
+        self.assertFalse(out["allowed"])
+        self.assertIn("BLOCKED", out["reason"])
+
+    def test_allows_normal_file_edit_camel_case(self):
+        # The widened key list must not over-block: an ordinary file named with
+        # the same convention still allows, with the same reason as before.
+        rc, out = run("Edit", {"filePath": str(REPO / "README.md"), "oldString": "x", "newString": "y"})
+        self.assertEqual(rc, 0)
+        self.assertTrue(out["allowed"])
+        self.assertEqual(out["reason"], "not an enforcement-control file")
+
     def test_blocks_edit_to_policy_tools(self):
         rc, out = run("Write", {"file_path": str(REPO / ".policy-tools/abc_delivery_enforcement.py")})
         self.assertEqual(rc, 2)
