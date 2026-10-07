@@ -9,6 +9,27 @@
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# The alias the installer must write, read from the profile the same way the
+# installer reads it — reality-derived, never transcribed here.
+ALIAS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["model"])' \
+  "$HERE/../config/model-profiles/qwen38.json") \
+  || { echo "sandbox: cannot read the profile alias"; exit 1; }
+[ -n "$ALIAS" ] || { echo "sandbox: profile alias is empty"; exit 1; }
+# Expected rail count likewise: the profile's parallel_rails is the reality the
+# proxy env must converge on (2 in the llama.cpp era, 1 in the strata era).
+RAILS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_optimization"]["parallel_rails"])' \
+  "$HERE/../config/model-profiles/qwen38.json") \
+  || { echo "sandbox: cannot read the profile rail count"; exit 1; }
+[ -n "$RAILS" ] || { echo "sandbox: profile rail count is empty"; exit 1; }
+# Session cap and pool likewise — transcribed numbers here are what left this
+# suite red on master through the whole 1-rail era.
+CTX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["context_window"])' \
+  "$HERE/../config/model-profiles/qwen38.json") \
+  || { echo "sandbox: cannot read the profile session cap"; exit 1; }
+POOL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_optimization"]["kv_capacity"])' \
+  "$HERE/../config/model-profiles/qwen38.json") \
+  || { echo "sandbox: cannot read the profile pool"; exit 1; }
+[ -n "$CTX" ] && [ -n "$POOL" ] || { echo "sandbox: profile cap/pool empty"; exit 1; }
 # Pin TMPDIR: it is honoured by mktemp, and a TMPDIR pointing inside the repo
 # would drop generated configs into the worktree.
 SANDBOX=$(TMPDIR=/tmp mktemp -d)
@@ -51,7 +72,9 @@ EOF
 cat > "$SANDBOX/.factory/config.json" <<'EOF'
 { "custom_models": [
   { "model_display_name": "Qwen3.5", "model": "qwen35-a3b-iq4xs",
-    "base_url": "http://localhost:8080/v1", "api_key": "sk-qwen35b", "provider": "openai" },
+    "base_url": "http://localhost:8080/v1", "api_key": "**********", "provider": "openai" },
+  { "model_display_name": "Qwen3.8-27B GSQ-RCO (local)", "model": "qwen38-gsq-rco-27b",
+    "base_url": "http://127.0.0.1:4000/v1", "api_key": "stale", "provider": "openai" },
   { "model_display_name": "CC Opus", "model": "claude-opus-4-6",
     "base_url": "http://192.168.1.165:8317", "api_key": "local", "provider": "anthropic" }
 ] }
@@ -62,6 +85,8 @@ cat > "$SANDBOX/.factory/settings.json" <<'EOF'
 { "customModels": [
   { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
     "baseUrl": "http://localhost:4000", "apiKey": "not-needed", "noImageSupport": true },
+  { "displayName": "Qwen3.8-27B GSQ-RCO (local)", "model": "qwen38-gsq-rco-27b",
+    "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale" },
   { "displayName": "Odd entry", "baseUrl": "http://192.168.1.165:8317" }
 ] }
 EOF
@@ -70,6 +95,22 @@ cat > "$SANDBOX/.codex/config.toml" <<'EOF'
 model = "some-cloud-model"
 [tui]
 status_line = ["model-name"]
+
+# --- UAP local stack (added 2026-09-20 by sync-local-agent-configs.sh) ------
+# Exactly the block an older run of the installer wrote (chat wire, proxy
+# route, retired id). The current run must REPLACE it wholesale — codex 0.120
+# refuses to load a config carrying wire_api = "chat" at all.
+[model_providers.uap-local]
+name = "UAP anthropic-proxy (local Qwen3.8-27B GSQ-RCO)"
+base_url = "http://127.0.0.1:4000/v1"
+wire_api = "chat"
+
+[model_providers.uap-local.http_headers]
+x-uap-model-profile = "qwen38"
+
+[profiles.qwen38]
+model = "qwen38-gsq-rco-27b"
+model_provider = "uap-local"
 EOF
 
 echo "sandbox: $SANDBOX"
@@ -89,21 +130,22 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=1; }
 
 # 1. proxy env
 env_f="$SANDBOX/.config/uap/anthropic-proxy.env"
-grep -q '^PROXY_CONCURRENCY_LIMIT=2$'      "$env_f" && ok "proxy: concurrency -> 2"      || bad "proxy: concurrency not 2"
-grep -q '^UAP_MODEL_SLOTS=2$'              "$env_f" && ok "proxy: model slots -> 2"      || bad "proxy: slots not 2"
-grep -q '^PROXY_SESSION_ADMISSION_LIMIT=2$' "$env_f" && ok "proxy: admission 4 -> 2 (pool guard)" || bad "proxy: admission limit not 2"
-grep -q '^PROXY_CONTEXT_WINDOW=114688$'    "$env_f" && ok "proxy: fallback window 114688" || bad "proxy: fallback window wrong"
+grep -q "^PROXY_CONCURRENCY_LIMIT=$RAILS$"      "$env_f" && ok "proxy: concurrency -> $RAILS"      || bad "proxy: concurrency not $RAILS"
+grep -q "^UAP_MODEL_SLOTS=$RAILS$"              "$env_f" && ok "proxy: model slots -> $RAILS"      || bad "proxy: slots not $RAILS"
+grep -q "^PROXY_SESSION_ADMISSION_LIMIT=$RAILS$" "$env_f" && ok "proxy: admission -> $RAILS (pool guard)" || bad "proxy: admission limit not $RAILS"
+grep -q "^PROXY_CONTEXT_WINDOW=$CTX$"    "$env_f" && ok "proxy: fallback window $CTX (profile cap)" || bad "proxy: fallback window wrong"
 grep -q '^PROXY_LOG_LEVEL=INFO$'           "$env_f" && ok "proxy: unrelated keys preserved" || bad "proxy: clobbered other keys"
 [ "$(grep -c '^PROXY_CONCURRENCY_LIMIT=' "$env_f")" = "1" ] && ok "proxy: no duplicate keys" || bad "proxy: duplicated key"
 
 # 2. opencode — including what must NOT change
-python3 - "$SANDBOX/.config/opencode/opencode.json" "$FAKE_TOKEN" "$CLOUD_KEY" <<'PY' && ok "opencode: shape, scoping and preservation" || bad "opencode: assertions failed"
+python3 - "$SANDBOX/.config/opencode/opencode.json" "$FAKE_TOKEN" "$CLOUD_KEY" "$ALIAS" "$CTX" "$POOL" <<'PY' && ok "opencode: shape, scoping and preservation" || bad "opencode: assertions failed"
 import json,sys
-d=json.load(open(sys.argv[1])); tok, cloud = sys.argv[2], sys.argv[3]
+d=json.load(open(sys.argv[1])); tok, cloud, alias, ctx, pool = sys.argv[2:7]
+ctx, pool = int(ctx), int(pool)
 p=d["provider"]["qwen-proxy"]; m=p["models"]["Qwen3.8-27B"]
 assert p["options"]["baseURL"]=="http://127.0.0.1:4000/v1"
 assert p["options"]["headers"]["x-uap-model-profile"]=="qwen38"
-assert m["limit"]=={"context":114688,"output":32768}, m["limit"]
+assert m["limit"]=={"context":ctx,"output":32768}, m["limit"]
 assert m["reasoning"] is True
 # The token must come from qwen-proxy, NOT the cloud provider listed first.
 assert p["options"]["apiKey"]==tok, f"expected scoped token, got {p['options']['apiKey']!r}"
@@ -119,19 +161,22 @@ assert d["agent"]["build"]["model"]=="qwen-proxy/Qwen3.8-27B"
 # dangling reference to the removed provider must be repaired
 assert d["small_model"]=="qwen-proxy/Qwen3.8-27B", d["small_model"]
 assert d.get("theme")=="keep-me", "unrelated settings lost"
+# the direct escape hatch is keyed by the id actually served
+assert d["provider"]["llama.cpp-direct"]["models"][alias]["limit"]["context"]==pool, \
+    "direct path not keyed by the served alias (or not sized to the pool)"
 assert "llama.cpp" not in d["provider"]
 PY
 
 # 3. factory — including the entry with no `model` key
 for F in config.json settings.json; do
-  python3 - "$SANDBOX/.factory/$F" "$FAKE_TOKEN" <<'PY' && ok "factory/$F: repointed, no crash" || bad "factory/$F: assertions failed"
+  python3 - "$SANDBOX/.factory/$F" "$FAKE_TOKEN" "$ALIAS" <<'PY' && ok "factory/$F: repointed, no crash" || bad "factory/$F: assertions failed"
 import json,sys
-d=json.load(open(sys.argv[1])); tok=sys.argv[2]
+d=json.load(open(sys.argv[1])); tok=sys.argv[2]; alias=sys.argv[3]
 found=0
 for key in ("custom_models","customModels"):
     for m in d.get(key,[]) or []:
-        assert m.get("model")!="qwen35-a3b-iq4xs", "retired model id still present"
-        if m.get("model")=="qwen38-gsq-rco-27b":
+        assert m.get("model") not in ("qwen35-a3b-iq4xs","qwen38-gsq-rco-27b"), "retired model id still present"
+        if m.get("model")==alias:
             found+=1
             assert not m.get("noImageSupport"), "vision still disabled"
             for bk in ("base_url","baseUrl"):
@@ -145,12 +190,17 @@ assert found>=1, "no repointed local entry found"
 PY
 done
 
-# 4. codex — additive, header-carrying, idempotent
+# 4. codex — additive, converging, loadable, idempotent
 c="$SANDBOX/.codex/config.toml"
-grep -q '^\[model_providers.uap-local\]'        "$c" && ok "codex: local provider added" || bad "codex: provider missing"
-grep -q '^\[profiles.qwen38\]'                  "$c" && ok "codex: qwen38 profile added"  || bad "codex: profile missing"
-grep -q '^x-uap-model-profile = "qwen38"'       "$c" && ok "codex: sends the profile header (cap applies)" || bad "codex: no profile header -> uncapped"
+grep -q '^\[model_providers.uap-local\]'        "$c" && ok "codex: local provider present" || bad "codex: provider missing"
+grep -q '^\[profiles.qwen38\]'                  "$c" && ok "codex: qwen38 profile present"  || bad "codex: profile missing"
+grep -q '^wire_api = "responses"$'              "$c" && ok "codex: speaks the Responses API (0.120 requirement)" || bad "codex: wire_api not responses — config will not load"
+grep -q '^base_url = "http://127.0.0.1:8080/v1"$' "$c" && ok "codex: direct strata route (proxy has no /v1/responses)" || bad "codex: not on the direct responses route"
+grep -Fq "model = \"$ALIAS\""                   "$c" && ok "codex: profile model is the served alias" || bad "codex: profile model is not the served alias"
+grep -q "^model_context_window = $CTX$"         "$c" && ok "codex: per-session cap carried client-side ($CTX)" || bad "codex: no client-side context cap"
 grep -q '^model = "some-cloud-model"'           "$c" && ok "codex: existing default untouched" || bad "codex: default model changed!"
+grep -q 'qwen38-gsq-rco-27b'                    "$c" && bad "codex: retired id still present" || ok "codex: retired id gone"
+[ "$(grep -c '^\[profiles.qwen38\]' "$c")" = "1" ] && ok "codex: single profile block (no duplicates)" || bad "codex: duplicated the block"
 
 # 5. claude-local: mode, no embedded secret, header
 w="$SANDBOX/.local/bin/claude-local"
@@ -159,6 +209,7 @@ mode=$(stat -c '%a' "$w" 2>/dev/null || echo "?")
 [ "$mode" = "700" ] && ok "claude-local: mode 700 (not group-writable on PATH)" || bad "claude-local: mode $mode, expected 700"
 grep -q "$FAKE_TOKEN" "$w" && bad "claude-local: TOKEN IS EMBEDDED in the wrapper" || ok "claude-local: no embedded secret"
 grep -q 'ANTHROPIC_CUSTOM_HEADERS' "$w" && ok "claude-local: sends the profile header (cap applies)" || bad "claude-local: no profile header -> uncapped"
+grep -Fq "ANTHROPIC_MODEL=\"\${ANTHROPIC_MODEL:-$ALIAS}\"" "$w" && ok "claude-local: ANTHROPIC_MODEL is the served alias" || bad "claude-local: ANTHROPIC_MODEL is not the served alias"
 
 # 6. idempotence
 SKIP_SERVICE_OPS=1 HOME="$SANDBOX" bash "$HERE/sync-local-agent-configs.sh" >/dev/null 2>&1

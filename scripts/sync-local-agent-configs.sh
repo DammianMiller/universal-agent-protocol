@@ -39,13 +39,9 @@ DRY_RUN="${DRY_RUN:-0}"
 # --- the single source of truth for every client ---------------------------
 PROXY_URL="http://127.0.0.1:4000"
 DIRECT_URL="http://127.0.0.1:8080"
-MODEL_ALIAS="qwen38-gsq-rco-27b"   # strata ignores requested ids; key kept for client session continuity
 PROFILE_NAME="qwen38"
 PROFILE_HEADER="x-uap-model-profile"
-CTX_SESSION=114688      # per-session cap: below the 131072 pool so a session at cap leaves the engine working room
-CTX_POOL=131072          # whole pool (strata, one rail); only the guardrail-free direct path sees it
-MAX_OUTPUT=32768         # matches the proxy tool-turn cap
-RAILS=1                 # strata runs ONE rail over the 131072 pool; admission 1 follows (2026-10-04)
+MAX_OUTPUT=32768         # matches the proxy tool-turn cap (proxy env, not profile geometry)
 
 PROXY_ENV="$HOME/.config/uap/anthropic-proxy.env"
 OC_GLOBAL="$HOME/.config/opencode/opencode.json"
@@ -57,6 +53,38 @@ CLAUDE_LOCAL="$HOME/.local/bin/claude-local"
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
 die()  { printf '\n\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# --- model id + geometry: READ FROM THE PROFILE ----------------------------
+# Never transcribed here. The profile is the one place a backend swap updates
+# (test/model-profiles-qwen38-rails.test.ts already pins profile.model and the
+# geometry against the live backend), and re-running this script then
+# converges every harness on it. The engine tolerates any requested id, but
+# the id is what the proxy logs and what session records show — clients must
+# send the id served. Transcribing the geometry here is what left the sandbox
+# rails assertions red on master through the whole 1-rail era.
+PROFILE_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/model-profiles/${PROFILE_NAME}.json"
+GEOMETRY="$(python3 - "$PROFILE_FILE" <<'PY'
+import json, sys
+try:
+    p = json.load(open(sys.argv[1]))
+    so = p["server_optimization"]
+    print(p["model"], p["context_window"], so["kv_capacity"], so["parallel_rails"])
+except Exception as e:
+    sys.stderr.write("profile read failed: %s\n" % e)
+    sys.exit(1)
+PY
+)" || die "cannot read the model id + geometry from $PROFILE_FILE — did a profile change break its shape?"
+# CTX_SESSION: per-session cap, deliberately below the pool so a session at
+# cap leaves the engine working room. CTX_POOL: the whole pool; only the
+# guardrail-free direct path sees it. RAILS: admission follows the rail count.
+read -r MODEL_ALIAS CTX_SESSION CTX_POOL RAILS <<< "$GEOMETRY"
+[ -n "$MODEL_ALIAS" ] && [ -n "$CTX_SESSION" ] && [ -n "$CTX_POOL" ] && [ -n "$RAILS" ] \
+  || die "$PROFILE_FILE returned an incomplete geometry row: $GEOMETRY"
+# The alias is interpolated into TOML, JSON bodies and a shell wrapper below;
+# anything but a plain model id would inject across those sinks. Repo-trusted
+# input, so this is defense in depth — but it is one line.
+[[ "$MODEL_ALIAS" =~ ^[A-Za-z0-9._/-]+$ ]] \
+  || die "profile .model is not a plain model id: $MODEL_ALIAS"
 
 backup() { # <file>
   [ -f "$1" ] || { note "absent, will create: $1"; return 0; }
@@ -175,7 +203,7 @@ prov["qwen-proxy"] = {
     },
     "models": {
         "Qwen3.8-27B": {
-            "name": "Qwen3.8-27B GSQ-RCO (proxy)",
+            "name": "Qwen3.8 (UAP guardrail proxy)",
             "reasoning": True,     # server runs --reasoning-format auto
             "tool_call": True,
             "attachment": True,    # mmproj loaded: vision + video
@@ -190,7 +218,7 @@ prov["llama.cpp-direct"] = {
     "options": {"baseURL": f"{direct}/v1", "apiKey": "sk-no-auth"},
     "models": {
         alias: {
-            "name": "Qwen3.8-27B GSQ-RCO (direct)",
+            "name": "Qwen3.8 (direct, no guardrails)",
             "limit": {"context": pool, "output": out},
         }
     },
@@ -250,8 +278,12 @@ changed = []
 for key in ("custom_models", "customModels"):
     for m in d.get(key, []) or []:
         label = m.get("id") or m.get("model") or m.get("displayName") or "<unnamed>"
-        # The stale local entries all carry the retired qwen35 id.
-        if m.get("model") == "qwen35-a3b-iq4xs":
+        # Retired local ids: the qwen35-era migration AND the id this very
+        # script hardcoded as MODEL_ALIAS before 2026-10-07 — boxes this
+        # script has already rewritten once carry qwen38-gsq-rco-27b, and
+        # skipping them would leave the exact stale-entry class this run
+        # exists to converge.
+        if m.get("model") in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b"):
             m["model"] = alias
             for bk in ("base_url", "baseUrl"):
                 if bk in m:
@@ -263,7 +295,7 @@ for key in ("custom_models", "customModels"):
                 m["noImageSupport"] = False   # mmproj is loaded
             for dk in ("model_display_name", "displayName"):
                 if dk in m:
-                    m[dk] = "Qwen3.8-27B GSQ-RCO (local)"
+                    m[dk] = "Qwen3.8 local (UAP)"
             changed.append(str(label))
         # Split-brain: one 8317 entry pointed at a LAN IP, the rest localhost.
         for bk in ("base_url", "baseUrl"):
@@ -289,34 +321,79 @@ note "      cannot send $PROFILE_HEADER and will size to the FULL pool."
 note "      Keep factory to one local session at a time."
 
 # ===========================================================================
-say "4/6  codex — add a local profile (cloud default untouched)"
+say "4/6  codex — local profile (cloud default untouched)"
 if [ -f "$CODEX_CFG" ]; then
   backup "$CODEX_CFG"
-  if grep -q '^\[model_providers.uap-local\]' "$CODEX_CFG" 2>/dev/null; then
-    note "already present — leaving as is"
-  elif [ "$DRY_RUN" != "1" ]; then
-    cat >> "$CODEX_CFG" <<EOF
-
-# --- UAP local stack (added $(date +%F) by sync-local-agent-configs.sh) ------
-# Additive on purpose: your default model/provider is untouched. Use with:
-#     codex --profile $PROFILE_NAME
-# http_headers carries the model profile, which is what caps this session at
-# $CTX_SESSION instead of the full $CTX_POOL shared pool.
-[model_providers.uap-local]
-name = "UAP anthropic-proxy (local Qwen3.8-27B GSQ-RCO)"
-base_url = "$PROXY_URL/v1"
-wire_api = "chat"
-
-[model_providers.uap-local.http_headers]
-$PROFILE_HEADER = "$PROFILE_NAME"
-
-[profiles.$PROFILE_NAME]
-model = "$MODEL_ALIAS"
-model_provider = "uap-local"
-EOF
-    note "appended [model_providers.uap-local] + [profiles.$PROFILE_NAME]"
+  if [ "$DRY_RUN" = "1" ]; then
+    note "DRY: would (re)write the uap-local provider + $PROFILE_NAME profile"
   else
-    note "DRY: would append local provider + profile"
+    # Codex 0.120 dropped wire_api="chat" — a config that still carries it
+    # fails to LOAD, breaking every codex invocation, profile or not. Codex
+    # speaks the Responses API only; the guardrail proxy does not expose
+    # /v1/responses (404) but the strata engine serves it natively. The local
+    # profile therefore goes DIRECT ($DIRECT_URL, no guardrails) and carries
+    # the per-session context cap client-side (model_context_window) — the
+    # same cap the $PROFILE_HEADER applies on the proxy path. Follow-up: a
+    # /v1/responses adapter on the proxy would restore the guardrailed route.
+    # Blocks written by older runs are REPLACED wholesale: our sections are
+    # removed (with their banner comments) and the canonical block appended,
+    # so the file converges no matter which era wrote it — and the
+    # hand-mangled partial states (profile without provider header) can no
+    # longer duplicate a section. The user's own sections — default model,
+    # [tui], other providers/profiles — are never touched.
+    python3 - "$CODEX_CFG" "$MODEL_ALIAS" "$PROFILE_NAME" "$CTX_SESSION" "$MAX_OUTPUT" "$DIRECT_URL" <<'PY'
+import sys
+path, alias, profile, ctx, out, direct = sys.argv[1:7]
+ours = {"model_providers.uap-local",
+        "model_providers.uap-local.http_headers",
+        "profiles." + profile}
+
+def is_ours(line):
+    s = line.strip()
+    return s.startswith("[") and s.endswith("]") and s[1:-1].strip() in ours
+
+lines = open(path).read().splitlines(keepends=True)
+kept, i = [], 0
+while i < len(lines):
+    if is_ours(lines[i]):
+        # Swallow our banner comment block directly above, if it is ours.
+        j = len(kept)
+        while j > 0 and kept[j - 1].lstrip().startswith("#"):
+            j -= 1
+        if any("UAP local stack" in kept[k] for k in range(j, len(kept))):
+            del kept[j:]
+        # Skip the section body: up to the next header line or EOF.
+        i += 1
+        while i < len(lines) and not (lines[i].startswith("[") and lines[i].rstrip().endswith("]")):
+            i += 1
+        continue
+    kept.append(lines[i])
+    i += 1
+text = "".join(kept)
+if text and not text.endswith("\n"):
+    text += "\n"
+text += """
+# --- UAP local stack (regenerated by sync-local-agent-configs.sh) ----------
+# Additive on purpose: your default model/provider is untouched. Use with:
+#     codex --profile {profile}
+# Direct strata route (codex speaks the Responses API only; the guardrail
+# proxy has no /v1/responses yet). model_context_window carries the
+# per-session cap the proxy header applies on the other harnesses.
+[model_providers.uap-local]
+name = "UAP local strata (direct, Responses API)"
+base_url = "{direct}/v1"
+wire_api = "responses"
+
+[profiles.{profile}]
+model = "{alias}"
+model_provider = "uap-local"
+model_context_window = {ctx}
+model_max_output_tokens = {out}
+""".format(profile=profile, alias=alias, direct=direct, ctx=ctx, out=out)
+open(path, "w").write(text)
+print("   codex: uap-local + profiles.%s -> %s (direct %s, responses)" % (profile, alias, direct))
+PY
+    note "wrote [model_providers.uap-local] + [profiles.$PROFILE_NAME] (responses, direct)"
   fi
 else
   note "absent: $CODEX_CFG"
@@ -358,6 +435,9 @@ export ANTHROPIC_API_KEY="\${ANTHROPIC_API_KEY:-\$_tok}"
 # instead of the full $CTX_POOL shared pool.
 export ANTHROPIC_CUSTOM_HEADERS="$PROFILE_HEADER: $PROFILE_NAME"
 export ANTHROPIC_MODEL="\${ANTHROPIC_MODEL:-$MODEL_ALIAS}"
+# Claude Code does not know local model ids; without this it assumes a 200k
+# window and its auto-compact fires far too late for the per-session cap.
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="\${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-$CTX_SESSION}"
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS="\${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-$MAX_OUTPUT}"
 unset _tok
 exec claude "\$@"
