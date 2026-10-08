@@ -1057,12 +1057,16 @@ export class CoordinationService {
     return info.changes;
   }
 
-  /** Active (non-expired) model-slot leases. */
-  activeModelLeases(): number {
+  /** Active (non-expired) model-slot leases. With a target: leases held
+   * against that placement target. Without: the fleet total (legacy
+   * behaviour — existing callers see every lease). */
+  activeModelLeases(target?: string): number {
     const now = new Date().toISOString();
-    const row = this.db
-      .prepare(`SELECT COUNT(*) as c FROM model_leases WHERE expires_at >= ?`)
-      .get(now) as { c: number };
+    const row = (
+      target === undefined
+        ? this.db.prepare(`SELECT COUNT(*) as c FROM model_leases WHERE expires_at >= ?`).get(now)
+        : this.db.prepare(`SELECT COUNT(*) as c FROM model_leases WHERE target = ? AND expires_at >= ?`).get(target, now)
+    ) as { c: number };
     return row?.c ?? 0;
   }
 
@@ -1071,18 +1075,25 @@ export class CoordinationService {
    * lease id, or null if the budget is full (caller should wait + retry). The
    * reap+count+insert runs in one write transaction so concurrent acquirers
    * across processes can't both slip past the budget (WAL + busy_timeout).
+   *
+   * `target` keys the lease to a placement target (device+endpoint identity
+   * from the ledger, NEVER the model name — a backend switch must not change
+   * the key mid-flight and orphan live leases; spec §5.1). Callers that pass
+   * none land in the legacy 'default' bucket, unchanged in behaviour.
    */
-  acquireModelSlot(holder: string, budget: number, ttlMs = 120_000): number | null {
+  acquireModelSlot(holder: string, budget: number, ttlMs = 120_000, target = 'default'): number | null {
     const txn = this.db.transaction((): number | null => {
       const now = Date.now();
       const nowIso = new Date(now).toISOString();
       // DELETE first so the transaction takes the write lock before counting.
       this.db.prepare(`DELETE FROM model_leases WHERE expires_at < ?`).run(nowIso);
-      const c = (this.db.prepare(`SELECT COUNT(*) as c FROM model_leases`).get() as { c: number }).c;
+      const c = (
+        this.db.prepare(`SELECT COUNT(*) as c FROM model_leases WHERE target = ?`).get(target) as { c: number }
+      ).c;
       if (c >= Math.max(1, budget)) return null;
       const info = this.db
-        .prepare(`INSERT INTO model_leases (holder, acquired_at, expires_at) VALUES (?, ?, ?)`)
-        .run(holder, nowIso, new Date(now + ttlMs).toISOString());
+        .prepare(`INSERT INTO model_leases (holder, acquired_at, expires_at, target) VALUES (?, ?, ?, ?)`)
+        .run(holder, nowIso, new Date(now + ttlMs).toISOString(), target);
       return Number(info.lastInsertRowid);
     });
     return txn();
@@ -1121,52 +1132,55 @@ export class CoordinationService {
   private bpDecreaseFactor = 0.5;
   private bpIncreaseStep = 1;
 
-  private _bpRow(ceiling: number): { lim: number; ceiling: number; lastDecreaseAt: string | null } {
+  private _bpRow(ceiling: number, target: string): { lim: number; ceiling: number; lastDecreaseAt: string | null } {
     const row = this.db
-      .prepare(`SELECT limit_val as lim, ceiling, last_decrease_at as lastDecreaseAt FROM model_backpressure WHERE id = 1`)
-      .get() as { lim: number; ceiling: number; lastDecreaseAt: string | null } | undefined;
+      .prepare(`SELECT limit_val as lim, ceiling, last_decrease_at as lastDecreaseAt FROM model_backpressure WHERE target = ?`)
+      .get(target) as { lim: number; ceiling: number; lastDecreaseAt: string | null } | undefined;
     if (!row) {
       const now = new Date().toISOString();
       this.db
-        .prepare(`INSERT OR IGNORE INTO model_backpressure (id, limit_val, ceiling, last_decrease_at, updated_at) VALUES (1, ?, ?, NULL, ?)`)
-        .run(ceiling, ceiling, now);
+        .prepare(`INSERT OR IGNORE INTO model_backpressure (target, limit_val, ceiling, last_decrease_at, updated_at) VALUES (?, ?, ?, NULL, ?)`)
+        .run(target, ceiling, ceiling, now);
       return { lim: ceiling, ceiling, lastDecreaseAt: null };
     }
     // Track ceiling changes (e.g. re-probed slot count).
     if (row.ceiling !== ceiling) {
-      this.db.prepare(`UPDATE model_backpressure SET ceiling = ?, limit_val = MIN(limit_val, ?), updated_at = ? WHERE id = 1`)
-        .run(ceiling, ceiling, new Date().toISOString());
+      this.db.prepare(`UPDATE model_backpressure SET ceiling = ?, limit_val = MIN(limit_val, ?), updated_at = ? WHERE target = ?`)
+        .run(ceiling, ceiling, new Date().toISOString(), target);
       row.ceiling = ceiling;
       row.lim = Math.min(row.lim, ceiling);
     }
     return row;
   }
 
-  /** Current adaptive limit, clamped to [1, ceiling]. */
-  getAdaptiveLimit(ceiling: number): number {
-    const r = this._bpRow(Math.max(1, ceiling));
+  /** Current adaptive limit for a target, clamped to [1, ceiling]. Omitted
+   * target = the legacy 'default' bucket (existing callers unchanged). */
+  getAdaptiveLimit(ceiling: number, target = 'default'): number {
+    const r = this._bpRow(Math.max(1, ceiling), target);
     return Math.max(1, Math.min(Math.floor(r.lim), Math.floor(r.ceiling)));
   }
 
-  /** Signal model-backend exhaustion → multiplicatively decrease the limit. */
-  recordModelExhaustion(ceiling: number): number {
-    const r = this._bpRow(Math.max(1, ceiling));
+  /** Signal model-backend exhaustion → multiplicatively decrease the limit
+   * for that target only — a struggling backend throttles itself, not the
+   * rest of the fleet. */
+  recordModelExhaustion(ceiling: number, target = 'default'): number {
+    const r = this._bpRow(Math.max(1, ceiling), target);
     const next = Math.max(1, Math.floor(r.lim * this.bpDecreaseFactor));
     const now = new Date().toISOString();
-    this.db.prepare(`UPDATE model_backpressure SET limit_val = ?, last_decrease_at = ?, updated_at = ? WHERE id = 1`)
-      .run(next, now, now);
+    this.db.prepare(`UPDATE model_backpressure SET limit_val = ?, last_decrease_at = ?, updated_at = ? WHERE target = ?`)
+      .run(next, now, now, target);
     return next;
   }
 
   /** Signal a healthy model call → additively recover (cooldown-gated). */
-  recordModelSuccess(ceiling: number): number {
-    const r = this._bpRow(Math.max(1, ceiling));
+  recordModelSuccess(ceiling: number, target = 'default'): number {
+    const r = this._bpRow(Math.max(1, ceiling), target);
     if (r.lim >= r.ceiling) return Math.floor(r.lim);
     const sinceDecrease = r.lastDecreaseAt ? Date.now() - Date.parse(r.lastDecreaseAt) : Infinity;
     if (sinceDecrease < this.bpRecoverCooldownMs) return Math.floor(r.lim);
     const next = Math.min(r.ceiling, r.lim + this.bpIncreaseStep);
-    this.db.prepare(`UPDATE model_backpressure SET limit_val = ?, updated_at = ? WHERE id = 1`)
-      .run(next, new Date().toISOString());
+    this.db.prepare(`UPDATE model_backpressure SET limit_val = ?, updated_at = ? WHERE target = ?`)
+      .run(next, new Date().toISOString(), target);
     return Math.floor(next);
   }
 

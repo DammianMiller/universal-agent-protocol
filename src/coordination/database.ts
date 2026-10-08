@@ -204,27 +204,87 @@ export class CoordinationDatabase {
       -- concurrent slots. Every model-calling path acquires a lease before a
       -- request and releases after; when active leases reach the budget, further
       -- acquirers wait. Leases carry a TTL so a crashed holder is auto-reaped.
+      -- The "target" column keys a lease to a placement target (device+endpoint
+      -- identity); callers that pass none land in the legacy 'default' bucket,
+      -- so existing behaviour is unchanged until a caller opts in (spec §5.1).
       CREATE TABLE IF NOT EXISTS model_leases (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         holder TEXT,
         acquired_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL
+        expires_at TEXT NOT NULL,
+        target TEXT NOT NULL DEFAULT 'default'
       );
       CREATE INDEX IF NOT EXISTS idx_model_leases_expires ON model_leases(expires_at);
+      -- idx_model_leases_target is created in migrateSchema(), AFTER the
+      -- target column exists on upgraded databases: on an old-shape DB this
+      -- CREATE TABLE is a no-op, so an index on "target" here would throw
+      -- "no such column" before the migration could add it.
 
-      -- Adaptive backpressure (AIMD): a single row tracking the current model
-      -- concurrency limit. On an exhaustion signal (429 / timeout / slot-busy)
-      -- the limit is multiplicatively decreased; on sustained success it
-      -- additively recovers toward the ceiling (the static slot budget). Shared
-      -- across processes so the whole fleet backs off together.
+      -- Adaptive backpressure (AIMD): one row PER TARGET tracking the current
+      -- model concurrency limit. On an exhaustion signal (429 / timeout /
+      -- slot-busy) the limit is multiplicatively decreased; on sustained
+      -- success it additively recovers toward the ceiling (the static slot
+      -- budget). Keyed by placement target so a struggling backend throttles
+      -- itself without throttling a healthy one sharing the fleet.
       CREATE TABLE IF NOT EXISTS model_backpressure (
-        id INTEGER PRIMARY KEY CHECK(id = 1),
+        target TEXT PRIMARY KEY,
         limit_val REAL NOT NULL,
         ceiling REAL NOT NULL,
         last_decrease_at TEXT,
         updated_at TEXT NOT NULL
       );
     `);
+    this.migrateSchema();
+  }
+
+  /**
+   * Idempotent schema evolution for pre-target databases. The coordination
+   * DB has no version marker, so every step is guarded by a PRAGMA
+   * table_info probe (the src/memory/short-term/schema.ts precedent) — an
+   * unguarded ALTER next to CREATE TABLE IF NOT EXISTS would throw on the
+   * second open.
+   *
+   * The model_backpressure rebuild maps the legacy `id = 1` row to
+   * `target = 'default'`, so a revert of the code loses no operator-tuned
+   * state: the migration stays reversible in code only (spec §5.1).
+   */
+  private migrateSchema(): void {
+    const leaseCols = this.tableColumns('model_leases');
+    if (leaseCols && !leaseCols.has('target')) {
+      this.db.exec(`ALTER TABLE model_leases ADD COLUMN target TEXT NOT NULL DEFAULT 'default'`);
+    }
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_model_leases_target ON model_leases(target, expires_at)`);
+
+    const bpCols = this.tableColumns('model_backpressure');
+    if (bpCols && bpCols.has('id') && !bpCols.has('target')) {
+      // SQLite cannot drop the CHECK(id = 1) constraint in place — rebuild.
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE model_backpressure_new (
+            target TEXT PRIMARY KEY,
+            limit_val REAL NOT NULL,
+            ceiling REAL NOT NULL,
+            last_decrease_at TEXT,
+            updated_at TEXT NOT NULL
+          );
+        `);
+        this.db.prepare(
+          `INSERT INTO model_backpressure_new (target, limit_val, ceiling, last_decrease_at, updated_at)
+           SELECT 'default', limit_val, ceiling, last_decrease_at, updated_at FROM model_backpressure WHERE id = 1`,
+        ).run();
+        this.db.exec('DROP TABLE model_backpressure');
+        this.db.exec('ALTER TABLE model_backpressure_new RENAME TO model_backpressure');
+      })();
+    }
+  }
+
+  private tableColumns(table: string): Set<string> | null {
+    try {
+      const rows = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return new Set(rows.map((r) => r.name));
+    } catch {
+      return null;
+    }
   }
 
   close(): void {
