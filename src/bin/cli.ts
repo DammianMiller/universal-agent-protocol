@@ -58,6 +58,7 @@ const lazy = {
   doctor: () => import('../cli/doctor.js').then((m) => m.doctorCommand),
   loops: () => import('../cli/loops.js').then((m) => m.loopsCommand),
   inference: () => import('../cli/inference.js').then((m) => m.inferenceHealthCommand),
+  models: () => import('../cli/models.js').then((m) => m.modelsCommand),
   review: () => import('../cli/review.js').then((m) => m.reviewCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
@@ -627,6 +628,37 @@ program
     const cmd = await lazy.inference();
     await cmd(options);
   });
+
+// Model placement registry (spec: docs/specs/operator-model-placement.md) —
+// `models` (plural) is placement: where a model lives and what it costs.
+// The existing `uap model` (singular) is multi-model routing: which model
+// answers. Both surfaces cross-reference each other in help text.
+program
+  .command('models')
+  .description('Model placement registry: validate footprints, measure the live backend')
+  .addCommand(
+    new Command('validate')
+      .description('Cross-check the registry (repo + ~/.uap/model-registry.json) against the capacity policy')
+      .option('--repo-path <path>', 'explicit repo registry path (default: <project>/config/model-registry.json)')
+      .option('--local-path <path>', 'explicit machine-local registry path (default: ~/.uap/model-registry.json)')
+      .action(async (options) => {
+        const code = await (await lazy.models())('validate', options);
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('measure')
+      .description('Record the live backend\'s measured footprint into the machine-local registry')
+      .option('--model <key>', 'registry model key to attribute the measurement to')
+      .option('--config <key>', 'registry config key to attribute the measurement to')
+      .option('--endpoint <url>', 'inference base URL (default: http://127.0.0.1:8080)')
+      .option('--device <key>', 'device key the measurement is valid on (default: first gpu in the registry)')
+      .option('--dry-run', 'Print what would be written; write nothing')
+      .action(async (options) => {
+        const code = await (await lazy.models())('measure', { ...options, dryRun: options.dryRun === true });
+        if (code) process.exitCode = code;
+      }),
+  );
 
 // Quality-metrics gate — complexity/coverage/mutation policing with a ratchet
 program
