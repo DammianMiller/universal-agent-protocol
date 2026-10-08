@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.23.0 (2026-10-09)
+
+- feat(placement): phase 4 — request-driven auto-load with a fail-closed policy
+
+
 ## v2.22.0 (2026-10-09)
 
 - feat(placement): phase 3 — enforcement, mutation surfaces, live in-flight view
