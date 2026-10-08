@@ -658,6 +658,26 @@ program
         const code = await (await lazy.models())('measure', { ...options, dryRun: options.dryRun === true });
         if (code) process.exitCode = code;
       }),
+  )
+  .addCommand(
+    new Command('status')
+      .description('Sync and print the placement ledger: devices (probe fact), residents, headroom')
+      .option('--repo-path <path>', 'explicit repo registry path')
+      .option('--local-path <path>', 'explicit machine-local registry path')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (options) => {
+        const code = await (await lazy.models())('status', options);
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('pending')
+      .description('List parked placement requests awaiting the operator')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (options) => {
+        const code = await (await lazy.models())('pending', options);
+        if (code) process.exitCode = code;
+      }),
   );
 
 // Quality-metrics gate — complexity/coverage/mutation policing with a ratchet

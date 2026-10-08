@@ -33,6 +33,7 @@
       "task_affinity": ["code", "general"],
       "affinity": { "device": ["gpu0"] },
       "endpoint": "http://127.0.0.1:8080",
+      "advertises": ["Qwen3.8-27B"],
       "configs": {
         "llama-mtp": {
           "status": "unmeasured",

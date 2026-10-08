@@ -1,18 +1,16 @@
 /**
- * `uap models` — model placement registry surface (spec §4.7, phase 0).
+ * `uap models` — model placement surface (spec §4.7).
  *
- * Two subcommands:
- *   validate — load registry (repo + machine-local merge), cross-check against
- *              the capacity policy, report per-field provenance, exit 1 on
- *              error findings. Read-only.
- *   measure  — record the LIVE backend's measured footprint into
- *              ~/.uap/model-registry.json (resident GPU MiB via
- *              nvidia-smi compute-apps for the engine PID, host RSS via
- *              /proc/<pid>/status, KV geometry via /metrics). Fails closed:
- *              anything it cannot verify, it refuses to write.
+ *   validate — registry (repo + machine-local merge) ↔ capacity-policy
+ *              cross-check, provenance per measured config. Read-only.
+ *   measure  — record the LIVE backend's footprint into
+ *              ~/.uap/model-registry.json. Fails closed on anything
+ *              unverifiable.
+ *   status   — sync + print the placement ledger: devices (probe fact),
+ *              residents, headroom.
+ *   pending  — list parked placement requests awaiting the operator.
  */
-import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import {
   REGISTRY_VERSION,
@@ -22,110 +20,29 @@ import {
   validateRegistry,
   type ModelRegistry,
 } from '../placement/registry.js';
+import {
+  gpuComputeMiB,
+  gpuStatsByIndex,
+  hostRssMiB,
+  hostTotalMiB,
+  listeningPortPid,
+  unitCgroupPids,
+  unitMainPid,
+  isUnitActive,
+} from '../placement/probes.js';
+import {
+  loadLedger,
+  placementLedgerPath,
+  syncLedger,
+  type PlacementLedger,
+} from '../placement/ledger.js';
 import { loadPolicy } from '../capacity/probe.js';
 import { looksLikeStrataMetrics, parseStrataEngine } from '../inference/strata.js';
 
 const PROBE_TIMEOUT_MS = 5000;
 
-// ---------------------------------------------------------------------------
-// Probe helpers (argv arrays only, no shell — probe.ts doctrine)
-// ---------------------------------------------------------------------------
-
-/** Main PID of a user unit; null when systemctl is missing or the unit is
- * inactive. Never a guess. */
-function unitMainPid(unit: string): number | null {
-  try {
-    const out = execFileSync('systemctl', ['--user', 'show', '-p', 'MainPID', '--', unit], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: PROBE_TIMEOUT_MS,
-    });
-    const pid = Number(out.trim().split('=')[1]);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
-/** All PIDs in a user unit's cgroup. A backend can be multi-process — the
- * strata unit's MainPID is the serve wrapper while the ENGINE child holds
- * the GPU — so the whole-config footprint must aggregate the cgroup, not
- * trust MainPID. Null when the unit or its cgroup is not readable. */
-function unitCgroupPids(unit: string): number[] | null {
-  try {
-    const out = execFileSync('systemctl', ['--user', 'show', '-p', 'ControlGroup', '--', unit], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: PROBE_TIMEOUT_MS,
-    });
-    const cg = out.trim().split('=')[1];
-    if (!cg) return null;
-    const procs = readFileSync(`/sys/fs/cgroup${cg}/cgroup.procs`, 'utf-8');
-    return procs
-      .split('\n')
-      .map((l) => Number(l.trim()))
-      .filter((p) => Number.isFinite(p) && p > 0);
-  } catch {
-    return null;
-  }
-}
-
-/** PID of whatever listens on the port, via `ss -ltnp`. Fallback for
- * unit-less backends. Null when nothing is listening. */
-function listeningPortPid(port: number): number | null {
-  try {
-    const out = execFileSync('ss', ['-ltnp', `sport = :${port}`], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: PROBE_TIMEOUT_MS,
-    });
-    const m = out.match(/pid=(\d+)/);
-    return m ? Number(m[1]) : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Whole-config GPU MiB: sum of nvidia-smi compute-apps memory across the
- * given PIDs. Null when none of them hold GPU memory — which is a refusal,
- * not a zero. */
-function gpuComputeMiB(pids: number[]): number | null {
-  try {
-    const out = execFileSync(
-      'nvidia-smi',
-      ['--query-compute-apps=pid,used_memory', '--format=csv,noheader,nounits'],
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: PROBE_TIMEOUT_MS },
-    );
-    const want = new Set(pids);
-    let total: number | null = null;
-    for (const line of out.split('\n')) {
-      const [p, mem] = line.split(',').map((s) => s.trim());
-      if (!want.has(Number(p))) continue;
-      const mib = Number(mem);
-      if (!Number.isFinite(mib)) continue;
-      total = (total ?? 0) + Math.round(mib);
-    }
-    return total;
-  } catch {
-    return null;
-  }
-}
-
-/** Whole-config host RSS (MiB): sum of VmRSS across the given PIDs. Processes
- * that vanish mid-sum are skipped; null only when none could be read. */
-function hostRssMiB(pids: number[]): number | null {
-  let total: number | null = null;
-  for (const pid of pids) {
-    try {
-      const status = readFileSync(`/proc/${pid}/status`, 'utf-8');
-      const m = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
-      if (!m) continue;
-      total = (total ?? 0) + Math.round(Number(m[1]) / 1024);
-    } catch {
-      // process exited between cgroup read and proc read — skip it
-    }
-  }
-  return total;
+function fail(msg: string): never {
+  throw new Error(msg);
 }
 
 async function fetchMetrics(endpoint: string): Promise<unknown> {
@@ -223,10 +140,6 @@ interface MeasureTarget {
   registry: ModelRegistry;
 }
 
-function fail(msg: string): never {
-  throw new Error(msg);
-}
-
 /** Find the registry entry the live backend's advertised model id maps to.
  * Exactly one match or explicit --model/--config; ambiguity is an error, not
  * a guess — attributing a measurement to the wrong entry poisons the
@@ -247,8 +160,10 @@ function resolveMeasureTarget(registry: ModelRegistry, liveModel: string | undef
   }
   const matches: MeasureTarget[] = [];
   for (const [mKey, model] of Object.entries(registry.models)) {
-    for (const [cKey] of Object.entries(model.configs)) {
-      if (liveModel && (model.advertises ?? []).includes(liveModel)) matches.push({ modelKey: mKey, configKey: cKey, registry });
+    if (!liveModel) continue;
+    if ((model.advertises ?? []).includes(liveModel)) {
+      const configKeys = Object.keys(model.configs);
+      for (const cKey of configKeys) matches.push({ modelKey: mKey, configKey: cKey, registry });
     }
   }
   if (matches.length === 1) return matches[0];
@@ -278,7 +193,8 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
   const port = endpointPort(endpoint);
   // Prefer the unit's whole cgroup (multi-process backends), then MainPID,
   // then the port listener (unit-less single-process backends).
-  const pids = (unit ? unitCgroupPids(unit) : null) ?? (unit && unitMainPid(unit) ? [unitMainPid(unit) as number] : null) ?? (port ? [listeningPortPid(port) as number] : []);
+  const mainPid = unit ? unitMainPid(unit) : null;
+  const pids = (unit ? unitCgroupPids(unit) : null) ?? (mainPid ? [mainPid] : null) ?? (port ? [listeningPortPid(port) as number] : []);
   if (pids.length === 0) fail(`cannot find the backend processes (unit '${unit ?? 'none'}', port ${port ?? '?'}) — nothing to measure`);
 
   const residentGpu = gpuComputeMiB(pids);
@@ -310,6 +226,37 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
   console.log(`  resident_gpu_mib: ${residentGpu}`);
   console.log(`  host_rss_mib:     ${rss}`);
   console.log(`  context_pool:     ${engine.maxContext} cells, kv ${engine.kv ?? '?'} resident ${engine.kvResident}`);
+
+  // Device facts (spec §4.1.1): the gpu reserve is DERIVED — capacity minus
+  // free minus the backend's own compute apps — so unattributed graphics
+  // memory lands in the reserve whether or not a PID owns it. The cpu
+  // reserve is the documented spec floor, not a measurement.
+  const deviceFacts: Record<string, unknown> = {};
+  const gpuIdx = /^gpu(\d+)$/.exec(device);
+  if (gpuIdx) {
+    const stats = gpuStatsByIndex().get(Number(gpuIdx[1]));
+    if (stats?.total_mib !== undefined && stats?.free_mib !== undefined) {
+      const reserved = Math.max(0, stats.total_mib - stats.free_mib - residentGpu);
+      deviceFacts[device] = {
+        kind: 'gpu',
+        total_mib: stats.total_mib,
+        reserved_mib: reserved,
+        reserve_reason: `derived: total ${stats.total_mib} − free ${stats.free_mib} − backend compute apps ${residentGpu}; captures desktop + unattributed graphics memory`,
+      };
+      console.log(`  ${device}: total ${stats.total_mib} MiB, derived reserve ${reserved} MiB (desktop + graphics)`);
+    }
+  }
+  const hostTotal = hostTotalMiB();
+  if (hostTotal !== null) {
+    deviceFacts.cpu0 = {
+      kind: 'cpu',
+      total_mib: hostTotal,
+      reserved_mib: 8192,
+      reserve_reason: 'spec §4.1 floor: page cache and the TS side must survive a 52 GiB engine attach',
+    };
+    console.log(`  cpu0: total ${hostTotal} MiB, reserve 8192 MiB (spec floor)`);
+  }
+
   if (opts.dryRun) {
     console.log('dry-run: nothing written');
     return 0;
@@ -325,6 +272,9 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
   }
   localDoc.version = REGISTRY_VERSION;
   localDoc.models = localDoc.models ?? {};
+  if (Object.keys(deviceFacts).length > 0) {
+    localDoc.devices = { ...localDoc.devices, ...deviceFacts } as typeof localDoc.devices;
+  }
   const localModel = (localDoc.models[target.modelKey] = localDoc.models[target.modelKey] ?? { display: model.display, configs: {} });
   localModel.configs = localModel.configs ?? {};
   localModel.configs[target.configKey] = measured;
@@ -337,12 +287,77 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
 }
 
 // ---------------------------------------------------------------------------
+// status / pending
+// ---------------------------------------------------------------------------
+
+export interface ModelsStatusOptions {
+  projectDir?: string;
+  repoPath?: string;
+  localPath?: string;
+  ledgerPath?: string;
+}
+
+function printLedger(ledger: PlacementLedger): void {
+  for (const [dKey, dev] of Object.entries(ledger.devices)) {
+    const free = dev.free_mib !== undefined ? `${dev.free_mib} MiB free` : 'free unprobed';
+    const total = dev.total_mib !== undefined ? `${dev.total_mib} MiB total` : 'total unmeasured';
+    const reserved = dev.reserved_mib !== undefined ? `, ${dev.reserved_mib} reserved` : ', reserve unmeasured';
+    console.log(`device ${dKey}: ${dev.kind}, ${total}, ${free}${reserved}  [${dev.source ?? '?'}]`);
+  }
+  console.log('');
+  if (ledger.residents.length === 0) {
+    console.log('residents: none');
+  }
+  for (const r of ledger.residents) {
+    const gpu = r.gpu_mib !== undefined ? `, ${r.gpu_mib} MiB GPU` : ', GPU unknown';
+    const rss = r.host_rss_mib !== undefined ? `, ${r.host_rss_mib} MiB RSS` : '';
+    console.log(`resident ${r.model}/${r.config}  ${r.state} on ${r.device}${gpu}${rss}${r.unit ? `  (${r.unit})` : ''}`);
+  }
+  console.log('');
+  console.log(ledger.pending.length === 0 ? 'pending: none' : `pending: ${ledger.pending.length}`);
+  for (const p of ledger.pending) {
+    console.log(`  ${p.id} ${p.requested_model} (client ${p.client ?? '?'}, expires ${p.expires_at}) — ${p.reason ?? 'parked'}`);
+  }
+}
+
+export async function modelsStatusCommand(opts: ModelsStatusOptions = {}): Promise<number> {
+  const projectDir = opts.projectDir ?? process.cwd();
+  const loaded = loadModelRegistry(projectDir, { repoPath: opts.repoPath, localPath: opts.localPath });
+  for (const err of loaded.errors) console.error(`registry error: ${err}`);
+  if (loaded.errors.length > 0) return 1;
+  const ledgerPath = opts.ledgerPath ?? placementLedgerPath();
+  const ledger = syncLedger(loaded.registry, ledgerPath, isUnitActive);
+  printLedger(ledger);
+  return 0;
+}
+
+export async function modelsPendingCommand(opts: ModelsStatusOptions = {}): Promise<number> {
+  const ledgerPath = opts.ledgerPath ?? placementLedgerPath();
+  const ledger = loadLedger(ledgerPath);
+  if (ledger.pending.length === 0) {
+    console.log('no pending placement requests');
+    return 0;
+  }
+  const now = Date.now();
+  for (const p of ledger.pending) {
+    const expires = new Date(p.expires_at).getTime();
+    console.log(`${p.id}  ${p.requested_model}`);
+    console.log(`  client ${p.client ?? '?'}${p.session ? `, session ${p.session}` : ''}${p.pid ? `, pid ${p.pid}` : ''}`);
+    console.log(`  parked ${p.created_at}, expires ${p.expires_at} (${expires > now ? `${Math.round((expires - now) / 1000)}s left` : 'EXPIRED'})`);
+    console.log(`  reason: ${p.reason ?? 'parked'}`);
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // dispatcher
 // ---------------------------------------------------------------------------
 
-export type ModelsAction = 'validate' | 'measure';
+export type ModelsAction = 'validate' | 'measure' | 'status' | 'pending';
 
 export async function modelsCommand(action: ModelsAction, opts: Record<string, unknown>): Promise<number> {
   if (action === 'validate') return modelsValidateCommand(opts as ModelsValidateOptions);
-  return modelsMeasureCommand(opts as ModelsMeasureOptions);
+  if (action === 'measure') return modelsMeasureCommand(opts as ModelsMeasureOptions);
+  if (action === 'status') return modelsStatusCommand(opts as ModelsStatusOptions);
+  return modelsPendingCommand(opts as ModelsStatusOptions);
 }
