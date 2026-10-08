@@ -445,29 +445,38 @@ offering, because "pause" sounds free and currently is not.
 
 ### 4.3 Admission gate — in the proxy
 
-The gate runs **after** the wire model is resolved and **before** anything is
-sent upstream. On `/v1/messages` this is exactly `_reconcile_wire_model()`
-(`anthropic_proxy.py:1681`, called at `:15036`): a pure rewrite with no side
-effects, so calling it first and gating on its result is correct — the gate
-sees the same value the upstream will.
+The gate runs **before** the wire model is rewritten and **before** anything is
+sent upstream, and it decides on **the model the client asked for** — the id
+that needs a placement decision. (An earlier draft gated after
+`_reconcile_wire_model()` on its rewritten value; that ordering defeats the
+gate: a non-resident id is silently rewritten to `ids[0]` before the gate ever
+sees it, and the gate forwards exactly what it exists to park. Implemented the
+other way, and in `mode=ask|auto` `_reconcile_wire_model()` skips its silent
+rewrite entirely — an id the upstream does not serve is the operator's decision,
+never an automatic substitution. `mode=off` keeps the rewrite, byte-identical.)
 
 But **it is not unbypassable, and an earlier draft claimed it was.**
 `_reconcile_wire_model` has exactly one call site, on `/v1/messages`. The proxy
 also sends upstream from `/anthropic/v1/messages` (`:15743`),
 `/v1/chat/completions` (`:15832`), `/api/chat` (`:16618`), and `/api/generate`
 (`:16655`), plus the passthrough client (`_pt_client`, `:14473`) and the
-save/restore client (`_sr_client`, `:13823`). So the gate must be a function of
-the resolved wire model, not a side effect of one route's rewrite step:
+save/restore client (`_sr_client`, `:13823`). The implemented gate is a
+function of the requested model, and it is reached because every non-exempt
+route funnels through the `/v1/messages` handler (the OpenAI and Ollama
+surfaces run a synthetic request through `messages()` via
+`_guarded_openai_completion`):
 
-- `/v1/messages` — gate after `_reconcile_wire_model()`. Every named client
-  (Claude Code, Codex, OpenCode, UAP agents) enters here; this is the phase-2
-  deliverable.
-- `/v1/chat/completions`, `/anthropic/v1/messages` — same gate, resolved from
-  the body's `model`. Same phase.
-- `/api/chat`, `/api/generate` (Ollama-compatible) — same gate; these are
-  local-only routes, so a non-resident model here is exactly the case to park.
-- Passthrough (`_pt_client`) — exempt by definition: the model is cloud, it
-  has no local cost, and it never reaches `:8080`.
+- `/v1/messages` — the gate, placed immediately before
+  `_reconcile_wire_model()`. Every named client (Claude Code, Codex, OpenCode,
+  UAP agents) enters here; this is the phase-2 deliverable.
+- `/v1/chat/completions`, `/anthropic/v1/messages` — same handler; a park
+  surfaces in the OpenAI error dialect with the placement id and the
+  `uap models pending` resolve path.
+- `/api/chat`, `/api/generate` (Ollama-compatible) — same handler; a park
+  surfaces in the Ollama error dialect the same way.
+- Passthrough (`_pt_client`) — exempt by construction: it returns before the
+  gate, the model is cloud, it has no local cost, and it never reaches
+  `:8080`.
 
 The §7 test list includes a test that each non-exempt route, in `mode=ask`,
 parks rather than forwards when the requested local model is not resident.
@@ -486,26 +495,56 @@ Decision order:
 | Not in registry | park, ask operator; **never auto-load** |
 | `mode=off` | current behavior, byte-identical |
 
-Parked requests return `409` with a machine-readable body:
+Parked requests return `409` with a machine-readable body (Anthropic error
+shape so every gated client parses it with the code it already has; the
+OpenAI/Ollama surfaces carry the same placement id and resolve path in their
+own dialects):
 
 ```json
-{ "error": { "type": "model_placement_pending",
+{ "type": "error",
+  "error": { "type": "model_placement_pending",
              "placement_id": "plc-7f2a",
              "requested_model": "qwen3.8-27b",
+             "reason": "not_resident",
              "retry_after_ms": 2000,
-             "resolve_with": "uap models apply plc-7f2a <option>  |  dashboard Models tab" } }
+             "resolve_with": "uap models pending  |  uap models apply <placement_id> <option>  |  dashboard Models tab" } }
 ```
+
+`reason` is machine-computed, never guessed: `unknown_model`,
+`no_measured_config` (fail closed), `not_resident`, or `unroutable_target`
+(the controller vouched for a resident on another endpoint; this proxy posts
+to one discovered upstream, so the id is not sent to it raw).
 
 `409` rather than a hang: the client keeps control, the proxy holds no socket
 open across an unbounded operator decision, and a client that understands the
-code can fall back on its own. `PROXY_PLACEMENT_HOLD_MS` optionally holds the
-connection for a bounded window first, for clients too dumb to retry.
+code can fall back on its own. `PROXY_PLACEMENT_HOLD_SECS` optionally holds the
+connection for a bounded window first (capped 30s), for clients too dumb to
+retry.
 
 Pending requests dedupe on `(client, requested_model)`: ten concurrent Claude
 Code requests for the same unloaded model produce one operator prompt, not ten.
+Two windows, deliberately different: the proxy's own dedupe map is a **short
+burst window** (~5s, enough to coalesce a burst that arrives in milliseconds)
+so a resolved placement forwards on the very next request, while the
+controller's ledger pending entry dedupes for **120s** — the operator-prompt
+window. The controller re-checks the ledger and answers `forward` the moment a
+live resident serves the id, so the long window never outlives a resolution.
 
-Environment: `PROXY_PLACEMENT_MODE=off|ask|auto` (default `off`),
-`PROXY_PLACEMENT_HOLD_MS` (default `0`).
+Admission is two-tier. With `PROXY_PLACEMENT_CONTROLLER` set (emitted by
+`uap setup` as the co-located dashboard, loopback), the proxy asks it: the
+controller owns the registry + ledger view, answers `forward` with the
+resident's target id (which keys the proxy's per-target concurrency budget),
+or answers `park` and writes the pending entry. Without a controller, or when
+it does not answer within its short timeout, the proxy degrades to read-only
+admission from its own cached upstream ids: an id the upstream serves
+forwards; an id it does not serve parks (`not_resident`); no knowledge
+(unprobed cache) forwards — the same fail-open direction
+`_reconcile_wire_model` takes with the same cache.
+
+Environment: `PROXY_PLACEMENT_MODE=off|ask|auto` (default `off`;
+`auto` is accepted and treated as `ask` until phase-3 enforcement exists),
+`PROXY_PLACEMENT_CONTROLLER` (default empty → read-only admission),
+`PROXY_PLACEMENT_HOLD_SECS` (default `0`).
 
 #### The proxy cannot load a model today
 
@@ -784,9 +823,16 @@ failure modes the repo has already recorded:
    first request after a successful switch fails the `requested in ids`
    check and gets silently rewritten to the *previous* backend's first id —
    no banner, wrong model. The invalidation must also cover the `/props` and
-   `/slots` snapshots, `_admitted_sessions` (`:4920`), and the pooled
-   connections pointed at the old process. This is a step in the sequence and
-   a row in the §7 test list, not an implementation detail.
+   `/slots` snapshots, `_admitted_sessions` (`:4920`), and the parked-request
+   burst map. This is a step in the sequence and a row in the §7 test list,
+   not an implementation detail. Shipped as the loopback-only
+   `POST /internal/placement/refresh` endpoint; the pooled connections are a
+   documented deviation (one retried request post-swap rather than a pool
+   swap). Until phase 3 automates this step, a MANUAL switch run outside the
+   tooling should fire the same hook by hand:
+
+       curl -s -X POST http://127.0.0.1:${PROXY_PORT:-4000}/internal/placement/refresh \
+            -H "Authorization: Bearer ${PROXY_AUTH_TOKEN:-}"
 8. Any step fails → roll back to the previous resident set and return a
    fallback to the client rather than leaving the machine with nothing loaded.
 

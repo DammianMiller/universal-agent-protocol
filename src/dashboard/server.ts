@@ -13,7 +13,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { getDashboardData, probeDatabaseHealth } from './data-service.js';
-import { getPlacementState, getPlacementPending, getPlacementPreview } from './placement-routes.js';
+import { getPlacementState, getPlacementPending, getPlacementPreview, getPlacementAdmit } from './placement-routes.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { heuristicOrder, buildOrderPrompt, parseOrderResponse, type OrderablePolicy } from '../policies/policy-order.js';
@@ -318,6 +318,42 @@ export function startDashboardServer(
         const pending = getPlacementPending();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ pending }));
+        return;
+      }
+      // API: Placement admission (spec §4.3) — the proxy gate's controller
+      // endpoint. POST, and LOOPBACK-ONLY rather than mutationToken-gated:
+      // the caller is the proxy (a local process that has no dashboard
+      // token), and its answer parks or forwards live model traffic, so it
+      // must never be reachable from off-host. Non-loopback callers get 403
+      // before the body is even read.
+      if (url === '/api/placement/admit' && req.method === 'POST') {
+        // Peer address captured from the live socket only: no '' fallback —
+        // a destroyed socket reports undefined and must FAIL CLOSED here,
+        // not coerce into the allowlist (this server is TCP-only, so an
+        // empty peer is never a unix socket).
+        const peer = req.socket.remoteAddress;
+        const loopback =
+          peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+        if (!loopback) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'placement admit is loopback-only' }));
+          return;
+        }
+        const body = await readBody(req);
+        const parsed = parseJsonBody(body);
+        const modelId = typeof parsed.model_id === 'string' ? parsed.model_id : '';
+        if (!modelId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'missing model_id' }));
+          return;
+        }
+        const answer = getPlacementAdmit(cwd, {
+          model_id: modelId,
+          client: typeof parsed.client === 'string' ? parsed.client : undefined,
+          session: typeof parsed.session === 'string' ? parsed.session : undefined,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(answer));
         return;
       }
       if (url.startsWith('/api/placement/preview')) {

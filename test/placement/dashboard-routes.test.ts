@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { getPlacementState, getPlacementPending, getPlacementPreview } from '../../src/dashboard/placement-routes.js';
+import { getPlacementState, getPlacementPending, getPlacementPreview, getPlacementAdmit, PLACEMENT_PENDING_TTL_MS } from '../../src/dashboard/placement-routes.js';
 import { loadModelRegistry, type ModelRegistry } from '../../src/placement/registry.js';
 import { withLedger, type PlacementLedger } from '../../src/placement/ledger.js';
 
@@ -124,5 +124,130 @@ describe('dashboard placement routes', () => {
     expect(payload.registry_errors.length).toBeGreaterThan(0);
     // The repo shape still summarizes: measured flash-next from repo.
     expect(payload.models[0].configs[0].measured).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Admission (spec §4.3) — the proxy gate's controller endpoint
+// ---------------------------------------------------------------------------
+
+describe('placement admit (proxy gate controller)', () => {
+  const loaded = () => ({
+    registry,
+    measuredFrom: new Map([['qwen3.8-flash-next/strata-iq3_s', 'repo']]),
+    errors: [],
+  });
+
+  it('forwards on resident reuse with the resident target id (device:endpoint)', () => {
+    const ledgerPath = freshLedger();
+    withLedger(ledgerPath, (l: PlacementLedger) => {
+      l.residents.push({
+        model: 'qwen3.8-flash-next',
+        config: 'strata-iq3_s',
+        device: 'gpu0',
+        endpoint: 'http://192.168.1.165:8080/v1',
+        state: 'hot',
+        holders: [],
+        since: new Date().toISOString(),
+      });
+    });
+    // The wire id the client asked for is the ADVERTISED alias, not the key.
+    const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code' }, { loaded: loaded(), ledgerPath });
+    expect(answer.decision).toBe('forward');
+    expect(answer.target_id).toBe('gpu0:http://192.168.1.165:8080/v1');
+  });
+
+  it('does not forward to a draining resident', () => {
+    const ledgerPath = freshLedger();
+    withLedger(ledgerPath, (l: PlacementLedger) => {
+      l.residents.push({
+        model: 'qwen3.8-flash-next',
+        config: 'strata-iq3_s',
+        device: 'gpu0',
+        state: 'draining',
+        holders: [],
+        since: new Date().toISOString(),
+      });
+    });
+    const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s' }, { loaded: loaded(), ledgerPath });
+    expect(answer.decision).toBe('park');
+  });
+
+  it('parks with reason not_resident (measured but not loaded) and writes a pending entry', () => {
+    const ledgerPath = freshLedger();
+    const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code', session: 's1' }, { loaded: loaded(), ledgerPath });
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('not_resident');
+    expect(answer.placement_id).toMatch(/^plc-[0-9a-f]{6}$/);
+    const pending = getPlacementPending(ledgerPath);
+    expect(pending.length).toBe(1);
+    expect(pending[0].requested_model).toBe('qwen3.8-flash-next-iq3_s');
+    expect(pending[0].client).toBe('claude-code');
+    expect(pending[0].reason).toBe('not_resident');
+    expect(pending[0].expires_at > new Date().toISOString()).toBe(true);
+  });
+
+  it('parks with reason no_measured_config (fail closed) and unknown_model', () => {
+    const ledgerPath = freshLedger();
+    const unmeasured: ModelRegistry = {
+      ...registry,
+      models: {
+        ...registry.models,
+        'qwen3.8-27b': {
+          display: 'Qwen3.8 27B',
+          engine: 'llama',
+          advertises: ['Qwen3.8-27B'],
+          affinity: { device: ['gpu0'] },
+          configs: { 'llama-mtp': { unit: 'uap-qwen27b' } },
+        },
+      },
+    };
+    const a = getPlacementAdmit(process.cwd(), { model_id: 'Qwen3.8-27B' }, { loaded: { registry: unmeasured, measuredFrom: new Map(), errors: [] }, ledgerPath });
+    expect(a.decision).toBe('park');
+    expect(a.reason).toBe('no_measured_config');
+    const b = getPlacementAdmit(process.cwd(), { model_id: 'gpt-99' }, { loaded: loaded(), ledgerPath });
+    expect(b.decision).toBe('park');
+    expect(b.reason).toBe('unknown_model');
+  });
+
+  it('dedupes on (requested_model, client): one pending entry, one placement id', () => {
+    const ledgerPath = freshLedger();
+    const first = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code' }, { loaded: loaded(), ledgerPath });
+    const second = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code' }, { loaded: loaded(), ledgerPath });
+    expect(first.placement_id).toBe(second.placement_id);
+    expect(getPlacementPending(ledgerPath).length).toBe(1);
+    // A different client is a different prompt.
+    const third = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'codex' }, { loaded: loaded(), ledgerPath });
+    expect(third.placement_id).not.toBe(first.placement_id);
+    expect(getPlacementPending(ledgerPath).length).toBe(2);
+  });
+
+  it('still answers park when the ledger lock is unavailable (write fails, decision does not)', async () => {
+    const ledgerPath = freshLedger();
+    const { acquireLedgerLock, releaseLedgerLock } = await import('../../src/placement/ledger.js');
+    expect(acquireLedgerLock(ledgerPath)).toBe(true);
+    try {
+      const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code' }, { loaded: loaded(), ledgerPath });
+      expect(answer.decision).toBe('park');
+      expect(answer.reason).toBe('not_resident');
+      expect(answer.placement_id).toMatch(/^plc-/);
+    } finally {
+      releaseLedgerLock(ledgerPath);
+    }
+  });
+
+  it('rejects a missing model_id without touching the ledger', () => {
+    const ledgerPath = freshLedger();
+    const answer = getPlacementAdmit(process.cwd(), { model_id: '' }, { loaded: loaded(), ledgerPath });
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('invalid_request');
+    expect(getPlacementPending(ledgerPath)).toEqual([]);
+  });
+
+  it('the ledger pending TTL is the operator-prompt window (120s), deliberately longer than the proxy burst window', () => {
+    // The proxy's own in-memory dedupe is a ~5s burst window so a resolved
+    // placement forwards on the next request; this 120s window only bounds
+    // how long one operator prompt lives. Spec §4.3 pins the split.
+    expect(PLACEMENT_PENDING_TTL_MS).toBe(120_000);
   });
 });

@@ -1702,7 +1702,16 @@ async def _reconcile_wire_model(openai_body: dict) -> None:
     told us what it serves. A request naming a model the backend knows is left
     exactly alone, so a genuine multi-model gateway keeps working; a backend we
     could not interrogate changes nothing. Fails open in both directions.
+
+    SKIPPED ENTIRELY when PROXY_PLACEMENT_MODE is on (ask/auto): the placement
+    gate replaces the silent fallback. An id the upstream does not serve is
+    then the operator's decision (a parked request with options), never an
+    automatic rewrite to ids[0] — a stale ids cache would otherwise rewrite a
+    just-forwarded resident to the PREVIOUS backend's id, the model the
+    operator evicted.
     """
+    if PROXY_PLACEMENT_MODE != "off":
+        return
     requested = openai_body.get("model")
     if not requested:
         return
@@ -1718,6 +1727,231 @@ async def _reconcile_wire_model(openai_body: dict) -> None:
             "Update the advertised/configured id to stop relying on this.",
             requested, ", ".join(ids[:4]), served,
         )
+
+
+async def _placement_controller_admit(
+    model_id: str, client_id: str, session_id: str | None
+) -> dict | None:
+    """Ask the dashboard-hosted placement controller for an admit decision.
+
+    Returns the controller's answer dict ({"decision": "forward"|"park",
+    "target_id": ..., "reason": ..., "placement_id": ...}), or None when no
+    controller is configured or it did not answer in time. Short timeout on
+    purpose: admission sits on the request path, so a slow or dead
+    controller must degrade to read-only admission, never stall traffic.
+    """
+    if not PROXY_PLACEMENT_CONTROLLER or http_client is None:
+        return None
+    url = PROXY_PLACEMENT_CONTROLLER.rstrip("/") + "/api/placement/admit"
+    payload = {"model_id": model_id, "client": client_id, "session": session_id}
+    try:
+        r = await http_client.post(url, json=payload, timeout=2.0)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, dict) and data.get("decision") in ("forward", "park"):
+                return data
+        return None
+    except Exception:  # noqa: BLE001 - controller outages degrade, never 500
+        return None
+
+
+def _placement_park_response(wire_model: str, placement_id: str, reason: str) -> Response:
+    """The 409 model_placement_pending body (spec §4.3).
+
+    Anthropic error-body shape (top-level type:"error") so every gated
+    client — Claude Code, Codex, OpenCode, UAP agents — parses it with the
+    code it already has for API errors. retry_after_ms matches Claude
+    Code's Retry-After pacing; resolve_with names the two operator paths.
+    """
+    body = {
+        "type": "error",
+        "error": {
+            "type": "model_placement_pending",
+            "placement_id": placement_id,
+            "requested_model": wire_model,
+            "reason": reason,
+            "retry_after_ms": 2000,
+            "resolve_with": (
+                "uap models pending  |  uap models apply <placement_id> <option>"
+                "  |  dashboard Models tab"
+            ),
+        },
+    }
+    return Response(
+        content=json.dumps(body),
+        status_code=409,
+        media_type="application/json",
+    )
+
+
+async def _placement_admit(
+    wire_model: str | None, client_id: str, session_id: str | None
+) -> Response | None:
+    """Placement admission gate (spec §4.3).
+
+    Returns None to forward the request upstream, or a 409 Response to park
+    it for the operator. Byte-identical to the pre-placement proxy when
+    PROXY_PLACEMENT_MODE=off (the shipped default): the first line returns.
+
+    Called ONCE, in messages(), immediately BEFORE _reconcile_wire_model
+    (the gate decides on the id the client asked for; the reconciler then
+    either leaves a served id alone or — in gate mode — is skipped so an
+    unserved id is never silently substituted). Every local route funnels
+    through messages() (/v1/messages, /anthropic/v1/messages,
+    /v1/chat/completions, /api/chat, /api/generate all reach it), and cloud
+    passthrough has already returned above, so passthrough is exempt by
+    construction.
+    """
+    if PROXY_PLACEMENT_MODE == "off" or not wire_model:
+        return None
+
+    # Burst dedupe: a (client, model) parked within the short window
+    # re-parks with the SAME placement_id, so a burst of concurrent requests
+    # produces one ask, not one per request. Window is deliberately short
+    # (see _PLACEMENT_BURST_DEDUPE_SECS) so a resolved placement forwards on
+    # the very next request.
+    now = time.time()
+    key = (client_id, wire_model)
+    entry = _placement_pending.get(key)
+    if entry is not None and entry["expires_at"] > now:
+        return _placement_park_response(
+            wire_model, entry["placement_id"], entry.get("reason") or "not_resident"
+        )
+
+    answer = await _placement_controller_admit(wire_model, client_id, session_id)
+    reason: str | None = None
+    placement_id: str | None = None
+    if answer is not None and answer.get("decision") == "forward":
+        # Trust but verify ROUTING (multi-backend guard, spec §4.3): the
+        # controller owns the registry view, but THIS proxy posts to ONE
+        # discovered upstream. A forward for a resident on another endpoint
+        # would otherwise send an unserved id to llama.cpp raw — loudly, with
+        # the reconciler's silent rewrite retired in gate mode. Ids unknown
+        # → forward: the same fail-open the read-only path takes with this
+        # same cache.
+        ids = await _upstream_model_ids_cached()
+        if ids is None or wire_model in ids:
+            # The controller vouched for the model AND told us which target
+            # (device+endpoint) holds it; the per-target semaphore budget
+            # keys off this. An off-shape target (a nonce, a session id)
+            # would mint a new semaphore per request and quietly multiply
+            # the concurrency budget, so anything that does not look like
+            # device:endpoint falls back to the default bucket.
+            target = answer.get("target_id")
+            if (
+                isinstance(target, str)
+                and target
+                and _PLACEMENT_TARGET_RE.match(target)
+            ):
+                _current_placement_target.set(target)
+            return None
+        reason = "unroutable_target"
+    elif answer is not None:
+        # Park; the controller's reason and (if it minted one) placement id.
+        reason = str(answer.get("reason") or "not_resident")
+        pid = answer.get("placement_id")
+        if isinstance(pid, str) and pid:
+            placement_id = pid
+    else:
+        # Read-only admission (no controller, or it did not answer):
+        # "already loaded" is answerable from the upstream's advertised ids
+        # (same cache _reconcile_wire_model used), anything else parks —
+        # there is no loading path without a controller, so parking is the
+        # only honest answer.
+        ids = await _upstream_model_ids_cached()
+        if ids is None or wire_model in ids:
+            # No knowledge, or the upstream DOES serve it: forward. Failing
+            # closed on "upstream unreachable" would park a healthy resident
+            # during every backend blip — the same fail-open direction
+            # _reconcile_wire_model already takes with this same cache.
+            return None
+        reason = "not_resident"
+
+    if placement_id is None:
+        placement_id = f"plc-{uuid.uuid4().hex[:6]}"
+    _placement_pending[key] = {
+        "placement_id": placement_id,
+        "reason": reason,
+        "created_at": now,
+        "expires_at": now + _PLACEMENT_BURST_DEDUPE_SECS,
+    }
+    # Opportunistic prune so a parked-and-abandoned model cannot grow the
+    # map unboundedly (bounded in practice by distinct (client, model) pairs
+    # in a 120s window, but cheap to keep tight).
+    for stale in [
+        k for k, v in _placement_pending.items() if v["expires_at"] <= now
+    ]:
+        _placement_pending.pop(stale, None)
+    logger.info(
+        "PLACEMENT PARK: client=%s requested %r -> parked as %s (%s, controller=%s)",
+        client_id,
+        wire_model,
+        placement_id,
+        reason,
+        "answered" if answer is not None else "not_configured",
+    )
+    if PROXY_PLACEMENT_HOLD_SECS > 0:
+        await asyncio.sleep(PROXY_PLACEMENT_HOLD_SECS)
+    return _placement_park_response(wire_model, placement_id, reason)
+
+
+def invalidate_upstream_caches() -> list[str]:
+    """Clear every process-lifetime view of the upstream after a placement
+    swap (spec §4.6 step 7). Called by the enforcement controller via the
+    loopback /internal/placement/refresh endpoint, AFTER the new backend
+    answers /health but BEFORE the next client request.
+
+    A stale _upstream_model_ids is the quiet killer: the first request after
+    a successful switch fails `requested in ids` and _reconcile_wire_model
+    silently rewrites it to the PREVIOUS backend's id — the model the
+    operator just evicted. Also re-arms the context-window, vision and
+    chat_template_kwargs probes so the next request re-measures instead of
+    trusting the dead backend's numbers, clears session admission so fresh
+    sessions re-admit against the new slot budget, and drops the parked-
+    request burst map so a just-loaded model forwards on the next retry.
+
+    Deliberate deviation from spec §4.6 step 7: the pooled httpx connections
+    are NOT swapped here — the self-heal pool reset is cooldown-guarded for
+    error bursts, and a stale pooled connection costs one failed request
+    that _post_with_retry already retries. The next successful connect
+    re-binds the pool to the live backend.
+    """
+    global _upstream_model_ids, _ctk_supported, _ctk_probed, _ctk_probe_attempts
+    global default_context_window, _context_window_measured, _last_ctx_recheck_ts
+    global upstream_vision, _last_vision_recheck_ts
+    global _placement_pending
+    cleared: list[str] = []
+    if _upstream_model_ids is not None:
+        _upstream_model_ids = None
+        _rewritten_model_ids.clear()
+        cleared.append("upstream_model_ids")
+    if PROXY_CHAT_TEMPLATE_KWARGS == "auto" and _ctk_probed:
+        # Only 'auto' mode holds a probe result; an operator pin (on/off) is
+        # an assertion about THIS operator's backends and must survive a swap.
+        _ctk_supported = None
+        _ctk_probed = False
+        _ctk_probe_attempts = 0
+        cleared.append("chat_template_kwargs_probe")
+    if default_context_window > 0:
+        default_context_window = 0
+        _context_window_measured = False
+        _last_ctx_recheck_ts = 0.0
+        cleared.append("context_window")
+    if upstream_vision:
+        upstream_vision = False
+        cleared.append("vision")
+    # Re-arm the vision re-probe unconditionally: the old backend's probe
+    # answer (either way) is about the old backend, and the recheck
+    # interval gate would otherwise suppress the re-probe for up to 60s
+    # after the swap.
+    _last_vision_recheck_ts = 0.0
+    _admitted_sessions.clear()
+    cleared.append("admitted_sessions")
+    if _placement_pending:
+        _placement_pending.clear()
+        cleared.append("placement_pending")
+    logger.info("PLACEMENT: upstream caches invalidated (%s)", ", ".join(cleared))
+    return cleared
 
 
 async def _upstream_model_name() -> str | None:
@@ -4758,6 +4992,79 @@ PROXY_CONCURRENCY_QUEUE_TIMEOUT = float(
 )
 upstream_semaphore: asyncio.Semaphore | None = None
 
+# ---------------------------------------------------------------------------
+# Model placement admission (docs/specs/operator-model-placement.md §4.3)
+# ---------------------------------------------------------------------------
+# The proxy NEVER services a model it cannot currently serve from the local
+# upstream: instead of rewriting the model id (what _reconcile_wire_model
+# does as a fallback), the gate parks the request as 409 model_placement_pending
+# and the OPERATOR resolves it (apply a placement option, or load the model).
+#
+# MODES:
+#   off  — shipped default, byte-identical to the pre-placement proxy: the
+#          gate returns before doing anything (the §7 regression test pins it)
+#   ask  — park non-resident models as 409; the operator resolves each pending
+#   auto — accepted and treated as ask until phase-3 enforcement can load
+#          models on its own; then it will forward-and-let-the-controller-load
+PROXY_PLACEMENT_MODE = os.environ.get("PROXY_PLACEMENT_MODE", "off").strip().lower()
+if PROXY_PLACEMENT_MODE not in ("off", "ask", "auto"):
+    # A typo'd mode must not silently activate the gate: unknown → off
+    # (current, byte-identical behavior), loudly, once.
+    logging.getLogger("uap.anthropic_proxy").warning(
+        "PROXY_PLACEMENT_MODE=%r is not off|ask|auto — running with the gate OFF",
+        PROXY_PLACEMENT_MODE,
+    )
+    PROXY_PLACEMENT_MODE = "off"
+# Loopback URL of the dashboard-hosted placement controller (emitted by
+# `uap setup` into .uap/proxy.env as PROXY_PLACEMENT_CONTROLLER). Empty →
+# read-only admission: the proxy answers "already loaded" from its own
+# upstream-id cache but cannot ask for a load, so non-resident models park
+# with reason not_resident.
+PROXY_PLACEMENT_CONTROLLER = os.environ.get("PROXY_PLACEMENT_CONTROLLER", "").strip()
+# Bounded hold before the 409 (seconds), for clients that cannot retry on
+# their own — a parked request waits up to this long for the operator to
+# resolve, then still gets the 409. 0 = answer immediately. Capped at 30s.
+PROXY_PLACEMENT_HOLD_SECS = min(
+    30.0, max(0.0, float(os.environ.get("PROXY_PLACEMENT_HOLD_SECS", "0") or "0"))
+)
+# How long a parked (client, model) pair stays deduped in the PROXY's own
+# map: a short BURST window (ten concurrent requests arrive within
+# milliseconds), not the controller's 120s operator-prompt TTL. Short on
+# purpose: once the operator resolves a pending (loads the model), the next
+# request re-asks the controller / re-reads the upstream ids and forwards —
+# a long window here would keep parking a resolved model out of spite. The
+# OPERATOR-PROMPT dedupe (one pending entry, one placement_id) is the
+# controller's, which re-checks the ledger and answers forward the moment a
+# live resident serves the id.
+_PLACEMENT_BURST_DEDUPE_SECS = 5.0
+
+# Target-keyed upstream semaphores. The key is the placement TARGET identity
+# (device+endpoint, from the controller's admit answer — never the model
+# name), so two residents on two backends get independent concurrency
+# budgets of PROXY_CONCURRENCY_LIMIT each. "default" is the legacy
+# single-backend bucket: it IS the module-global `upstream_semaphore` created
+# at lifespan start, so a deployment that never opts in is byte-identical.
+_upstream_semaphores: dict[str, asyncio.Semaphore] = {}
+# Per-request placement target, set by the admission gate from the
+# controller's answer. Same contextvar pattern as _current_request_session:
+# set once at the gate, read deep inside _post_with_retry.
+_current_placement_target: contextvars.ContextVar[str | None] = (
+    contextvars.ContextVar("uap_current_placement_target", default=None)
+)
+# Parked (client, model) → {placement_id, reason, created_at, expires_at}.
+# Proxy-side dedupe only; ledger pending entries are the controller's to
+# write (it owns the atomic ledger write under the advisory lock).
+_placement_pending: dict[tuple[str, str], dict] = {}
+# A controller-supplied target id must look like device:endpoint (the shape
+# the controller composes from the ledger resident: "gpu0:http://…/v1").
+# Anything else — a nonce, a session id, a timestamp — would mint a NEW
+# semaphore per request and quietly multiply the concurrency budget, so an
+# off-shape answer falls back to the default bucket instead.
+_PLACEMENT_TARGET_RE = re.compile(r"^[A-Za-z0-9_.\-]+:\S+$")
+# Cap on per-target semaphores: real deployments have a handful of devices.
+# Overflow falls back to the default bucket rather than growing unboundedly.
+_PLACEMENT_MAX_TARGETS = 8
+
 
 # ---------------------------------------------------------------------------
 # Session admission control — cap the number of DISTINCT "hot" sessions
@@ -5157,21 +5464,47 @@ async def _ensure_session_admitted(session_id: str | None) -> None:
                 pass  # re-loop: re-prune idle admissions, retry
 
 
-async def _acquire_upstream_slot() -> bool:
+def _semaphore_for(target_id: str | None) -> asyncio.Semaphore | None:
+    """Resolve the upstream semaphore for a placement target.
+
+    "default" (and any unset target, i.e. every deployment that has not
+    opted into placement) resolves to the module-global semaphore created
+    at lifespan start — byte-identical to the pre-placement proxy. Any other
+    target id gets its own semaphore, lazily created with the same
+    PROXY_CONCURRENCY_LIMIT, so per-target budgets are independent: two
+    backends each get their own full limit, not a shared pool.
+    """
+    if not target_id or target_id == "default":
+        return upstream_semaphore
+    sem = _upstream_semaphores.get(target_id)
+    if sem is None:
+        # Cap the map: a real deployment has a handful of devices. Overflow
+        # (a runaway or hostile controller minting novel target ids) falls
+        # back to the default bucket rather than growing unboundedly and
+        # multiplying the total concurrency budget.
+        if len(_upstream_semaphores) >= _PLACEMENT_MAX_TARGETS:
+            return upstream_semaphore
+        sem = asyncio.Semaphore(PROXY_CONCURRENCY_LIMIT)
+        _upstream_semaphores[target_id] = sem
+    return sem
+
+
+async def _acquire_upstream_slot(target_id: str | None = None) -> bool:
     """Acquire a semaphore slot for an upstream request.
 
     Returns True if a slot was acquired, False if the wait timed out.
     asyncio.Semaphore.acquire() preserves wait order via futures, so this
     gives a natural FIFO queue.
     """
-    if upstream_semaphore is None:
+    sem = _semaphore_for(target_id)
+    if sem is None:
         return True  # Not yet initialized; proceed without limiting
     if PROXY_CONCURRENCY_QUEUE_TIMEOUT <= 0:
-        await upstream_semaphore.acquire()
+        await sem.acquire()
         return True
     try:
         await asyncio.wait_for(
-            upstream_semaphore.acquire(),
+            sem.acquire(),
             timeout=PROXY_CONCURRENCY_QUEUE_TIMEOUT,
         )
         return True
@@ -5179,7 +5512,7 @@ async def _acquire_upstream_slot() -> bool:
         return False
 
 
-def _release_upstream_slot() -> None:
+def _release_upstream_slot(target_id: str | None = None) -> None:
     """Release a semaphore slot. MUST be called once per successful acquire.
 
     Note: asyncio.Semaphore.release() always increments the counter — we
@@ -5187,8 +5520,9 @@ def _release_upstream_slot() -> None:
     is 0 (no slots left). Gating would cause a slot leak when limit > 1 and
     multiple holders release simultaneously.
     """
-    if upstream_semaphore is not None:
-        upstream_semaphore.release()
+    sem = _semaphore_for(target_id)
+    if sem is not None:
+        sem.release()
 
 
 def _is_loading_model_503(resp: httpx.Response) -> bool:
@@ -5252,7 +5586,10 @@ async def _post_with_retry(
     if await _client_gone():
         raise ClientGoneError("client disconnected before upstream call")
     await _ensure_session_admitted(_current_request_session.get())
-    acquired = await _acquire_upstream_slot()
+    # Placement target: the admission gate set this per request (or it is
+    # None, which _semaphore_for maps to the legacy default bucket).
+    _placement_target = _current_placement_target.get()
+    acquired = await _acquire_upstream_slot(_placement_target)
     if not acquired:
         logger.warning(
             "CONCURRENCY: queue timeout (%ds) exceeded waiting for upstream slot",
@@ -5269,7 +5606,7 @@ async def _post_with_retry(
         await _ensure_slot_for_session(client, _current_request_session.get())
         return await _post_with_retry_inner(client, url, payload, headers)
     finally:
-        _release_upstream_slot()
+        _release_upstream_slot(_placement_target)
 
 
 # How often to re-check the caller while an upstream generation is in flight.
@@ -5630,6 +5967,8 @@ async def lifespan(app: FastAPI):
     http_client = None
     if upstream_semaphore is not None:
         upstream_semaphore = None
+    _upstream_semaphores.clear()
+    _placement_pending.clear()
     _admission_cond = None
     _admitted_sessions.clear()
     logger.info("Proxy shut down")
@@ -15031,6 +15370,29 @@ async def messages(request: Request):
             status_code=400,
             media_type="application/json",
         )
+    # Placement admission gate (spec §4.3): parked requests end here with a
+    # 409 model_placement_pending for the operator to resolve. Runs BEFORE
+    # _reconcile_wire_model and decides on the model the CLIENT asked for —
+    # the id that needs a placement decision. (Running it after the
+    # reconciler would decide on ids[0]: a non-resident id would be silently
+    # rewritten first and the gate would forward exactly what it exists to
+    # park.) No-op returning None when PROXY_PLACEMENT_MODE=off (the shipped
+    # default) — byte-identical to the pre-placement proxy. Covers every
+    # local route: they all funnel through this handler, and cloud
+    # passthrough returned before here, so it is exempt by construction.
+    parked = await _placement_admit(
+        # The model the CLIENT asked for (the handler's resolved `model`
+        # above), NOT openai_body's — build_openai_request injects the
+        # sentinel "default" when the client named none, and a model-less
+        # request means "whatever is loaded": no placement decision to make,
+        # so the gate is skipped for it.
+        model if isinstance(model, str) and model != "default" else None,
+        client_id,
+        session_id,
+    )
+    if parked is not None:
+        return parked
+
     # Only the WIRE body is touched. The Anthropic response still echoes the
     # model the client asked for, which is what clients check.
     await _reconcile_wire_model(openai_body)
@@ -15791,6 +16153,26 @@ async def _guarded_openai_completion(
 
     # Run the full guarded Anthropic pipeline
     inner_resp = await messages(fake_request)
+
+    # A placement park is NOT an upstream failure: the admission gate inside
+    # messages() answered 409 model_placement_pending. Surface it in THIS
+    # surface's dialect (the generic "upstream returned no message" path
+    # below would otherwise swallow the placement id the client needs).
+    if (
+        isinstance(inner_resp, Response)
+        and not isinstance(inner_resp, StreamingResponse)
+        and inner_resp.status_code == 409
+    ):
+        try:
+            parked_err = (json.loads(inner_resp.body) or {}).get("error") or {}
+        except (ValueError, TypeError):
+            parked_err = {}
+        if isinstance(parked_err, dict) and parked_err.get("type") == "model_placement_pending":
+            return None, 409, (
+                f"model placement pending: {parked_err.get('requested_model')} is "
+                f"not loaded; resolve with `uap models pending` "
+                f"(placement {parked_err.get('placement_id')})"
+            )
 
     # Extract the Anthropic-format JSON from whatever messages() returned
     anthropic_resp_dict: dict | None = None
@@ -16732,6 +17114,33 @@ async def health():
         "upstream": "ok" if upstream_ok else "unreachable",
         "upstream_url": LLAMA_CPP_BASE,
     }
+
+
+@app.post("/internal/placement/refresh")
+async def internal_placement_refresh(request: Request):
+    """Placement swap invalidation hook (spec §4.6 step 7).
+
+    Called by the TS enforcement controller over loopback AFTER a placement
+    swap is verified (new backend healthy, old one drained) so no client
+    request sees a cached view of the backend that just went away. Resets
+    live admission state, so it is loopback-only AND NOT in
+    _PROXY_AUTH_OPEN_PATHS: on a token-gated bind the controller must present
+    the shared secret like any other caller (it reads the same proxy.env).
+    """
+    peer = request.client.host if request.client else ""
+    # Same allowlist as the dashboard's admit gate (server.ts), plus "" for a
+    # genuine unix-socket bind (client is None). No "localhost": a TCP peer is
+    # always an IP, and ::ffff:127.0.0.1 is the dual-stack form a loopback
+    # controller presents as — rejecting it would silently break the
+    # invalidation hook on a dual-stack bind.
+    if peer not in ("127.0.0.1", "::1", "::ffff:127.0.0.1", ""):
+        return Response(
+            content=json.dumps({"error": "loopback only"}),
+            status_code=403,
+            media_type="application/json",
+        )
+    cleared = invalidate_upstream_caches()
+    return {"ok": True, "cleared": cleared}
 
 
 @app.get("/v1/context")

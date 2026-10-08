@@ -65,6 +65,15 @@ export const LedgerPendingSchema = z.object({
 });
 export type LedgerPending = z.infer<typeof LedgerPendingSchema>;
 
+/** Canonical placement TARGET identity for a resident: `device:endpoint`
+ * (spec §5.1 — the placement identity, never the model name). One composer,
+ * one spelling: the dashboard's admit answer, the proxy's per-target
+ * semaphore budget, and (phase 3) coordination leases must key off the
+ * identical string, so it is exported rather than re-derived per caller. */
+export function residentTargetId(resident: LedgerResident): string {
+  return `${resident.device}:${resident.endpoint ?? 'default'}`;
+}
+
 export const PlacementLedgerSchema = z.object({
   version: z.literal(LEDGER_VERSION),
   updated_at: z.string().optional(),
