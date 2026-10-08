@@ -170,7 +170,14 @@ function parseRegistryFile<S extends z.ZodTypeAny>(path: string, schema: S, erro
     errors.push(`${path}: unreadable (${(err as Error).message})`);
     return null;
   }
-  const parsed = schema.safeParse(JSON.parse(raw));
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch (err) {
+    errors.push(`${path}: unparseable JSON (${(err as Error).message})`);
+    return null;
+  }
+  const parsed = schema.safeParse(doc);
   if (!parsed.success) {
     errors.push(`${path}: invalid registry: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
     return null;

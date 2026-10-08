@@ -13,6 +13,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { getDashboardData, probeDatabaseHealth } from './data-service.js';
+import { getPlacementState, getPlacementPending, getPlacementPreview } from './placement-routes.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { heuristicOrder, buildOrderPrompt, parseOrderResponse, type OrderablePolicy } from '../policies/policy-order.js';
@@ -294,6 +295,50 @@ export function startDashboardServer(
         const data = await getDashboardData();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
+        return;
+      }
+
+      // API: Model placement (spec §4.7) — READS ONLY in this phase; the
+      // load/unload/resolve mutation routes arrive with phase-3 enforcement
+      // and will go through mutationAuthorized(). `state` syncs the ledger
+      // (probes + unit reconcile) — heavier than the 2s dash refresh, so the
+      // tab throttles its own polling rather than riding the refresh tick.
+      if (url === '/api/placement/state') {
+        try {
+          const data = getPlacementState(cwd);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(data));
+        } catch (err) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `placement state unavailable: ${(err as Error).message}` }));
+        }
+        return;
+      }
+      if (url === '/api/placement/pending') {
+        const pending = getPlacementPending();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ pending }));
+        return;
+      }
+      if (url.startsWith('/api/placement/preview')) {
+        const urlObj = new URL(url, `http://${host}:${boundPort}`);
+        const model = urlObj.searchParams.get('model');
+        if (!model) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'missing ?model=<id>' }));
+          return;
+        }
+        const cells = Number(urlObj.searchParams.get('cells'));
+        try {
+          const preview = getPlacementPreview(cwd, model, {
+            cells: Number.isFinite(cells) && cells > 0 ? cells : undefined,
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(preview));
+        } catch (err) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `placement preview unavailable: ${(err as Error).message}` }));
+        }
         return;
       }
 
