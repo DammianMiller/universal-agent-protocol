@@ -29,6 +29,13 @@ import {
   type RegistryLoadResult,
 } from '../placement/registry.js';
 import { computeOptions } from '../placement/admission.js';
+import {
+  autoOptionFor,
+  loadAutoPolicy,
+  scheduleAutoResolution,
+  type AutoPolicy,
+} from '../placement/auto.js';
+import { enforceOption } from '../placement/enforce.js';
 
 export interface PlacementModelSummary {
   model: string;
@@ -179,7 +186,13 @@ function residentServes(
 export function getPlacementAdmit(
   projectDir: string,
   request: PlacementAdmitRequest,
-  opts?: { loaded?: RegistryLoadResult; ledgerPath?: string },
+  opts?: {
+    loaded?: RegistryLoadResult;
+    ledgerPath?: string;
+    /** Auto-resolution seam (phase 4): the policy is injected for tests;
+     * `enforce` replaces the background enforcement entirely. */
+    auto?: { policy?: AutoPolicy; enforce?: typeof enforceOption };
+  },
 ): PlacementAdmitAnswer {
   if (!request.model_id || typeof request.model_id !== 'string') {
     return { decision: 'park', reason: 'invalid_request' };
@@ -187,10 +200,14 @@ export function getPlacementAdmit(
   const loaded = opts?.loaded ?? loadModelRegistry(projectDir);
   const registry = loaded.registry;
   const ledgerPath = opts?.ledgerPath ?? placementLedgerPath();
+  // One read feeds the resident check, the auto option math, and the
+  // dedupe scan (the locked write below re-reads — it must see the
+  // authoritative state).
+  const ledger = loadLedger(ledgerPath);
 
   // Forward on reuse: a live resident serves this id. Draining residents
   // don't count — a swap is in flight.
-  const resident = loadLedger(ledgerPath).residents.find(
+  const resident = ledger.residents.find(
     (r) => r.state !== 'draining' && residentServes(r, request.model_id, registry),
   );
   if (resident) {
@@ -209,44 +226,71 @@ export function getPlacementAdmit(
     reason = 'no_measured_config';
   }
 
+  // Auto-resolution (phase 4): a known, placeable model that is not
+  // resident can load ITSELF — alongside always (nothing evicted), by
+  // displacement only for operator-allowlisted models. The park reason
+  // becomes auto_loading; the client's retry is the protocol and forwards
+  // once the load completes. Unmeasured/unknown models never auto-load,
+  // and neither does a model in its failure cooldown or past the
+  // in-flight cap — autoOptionFor gates all of it so the reason never
+  // promises a run that will be refused.
+  let autoPlan: ReturnType<typeof autoOptionFor> = null;
+  if (reason === 'not_resident') {
+    const options = computeOptions(registry, ledger, request.model_id).options;
+    autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), request.model_id);
+    if (autoPlan) reason = 'auto_loading';
+  }
+
   // Dedupe on (requested_model, client): an unexpired pending entry reuses
   // its id, so retries within the TTL do not multiply operator prompts or
   // ledger writes. Checked again under the lock (the authoritative one).
+  // client/session are CLIENT-SUPPLIED identity strings — truncated
+  // before persisting so a flood cannot grow the ledger the dashboard
+  // rewrites on every admit (the full value never matters downstream).
   const now = new Date();
   const expiresAt = new Date(now.getTime() + PLACEMENT_PENDING_TTL_MS).toISOString();
-  const clientKey = request.client ?? '';
+  const client = request.client ? request.client.slice(0, 128) : undefined;
+  const session = request.session ? request.session.slice(0, 128) : undefined;
+  const clientKey = client ?? '';
   const matchesPending = (p: LedgerPending): boolean =>
     p.requested_model === request.model_id && (p.client ?? '') === clientKey && p.expires_at > now.toISOString();
 
-  const existing = loadLedger(ledgerPath).pending.find(matchesPending);
+  const existing = ledger.pending.find(matchesPending);
   if (existing) {
+    // No re-scheduling on the dedupe path: the entry's auto run is either
+    // in flight (the run map dedupes by requested model) or already
+    // finished (its reason says so). A stale `auto_loading` entry whose
+    // run died with the process self-heals: it expires after the TTL and
+    // the next admit creates a fresh entry with a fresh run.
     return { decision: 'park', placement_id: existing.id, reason: existing.reason ?? reason };
   }
 
   const pending: LedgerPending = {
     id: `plc-${randomBytes(3).toString('hex')}`,
     requested_model: request.model_id,
-    client: request.client,
-    session: request.session,
+    client,
+    session,
     created_at: now.toISOString(),
     expires_at: expiresAt,
     reason,
   };
   let placementId = pending.id;
+  let raceWinnerReason: string | undefined;
   try {
-    withLedger(ledgerPath, (ledger) => {
+    withLedger(ledgerPath, (l) => {
       // Prune expired entries while the authoritative ledger is held under
       // the lock: admits deliberately skip the (heavier, probe-running)
       // syncLedger refresh, so without this a parked-and-abandoned flood
       // could grow the pending list until the next dashboard poll or
       // `uap models` run.
-      ledger.pending = ledger.pending.filter((p) => p.expires_at > now.toISOString());
-      const again = ledger.pending.find(matchesPending);
+      l.pending = l.pending.filter((p) => p.expires_at > now.toISOString());
+      const again = l.pending.find(matchesPending);
       if (again) {
         placementId = again.id; // a concurrent admit won the write race
+        raceWinnerReason = again.reason;
         return;
       }
-      ledger.pending.push(pending);
+      l.pending.push(pending);
     });
   } catch {
     // Ledger lock contention fails the WRITE, not the decision: the request
@@ -261,8 +305,27 @@ export function getPlacementAdmit(
     }
     // Nobody persisted this ask: answer with our id anyway (the operator
     // sees the 409 in the client; the dashboard has no pending row for it
-    // yet) and say so.
+    // yet) and say so. No auto scheduling: the entry is not persisted, so
+    // a resolved pending would have nothing to remove — and the reason
+    // must not promise a load that will never run.
+    return { decision: 'park', placement_id: placementId, reason: autoPlan ? 'not_resident' : reason };
+  }
+  if (autoPlan && placementId === pending.id) {
+    // Our entry won the race and auto-load applies: fire the background
+    // enforcement for exactly this placement id (a concurrent winner
+    // schedules its own). The client retries on the floor and forwards
+    // once the load lands.
+    scheduleAutoResolution(registry, request.model_id, autoPlan, placementId, {
+      ledgerPath,
+      enforce: opts?.auto?.enforce,
+    });
     return { decision: 'park', placement_id: placementId, reason };
+  }
+  if (raceWinnerReason !== undefined) {
+    // A concurrent admit won the write race: its entry (and its auto run,
+    // if any) is the real state — report ITS reason, not our locally
+    // computed one (which may promise a load the winner never scheduled).
+    return { decision: 'park', placement_id: placementId, reason: raceWinnerReason };
   }
   return { decision: 'park', placement_id: placementId, reason };
 }

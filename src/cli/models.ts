@@ -58,6 +58,12 @@ import {
   writePlacementUnitDropins,
   fetchProxyInflight,
 } from '../placement/enforce.js';
+import {
+  autoPolicyPath,
+  loadAutoPolicy,
+  saveAutoPolicy,
+  type AutoPolicy,
+} from '../placement/auto.js';
 import { loadPolicy } from '../capacity/probe.js';
 import { looksLikeStrataMetrics, parseStrataEngine } from '../inference/strata.js';
 
@@ -511,6 +517,60 @@ export async function modelsUnitsCommand(opts: ModelsStatusOptions = {}): Promis
   return 0;
 }
 
+export interface ModelsAutoOptions {
+  enable?: boolean;
+  disable?: boolean;
+  /** Comma-separated registry model keys to (dis)allow for auto displacement. */
+  allowDisplace?: string;
+  disallowDisplace?: string;
+  yes?: boolean;
+  policyPath?: string;
+}
+
+export function modelsAutoCommand(opts: ModelsAutoOptions = {}): number {
+  const path = opts.policyPath ?? autoPolicyPath();
+  const policy = loadAutoPolicy(path);
+  if (opts.enable === true && opts.disable === true) {
+    console.error('--enable and --disable are mutually exclusive; pick one');
+    return 1;
+  }
+  const wantsChange =
+    opts.enable === true || opts.disable === true || !!opts.allowDisplace || !!opts.disallowDisplace;
+  if (!wantsChange) {
+    console.log(`auto-load: ${policy.enabled ? 'enabled' : 'disabled'} (${path})`);
+    console.log('  non-displacing options (load-alongside) load automatically when the policy is enabled');
+    console.log(`  auto-displacement allowlist: ${policy.allow_displace.length ? policy.allow_displace.join(', ') : '(empty — displacement always parks for the operator)'}`);
+    return 0;
+  }
+  const next: AutoPolicy = { ...policy, allow_displace: [...policy.allow_displace] };
+  if (opts.enable === true) next.enabled = true;
+  if (opts.disable === true) next.enabled = false;
+  const parseList = (v: string): string[] => v.split(',').map((s) => s.trim()).filter(Boolean);
+  if (opts.allowDisplace) {
+    const adding = parseList(opts.allowDisplace);
+    if (!opts.yes) {
+      console.log('auto-displacement means: a parked request for these models UNLOADS the current');
+      console.log('resident(s) — the minimal set that makes room, re-evaluated at load time — and');
+      console.log('loads the requested one WITHOUT an operator prompt between them.');
+      console.log(`models: ${adding.join(', ')}`);
+      console.log(`confirm: uap models auto --allow-displace ${opts.allowDisplace} --yes`);
+      return 1;
+    }
+    for (const m of adding) if (!next.allow_displace.includes(m)) next.allow_displace.push(m);
+    console.log(`auto-displacement allowed for: ${next.allow_displace.join(', ')}`);
+  }
+  if (opts.disallowDisplace) {
+    for (const m of parseList(opts.disallowDisplace)) {
+      next.allow_displace = next.allow_displace.filter((x) => x !== m);
+    }
+    console.log(`auto-displacement allowed for: ${next.allow_displace.join(', ') || '(none)'}`);
+  }
+  saveAutoPolicy(next, path);
+  console.log(`auto-load: ${next.enabled ? 'enabled' : 'disabled'} (policy written to ${path})`);
+  console.log('the dashboard controller picks the policy up on its next admission (no restart needed)');
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // dispatcher
 // ---------------------------------------------------------------------------
@@ -524,7 +584,8 @@ export type ModelsAction =
   | 'dismiss'
   | 'load'
   | 'unload'
-  | 'units';
+  | 'units'
+  | 'auto';
 
 export async function modelsCommand(action: ModelsAction, opts: Record<string, unknown>): Promise<number> {
   if (action === 'validate') return modelsValidateCommand(opts as ModelsValidateOptions);
@@ -535,5 +596,6 @@ export async function modelsCommand(action: ModelsAction, opts: Record<string, u
   if (action === 'load') return modelsLoadCommand(opts as { model?: string } & ModelsStatusOptions);
   if (action === 'unload') return modelsUnloadCommand(opts as { model?: string } & ModelsStatusOptions);
   if (action === 'units') return modelsUnitsCommand(opts as ModelsStatusOptions);
+  if (action === 'auto') return modelsAutoCommand(opts as ModelsAutoOptions);
   return modelsPendingCommand(opts as ModelsStatusOptions);
 }

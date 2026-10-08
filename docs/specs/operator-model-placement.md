@@ -489,7 +489,7 @@ Decision order:
 | --- | --- |
 | Resolved model already resident and satisfies the request | forward |
 | Cloud preset (no local cost) | forward, no placement decision |
-| In registry, fits in free − reserve, `mode=auto` | load alongside, then forward |
+| In registry, fits in free − reserve, `mode=auto` | controller auto-loads alongside, then forward (§4.4.1; displacing only for allowlisted models) |
 | In registry, fits in free − reserve, `mode=ask` | park, ask operator |
 | In registry, fits only by displacing | park, ask operator with impact preview |
 | Not in registry | park, ask operator; **never auto-load** |
@@ -525,6 +525,11 @@ changes, all applied):
   only.
 - `reason` is machine-computed, never guessed: `unknown_model`,
   `no_measured_config` (fail closed), `not_resident` (loadable, not loaded),
+  `auto_loading` (phase 4: the controller is loading the model itself — the
+  client's retry IS the protocol, no operator step exists, so the `message`
+  deliberately says so instead of pointing at `uap models pending`),
+  `auto_failed` (phase 4: the auto attempt failed; the pending entry survives
+  marked with this reason and the operator resolves it like any other park),
   `unroutable_target` (the controller vouched for a resident on another
   endpoint; this proxy posts to one discovered upstream, so the id is not
   sent to it raw), `no_controller` (read-only admission with no reachable
@@ -772,6 +777,78 @@ Generated options, in ranking order:
 Ranking: reuse > load_alongside with matching `task_affinity` > load_alongside
 > smallest displacement > largest displacement. The operator always sees the
 full list; the ranking only sets default order and the recommended row.
+
+#### 4.4.1 Auto-resolution policy (phase 4)
+A parked request whose option list is non-empty does not have to wait for a
+human `apply`. `src/placement/auto.ts` picks from the same ranked list the
+operator sees, under two rules:
+
+1. **Non-displacing options auto-enforce when the policy is enabled** —
+   reuse needs nothing, load-alongside evicts nothing; the budget math
+   already said it fits.
+2. **Displacement auto-enforces only for allowlisted models.** The
+   allowlist (`uap models auto --allow-displace <model> --yes`) is the
+   standing operator confirmation the core invariant requires — see the
+   §6 phase-4 note for why this extends, not violates, "never displacement".
+
+The policy lives in `~/.uap/placement-auto.json` (`UAP_PLACEMENT_AUTO`):
+`{"enabled": bool, "allow_displace": [model keys]}`. **Opt-in, fail-closed**:
+a missing file, a corrupt file, or a missing `enabled: true` key all mean
+auto is OFF — every park waits for a manual apply, exactly as in phase 3.
+`uap models auto` with no flags prints status; `--enable`/`--disable` flip
+it; `--allow-displace` refuses to record anything without `--yes`, because
+what it records is consent to evict unattended.
+
+Mechanics, all fail-closed (hardened after the phase-4 parallel review):
+
+- **One background run per requested MODEL** (`scheduleAutoResolution` keys
+  its run map by model, not placement id): the client-supplied identity
+  headers can mint fresh placement ids at request rate, so the id is no
+  dedupe at all — the model is the real "same load" key. The proxy parks
+  `auto_loading` reasons under a model-only burst key too, so rotating the
+  client-id header does not even re-ask the controller.
+- **Single-flight machine-wide**: auto runs queue on one tail promise —
+  two alongside options computed against the same pre-load free-memory
+  snapshot can otherwise both start and oversubscribe the card. A hard cap
+  (`AUTO_MAX_CONCURRENT_RUNS = 2`) bounds the queue outright.
+- **The entry outlives its run**: scheduling extends the pending entry's
+  `expires_at` past the enforcement envelope (drain + stops + verify-free +
+  start can exceed the 120s operator-prompt TTL), because a mid-run expiry
+  would mint a fresh entry and a second concurrent run for the same model.
+- **A failed run parks its model in a cooldown** (~10 min): a persistently
+  failing load would otherwise re-enforce at every TTL expiry — an
+  unattended drain→stop→fail→rollback oscillation the operator consented
+  to neither. A later success clears the cooldown.
+- **The run never rejects**: every ledger write inside it is caught — a
+  lock hiccup in a background run must not become an unhandled rejection
+  that kills the dashboard daemon. The entry self-heals via TTL expiry.
+- Enforcement starts on a `setImmediate` yield, after the park answer is
+  built: its synchronous prefix (device probes, `systemctl is-active`, the
+  ledger lock) must not stall the admit path, which the proxy holds to a
+  2s timeout.
+- Success removes the pending entry; the client's next retry forwards.
+  Failure (or a thrown error) marks the entry `reason: "auto_failed"` —
+  one attempt per entry, plus the per-model cooldown above; the operator
+  sees it in `uap models pending` like any other park.
+- Only a persisted, won-the-write-race entry schedules (the answer's
+  placement id must be the ledger's entry id, or a resolved pending would
+  have nothing to remove). A lost race or an unpersisted answer reports
+  the honest reason — never `auto_loading` for a run that will not
+  execute.
+- Unknown and unmeasured models never auto-load — there is nothing to
+  enforce. The park reasons `unknown_model` / `no_measured_config` stand.
+- If the controller dies mid-enforcement, the machine can be left with the
+  victim stopped and nothing loaded — the ledger self-heals (TTL, then
+  resync), the machine does not; recovery is manual (`uap models load`).
+  A durable enforcement queue is deliberately out of scope for one
+  operator's loopback dashboard; revisit only if controller death
+  mid-load is ever observed.
+
+Precedence note: the CONTROLLER's auto policy (this section) decides
+auto-loads; the proxy's `PROXY_PLACEMENT_MODE` never reaches the
+controller. An operator running `mode=ask` with the auto policy enabled
+gets auto-loads — the policy file is the single authority, and
+`uap models auto --disable` is the off switch.
 
 ### 4.5 Impact preview
 
@@ -1029,7 +1106,18 @@ TABLE to change CHECK constraints, so we must rebuild the table").
 | 1 | ledger, `models status`, `models pending`, cost math, preview | `off` |
 | 2 | proxy gate, `409` pending, dashboard state/pending, Models tab | `ask` |
 | 3 | enforcement: drain, stop, verify-free, start, verify-metrics, rollback; `apply`/`dismiss`/`load`/`unload`/`units` surfaces; `Conflicts=` drop-ins; the in-flight proxy endpoint | `ask` |
-| 4 | affinity-driven auto-load alongside; never displacement | `auto` |
+| 4 | auto mode: the controller auto-loads a parked, placeable request — alongside always; by displacement only for models the operator allowlisted (`uap models auto --allow-displace <model> --yes`). Never displacement by default. | `auto` |
+
+Phase 4's displacement allowlist extends the earlier "never displacement"
+wording deliberately, and the argument is the spec's own invariant: *never
+evict without explicit operator confirmation*. The allowlist IS that
+confirmation — standing, written deliberately under a `--yes` that prints
+what it consents to, auditable in `~/.uap/placement-auto.json`, and removable
+per model at any time. Displacement stays impossible without it; alongside
+auto-load is the only automatic path. (Recorded here because the phase table
+previously said "never displacement" flatly, and a reviewer should find the
+reasoning, not just the change. The decision record is
+`docs/architecture/adr/0007-auto-displacement-allowlist-as-standing-consent.md`.)
 
 Phase 0 is useful on its own: it turns the prose in five profile files into
 data `uap doctor` can act on. Nothing gates on the rest.

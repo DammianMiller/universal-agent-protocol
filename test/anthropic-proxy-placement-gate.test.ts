@@ -155,6 +155,81 @@ print(json.dumps(out))
     expect(out.pending_map).toBe(1);
   });
 
+  it('auto mode reasons: auto_loading tells the client to retry, auto_failed falls back to operator resolve', () => {
+    const out = runPython(GATE_PREAMBLE
+      .replace('__MODE__', 'ask')
+      .replace('__CONTROLLER__', '')
+      .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
+      + `
+loading = json.loads(_placement_park_response('qwen3.8-27b-iq3_s', 'plc-abc123', 'auto_loading').body)
+failed = json.loads(_placement_park_response('qwen3.8-27b-iq3_s', 'plc-def456', 'auto_failed').body)
+out = {
+    "loading_type": loading["error"]["type"],
+    "loading_reason": loading["error"]["reason"],
+    "loading_message": loading["error"]["message"],
+    "failed_reason": failed["error"]["reason"],
+    "failed_message": failed["error"]["message"],
+    "loading_retry": isinstance(loading["error"].get("retry_after_ms"), int),
+    "failed_retry": isinstance(failed["error"].get("retry_after_ms"), int),
+    "loading_resolve_with": loading["error"]["resolve_with"],
+    "failed_resolve_with": failed["error"]["resolve_with"],
+}
+print(json.dumps(out))
+`);
+    // The controller is loading the model itself: the client's retry IS the
+    // protocol — the message must not send the operator to `uap models pending`.
+    expect(out.loading_type).toBe('model_placement_pending');
+    expect(out.loading_reason).toBe('auto_loading');
+    expect(String(out.loading_message)).toContain('qwen3.8-27b-iq3_s');
+    expect(String(out.loading_message)).toContain('loaded automatically');
+    expect(String(out.loading_message)).toContain('when the load completes');
+    expect(String(out.loading_message)).not.toContain('uap models pending');
+    expect(out.loading_retry).toBe(true);
+    // resolve_with must not contradict the message: no `uap models apply`
+    // step mid-auto-load (applying by hand would race the background run);
+    // the only operator action is turning auto mode off.
+    expect(String(out.loading_resolve_with)).not.toContain('uap models apply');
+    expect(String(out.loading_resolve_with)).toContain('retry');
+    expect(String(out.loading_resolve_with)).toContain('uap models auto --disable');
+    // A failed auto attempt is back in the operator's hands.
+    expect(out.failed_reason).toBe('auto_failed');
+    expect(String(out.failed_message)).toContain('failed to load automatically');
+    expect(String(out.failed_message)).toContain('uap models pending');
+    expect(String(out.failed_message)).toContain('plc-def456');
+    expect(String(out.failed_resolve_with)).toContain('uap models apply');
+    expect(out.failed_retry).toBe(true);
+  });
+
+  it('auto-loading parks are MODEL-keyed: rotating the client-id header mints no fresh controller ask', () => {
+    // The client id header is client-supplied, so (client, model) is no
+    // brake against a fresh ask per request while the controller's
+    // background load runs. The model-only burst key collapses it.
+    const out = runPython(GATE_PREAMBLE
+      .replace('__MODE__', 'ask')
+      .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
+      .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
+      + `
+asks = []
+async def _placement_controller_admit(model_id, client_id, session_id):
+    asks.append([client_id, model_id])
+    return {"decision": "park", "reason": "auto_loading", "placement_id": "plc-abc123"}
+async def main():
+    r1 = await _placement_admit('Qwen3.8-27B', 'claude-code', 's1')
+    r2 = await _placement_admit('Qwen3.8-27B', 'rotated-attacker-id', 's2')
+    b1 = json.loads(r1.body)["error"]
+    b2 = json.loads(r2.body)["error"]
+    return {"asks": asks, "pid1": b1["placement_id"], "pid2": b2["placement_id"],
+            "reason2": b2["reason"]}
+print(json.dumps(asyncio.run(main())))
+`);
+    // Exactly ONE controller ask: the second (rotated id) re-parked from the
+    // model-only key without re-asking, with the SAME placement id.
+    expect(out.asks).toEqual([['claude-code', 'Qwen3.8-27B']]);
+    expect(out.pid1).toBe('plc-abc123');
+    expect(out.pid2).toBe('plc-abc123');
+    expect(out.reason2).toBe('auto_loading');
+  });
+
   it('ask mode dedupes (client, model) retries onto one placement_id', () => {
     const out = runPython(GATE_PREAMBLE
       .replace('__MODE__', 'ask')

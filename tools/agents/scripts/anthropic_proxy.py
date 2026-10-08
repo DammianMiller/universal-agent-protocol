@@ -1755,6 +1755,24 @@ async def _placement_controller_admit(
         return None
 
 
+_PLACEMENT_PARK_MESSAGES = {
+    # Auto mode (phase 4): the controller is loading the model itself — the
+    # client's retry IS the right action, no operator step exists.
+    "auto_loading": "model {wire_model} is being loaded automatically; retrying is correct and it will forward when the load completes",
+    "auto_failed": "model {wire_model} failed to load automatically; resolve with `uap models pending` (placement {placement_id})",
+}
+# resolve_with is display-only (no stability guarantee, spec §4.3), but it
+# must not offer an operator step that contradicts the message: for
+# auto_loading the protocol is "retry", and the only operator action is
+# turning auto mode OFF if the load is unwanted.
+_PLACEMENT_PARK_RESOLVE_WITH = {
+    "auto_loading": (
+        "wait for the automatic load (retrying forwards once it completes)"
+        "  |  uap models auto --disable to stop auto-loading"
+    ),
+}
+
+
 def _placement_park_response(wire_model: str, placement_id: str, reason: str) -> Response:
     """The 409 model_placement_pending body (spec §4.3, contract v1).
 
@@ -1763,10 +1781,13 @@ def _placement_park_response(wire_model: str, placement_id: str, reason: str) ->
     code it already has for API errors. `message` is the one field every
     Anthropic SDK surface renders to the human, so the operator instructions
     live there too. retry_after_ms is a re-poll FLOOR, not an expected
-    resolution time (resolution is operator-bound); the Retry-After header
-    carries the same floor for non-SDK tooling.
+    resolution time (resolution is operator-bound, except the auto_loading
+    case where the controller's background load bounds it); the Retry-After
+    header carries the same floor for non-SDK tooling.
     """
-    message = (
+    message = _PLACEMENT_PARK_MESSAGES.get(reason, "").format(
+        wire_model=wire_model, placement_id=placement_id
+    ) or (
         f"model {wire_model} is not loaded; resolve with `uap models pending` "
         f"(placement {placement_id})"
     )
@@ -1779,7 +1800,7 @@ def _placement_park_response(wire_model: str, placement_id: str, reason: str) ->
             "requested_model": wire_model,
             "reason": reason,
             "retry_after_ms": 2000,
-            "resolve_with": (
+            "resolve_with": _PLACEMENT_PARK_RESOLVE_WITH.get(reason) or (
                 "uap models pending  |  uap models apply <placement_id> <option>"
                 "  |  dashboard Models tab"
             ),
@@ -1825,6 +1846,17 @@ async def _placement_admit(
     if entry is not None and entry["expires_at"] > now:
         return _placement_park_response(
             wire_model, entry["placement_id"], entry.get("reason") or "not_resident"
+        )
+    # Auto-load dedupe is keyed on the MODEL alone: the client id header is
+    # client-supplied and rotatable, so (client, model) is no brake against
+    # minting a fresh controller ask per request while the controller's
+    # background load runs. Same short window — the point is collapsing a
+    # burst, not caching the park past the load (the controller dedupes
+    # runs per model and refuses duplicates).
+    auto_entry = _placement_pending.get(("__auto__", wire_model))
+    if auto_entry is not None and auto_entry["expires_at"] > now:
+        return _placement_park_response(
+            wire_model, auto_entry["placement_id"], auto_entry.get("reason") or "not_resident"
         )
 
     answer = await _placement_controller_admit(wire_model, client_id, session_id)
@@ -1886,6 +1918,16 @@ async def _placement_admit(
         "created_at": now,
         "expires_at": now + _PLACEMENT_BURST_DEDUPE_SECS,
     }
+    if reason == "auto_loading":
+        # Same entry under the model-only key (see the burst dedupe above):
+        # rotating the client-id header must not mint a fresh ask per
+        # request while the controller's background load runs.
+        _placement_pending[("__auto__", wire_model)] = {
+            "placement_id": placement_id,
+            "reason": reason,
+            "created_at": now,
+            "expires_at": now + _PLACEMENT_BURST_DEDUPE_SECS,
+        }
     # Opportunistic prune so a parked-and-abandoned model cannot grow the
     # map unboundedly (bounded in practice by distinct (client, model) pairs
     # in a 120s window, but cheap to keep tight).

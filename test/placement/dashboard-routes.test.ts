@@ -2,13 +2,16 @@
  * Dashboard placement read routes (spec §4.7) — the read-only half of
  * phase 2: state, pending, and preview against injected fixtures.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { getPlacementState, getPlacementPending, getPlacementPreview, getPlacementAdmit, PLACEMENT_PENDING_TTL_MS } from '../../src/dashboard/placement-routes.js';
 import { loadModelRegistry, type ModelRegistry } from '../../src/placement/registry.js';
+import type { PlacementOption } from '../../src/placement/admission.js';
+import type { EnforceResult } from '../../src/placement/enforce.js';
 import { withLedger, type PlacementLedger } from '../../src/placement/ledger.js';
+import { resetAutoSchedulerForTests } from '../../src/placement/auto.js';
 
 const registry: ModelRegistry = {
   version: 1,
@@ -132,6 +135,9 @@ describe('dashboard placement routes', () => {
 // ---------------------------------------------------------------------------
 
 describe('placement admit (proxy gate controller)', () => {
+  beforeEach(() => {
+    resetAutoSchedulerForTests(); // auto-run state must not leak across cases
+  });
   const loaded = () => ({
     registry,
     measuredFrom: new Map([['qwen3.8-flash-next/strata-iq3_s', 'repo']]),
@@ -249,5 +255,231 @@ describe('placement admit (proxy gate controller)', () => {
     // placement forwards on the next request; this 120s window only bounds
     // how long one operator prompt lives. Spec §4.3 pins the split.
     expect(PLACEMENT_PENDING_TTL_MS).toBe(120_000);
+  });
+
+  // -------------------------------------------------------------------------
+  // Auto-resolution (spec §4.4, phase 4): a parked, placeable request can
+  // load itself — alongside always, displacement only when allowlisted.
+  // -------------------------------------------------------------------------
+  const seededDevices = (ledgerPath: string, freeMib: number): void => {
+    // Full budget inputs: gpu total/reserved for the device gate AND a cpu
+    // device for the host-RSS gate (unknown host free refuses the option).
+    withLedger(ledgerPath, (l: PlacementLedger) => {
+      l.devices = {
+        gpu0: { kind: 'gpu', total_mib: 24576, free_mib: freeMib, reserved_mib: 1293, source: 'nvidia-smi' },
+        cpu0: { kind: 'cpu', free_mib: 100_000, reserved_mib: 8192, source: 'MemAvailable' },
+      };
+    });
+  };
+
+  it('auto DISABLED by default: a placeable park stays not_resident, nothing scheduled', () => {
+    const ledgerPath = freshLedger();
+    seededDevices(ledgerPath, 23_000); // room to load alongside
+    const enforced: string[] = [];
+    const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code' }, {
+      loaded: loaded(),
+      ledgerPath,
+      auto: {
+        policy: { enabled: false, allow_displace: [] },
+        enforce: async (_r: ModelRegistry, model: string) => {
+          enforced.push(model);
+          return { ok: true, steps: [] };
+        },
+      },
+    });
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('not_resident');
+    expect(enforced).toEqual([]);
+  });
+
+  it('auto enabled, room to load alongside: park auto_loading + background enforcement of the alongside option', async () => {
+    const ledgerPath = freshLedger();
+    seededDevices(ledgerPath, 23_000);
+    const enforced: Array<{ model: string; kind: string }> = [];
+    const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code' }, {
+      loaded: loaded(),
+      ledgerPath,
+      auto: {
+        policy: { enabled: true, allow_displace: [] },
+        enforce: async (_r: ModelRegistry, model: string, option: PlacementOption) => {
+          enforced.push({ model, kind: option.kind });
+          return { ok: true, steps: [] };
+        },
+      },
+    });
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('auto_loading');
+    expect(answer.placement_id).toMatch(/^plc-/);
+    await new Promise((r) => setTimeout(r, 20)); // let the background run finish
+    expect(enforced).toEqual([{ model: 'qwen3.8-flash-next-iq3_s', kind: 'load_alongside' }]);
+    // Success resolved the pending entry: the client's next retry forwards.
+    expect(getPlacementPending(ledgerPath)).toEqual([]);
+  });
+
+  it('displacement auto-loads ONLY for allowlisted models; otherwise it parks for the operator', async () => {
+    const ledgerPath = freshLedger();
+    // A two-model registry: 'victim-27b' is the measured resident holding the
+    // whole GPU; the requested flash-next is measured but not resident, so
+    // the only viable option is to displace the victim. One withLedger
+    // (nested ones self-deadlock on the advisory lock).
+    const twoModels: ModelRegistry = {
+      ...registry,
+      models: {
+        ...registry.models,
+        'victim-27b': {
+          display: 'Victim 27B',
+          engine: 'llama',
+          unit: 'uap-victim-server',
+          advertises: ['victim-27b-id'],
+          affinity: { device: ['gpu0'] },
+          configs: {
+            'llama-std': {
+              unit: 'uap-victim-server',
+              resident_gpu_mib: 21812,
+              host_rss_mib: 52857,
+              context_pool_cells: 131072,
+              kv_resident_cells: 32768,
+              kv_kind: 'int8',
+              measured_at: '2026-10-08T14:02:00Z',
+              measured_on: 'gpu0',
+            },
+          },
+        },
+      },
+    };
+    const loadedTwo = () => ({
+      registry: twoModels,
+      measuredFrom: new Map([
+        ['qwen3.8-flash-next/strata-iq3_s', 'repo'],
+        ['victim-27b/llama-std', 'repo'],
+      ]),
+      errors: [],
+    });
+    withLedger(ledgerPath, (l: PlacementLedger) => {
+      l.devices = {
+        gpu0: { kind: 'gpu', total_mib: 24576, free_mib: 1_000, reserved_mib: 1293, source: 'nvidia-smi' },
+        cpu0: { kind: 'cpu', free_mib: 100_000, reserved_mib: 8192, source: 'MemAvailable' },
+      };
+      l.residents.push({
+        model: 'victim-27b',
+        config: 'llama-std',
+        device: 'gpu0',
+        unit: 'uap-victim-server',
+        gpu_mib: 21812,
+        host_rss_mib: 52857,
+        state: 'hot',
+        holders: [],
+        since: new Date().toISOString(),
+      });
+    });
+    const enforced: Array<{ model: string; kind: string }> = [];
+    const auto = (allow: string[]) => ({
+      policy: { enabled: true, allow_displace: allow },
+      enforce: async (_r: ModelRegistry, model: string, option: PlacementOption) => {
+        enforced.push({ model, kind: option.kind });
+        return { ok: true, steps: [] };
+      },
+    });
+    // An unknown model can never auto-load (nothing to enforce).
+    const unknown = getPlacementAdmit(process.cwd(), { model_id: 'gpt-99', client: 'claude-code' }, {
+      loaded: loadedTwo(),
+      ledgerPath,
+      auto: auto([]),
+    });
+    expect(unknown.reason).toBe('unknown_model');
+    // Measured + displacement needed + NOT allowlisted → operator park.
+    const notAllowed = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'codex' }, {
+      loaded: loadedTwo(),
+      ledgerPath,
+      auto: auto(['some-other-model']),
+    });
+    expect(notAllowed.reason).toBe('not_resident');
+    expect(enforced).toEqual([]);
+    // Allowlisted (the model being LOADED is what's allowlisted) →
+    // auto_loading with the displace option.
+    const allowed = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'opencode' }, {
+      loaded: loadedTwo(),
+      ledgerPath,
+      auto: auto(['qwen3.8-flash-next']),
+    });
+    expect(allowed.reason).toBe('auto_loading');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(enforced).toEqual([{ model: 'qwen3.8-flash-next-iq3_s', kind: 'displace' }]);
+  });
+
+  it('retries of an auto_loading entry do not schedule a second run (the reason is kept)', async () => {
+    const ledgerPath = freshLedger();
+    seededDevices(ledgerPath, 23_000);
+    let calls = 0;
+    const enforce = async (): Promise<EnforceResult> => {
+      calls += 1;
+      await new Promise((r) => setTimeout(r, 30));
+      return { ok: true, steps: [] };
+    };
+    const first = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code' }, {
+      loaded: loaded(), ledgerPath, auto: { policy: { enabled: true, allow_displace: [] }, enforce },
+    });
+    expect(first.reason).toBe('auto_loading');
+    // The retry while the run is in flight: same placement id, same reason,
+    // and NO second run.
+    const retry = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code' }, {
+      loaded: loaded(), ledgerPath, auto: { policy: { enabled: true, allow_displace: [] }, enforce },
+    });
+    expect(retry.placement_id).toBe(first.placement_id);
+    expect(retry.reason).toBe('auto_loading');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(calls).toBe(1);
+    expect(getPlacementPending(ledgerPath)).toEqual([]);
+  });
+
+  it('client/session identity strings are TRUNCATED before persisting (a flood must not grow the ledger)', () => {
+    const ledgerPath = freshLedger();
+    const longClient = 'c'.repeat(300);
+    const longSession = 's'.repeat(300);
+    const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: longClient, session: longSession }, { loaded: loaded(), ledgerPath });
+    expect(answer.decision).toBe('park');
+    const pending = getPlacementPending(ledgerPath);
+    expect(pending[0].client?.length).toBe(128);
+    expect(pending[0].session?.length).toBe(128);
+    expect(pending[0].client).toBe('c'.repeat(128));
+  });
+
+  it('lock contention + nobody persisted: the reason does NOT promise an auto load that will never run', async () => {
+    const ledgerPath = freshLedger();
+    seededDevices(ledgerPath, 23_000); // room: autoPlan would exist
+    const enforced: string[] = [];
+    const { acquireLedgerLock, releaseLedgerLock } = await import('../../src/placement/ledger.js');
+    expect(acquireLedgerLock(ledgerPath)).toBe(true);
+    try {
+      const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code' }, {
+        loaded: loaded(),
+        ledgerPath,
+        auto: {
+          policy: { enabled: true, allow_displace: [] },
+          enforce: async (_r: ModelRegistry, model: string) => {
+            enforced.push(model);
+            return { ok: true, steps: [] };
+          },
+        },
+      });
+      expect(answer.decision).toBe('park');
+      // The entry was never persisted, so no run will execute for this id —
+      // the honest reason is not_resident, never auto_loading.
+      expect(answer.reason).toBe('not_resident');
+      expect(enforced).toEqual([]);
+    } finally {
+      releaseLedgerLock(ledgerPath);
+    }
+  });
+
+  it('production wiring pin: the dashboard admit route injects NO auto opts (defaults resolve the real policy + enforcement)', () => {
+    // The route at src/dashboard/server.ts is the production caller; if a
+    // refactor starts passing its own auto opts, the default-opts path
+    // these tests rely on no longer matches production.
+    const serverSrc = readFileSync(join(process.cwd(), 'src', 'dashboard', 'server.ts'), 'utf-8');
+    const call = serverSrc.slice(serverSrc.indexOf('getPlacementAdmit(cwd'));
+    const callArgs = call.slice(0, call.indexOf(');'));
+    expect(callArgs).toContain('model_id');
+    expect(callArgs).not.toContain('auto');
   });
 });

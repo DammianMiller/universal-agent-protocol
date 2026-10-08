@@ -742,6 +742,27 @@ program
         const code = await (await lazy.models())('units', options);
         if (code) process.exitCode = code;
       }),
+  )
+  .addCommand(
+    new Command('auto')
+      .description('Auto-load policy: load-alongside always; displacement only for allowlisted models (request-driven, no manual apply). Off until --enable.')
+      .option('--enable', 'enable auto-load')
+      .option('--disable', 'disable auto-load; every park needs a manual apply again')
+      .option('--allow-displace <models>', 'comma-separated registry model keys whose displacement may auto-enforce')
+      .option('--disallow-displace <models>', 'comma-separated registry model keys to remove from the displacement allowlist')
+      .option('--yes', 'required with --allow-displace: the standing consent being recorded')
+      .option('--policy-path <path>', 'explicit policy file path (testing only: the controller reads ~/.uap/placement-auto.json or UAP_PLACEMENT_AUTO)')
+      .action(async (options) => {
+        const code = await (await lazy.models())('auto', {
+          enable: options.enable === true,
+          disable: options.disable === true,
+          allowDisplace: options.allowDisplace,
+          disallowDisplace: options.disallowDisplace,
+          yes: options.yes === true,
+          policyPath: options.policyPath,
+        });
+        if (code) process.exitCode = code;
+      }),
   );
 
 // Quality-metrics gate — complexity/coverage/mutation policing with a ratchet
