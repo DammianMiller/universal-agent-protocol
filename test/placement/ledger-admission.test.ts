@@ -9,6 +9,7 @@ import {
   deriveLiveResidents,
   loadLedger,
   probeDeviceStates,
+  syncLedger,
   withLedger,
   placementLedgerPath,
   emptyLedger,
@@ -141,6 +142,24 @@ describe('placement ledger', () => {
     const path = join(freshDir(), 'placement.json');
     writeFileSync(path, '{ this is not json');
     expect(loadLedger(path)).toEqual(emptyLedger());
+  });
+
+  it('syncLedger PRESERVES draining markers: a concurrent status read never re-opens admission mid-drain', () => {
+    const reg: ModelRegistry = JSON.parse(JSON.stringify(registry));
+    const path = join(freshDir(), 'placement.json');
+    // An enforcement marked the strata resident draining; its drain window
+    // can outlast a concurrent `models status` / dashboard auto-refresh.
+    withLedger(path, (l) => {
+      const r = deriveLiveResidents(reg, () => true)[0];
+      l.residents = [{ ...r, state: 'draining' }];
+    });
+    const synced = syncLedger(reg, path, () => true);
+    const strata = synced.residents.find((r) => r.model === 'qwen3.8-flash-next');
+    expect(strata?.state).toBe('draining'); // NOT reset to hot by the rebuild
+    // But draining never RESURRECTS a dead unit: the unit stopped, the
+    // resident is gone.
+    const after = syncLedger(reg, path, () => false);
+    expect(after.residents).toEqual([]);
   });
 
   it('probeDeviceStates maps gpuN → nvidia-smi index N and cpu → MemAvailable', () => {
@@ -297,7 +316,7 @@ describe('preview', () => {
     expect(previews[0].frees_gpu_mib).toBe(21812);
     expect(previews[0].reload_cost_mib).toBe(21812);
     expect(previews[0].inflight).toBe('unknown');
-    expect(previews[0].consequence).toMatch(/in-flight unknown/);
+    expect(previews[0].consequence).toMatch(/in-flight view unavailable from the proxy/);
   });
 
   it('enforcement aborts when the re-derived victim set differs from the approved one', () => {

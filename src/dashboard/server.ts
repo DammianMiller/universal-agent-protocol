@@ -14,6 +14,7 @@ import { join, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { getDashboardData, probeDatabaseHealth } from './data-service.js';
 import { getPlacementState, getPlacementPending, getPlacementPreview, getPlacementAdmit } from './placement-routes.js';
+import { resolvePendingPlacement, dismissPendingPlacement, loadPlacement, unloadPlacement } from '../placement/enforce.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { heuristicOrder, buildOrderPrompt, parseOrderResponse, type OrderablePolicy } from '../policies/policy-order.js';
@@ -869,7 +870,7 @@ function parseJsonBody(body: string): Record<string, unknown> {
   }
 }
 
-const CONTROL_PREFIXES = ['/api/tasks', '/api/ledger', '/api/orchestrator', '/api/agents', '/api/deliver'];
+const CONTROL_PREFIXES = ['/api/tasks', '/api/ledger', '/api/orchestrator', '/api/agents', '/api/deliver', '/api/placement'];
 
 async function routeControl(url: string, cwd: string, body: Record<string, unknown>): Promise<unknown> {
   const seg = url.split('/').filter(Boolean); // ['api','tasks','<id>','update']
@@ -891,5 +892,51 @@ async function routeControl(url: string, cwd: string, body: Record<string, unkno
   if (url === '/api/deliver/launch') return handleDeliverLaunch(cwd, body);
   if (seg[1] === 'deliver' && seg.length === 4 && seg[3] === 'cancel') return handleDeliverCancel(cwd, dec(seg[2]));
   if (seg[1] === 'deliver' && seg.length === 4 && seg[3] === 'resume') return handleDeliverResume(cwd, dec(seg[2]));
+  // Placement mutations (spec §4.7): token-gated like every control route.
+  // The result object is returned whole (200) even on ok:false — the steps
+  // and rollback detail are the operator's evidence, not an error string.
+  if (url === '/api/placement/resolve') return handlePlacementResolve(cwd, body);
+  if (url === '/api/placement/dismiss') return handlePlacementDismiss(body);
+  if (url === '/api/placement/load') return handlePlacementLoad(cwd, body);
+  if (url === '/api/placement/unload') return handlePlacementUnload(cwd, body);
   return undefined;
+}
+
+async function handlePlacementResolve(cwd: string, body: Record<string, unknown>): Promise<unknown> {
+  const placementId = typeof body.placement_id === 'string' ? body.placement_id : '';
+  const option = Number(body.option);
+  if (!placementId) throw new Error('placement_id is required');
+  if (!Number.isInteger(option) || option < 1) throw new Error('option must be a 1-based index (as `uap models pending` prints them)');
+  // Approval signature (spec §4.5): the dashboard UI sends the victim list
+  // the operator actually SAW in the preview; enforcement refuses if the
+  // recomputed option's victims differ.
+  const expectedVictims = Array.isArray(body.expected_victims)
+    ? body.expected_victims
+        .filter(
+          (v): v is { model: string; config: string } =>
+            typeof v === 'object' && v !== null &&
+            typeof (v as { model?: unknown }).model === 'string' &&
+            typeof (v as { config?: unknown }).config === 'string',
+        )
+        .map((v) => ({ model: v.model, config: v.config }))
+    : undefined;
+  return resolvePendingPlacement(cwd, placementId, option, expectedVictims ? { expectedVictims } : {});
+}
+
+function handlePlacementDismiss(body: Record<string, unknown>): unknown {
+  const placementId = typeof body.placement_id === 'string' ? body.placement_id : '';
+  if (!placementId) throw new Error('placement_id is required');
+  return dismissPendingPlacement(placementId);
+}
+
+async function handlePlacementLoad(cwd: string, body: Record<string, unknown>): Promise<unknown> {
+  const model = typeof body.model === 'string' ? body.model : '';
+  if (!model) throw new Error('model is required');
+  return loadPlacement(cwd, model);
+}
+
+async function handlePlacementUnload(cwd: string, body: Record<string, unknown>): Promise<unknown> {
+  const model = typeof body.model === 'string' ? body.model : '';
+  if (!model) throw new Error('model is required');
+  return unloadPlacement(cwd, model);
 }

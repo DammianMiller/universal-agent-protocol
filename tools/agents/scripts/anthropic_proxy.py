@@ -1756,17 +1756,25 @@ async def _placement_controller_admit(
 
 
 def _placement_park_response(wire_model: str, placement_id: str, reason: str) -> Response:
-    """The 409 model_placement_pending body (spec §4.3).
+    """The 409 model_placement_pending body (spec §4.3, contract v1).
 
     Anthropic error-body shape (top-level type:"error") so every gated
     client — Claude Code, Codex, OpenCode, UAP agents — parses it with the
-    code it already has for API errors. retry_after_ms matches Claude
-    Code's Retry-After pacing; resolve_with names the two operator paths.
+    code it already has for API errors. `message` is the one field every
+    Anthropic SDK surface renders to the human, so the operator instructions
+    live there too. retry_after_ms is a re-poll FLOOR, not an expected
+    resolution time (resolution is operator-bound); the Retry-After header
+    carries the same floor for non-SDK tooling.
     """
+    message = (
+        f"model {wire_model} is not loaded; resolve with `uap models pending` "
+        f"(placement {placement_id})"
+    )
     body = {
         "type": "error",
         "error": {
             "type": "model_placement_pending",
+            "message": message,
             "placement_id": placement_id,
             "requested_model": wire_model,
             "reason": reason,
@@ -1781,6 +1789,7 @@ def _placement_park_response(wire_model: str, placement_id: str, reason: str) ->
         content=json.dumps(body),
         status_code=409,
         media_type="application/json",
+        headers={"Retry-After": "2"},
     )
 
 
@@ -1855,9 +1864,11 @@ async def _placement_admit(
     else:
         # Read-only admission (no controller, or it did not answer):
         # "already loaded" is answerable from the upstream's advertised ids
-        # (same cache _reconcile_wire_model used), anything else parks —
-        # there is no loading path without a controller, so parking is the
-        # only honest answer.
+        # (same cache _reconcile_wire_model used), anything else parks with
+        # reason no_controller — a different operator action than
+        # not_resident ("load it"): the dashboard/controller is down or
+        # unconfigured, so the resolution is "start it / set
+        # PROXY_PLACEMENT_CONTROLLER", not a placement decision.
         ids = await _upstream_model_ids_cached()
         if ids is None or wire_model in ids:
             # No knowledge, or the upstream DOES serve it: forward. Failing
@@ -1865,7 +1876,7 @@ async def _placement_admit(
             # during every backend blip — the same fail-open direction
             # _reconcile_wire_model already takes with this same cache.
             return None
-        reason = "not_resident"
+        reason = "no_controller"
 
     if placement_id is None:
         placement_id = f"plc-{uuid.uuid4().hex[:6]}"
@@ -5018,8 +5029,9 @@ if PROXY_PLACEMENT_MODE not in ("off", "ask", "auto"):
 # Loopback URL of the dashboard-hosted placement controller (emitted by
 # `uap setup` into .uap/proxy.env as PROXY_PLACEMENT_CONTROLLER). Empty →
 # read-only admission: the proxy answers "already loaded" from its own
-# upstream-id cache but cannot ask for a load, so non-resident models park
-# with reason not_resident.
+# upstream-id cache but cannot ask for a load, so unserved models park
+# with reason no_controller (the resolution is "start the dashboard / set
+# the controller URL", not a placement decision).
 PROXY_PLACEMENT_CONTROLLER = os.environ.get("PROXY_PLACEMENT_CONTROLLER", "").strip()
 # Bounded hold before the 409 (seconds), for clients that cannot retry on
 # their own — a parked request waits up to this long for the operator to
@@ -5055,6 +5067,125 @@ _current_placement_target: contextvars.ContextVar[str | None] = (
 # Proxy-side dedupe only; ledger pending entries are the controller's to
 # write (it owns the atomic ledger write under the advisory lock).
 _placement_pending: dict[tuple[str, str], dict] = {}
+# Live in-flight requests per placement target, keyed by the same target id
+# as the semaphore budget: what drain (spec §4.6 step 2) waits on. Entries
+# are registered in DisconnectAwareClient.send — THE choke point (the
+# placement code first guarded _post_with_retry and a live smoke went
+# through a guardrail path that posts directly; the disconnect watcher hit
+# the same trap and documents it) — so the list is exact for EVERY call
+# site, not sampled. Served loopback-only at /internal/placement/inflight
+# so the TS enforcement step can wait for a resident's generations to
+# finish before stopping its unit.
+_placement_inflight: dict[str, list[dict]] = {}
+
+
+def _placement_inflight_register(request: httpx.Request) -> tuple[str | None, dict | None]:
+    """Append the in-flight entry for a GENERATION call, or (None, None).
+
+    Generation calls only: a POST to a *completions path. Probes (GET
+    /slots, /health, /v1/models), the controller admit POST, and loopback
+    refreshes stay out of the list — the drain view answers "is a resident
+    generating", not "is the proxy talking".
+    """
+    path = request.url.path
+    if request.method != "POST" or not (
+        path.endswith("/chat/completions") or path.endswith("/completions")
+    ):
+        return None, None
+    target = _current_placement_target.get() or "default"
+    entry = {
+        # Identity-based removal: two concurrent identical requests produce
+        # equal dicts (same client/session/second) — without a unique id,
+        # entries.remove() deletes the TWIN and the second removal lands in
+        # the ValueError catch, correct only by a non-local invariant.
+        "id": str(uuid.uuid4()),
+        "client": _current_request_client.get(),
+        "session": _current_request_session.get(),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _placement_inflight.setdefault(target, []).append(entry)
+    return target, entry
+
+
+def _placement_inflight_remove(target: str | None, entry: dict | None) -> None:
+    """Remove an in-flight entry, KEEPING the (now empty) target list.
+
+    An empty list is the honest "target known, nothing in flight" — the
+    difference between "session idle" and "no data" the §4.5 preview table
+    turns into a consequence row. The map's keys are bounded by the number
+    of placement targets (a handful of devices), and lifespan teardown
+    clears it wholesale.
+    """
+    if target is None or entry is None:
+        return
+    entries = _placement_inflight.get(target)
+    if entries is None:
+        return
+    try:
+        entries.remove(entry)
+    except ValueError:  # already gone (teardown cleared the map)
+        pass
+
+
+def _placement_inflight_hold_stream(resp, target: str, entry: dict) -> None:
+    """Tie an in-flight entry's removal to a STREAMING response's end.
+
+    send(stream=True) returns when HEADERS arrive; generation continues in
+    the relay loop's aiter_lines for the whole stream. Removing at send()'s
+    finally would report the target idle while tokens are still being
+    generated — and a drain acting on that view hard-kills the active
+    stream, the exact harm §4.6 step 2 exists to prevent. The relay closes
+    its response when it finishes (directly or via _detach_aclose), and a
+    full read exhausts it, so the response's own close/read methods are
+    where removal belongs. Each hook is idempotent: the first to fire wins.
+    """
+    removed: list[bool] = []
+
+    def _remove_once() -> None:
+        if not removed:
+            removed.append(True)
+            _placement_inflight_remove(target, entry)
+
+    orig_close = resp.close
+    orig_aclose = resp.aclose
+    orig_read = resp.read
+    orig_aread = resp.aread
+
+    def close():
+        try:
+            return orig_close()
+        finally:
+            _remove_once()
+
+    async def aclose():
+        try:
+            return await orig_aclose()
+        finally:
+            _remove_once()
+
+    def read():
+        try:
+            return orig_read()
+        finally:
+            _remove_once()
+
+    async def aread():
+        try:
+            return await orig_aread()
+        finally:
+            _remove_once()
+
+    resp.close = close  # type: ignore[method-assign]
+    resp.aclose = aclose  # type: ignore[method-assign]
+    resp.read = read  # type: ignore[method-assign]
+    resp.aread = aread  # type: ignore[method-assign]
+
+
+# Client identity for the in-flight view; set in messages() alongside
+# _current_request_session.
+_current_request_client: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "uap_current_request_client", default=None
+)
 # A controller-supplied target id must look like device:endpoint (the shape
 # the controller composes from the ledger resident: "gpu0:http://…/v1").
 # Anything else — a nonce, a session id, a timestamp — would mint a NEW
@@ -5600,6 +5731,10 @@ async def _post_with_retry(
             f"(limit={PROXY_CONCURRENCY_LIMIT})",
             request=None,
         )
+    # In-flight view (spec §4.6 step 2): registered one level down, in
+    # DisconnectAwareClient.send — the choke point every call site shares
+    # (this function is only ONE of several paths to the model; guardrail
+    # and recipe passes post directly).
     try:
         # Inside the serialized section: swap the upstream slot's KV state to
         # this request's session if needed (no-op when disabled or unchanged).
@@ -5616,14 +5751,18 @@ PROXY_DISCONNECT_POLL_SECS = max(
 
 
 class DisconnectAwareClient(httpx.AsyncClient):
-    """An httpx client that abandons a call when the caller hangs up.
+    """An httpx client with two per-send responsibilities.
 
-    THE CHOKE POINT. The previous attempt guarded ONE call site and claimed to
-    cover them all; there are fourteen, and the guardrail loops that caused the
-    incident call the model directly rather than through _post_with_retry. So
-    the check belongs where it cannot be missed: every high-level httpx method —
-    post(), stream(), request() — funnels through send(), so overriding send()
-    covers all of them, including any added later.
+    1. Abandons a call when the caller hangs up.
+    2. Accounts the call in the placement in-flight view (spec §4.6 step 2).
+
+    THE CHOKE POINT (true for both). The previous attempt guarded ONE call site
+    and claimed to cover them all; there are fourteen, and the guardrail loops
+    that caused the incident call the model directly rather than through
+    _post_with_retry. The in-flight registration repeated exactly that mistake
+    (a live smoke caught an empty view mid-generation) before moving here. Every
+    high-level httpx method — post(), stream(), request() — funnels through
+    send(), so overriding send() covers all of them, including any added later.
 
     Cancelling matters rather than merely returning: closing the connection is
     what makes llama.cpp release the slot (verified against the running server —
@@ -5631,34 +5770,57 @@ class DisconnectAwareClient(httpx.AsyncClient):
     cancelling would leave the model generating exactly as before.
 
     No probe (background task, health check, tests) means a plain send,
-    unwatched. Streaming sends are covered for their header phase; a body being
-    written to a vanished client fails on write anyway.
+    unwatched and unregistered (the register helper admits only generation
+    POSTs). Streaming sends are covered for their header phase by the
+    disconnect watch; the in-flight entry lives until the response's
+    close/read (a body being written to a vanished client fails on write
+    anyway).
     """
 
     async def send(self, request, **kwargs):  # type: ignore[override]
-        holder = _disconnect_holder.get()
-        if holder is None:
-            return await super().send(request, **kwargs)
-
-        task = asyncio.ensure_future(super().send(request, **kwargs))
+        # In-flight view (spec §4.6 step 2): registered HERE, at the choke
+        # point, for the actual upstream lifetime — every generation call
+        # (guarded, retried, streamed, or posted directly by a guardrail
+        # pass) funnels through send(), while _post_with_retry covers only
+        # some of them. NON-streaming: removed in the finally below, when
+        # send() returns with the body complete. STREAMING: send() returns
+        # at HEADERS while generation continues in the relay loop, so
+        # removal is handed to the response itself (close/read) via
+        # _placement_inflight_hold_stream — the drain view must stay true
+        # for the whole stream, or a drain stops a live generation.
+        _inflight_target, _inflight_entry = _placement_inflight_register(request)
         try:
-            while True:
-                done, _pending = await asyncio.wait(
-                    {task}, timeout=PROXY_DISCONNECT_POLL_SECS
-                )
-                if task in done:
-                    return task.result()
-                if await _client_gone():
-                    task.cancel()
-                    try:
-                        await task
-                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                        pass  # cancellation is the point; the connection is closed
-                    raise ClientGoneError("client disconnected mid-generation")
+            holder = _disconnect_holder.get()
+            if holder is None:
+                resp = await super().send(request, **kwargs)
+            else:
+                task = asyncio.ensure_future(super().send(request, **kwargs))
+                try:
+                    while True:
+                        done, _pending = await asyncio.wait(
+                            {task}, timeout=PROXY_DISCONNECT_POLL_SECS
+                        )
+                        if task in done:
+                            resp = task.result()
+                            break
+                        if await _client_gone():
+                            task.cancel()
+                            try:
+                                await task
+                            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                                pass  # cancellation is the point; the connection is closed
+                            raise ClientGoneError("client disconnected mid-generation")
+                finally:
+                    # Never leave an upstream call running once we stop waiting on it.
+                    if not task.done():
+                        task.cancel()
+            if _inflight_entry is not None and kwargs.get("stream"):
+                _placement_inflight_hold_stream(resp, _inflight_target, _inflight_entry)
+                _inflight_entry = None  # the response owns removal now
+            return resp
         finally:
-            # Never leave an upstream call running once we stop waiting on it.
-            if not task.done():
-                task.cancel()
+            if _inflight_entry is not None:
+                _placement_inflight_remove(_inflight_target, _inflight_entry)
 
 
 async def _send_stream_with_retry(
@@ -5969,6 +6131,7 @@ async def lifespan(app: FastAPI):
         upstream_semaphore = None
     _upstream_semaphores.clear()
     _placement_pending.clear()
+    _placement_inflight.clear()
     _admission_cond = None
     _admitted_sessions.clear()
     logger.info("Proxy shut down")
@@ -15111,6 +15274,9 @@ async def messages(request: Request):
     # single set covers both the Anthropic and OpenAI-passthrough entry
     # points for local llama-server requests.
     _current_request_session.set(session_id)
+    # Client identity for the in-flight view (drain) and future holder
+    # attribution; same contextvar pattern, set once at request entry.
+    _current_request_client.set(client_id)
 
     profile_prompt_suffix = None
     profile_grammar = None
@@ -16168,7 +16334,9 @@ async def _guarded_openai_completion(
         except (ValueError, TypeError):
             parked_err = {}
         if isinstance(parked_err, dict) and parked_err.get("type") == "model_placement_pending":
-            return None, 409, (
+            # Prefer the structured body's message (correct copy per reason —
+            # unknown_model is not "not loaded") over re-deriving one here.
+            return None, 409, parked_err.get("message") or (
                 f"model placement pending: {parked_err.get('requested_model')} is "
                 f"not loaded; resolve with `uap models pending` "
                 f"(placement {parked_err.get('placement_id')})"
@@ -17141,6 +17309,28 @@ async def internal_placement_refresh(request: Request):
         )
     cleared = invalidate_upstream_caches()
     return {"ok": True, "cleared": cleared}
+
+
+@app.get("/internal/placement/inflight")
+async def internal_placement_inflight(request: Request):
+    """Live in-flight requests per placement target (spec §4.6 step 2).
+
+    Loopback-only, like /internal/placement/refresh, and token-gated on a
+    shared bind like every other non-open route. The drain reads THIS, not
+    unit state: a resident unit can be 'active' with no live generation
+    (safe to stop now) while another has one long generation still running
+    (must wait). Keyed by the same target id the admission gate set.
+    """
+    peer = request.client.host if request.client else ""
+    if peer not in ("127.0.0.1", "::1", "::ffff:127.0.0.1", ""):
+        return Response(
+            content=json.dumps({"error": "loopback only"}),
+            status_code=403,
+            media_type="application/json",
+        )
+    return {
+        "targets": {k: list(v) for k, v in _placement_inflight.items()},
+    }
 
 
 @app.get("/v1/context")

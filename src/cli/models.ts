@@ -8,7 +8,17 @@
  *              unverifiable.
  *   status   — sync + print the placement ledger: devices (probe fact),
  *              residents, headroom.
- *   pending  — list parked placement requests awaiting the operator.
+ *   pending  — list parked placement requests awaiting the operator, with
+ *              ranked options (1-based, what `apply` takes).
+ *   apply    — the explicit operator yes: prints the impact list first,
+ *              then enforces (drain → stop → verify-free → start → verify
+ *              → refresh), rolling back on any failure. --yes required.
+ *   dismiss  — refuse a parked request; the client falls back on expiry.
+ *   load     — operator-initiated load; reuse/load-alongside only, never
+ *              displacement (displacement needs the pending path).
+ *   unload   — drain, stop, verify-free, refresh for a model's residents.
+ *   units    — write Conflicts= drop-ins for same-device units (systemd
+ *              itself then refuses two same-device residents).
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
@@ -33,9 +43,21 @@ import {
 import {
   loadLedger,
   placementLedgerPath,
+  residentTargetId,
   syncLedger,
+  type LedgerResident,
   type PlacementLedger,
 } from '../placement/ledger.js';
+import { computeOptions } from '../placement/admission.js';
+import { buildVictimPreviews } from '../placement/preview.js';
+import {
+  resolvePendingPlacement,
+  dismissPendingPlacement,
+  loadPlacement,
+  unloadPlacement,
+  writePlacementUnitDropins,
+  fetchProxyInflight,
+} from '../placement/enforce.js';
 import { loadPolicy } from '../capacity/probe.js';
 import { looksLikeStrataMetrics, parseStrataEngine } from '../inference/strata.js';
 
@@ -332,12 +354,14 @@ export async function modelsStatusCommand(opts: ModelsStatusOptions = {}): Promi
 }
 
 export async function modelsPendingCommand(opts: ModelsStatusOptions = {}): Promise<number> {
+  const projectDir = opts.projectDir ?? process.cwd();
   const ledgerPath = opts.ledgerPath ?? placementLedgerPath();
   const ledger = loadLedger(ledgerPath);
   if (ledger.pending.length === 0) {
     console.log('no pending placement requests');
     return 0;
   }
+  const loaded = loadModelRegistry(projectDir, { repoPath: opts.repoPath, localPath: opts.localPath });
   const now = Date.now();
   for (const p of ledger.pending) {
     const expires = new Date(p.expires_at).getTime();
@@ -345,7 +369,145 @@ export async function modelsPendingCommand(opts: ModelsStatusOptions = {}): Prom
     console.log(`  client ${p.client ?? '?'}${p.session ? `, session ${p.session}` : ''}${p.pid ? `, pid ${p.pid}` : ''}`);
     console.log(`  parked ${p.created_at}, expires ${p.expires_at} (${expires > now ? `${Math.round((expires - now) / 1000)}s left` : 'EXPIRED'})`);
     console.log(`  reason: ${p.reason ?? 'parked'}`);
+    const options = computeOptions(loaded.registry, ledger, p.requested_model).options;
+    if (options.length === 0) {
+      console.log('  no viable option (unmeasured, unknown cost, or nothing fits)');
+    }
+    options.forEach((o, i) => {
+      const victims = o.victims ?? [];
+      const impact = victims.length
+        ? ` — displaces ${victims.map((v) => `${v.model}/${v.config}`).join(', ')}`
+        : '';
+      console.log(`  option ${i + 1}: ${o.kind} ${o.model}/${o.config} on ${o.device}${impact}`);
+    });
   }
+  console.log('');
+  console.log('resolve: uap models apply <id> <option> --yes   |   refuse: uap models dismiss <id>');
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// apply / dismiss / load / unload / units — the operator's mutation surface
+// ---------------------------------------------------------------------------
+
+export interface ModelsApplyOptions extends ModelsStatusOptions {
+  placementId?: string;
+  option?: number;
+  yes?: boolean;
+}
+
+export async function modelsApplyCommand(opts: ModelsApplyOptions = {}): Promise<number> {
+  const projectDir = opts.projectDir ?? process.cwd();
+  const placementId = opts.placementId ?? '';
+  const option = Number(opts.option);
+  if (!placementId || !Number.isInteger(option) || option < 1) {
+    console.error('usage: uap models apply <placement-id> <option> [--yes]');
+    return 1;
+  }
+  const ledgerPath = opts.ledgerPath ?? placementLedgerPath();
+  const pending = loadLedger(ledgerPath).pending.find((p) => p.id === placementId);
+  if (!pending) {
+    console.error(`no pending placement ${placementId} (run: uap models pending)`);
+    return 1;
+  }
+  const loaded = loadModelRegistry(projectDir, { repoPath: opts.repoPath, localPath: opts.localPath });
+  const options = computeOptions(loaded.registry, loadLedger(ledgerPath), pending.requested_model).options;
+  const approved = options[option - 1];
+  if (!approved) {
+    console.error(`option ${option} does not exist (1-${options.length})`);
+    return 1;
+  }
+  // Print the impact list first (spec §4.7): the operator approves KNOWING
+  // what is killed. In-flight is the proxy's live view when it answers;
+  // otherwise the honest `unknown`.
+  if (approved.victims?.length) {
+    const inflightMap = await fetchProxyInflight();
+    const inflightOf = (victim: LedgerResident): boolean | 'unknown' => {
+      if (inflightMap === null) return 'unknown';
+      const entries = inflightMap.get(residentTargetId(victim));
+      return entries !== undefined ? entries.length > 0 : 'unknown';
+    };
+    console.log('impact:');
+    for (const v of buildVictimPreviews(loaded.registry, approved.victims, inflightOf)) {
+      console.log(`  ${v.model}/${v.config} on ${v.device}: ${v.consequence} (frees ${v.frees_gpu_mib} MiB GPU)`);
+    }
+  } else {
+    console.log(`impact: none (${approved.kind} ${approved.model}/${approved.config})`);
+  }
+  if (!opts.yes) {
+    console.log('');
+    console.log(`confirm: uap models apply ${placementId} ${option} --yes`);
+    return 1;
+  }
+  // The approval signature: what is enforced must be exactly what the
+  // impact list above showed (a recomputed drift between print and enforce
+  // refuses instead of displacing a set the operator never saw).
+  const result = await resolvePendingPlacement(projectDir, placementId, option, {
+    ledgerPath,
+    expectedVictims: (approved.victims ?? []).map((v) => ({ model: v.model, config: v.config })),
+  });
+  for (const s of result.steps) console.log(`${s.ok ? 'ok  ' : 'FAIL'} ${s.name}${s.detail ? ` — ${s.detail}` : ''}`);
+  if (!result.ok) {
+    console.error(`enforcement failed${result.rolledBack ? ' (rolled back)' : ''}: ${result.error}`);
+    return 1;
+  }
+  console.log('placement applied; the parked client is served on its next retry');
+  return 0;
+}
+
+export async function modelsDismissCommand(opts: { placementId?: string; ledgerPath?: string } = {}): Promise<number> {
+  const placementId = opts.placementId ?? '';
+  if (!placementId) {
+    console.error('usage: uap models dismiss <placement-id>');
+    return 1;
+  }
+  const { dismissed } = dismissPendingPlacement(placementId, { ledgerPath: opts.ledgerPath });
+  console.log(dismissed ? `dismissed ${placementId}; the client falls back on its next retry` : `no pending placement ${placementId}`);
+  return dismissed ? 0 : 1;
+}
+
+export async function modelsLoadCommand(opts: { model?: string } & ModelsStatusOptions = {}): Promise<number> {
+  const projectDir = opts.projectDir ?? process.cwd();
+  const model = opts.model ?? '';
+  if (!model) {
+    console.error('usage: uap models load <model-key>');
+    return 1;
+  }
+  const result = await loadPlacement(projectDir, model, { ledgerPath: opts.ledgerPath });
+  for (const s of result.steps) console.log(`${s.ok ? 'ok  ' : 'FAIL'} ${s.name}${s.detail ? ` — ${s.detail}` : ''}`);
+  if (!result.ok) {
+    console.error(result.error);
+    return 1;
+  }
+  return 0;
+}
+
+export async function modelsUnloadCommand(opts: { model?: string } & ModelsStatusOptions = {}): Promise<number> {
+  const projectDir = opts.projectDir ?? process.cwd();
+  const model = opts.model ?? '';
+  if (!model) {
+    console.error('usage: uap models unload <model-key>');
+    return 1;
+  }
+  const result = await unloadPlacement(projectDir, model, { ledgerPath: opts.ledgerPath });
+  for (const s of result.steps) console.log(`${s.ok ? 'ok  ' : 'FAIL'} ${s.name}${s.detail ? ` — ${s.detail}` : ''}`);
+  if (!result.ok) {
+    console.error(result.error);
+    return 1;
+  }
+  return 0;
+}
+
+export async function modelsUnitsCommand(opts: ModelsStatusOptions = {}): Promise<number> {
+  const projectDir = opts.projectDir ?? process.cwd();
+  const loaded = loadModelRegistry(projectDir, { repoPath: opts.repoPath, localPath: opts.localPath });
+  const { written, dir } = writePlacementUnitDropins(loaded.registry);
+  if (written.length === 0) {
+    console.log('no same-device unit pairs in the registry; nothing to write');
+    return 0;
+  }
+  for (const w of written) console.log(`wrote ${w}`);
+  console.log(`(Conflicts= drop-ins in ${dir}; the operator's unit files are untouched)`);
   return 0;
 }
 
@@ -353,11 +515,25 @@ export async function modelsPendingCommand(opts: ModelsStatusOptions = {}): Prom
 // dispatcher
 // ---------------------------------------------------------------------------
 
-export type ModelsAction = 'validate' | 'measure' | 'status' | 'pending';
+export type ModelsAction =
+  | 'validate'
+  | 'measure'
+  | 'status'
+  | 'pending'
+  | 'apply'
+  | 'dismiss'
+  | 'load'
+  | 'unload'
+  | 'units';
 
 export async function modelsCommand(action: ModelsAction, opts: Record<string, unknown>): Promise<number> {
   if (action === 'validate') return modelsValidateCommand(opts as ModelsValidateOptions);
   if (action === 'measure') return modelsMeasureCommand(opts as ModelsMeasureOptions);
   if (action === 'status') return modelsStatusCommand(opts as ModelsStatusOptions);
+  if (action === 'apply') return modelsApplyCommand(opts as ModelsApplyOptions);
+  if (action === 'dismiss') return modelsDismissCommand(opts as { placementId?: string; ledgerPath?: string });
+  if (action === 'load') return modelsLoadCommand(opts as { model?: string } & ModelsStatusOptions);
+  if (action === 'unload') return modelsUnloadCommand(opts as { model?: string } & ModelsStatusOptions);
+  if (action === 'units') return modelsUnitsCommand(opts as ModelsStatusOptions);
   return modelsPendingCommand(opts as ModelsStatusOptions);
 }

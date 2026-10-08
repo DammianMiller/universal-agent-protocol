@@ -672,10 +672,74 @@ program
   )
   .addCommand(
     new Command('pending')
-      .description('List parked placement requests awaiting the operator')
+      .description('List parked placement requests awaiting the operator, with ranked options')
+      .option('--repo-path <path>', 'explicit repo registry path')
+      .option('--local-path <path>', 'explicit machine-local registry path')
       .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
       .action(async (options) => {
         const code = await (await lazy.models())('pending', options);
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    // Args as .argument(), NOT in the name: commander matches the invoked
+    // subcommand by NAME, and a name like 'apply <id> <option>' never
+    // matches 'apply' (verified live: help listed it, invocation didn't).
+    new Command('apply')
+      .argument('<placementId>', 'pending placement id (from `uap models pending`)')
+      .argument('<option>', '1-based option index (as printed by `uap models pending`)')
+      .description('The explicit operator yes: print the impact list, then enforce the placement (rollback on failure)')
+      .option('--yes', 'Actually enforce; without it, prints the impact list and the confirm command')
+      .option('--repo-path <path>', 'explicit repo registry path')
+      .option('--local-path <path>', 'explicit machine-local registry path')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (placementId, option, options) => {
+        const code = await (await lazy.models())('apply', {
+          ...options,
+          placementId,
+          option: Number(option),
+          yes: options.yes === true,
+        });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('dismiss')
+      .argument('<placementId>', 'pending placement id')
+      .description('Refuse a parked placement request; the client falls back on expiry')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (placementId, options) => {
+        const code = await (await lazy.models())('dismiss', { ...options, placementId });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('load')
+      .argument('<model>', 'registry model key (e.g. qwen3.8-27b)')
+      .description('Operator-initiated load: reuse/load-alongside only (displacement needs a pending request)')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (model, options) => {
+        const code = await (await lazy.models())('load', { ...options, model });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('unload')
+      .argument('<model>', 'registry model key whose live residents should be drained and stopped')
+      .description('Drain, stop, verify-free, and refresh for a model\'s live residents')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (model, options) => {
+        const code = await (await lazy.models())('unload', { ...options, model });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('units')
+      .description('Write Conflicts= drop-ins for same-device registry units (systemd then refuses two residents per device)')
+      .option('--repo-path <path>', 'explicit repo registry path')
+      .option('--local-path <path>', 'explicit machine-local registry path')
+      .action(async (options) => {
+        const code = await (await lazy.models())('units', options);
         if (code) process.exitCode = code;
       }),
   );

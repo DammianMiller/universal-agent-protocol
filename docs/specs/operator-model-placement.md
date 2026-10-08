@@ -498,11 +498,12 @@ Decision order:
 Parked requests return `409` with a machine-readable body (Anthropic error
 shape so every gated client parses it with the code it already has; the
 OpenAI/Ollama surfaces carry the same placement id and resolve path in their
-own dialects):
+own dialects), plus a `Retry-After: 2` header:
 
 ```json
 { "type": "error",
   "error": { "type": "model_placement_pending",
+             "message": "model qwen3.8-27b is not loaded; resolve with `uap models pending` (placement plc-7f2a)",
              "placement_id": "plc-7f2a",
              "requested_model": "qwen3.8-27b",
              "reason": "not_resident",
@@ -510,10 +511,30 @@ own dialects):
              "resolve_with": "uap models pending  |  uap models apply <placement_id> <option>  |  dashboard Models tab" } }
 ```
 
-`reason` is machine-computed, never guessed: `unknown_model`,
-`no_measured_config` (fail closed), `not_resident`, or `unroutable_target`
-(the controller vouched for a resident on another endpoint; this proxy posts
-to one discovered upstream, so the id is not sent to it raw).
+Contract notes (api-designer sign-off, 2026-10-08 — verdict: approve with
+changes, all applied):
+
+- `retry_after_ms` (and the header) are a re-poll **floor**, not an expected
+  resolution time — resolution is operator-bound; both dedupe windows make a
+  short re-poll cheap, and a resolved placement serves the next retry.
+- `message` is the one field every Anthropic SDK surface renders to the
+  human; the operator instructions live there. The OpenAI/Ollama dialects
+  prefer this message over re-derived copy.
+- `resolve_with` is human-renderable text, display-only, **no stability
+  guarantee** — machine consumers key on `type`, `placement_id`, `reason`
+  only.
+- `reason` is machine-computed, never guessed: `unknown_model`,
+  `no_measured_config` (fail closed), `not_resident` (loadable, not loaded),
+  `unroutable_target` (the controller vouched for a resident on another
+  endpoint; this proxy posts to one discovered upstream, so the id is not
+  sent to it raw), `no_controller` (read-only admission with no reachable
+  controller — the resolution is "start the dashboard / set
+  PROXY_PLACEMENT_CONTROLLER", not a placement decision), or
+  `invalid_request` (controller-side: missing model_id). New values may be
+  added additively.
+- `placement_id` is 24 bits within a 120s dedupe window: ~3e-6 collision at
+  ~10 concurrent pendings. Widen only if pending volume exceeds ~100 per
+  window.
 
 `409` rather than a hang: the client keeps control, the proxy holds no socket
 open across an unbounded operator decision, and a client that understands the
@@ -785,12 +806,17 @@ Two sources exist and neither alone answers "who is using this model":
 
 So the preview needs a **new proxy endpoint** — in-flight work per target
 (client id, session, request id, started-at) — as an explicit phase-2
-deliverable, not a join of two existing registries. Until it exists, the
-holder column of the preview says `unknown (lease holder only)` and the
-operator approves displacement knowing the model but not the victim. That is
-an honest v1 limitation, and the preview must display it rather than paper
-over it. The lease side still needs a target column (§4.3) before it can
-attribute a holder to a specific resident model.
+deliverable, not a join of two existing registries. **Shipped** (phase 3) as
+the loopback-only `GET /internal/placement/inflight`, keyed by the same
+target id the admission gate sets (`device:endpoint`, `default` when no
+controller answer set one). The registration lives at the httpx client's
+`send()` override — the one choke point every upstream call shares — not at
+`_post_with_retry` alone: guardrail and recipe passes post directly, and the
+first cut (guarded only `_post_with_retry`) was caught by a live smoke showing
+an empty list mid-generation. The `uap models apply` impact list reads this
+endpoint (best-effort; `unknown` when the proxy does not answer — never a
+guessed "idle"). The lease side still needs a target column (§4.3) before it
+can attribute a holder to a specific resident model.
 
 Nothing in this view is advisory-only: the enforcement step re-derives the
 same list and **refuses to proceed if it differs** from what the operator
@@ -811,10 +837,13 @@ failure modes the repo has already recorded:
    `nvidia-smi --query-compute-apps=pid,used_memory --format=csv` for an
    orphan before concluding the load failed for capacity reasons.
 5. Start the new unit with the profile's flags.
-6. Poll `/health`, then `/slots` and `/metrics`, applying `metricsMustMatch`.
-   A server that comes up with the wrong `kv` kind or pool size is RED, not
-   up — that is the existing `execStartMustContain` doctrine applied to a
-   service with no `ExecStart`.
+6. Poll `/health`, then the advertised ids (`/v1/models`): the load-bearing
+   check is that the requested model is actually SERVABLE now. **Shipped
+   scope (phase 3): id-level verify-up only** — the deep `/slots` +
+   `/metrics` `metricsMustMatch` check ("wrong `kv` kind or pool size is
+   RED, not up") stays `uap doctor`'s job (the existing capacity cross-check
+   runs the same probes with the policy attached); wiring it into the
+   enforcement sequence is an open follow-up, not a silent drop.
 7. **Invalidate the proxy's cached view of the upstream, then** update the
    ledger; release the pending request; the client retries and is served.
    `_upstream_model_ids_cached()` (`:1648`) caches the upstream's advertised
@@ -828,13 +857,18 @@ failure modes the repo has already recorded:
    not an implementation detail. Shipped as the loopback-only
    `POST /internal/placement/refresh` endpoint; the pooled connections are a
    documented deviation (one retried request post-swap rather than a pool
-   swap). Until phase 3 automates this step, a MANUAL switch run outside the
-   tooling should fire the same hook by hand:
+   swap). Phase 3 automates this step inside the sequence (`uap models
+   apply`/`unload` fire it as `refresh-proxy`); a MANUAL switch run outside
+   the tooling still fires the same hook by hand:
 
        curl -s -X POST http://127.0.0.1:${PROXY_PORT:-4000}/internal/placement/refresh \
             -H "Authorization: Bearer ${PROXY_AUTH_TOKEN:-}"
 8. Any step fails → roll back to the previous resident set and return a
    fallback to the client rather than leaving the machine with nothing loaded.
+   A unit STARTED during the failed sequence is stopped first (two
+   same-device residents is the same outcome step 8 exists to prevent), and
+   the sequence's `draining` markers are cleared (the marker must survive
+   concurrent ledger syncs MID-drain, but must not leak past the rollback).
 
 Step 8 is the one that decides whether this feature is trustworthy. A partial
 enforcement leaves the machine with no model loaded and every agent pointed at
@@ -865,8 +899,9 @@ uap models status                 residents, devices, free/headroom, holders
 uap models pending                parked requests with ranked options
 uap models apply <id> <option>    explicit yes; prints the impact list first
 uap models dismiss <id>           refuse; client gets a clean fallback
-uap models load <model> [--device]      operator-initiated, same gate
+uap models load <model>               operator-initiated, same gate (no --device yet)
 uap models unload <model>               operator-initiated, same preview
+uap models units                 write Conflicts= drop-ins for same-device units
 uap models measure <model>              populate measured footprints
 uap models validate               registry ↔ capacity-policy cross-check
 ```
@@ -993,7 +1028,7 @@ TABLE to change CHECK constraints, so we must rebuild the table").
 | 0 | registry, `models validate`, `models measure` | `off` |
 | 1 | ledger, `models status`, `models pending`, cost math, preview | `off` |
 | 2 | proxy gate, `409` pending, dashboard state/pending, Models tab | `ask` |
-| 3 | enforcement: drain, stop, verify-free, start, verify-metrics, rollback | `ask` |
+| 3 | enforcement: drain, stop, verify-free, start, verify-metrics, rollback; `apply`/`dismiss`/`load`/`unload`/`units` surfaces; `Conflicts=` drop-ins; the in-flight proxy endpoint | `ask` |
 | 4 | affinity-driven auto-load alongside; never displacement | `auto` |
 
 Phase 0 is useful on its own: it turns the prose in five profile files into

@@ -38,7 +38,9 @@ function consequenceFor(state: LedgerResident['state'], inflight: InFlight): str
   if (state === 'paused') return 'already offloaded; restore path lost';
   if (inflight === true) return 'active generation aborted; context lost';
   if (inflight === false) return 'session idle; context lost; reload needed';
-  return 'context lost; reload needed (in-flight unknown until the proxy endpoint lands)';
+  // The proxy's /internal/placement/inflight endpoint shipped (phase 3);
+  // 'unknown' now means "the proxy did not answer", never "not wired yet".
+  return 'context lost; reload needed (in-flight view unavailable from the proxy)';
 }
 
 /** Build the victim preview for a displace option. */

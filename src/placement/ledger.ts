@@ -259,7 +259,19 @@ export function syncLedger(
   const residents = deriveLiveResidents(registry, isActive);
   return withLedger(path, (ledger) => {
     ledger.devices = devices;
-    ledger.residents = residents;
+    // `draining` markers survive the wholesale resident rebuild: an
+    // enforcement's drain window can outlast a concurrent `models status`
+    // or dashboard auto-refresh, and resetting victims to hot would
+    // re-open admission to a unit being stopped (spec §4.6 step 1's
+    // "refuse new requests" must hold for the whole sequence).
+    const draining = new Set(
+      ledger.residents
+        .filter((r) => r.state === 'draining')
+        .map((r) => `${r.model}/${r.config}`),
+    );
+    ledger.residents = residents.map((r) =>
+      draining.has(`${r.model}/${r.config}`) ? { ...r, state: 'draining' as const } : r,
+    );
     // Pending entries survive the sync: they are requests awaiting the
     // operator, not backend state. Expired ones are pruned.
     const now = new Date().toISOString();

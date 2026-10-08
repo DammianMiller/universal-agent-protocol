@@ -36,11 +36,25 @@ export const DeviceSchema = z.object({
 });
 export type RegistryDevice = z.infer<typeof DeviceSchema>;
 
+/** Valid systemd unit name (for the effects placement builds from it:
+ * systemctl argv, drop-in file paths, drop-in content). Charset excludes
+ * `/`, whitespace, and control characters (no path traversal, no line
+ * injection into drop-in files); a leading dot or any `..` run is refused.
+ * The registry comes from the repo's config/ — a cloned repo must not get
+ * to write outside ~/.config/systemd/user or inject `[Service]` sections. */
+const UNIT_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_.@-]*$/;
+export function validUnitName(unit: string): boolean {
+  return UNIT_NAME_RE.test(unit) && !unit.includes('..');
+}
+const UnitNameSchema = z.string().refine(validUnitName, {
+  message: 'invalid systemd unit name (charset [A-Za-z0-9_.@-], no leading dot, no ..)',
+});
+
 /** Identity fields a config carries regardless of measured state, so a
  * `measure` write never drops the unit/profile/service it was found through. */
 const configIdentity = {
   engine: z.string().optional(),
-  unit: z.string().optional(),
+  unit: UnitNameSchema.optional(),
   profile: z.string().optional(),
   /** Capacity-policy service name this config is cross-checked against
    * (overrides the model-level `service`). The policy's `services` is a
@@ -82,7 +96,7 @@ export type ConfigEntry = z.infer<typeof ConfigEntrySchema>;
 export const ModelEntrySchema = z.object({
   display: z.string(),
   engine: z.string().optional(),
-  unit: z.string().optional(),
+  unit: UnitNameSchema.optional(),
   service: z.string().optional(),
   launch: z.string().optional(),
   endpoint: z.string().optional(),
