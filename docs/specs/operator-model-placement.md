@@ -265,6 +265,22 @@ Rules:
   1-rail server is exactly the overflow the profile warns about. Rail discovery
   must become backend-aware before the registry can be trusted to allocate.
 
+**Ownership — the registry must not become a fifth source of truth.** Endpoints
+already live in four places: `src/models/types.ts:229` pins the live-backend
+alias with a comment explaining why pinning more would "turn a backend switch
+into an outage"; `config/model-profiles/`; `config/llama-profiles/`; and
+`config/capacity-policy.json`. The registry therefore **references** rather
+than restates, and `models validate` fails on a contradiction:
+
+| Number | Owner | Registry holds |
+| --- | --- | --- |
+| Endpoint the proxy forwards to | proxy env (`LLAMA_CPP_BASE`) | read-only echo for display, never consumed by routing |
+| Liveness + budget + metrics identity | `config/capacity-policy.json` (`services` is a **list** keyed by `name` — lookups must not assume a map) | the service `name` it cross-checks against |
+| Launch flags per llama profile | `config/llama-profiles/*.env` | the profile path |
+| Advertised model ids + session caps | `config/model-profiles/*.json` | cross-check only |
+| Measured footprints (`resident_gpu_mib`, `host_rss_mib`, KV geometry) | `~/.uap/model-registry.json` | the only owner |
+| Device totals + `reserved_mib` | `~/.uap/model-registry.json` | the only owner |
+
 #### 4.1.1 What measurement actually returns (measured on this host)
 
 The naive recipe — file size for weights, `nvidia-smi` used-minus-weights for
@@ -430,10 +446,33 @@ offering, because "pause" sounds free and currently is not.
 ### 4.3 Admission gate — in the proxy
 
 The gate runs **after** the wire model is resolved and **before** anything is
-sent upstream. `_reconcile_wire_model()` is a pure rewrite with no side
-effects, so calling it first and gating on its result is both correct and
-unbypassable: every request path that can change the model must pass through
-it, and the gate sees the same value the upstream will.
+sent upstream. On `/v1/messages` this is exactly `_reconcile_wire_model()`
+(`anthropic_proxy.py:1681`, called at `:15036`): a pure rewrite with no side
+effects, so calling it first and gating on its result is correct — the gate
+sees the same value the upstream will.
+
+But **it is not unbypassable, and an earlier draft claimed it was.**
+`_reconcile_wire_model` has exactly one call site, on `/v1/messages`. The proxy
+also sends upstream from `/anthropic/v1/messages` (`:15743`),
+`/v1/chat/completions` (`:15832`), `/api/chat` (`:16618`), and `/api/generate`
+(`:16655`), plus the passthrough client (`_pt_client`, `:14473`) and the
+save/restore client (`_sr_client`, `:13823`). So the gate must be a function of
+the resolved wire model, not a side effect of one route's rewrite step:
+
+- `/v1/messages` — gate after `_reconcile_wire_model()`. Every named client
+  (Claude Code, Codex, OpenCode, UAP agents) enters here; this is the phase-2
+  deliverable.
+- `/v1/chat/completions`, `/anthropic/v1/messages` — same gate, resolved from
+  the body's `model`. Same phase.
+- `/api/chat`, `/api/generate` (Ollama-compatible) — same gate; these are
+  local-only routes, so a non-resident model here is exactly the case to park.
+- Passthrough (`_pt_client`) — exempt by definition: the model is cloud, it
+  has no local cost, and it never reaches `:8080`.
+
+The §7 test list includes a test that each non-exempt route, in `mode=ask`,
+parks rather than forwards when the requested local model is not resident.
+"Gate the choke point" was the right instinct; "the choke point covers
+everything" was a false statement about 17k lines and is now corrected.
 
 Decision order:
 
@@ -496,6 +535,19 @@ including the `Conflicts=` unit graph. The script is the reference
 implementation; the module is that script with drain, verification, and
 rollback.
 
+**One caveat the earlier draft glossed: those units are machine-local.**
+`grep -rn "Conflicts=" config/` returns nothing — the mutually-conflicting
+backend units live in `~/.config/systemd/user/`, installed by hand, and the
+capacity policy itself records `strata-server` as unit-less. Enforcement
+step 4 (`systemctl --user start <new unit>`) depends on units the repo does
+not ship. Phase 2 therefore needs tracked unit templates with the `Conflicts=`
+edges (extending `src/cli/systemd-services.ts`, which already installs
+`uap-anthropic-proxy.service` and `uap-llama-server.service`), or the
+registry must record that a unit's provenance is machine-local and
+enforcement must refuse configs whose unit it cannot install. Degrading to
+raw `systemd kill`/`ExecStart` strings is the failure the risk table already
+forbids.
+
 Two things that script does not do, and that the module must:
 
 **Rollback after a failed start is the trust-critical step.** A failed start
@@ -515,14 +567,22 @@ go-ahead, and until then the timeouts are conservative defaults labelled
 unvalidated. Publishing a hold ceiling without a measured envelope behind it is
 the same mistake as publishing a VRAM cost without a measurement.
 
-**How the proxy finds the controller.** The lifecycle helper already passes
-`UAP_DASHBOARD_URL` to the proxy when it starts a dashboard; placement reuses
-that channel, with the enforcement module mounted on the dashboard server. With
-no dashboard running there is no controller, and admission runs read-only: it
-can answer "already loaded" from the ledger, but it cannot load anything, so an
-unloaded request gets `model_placement_pending` with reason `no_controller`, and
-`uap models pending` tells the operator to start the dashboard or act from the
-CLI.
+**How the proxy finds the controller.** This is new wiring, not reuse — an
+earlier draft claimed the lifecycle helper already passes `UAP_DASHBOARD_URL`
+to the proxy; that variable exists nowhere in the repo. The proxy reads no
+dashboard address today. So: `uap setup` emits `PROXY_PLACEMENT_CONTROLLER`
+into `.uap/proxy.env` next to the other `PROXY_*` knobs it already emits, and
+the unit file's `EnvironmentFile` picks it up. The value is a loopback URL.
+Two constraints from the existing server code (`src/dashboard/server.ts`): the
+dashboard may bind port 0 (OS-picked, resolved only after `listen`), and it may
+bind `0.0.0.0` for LAN reachability — a placement control endpoint that stops
+and starts systemd units must be **loopback-bound regardless of `--host`**,
+with `mutationAuthorized(req)` on every write. If the controller URL is unset
+or nothing answers it, admission runs read-only: it can answer "already
+loaded" from the ledger, but it cannot load anything, so an unloaded request
+gets `model_placement_pending` with reason `no_controller`, and
+`uap models pending` tells the operator to start the dashboard or act from
+the CLI.
 
 #### Concurrency must become per-target
 
@@ -669,20 +729,29 @@ Per victim: model, state, device, holders (client, pid, job, turns, context
 cells), in-flight flag, cost it frees, and estimated reload cost for the
 displaced model.
 
-Two registries exist and neither alone answers "who is using this model":
+Two sources exist and neither alone answers "who is using this model":
 
 - `model_leases` (`src/coordination/database.ts`) has a `holder` column, but
   `activeModelLeases()` (`src/coordination/service.ts:1061`) returns only a
-  count, and the holder is a lease-holder string, not a client.
-- The proxy keeps its own `_client_registry` (`anthropic_proxy.py:1121`)
-  served at `/v1/api/clients`, plus per-request state in contextvars
-  (`_current_session_var`, `_current_request_id_var`, the client-disconnected
-  check). That is the only source that knows a generation is in flight *right
-  now*.
+  count, and the holder is a lease-holder string (`model:<apiModel>`,
+  `agentic:<apiModel>`), not a client identity.
+- The proxy holds the live request state, but it is **not exposed**. An
+  earlier draft named a `_client_registry` served at `/v1/api/clients` —
+  neither exists. The real primitives are `_current_request_session`
+  (contextvar, `:4853`), the in-flight counters hung on the httpx client
+  (`_inflight_inc`/`_inflight_dec`, `:4628-4637`), session admission state
+  (`_admitted_sessions`, `:4920`), and client identity
+  (`resolve_client_id` + `_client_request_times`, `:2011-2053`). None has a
+  route.
 
-The preview joins the proxy's live request state to the lease table, and
-needs a target column on the lease side (§4.3) before it can attribute a
-holder to a specific resident model.
+So the preview needs a **new proxy endpoint** — in-flight work per target
+(client id, session, request id, started-at) — as an explicit phase-2
+deliverable, not a join of two existing registries. Until it exists, the
+holder column of the preview says `unknown (lease holder only)` and the
+operator approves displacement knowing the model but not the victim. That is
+an honest v1 limitation, and the preview must display it rather than paper
+over it. The lease side still needs a target column (§4.3) before it can
+attribute a holder to a specific resident model.
 
 Nothing in this view is advisory-only: the enforcement step re-derives the
 same list and **refuses to proceed if it differs** from what the operator
@@ -707,8 +776,17 @@ failure modes the repo has already recorded:
    A server that comes up with the wrong `kv` kind or pool size is RED, not
    up — that is the existing `execStartMustContain` doctrine applied to a
    service with no `ExecStart`.
-7. Update the ledger; release the pending request; the client retries and is
-   served.
+7. **Invalidate the proxy's cached view of the upstream, then** update the
+   ledger; release the pending request; the client retries and is served.
+   `_upstream_model_ids_cached()` (`:1648`) caches the upstream's advertised
+   ids **for the process lifetime** ("fetched at most once per process"), and
+   `_upstream_model_name()` (`:1724`) reads the same cache. Skip this and the
+   first request after a successful switch fails the `requested in ids`
+   check and gets silently rewritten to the *previous* backend's first id —
+   no banner, wrong model. The invalidation must also cover the `/props` and
+   `/slots` snapshots, `_admitted_sessions` (`:4920`), and the pooled
+   connections pointed at the old process. This is a step in the sequence and
+   a row in the §7 test list, not an implementation detail.
 8. Any step fails → roll back to the previous resident set and return a
    fallback to the client rather than leaving the machine with nothing loaded.
 
@@ -728,6 +806,11 @@ go-ahead; it is the first thing to do once they are ready to touch a running
 model.
 
 ### 4.7 Surfaces
+
+Namespace note: `uap models` (plural, placement) sits next to the existing
+`uap model` (singular, multi-model routing at `src/bin/cli.ts:2035`) — a
+near-homonym, kept because they answer different questions (where does it
+live vs which model answers). Help text for both cross-references the other.
 
 **TUI** — `uap models`:
 
@@ -820,22 +903,42 @@ CREATE INDEX IF NOT EXISTS idx_model_leases_target ON model_leases(target, expir
 `model_backpressure` drops its `CHECK(id = 1)` constraint in favour of a
 primary key on the target id. SQLite cannot drop a table constraint in place,
 so this is the standard create-new-table → copy → drop → rename, inside one
-transaction.
+transaction. Map the legacy `id = 1` row to `target = 'default'` in the copy so
+a revert of the code loses no operator-tuned state — that keeps the one-way
+door reversible in code only.
 
-Two rules keep this from breaking anything:
+Three rules keep this from breaking anything:
 
 - **`target = 'default'` is the legacy bucket.** Existing rows and existing
   callers that do not pass a target land there, so behaviour is unchanged
   until a caller opts in by naming a target. The migration is additive.
+- **`target` is the placement target identity (device + endpoint from the
+  ledger), never the model name.** The existing holder strings already embed
+  the model id (`model:<apiModel>`, `agentic:<apiModel>` — see
+  `src/models/openai-compat-client.ts:260` and
+  `src/delivery/agentic-executor.ts:2569`). Keying `target` on `apiModel`
+  would make a backend switch change the key mid-flight: outstanding leases
+  orphan, and per-target backpressure resets — the exact hazard
+  `src/models/types.ts:229` documents for pinned endpoints. The ledger's
+  target id is stable across model changes on the same endpoint.
 - **`acquireModelSlot` keeps its current signature** with `target` as an
-  optional trailing argument. The four call sites
-  (`src/utils/model-slot-lease.ts`, `src/cli/coord.ts`,
-  `src/delivery/agentic-executor.ts`, `src/models/openai-compat-client.ts`)
-  do not change in the same commit that adds the column.
+  optional trailing argument. The only direct TS caller is
+  `src/utils/model-slot-lease.ts:94` (an earlier draft also listed
+  `src/cli/coord.ts` — it does not call it); the real consumers all go through
+  `withModelSlot()` at `src/models/openai-compat-client.ts:260` and
+  `src/delivery/agentic-executor.ts:2569`. None of them changes in the same
+  commit that adds the column.
 
-The migration runs in `src/coordination/database.ts` alongside the existing
-`CREATE TABLE IF NOT EXISTS` statements, which is where schema evolution
-already lives in this codebase.
+**The migration needs an idempotence guard this database does not have.**
+`src/coordination/database.ts` contains only `CREATE TABLE IF NOT EXISTS` — no
+`ALTER TABLE`, no `PRAGMA user_version`, no version marker at all, so an
+unguarded `ALTER` next to the creates throws on the second open. The precedent
+to follow is `src/memory/short-term/schema.ts:23` — probe
+`PRAGMA table_info(model_leases)`, add the column only if `target` is absent,
+and guard the `model_backpressure` rebuild on its actual column shape. The
+backpressure rebuild copies the same create-new-table → copy → drop → rename
+shape that file's comment describes verbatim ("SQLite doesn't support ALTER
+TABLE to change CHECK constraints, so we must rebuild the table").
 
 ## 6. Phasing
 
@@ -850,7 +953,7 @@ already lives in this codebase.
 Phase 0 is useful on its own: it turns the prose in five profile files into
 data `uap doctor` can act on. Nothing gates on the rest.
 
-Two ordering constraints:
+Two ordering constraints, plus one refactor the review forced us to schedule:
 
 - **Item 3 (backend-aware rail discovery) lands in phase 0, not later.** The
   registry's `rails` field is only trustworthy if the probe that fills it
@@ -862,6 +965,21 @@ Two ordering constraints:
   and the upstream semaphore are global will admit more traffic than the
   resident model can serve. Phase 2 does not open until the lease table
   carries a target column and the semaphore map is keyed the same way.
+- **Phase 1.5: per-target upstream addressing in the proxy.** A per-target
+  semaphore on top of a single upstream address is decorative: `LLAMA_CPP_BASE`
+  is one module constant with 35 references, including every derived probe
+  (`.replace("/v1", "/props")` at `:3403`/`:16452`, `/slots` at `:3470`/
+  `:3529`/`:4926`/`:15073`, `/health` at `:5210`/`:16722`), CLOSE-WAIT
+  accounting (`_upstream_port()`, `:4580`), and the streaming retry loops
+  (`:15065-15700`). The enabler is a resolved target object
+  `{target_id, base_url, slots_url, props_url, health_url}` threaded through
+  the send paths, with `LLAMA_CPP_BASE` as the default target so single-backend
+  behavior is unchanged. It is the riskiest refactor in a 17k-line file; it
+  gets its own branch, its own review, and lands before the phase-2 gate —
+  otherwise phases 3–4 admit per-target placement the proxy cannot address.
+- **Tracked unit templates are a phase-2 prerequisite** (see §4.3's caveat):
+  enforcement can only `systemctl --user start` units that exist, and today
+  the `Conflicts=` graph lives only in `~/.config/systemd/user/`.
 
 Implementation runs in `.worktrees/345-model-placement/` on
 `feature/345-model-placement`, per the worktree gate.
@@ -874,9 +992,15 @@ Implementation runs in `.worktrees/345-model-placement/` on
   (a mismatch must abort).
 - Registry: schema validation; disagreement with `capacity-policy.json` fails.
 - Ledger: concurrent writers, pending expiry, dead-PID holder pruning.
-- Proxy gate: `409` shape, dedupe per `(client, model)`, and **`mode=off`
+- Proxy gate: `409` shape, dedupe per `(client, model)`, **`mode=off`
   produces byte-identical behavior to today** — the regression that matters
-  most, because the proxy serves every client.
+  most, because the proxy serves every client — and, per §4.3's route list,
+  **each non-exempt entry route parks in `mode=ask`** when the requested
+  local model is not resident (`/v1/chat/completions`, `/api/chat`,
+  `/api/generate`, `/anthropic/v1/messages`), while passthrough stays exempt.
+- Enforcement: after a successful swap the proxy's upstream id cache is
+  invalidated — the next request must not be rewritten to the previous
+  backend's id (§4.6 step 7).
 - Dashboard: writes require `mutationAuthorized()`; reads do not.
 - Existing suites must stay green: `test/models/lease-heartbeat.test.ts`,
   `test/models/openai-compat-lease.test.ts`,
@@ -893,7 +1017,7 @@ Implementation runs in `.worktrees/345-model-placement/` on
 | Two controllers race on the ledger | advisory lock + re-read-before-commit; enforcement re-derives the victim set |
 | A monitor watchdog fights enforcement | the units already declare `Conflicts=`; enforcement uses `systemctl --user`, never raw signals |
 | Preview and enforcement disagree | enforcement aborts rather than acting on a stale preview |
-| A backend with no systemd unit cannot be displaced | `flash` and `strata` are `Type=simple` with no `ExecStart`, so their footprint is invisible to the policy parser. Enforcement treats "no unit" as a distinct state, never as zero cost |
+| A backend with no systemd unit cannot be displaced | the capacity policy probes `strata-server` over HTTP precisely because the repo ships no unit for it; enforcement treats "no unit" as a distinct state, never as zero cost, and phase 2 ships tracked unit templates (§4.3) |
 | Auto mode displaces something important | `auto_load.displace: false` is the default and the only supported value in phase 4 |
 
 ## 9. Decisions taken
