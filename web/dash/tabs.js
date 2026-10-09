@@ -91,13 +91,49 @@
       if (ev.length) ev.forEach(function (e) { feed.appendChild(eventRow(e)); }); else feed.appendChild(empty('Waiting for events…'));
       ep.appendChild(feed); host.appendChild(ep);
     }
+    // Service health strip (uap doctor): fetched ON DEMAND from /api/doctor —
+    // the probes are bounded-but-blocking (up to ~5s each), so it never rides
+    // the 2s snapshot tick. Persists across update() rebuilds; Refresh re-fetches.
+    function doctorPanel() {
+      var p = panel('Service Health (uap doctor)');
+      p.appendChild(el('button', { class: 'btn btn-sm', style: { marginBottom: '8px' }, onclick: function () { loadDoctor(host); } }, 'Refresh'));
+      var host = el('div', { id: 'ov-doctor' });
+      host.appendChild(el('div', { class: 'muted', text: 'Probing services…' }));
+      p.appendChild(host);
+      loadDoctor(host);
+      return p;
+    }
+    function loadDoctor(host) {
+      U.clear(host);
+      host.appendChild(el('div', { class: 'muted', text: 'Probing services…' }));
+      fetch(U.API_URL + '/api/doctor').then(function (r) { return r.json(); }).then(function (rep) {
+        U.clear(host);
+        if (rep.error) { host.appendChild(el('div', { class: 'empty', text: 'doctor unavailable: ' + rep.error })); return; }
+        var services = rep.services || [];
+        if (!services.length) { host.appendChild(empty('No services declared in the capacity policy')); return; }
+        var cls = function (h) { return h === 'GREEN' ? 'green' : (h === 'RED' ? 'red' : (h === 'DARK' ? 'red' : '')); };
+        var thead = el('tr', {}); ['Service', 'Health'].forEach(function (x) { thead.appendChild(el('th', { text: x })); });
+        var t = el('table', {}, thead);
+        services.forEach(function (s) {
+          var tr = el('tr', {},
+            el('td', { text: s.name || '-' }),
+            el('td', {}, el('span', { class: 'badge ' + cls(s.health), text: s.health || '-' }),
+              (s.reasons && s.reasons.length) ? el('span', { class: 'muted', text: ' — ' + s.reasons[0] }) : null));
+          t.appendChild(tr);
+        });
+        host.appendChild(el('div', { class: 'table-wrap' }, t));
+      }).catch(function () {
+        U.clear(host);
+        host.appendChild(el('div', { class: 'empty', text: 'doctor request failed' }));
+      });
+    }
     function build(root, d) {
       var tiles = el('div', { class: 'tile-grid', id: 'ov-tiles' });
       var hero = el('div', { class: 'hero-row' },
         panelWith('Tasks & Agents', el('div', { class: 'chart-container chart-hero', id: 'ov-chart-tasks' })),
         panelWith('Compression & Memory', el('div', { class: 'chart-container chart-hero', id: 'ov-chart-comp' })));
       var summaries = el('div', { class: 'metrics-row', id: 'ov-summaries', style: { gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))' } });
-      root.appendChild(tiles); root.appendChild(hero); root.appendChild(summaries);
+      root.appendChild(tiles); root.appendChild(hero); root.appendChild(summaries); root.appendChild(doctorPanel());
       fillTiles(tiles, d); fillSummaries(summaries, d); paintCharts(d);
     }
     function panelWith(title, node) { var p = panel(title); p.appendChild(node); return p; }
@@ -117,6 +153,8 @@
     var msg = (title && detail) ? (title + ' — ' + detail) : (title || detail || String((ev.data && JSON.stringify(ev.data)) || '').slice(0, 80));
     return el('div', { class: 'event-row' }, el('span', { class: 'event-time', text: ts }), el('span', { class: 'event-cat cat-' + cat, text: cat }), el('span', { class: 'event-msg', text: msg }));
   }
+  // Shared with the tab-policies.js override (it rebuilds the Live Events feed).
+  U.eventRow = eventRow;
 
   // ═══════════════════════════ TASKS & EPICS ═══════════════════════════
   U.registerTab('tasks', (function () {
@@ -222,7 +260,7 @@
           ]).then(function (v) { if (v && v.title) U.api('/api/tasks', { title: v.title, type: v.type, priority: Number(v.priority) || 2, assignee: v.assignee || undefined }).then(function () { U.toast('Task created', 'ok'); }); });
         } }, '+ New Task'),
       ]);
-      var counts = el('div', { class: 'section-note', text: (tasks.total || 0) + ' tasks · ' + (tasks.done || 0) + ' done · ' + (tasks.inProgress || 0) + ' active · ' + (tasks.blocked || 0) + ' blocked · ' + (tasks.open || 0) + ' open' });
+      var counts = el('div', { class: 'section-note', text: (tasks.total || 0) + ' tasks · ' + (tasks.done || 0) + ' done · ' + (tasks.inProgress || 0) + ' active · ' + (tasks.blocked || 0) + ' blocked · ' + (tasks.open || 0) + ' open · board shows newest ' + (tasks.boardShown != null ? tasks.boardShown : (tasks.items || []).length) + ' of ' + (tasks.boardTotal != null ? tasks.boardTotal : (tasks.total || 0) - (tasks.done || 0)) + ' not-done' });
       p.appendChild(counts);
       p.appendChild(el('div', { class: 'toolbar' }, el('span', { class: 'label', text: 'Filter:' }), filterSel));
       var board = el('div', { class: 'kanban', id: 'kanban-board' });
@@ -259,7 +297,7 @@
     function mergeAgents(d) {
       var out = {}, order = [];
       var coord = (d.coordination && d.coordination.agents) || [];
-      coord.forEach(function (a) { out[a.id] = { id: a.id, name: a.name, status: a.status, task: a.task || a.type || '', type: a.type || 'main' }; order.push(a.id); });
+      coord.forEach(function (a) { out[a.id] = { id: a.id, name: a.name, status: a.status, task: a.task || a.type || '', type: a.type || 'main', lastHeartbeat: a.lastHeartbeat || a.startedAt || null }; order.push(a.id); });
       var sess = (d.session && d.session.agents) || [];
       sess.forEach(function (a) { var e = out[a.id] || { id: a.id, name: a.name, status: a.status, task: a.task, type: a.type }; e.tokensIn = a.tokensIn; e.tokensOut = a.tokensOut; e.tokensUsed = a.tokensUsed; e.model = a.model; e.cost = a.cost; e.durationMs = a.durationMs; e.taskCount = a.taskCount; if (!out[a.id]) order.push(a.id); out[a.id] = e; });
       return order.map(function (id) { return out[id]; });
@@ -309,11 +347,22 @@
     }
     function build(root, d) {
       var agents = mergeAgents(d);
+      // Freshest heartbeats first — a stale agent sinks to the bottom instead
+      // of hiding among fresh ones.
+      agents.sort(function (x, y) {
+        var ax = x.lastHeartbeat ? new Date(x.lastHeartbeat).getTime() : 0;
+        var ay = y.lastHeartbeat ? new Date(y.lastHeartbeat).getTime() : 0;
+        return ay - ax;
+      });
       var ap = panel('Agents', [el('button', { class: 'btn', onclick: function () { U.confirm('Clean up stale agents (stale heartbeats)?').then(function (ok) { if (ok) U.api('/api/agents/clean', {}).then(function (r) { U.toast('Cleaned ' + ((r && r.cleaned) || 0) + ' stale agents', 'ok'); }); }); } }, 'Clean stale')]);
       if (!agents.length) ap.appendChild(empty('No agents registered'));
       else { var grid = el('div', { class: 'card-grid' }); agents.forEach(function (a) {
+        // Heartbeat age: agents re-beat every ~30s, so >5m (300s) is stale.
+        var hbAgeMs = a.lastHeartbeat ? (Date.now() - new Date(a.lastHeartbeat).getTime()) : null;
+        var hbAgeS = hbAgeMs != null && isFinite(hbAgeMs) ? Math.floor(hbAgeMs / 1000) : null;
+        var hbNode = hbAgeS == null ? null : el('span', { class: hbAgeS > 300 ? 'value red' : 'muted', text: 'hb ' + U.timeAgo(a.lastHeartbeat) + (hbAgeS > 300 ? ' (stale)' : '') });
         grid.appendChild(el('div', { class: 'entity-card', tabindex: '0', role: 'button', onclick: function () { agentDrawer(a, d); }, onkeydown: function (e) { if (e.key === 'Enter') agentDrawer(a, d); } },
-          el('div', { class: 'ec-head' }, el('span', { class: 'badge ' + (a.type || 'main') }, a.type || 'agent'), el('span', { class: 'ec-name', text: a.name || a.id }), statusBadge(a.status)),
+          el('div', { class: 'ec-head' }, el('span', { class: 'badge ' + (a.type || 'main') }, a.type || 'agent'), el('span', { class: 'ec-name', text: a.name || a.id }), statusBadge(a.status), hbNode),
           el('div', { class: 'ec-task', text: a.task || '-' }),
           el('div', { class: 'ec-metrics' }, el('span', {}, fmtNum((a.tokensIn || 0) + (a.tokensOut || 0) || a.tokensUsed || 0) + ' tok'), a.model ? el('span', { class: 'muted', text: modelName(a.model) }) : null, el('span', {}, fmtUsd(a.cost || 0)))));
       }); ap.appendChild(grid); }
@@ -329,7 +378,7 @@
     return {
       label: 'Agents & Sessions',
       render: function (root, d) { build(root, d); },
-      update: function (root, d) { var s = sig({ a: (d.coordination || {}).agents, se: (d.session || {}).agents, h: d.sessions }); if (s !== lastSig) { lastSig = s; U.clear(root); build(root, d); } },
+      update: function (root, d) { var s = sig({ a: (d.coordination || {}).agents, se: (d.session || {}).agents, h: d.sessions, hb: ((d.coordination || {}).agents || []).map(function (a) { return a.lastHeartbeat || ''; }) }); if (s !== lastSig) { lastSig = s; U.clear(root); build(root, d); } },
     };
   })());
 
@@ -373,7 +422,14 @@
       else shown.forEach(function (m) { tp.appendChild(node(m, 0)); });
       root.appendChild(tp);
     }
-    return { label: 'Orchestration', render: build };
+    var lastSig = null;
+    return {
+      label: 'Orchestration',
+      render: function (root, d) { lastSig = sig({ t: d.orchestrationTree, o: d.orchestrate }); build(root, d); },
+      // Rebuild only on real change — the 2s tick used to wipe the tab every
+      // refresh (scroll/select resets) even when nothing moved.
+      update: function (root, d) { var s = sig({ t: d.orchestrationTree, o: d.orchestrate }); if (s === lastSig) return; lastSig = s; U.clear(root); build(root, d); },
+    };
   })());
 
   // ═══════════════════════════ DELIVER ═══════════════════════════
@@ -419,76 +475,21 @@
       }, function (r) { runDrawer(r); }) : empty('No deliver runs tracked yet'));
       root.appendChild(p);
     }
-    return { label: 'Deliver', render: build };
+    var lastSig = null;
+    return {
+      label: 'Deliver',
+      render: function (root, d) { lastSig = sig(d.deliverRuns); build(root, d); },
+      // Rebuild only on real change — the 2s tick used to wipe the tab every
+      // refresh (scroll/select resets) even when no run moved.
+      update: function (root, d) { var s = sig(d.deliverRuns); if (s === lastSig) return; lastSig = s; U.clear(root); build(root, d); },
+    };
   })());
 
-  // ═══════════════════════════ POLICIES & COMPLIANCE ═══════════════════════════
-  U.registerTab('policies', (function () {
-    function build(root, d) {
-      var policies = d.policies || [], policyFiles = d.policyFiles || [], compliance = d.compliance || {}, audit = d.auditTrail || [];
-      var pm = {}, order = [];
-      policies.forEach(function (p) { var key = p.name || p.id; pm[key] = Object.assign({}, p, { source: 'db' }); order.push(key); });
-      policyFiles.forEach(function (pf) { if (!pm[pf.name]) { pm[pf.name] = { id: pf.filename, name: pf.name, category: pf.category, level: '-', enforcementStage: '-', isActive: null, source: 'file' }; order.push(pf.name); } });
-      var all = order.map(function (k) { return pm[k]; });
-
-      var pp = panel('Policies');
-      var thead = el('tr', {}); ['Name', 'Category', 'Level', 'Stage', 'Status', 'Actions'].forEach(function (x) { thead.appendChild(el('th', { text: x })); });
-      var tbl = el('table', {}, thead);
-      all.forEach(function (p) {
-        var isDb = p.source === 'db';
-        var actions = el('span', {});
-        if (isDb) {
-          actions.appendChild(el('button', { class: 'btn', onclick: function () { U.api('/api/policy/' + encodeURIComponent(p.id) + '/toggle', undefined).then(function (r) { U.toast('Policy ' + (r.isActive ? 'enabled' : 'disabled'), 'ok'); }); } }, p.isActive ? 'Disable' : 'Enable'));
-          var stageSel = el('select', { onchange: function (e) { U.api('/api/policy/' + encodeURIComponent(p.id) + '/stage', { stage: e.target.value }).then(function () { U.toast('Stage: ' + e.target.value, 'ok'); }); } });
-          ['pre-exec', 'post-exec', 'review', 'always'].forEach(function (s) { stageSel.appendChild(el('option', { value: s }, s)); }); stageSel.value = p.enforcementStage;
-          var lvlSel = el('select', { onchange: function (e) { U.api('/api/policy/' + encodeURIComponent(p.id) + '/level', { level: e.target.value }).then(function () { U.toast('Level: ' + e.target.value, 'ok'); }); } });
-          ['REQUIRED', 'RECOMMENDED', 'OPTIONAL'].forEach(function (l) { lvlSel.appendChild(el('option', { value: l }, l)); }); lvlSel.value = p.level;
-          actions.appendChild(document.createTextNode(' ')); actions.appendChild(stageSel); actions.appendChild(document.createTextNode(' ')); actions.appendChild(lvlSel);
-        } else actions.appendChild(el('span', { class: 'mono-sm', text: 'file-only' }));
-        var status = isDb ? el('span', { class: 'badge ' + (p.isActive ? 'on' : 'off') }, p.isActive ? 'ON' : 'OFF') : el('span', { class: 'badge file-only' }, 'FILE');
-        var tr = el('tr', {},
-          el('td', {}, el('span', { style: { fontWeight: '500' }, text: p.name || '-' })),
-          el('td', { text: p.category || '-' }),
-          el('td', {}, el('span', { class: 'badge ' + (p.level || '').toLowerCase() }, p.level || '-')),
-          el('td', { text: p.enforcementStage || '-' }),
-          el('td', {}, status),
-          el('td', {}, actions));
-        tbl.appendChild(tr);
-      });
-      pp.appendChild(all.length ? el('div', { class: 'table-wrap' }, tbl) : empty('No policies'));
-      root.appendChild(pp);
-
-      var cp = panel('Compliance & Audit');
-      cp.appendChild(el('h3', {}, 'Block Rate Trend'));
-      cp.appendChild(el('div', { class: 'chart-container chart-spark', id: 'pol-chart-block' }));
-      cp.appendChild(el('h3', {}, 'Failures by Mechanism'));
-      var fbm = compliance.failuresByMechanism || {}; var me = Object.keys(fbm).map(function (k) { return [k, fbm[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
-      if (me.length) { var max = Math.max.apply(null, me.map(function (x) { return x[1]; }).concat([1])); var mb = el('div', {}); me.forEach(function (m) { mb.appendChild(el('div', { class: 'bar-container' }, el('span', { class: 'bar-label', style: { width: '120px' }, text: m[0] }), el('div', { class: 'bar red', style: { width: Math.round((m[1] / max) * 180) + 'px' } }), el('span', { class: 'bar-value', text: String(m[1]) }))); }); cp.appendChild(mb); }
-      else cp.appendChild(empty('No failure mechanisms'));
-      cp.appendChild(el('h3', {}, 'Recent Failures'));
-      var rf = compliance.recentFailures || [];
-      cp.appendChild(rf.length ? tableNode(['Time', 'Policy', 'Op', 'Mechanism', 'Reason'], rf.slice(0, 10), function (f) { return [el('span', { class: 'mono-sm', text: (f.executedAt || '').slice(11, 19) }), el('span', { class: 'value red', text: f.policyName || f.policyId || '-' }), f.operation || '-', el('span', { class: 'badge required' }, f.defeatedMechanism || '-'), el('span', { class: 'muted', text: (f.reason || '-').slice(0, 60) })]; }) : empty('No recent failures'));
-      cp.appendChild(el('h3', {}, 'Audit Trail'));
-      var at = el('div', {});
-      if (audit.length) audit.slice(0, 15).forEach(function (e) { var ts = (typeof e.executedAt === 'string' && e.executedAt.length >= 19) ? e.executedAt.slice(11, 19) : (e.executedAt || '-'); at.appendChild(el('div', { class: 'audit-row' }, el('span', { class: 'audit-time', text: ts }), el('span', { class: 'audit-icon ' + (e.allowed ? 'pass' : 'block'), text: e.allowed ? 'PASS' : 'BLOCK' }), el('span', { class: 'audit-policy', text: (e.policyId || '').slice(0, 8) }), el('span', { class: 'audit-op', text: e.operation || '' }), el('span', { class: 'audit-reason', text: e.reason || '' }))); });
-      else at.appendChild(empty('No audit entries'));
-      cp.appendChild(at);
-      cp.appendChild(el('h3', {}, 'Live Events'));
-      var feed = el('div', { class: 'event-feed', id: 'pol-live-events' });
-      fillEvents(feed);
-      cp.appendChild(feed);
-      root.appendChild(cp);
-      U.charts.syncSpark('pol-chart-block', d.timeSeries || [], U.charts.parseBR, U.charts.CC.blockRate, 'Block Rate %');
-    }
-    function fillEvents(feed) {
-      U.clear(feed);
-      var ev = (U.liveEvents || []).slice(0, 20);
-      if (!ev.length) { feed.appendChild(empty('Waiting for events…')); return; }
-      ev.forEach(function (e) { feed.appendChild(eventRow(e)); });
-    }
-    U.onEvents(function () { var f = document.getElementById('pol-live-events'); if (f) fillEvents(f); });
-    return { label: 'Policies', render: build };
-  })());
+  // NOTE: there is no inline 'policies' tab here — tab-policies.js (loaded
+  // after this file) owns the Policies tab outright, including the Compliance
+  // & Audit panel and the Live Events feed it used to shadow from here. The
+  // shadowed inline copy (and its duplicate U.onEvents fill of the same
+  // 'pol-live-events' element) was deleted (architecture review P2).
 
   // ═══════════════════════════ MODELS ═══════════════════════════
   U.registerTab('models', (function () {

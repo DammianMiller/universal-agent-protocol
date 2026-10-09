@@ -37,6 +37,16 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install python harness deps
+        # The vitest suite spawns python3 harnesses (the placement gate, the
+        # end-turn classifier) whose sliced proxy code imports fastapi/httpx
+        # at import time. Without these, `npm run test:ci` fails 11 tests in
+        # CI (ModuleNotFoundError: httpx) while passing everywhere httpx
+        # happens to be installed — same set as the enforcers job.
+        run: pip install fastapi uvicorn httpx openai
       - run: npm ci
       - name: Build
         run: npm run build

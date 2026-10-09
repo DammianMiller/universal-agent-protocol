@@ -1,0 +1,23 @@
+[Unit]
+Description=UAP Dashboard (web console, default port 3847; the proxy's placement controller)
+Documentation=https://github.com/DammianMiller/universal-agent-protocol README.md
+# The dashboard is not just a view: PROXY_PLACEMENT_CONTROLLER points here, so
+# the placement gate (spec docs/specs/operator-model-placement.md) answers from
+# THIS service. "If the proxy is active, the dashboard is active" — hence
+# default.target (always with the session) AND the proxy unit Wants= this one.
+After=network-online.target uap-anthropic-proxy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT__
+ExecStart=/bin/node __ROOT__/dist/bin/cli.js dash serve
+# Port-conflict exits are deliberate (src/dashboard/server.ts): another UAP
+# dashboard already owning :3847 exits 0 (no restart loop — the operator must
+# decide which project owns the port); anything else exits 1 and restarts.
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

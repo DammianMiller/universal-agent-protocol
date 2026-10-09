@@ -376,25 +376,12 @@ export function installSystemdUserServices(
 }
 
 
-/** Absolute path to the proxy's systemd EnvironmentFile. */
-export function proxyEnvPath(homeDir: string = os.homedir()): string {
-  return join(homeDir, '.config', 'uap', 'anthropic-proxy.env');
-}
+// The proxy-env readers moved to src/placement/proxy-env.ts (the placement
+// domain must not import from the CLI surface layer). Imported for the
+// internal uses below, re-exported for existing callers.
+import { proxyEnvPath, readProxyEnvVar } from '../placement/proxy-env.js';
+export { proxyEnvPath, readProxyEnvVar };
 
-/**
- * Read the last (last-wins) value of KEY in the proxy env file, or null if the
- * file is missing or the key is unset. Used to honor an operator local-only pin
- * before overwriting ANTHROPIC_PASSTHROUGH_MODELS.
- */
-export function readProxyEnvVar(key: string, homeDir: string = os.homedir()): string | null {
-  const path = proxyEnvPath(homeDir);
-  if (!existsSync(path)) return null;
-  const lines = readFileSync(path, 'utf8').split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].startsWith(`${key}=`)) return lines[i].slice(key.length + 1);
-  }
-  return null;
-}
 
 /**
  * Idempotently set KEY=value lines in the proxy's systemd EnvironmentFile — the

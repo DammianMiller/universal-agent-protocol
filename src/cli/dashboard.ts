@@ -158,24 +158,29 @@ async function exportDashboard(options: DashboardOptions): Promise<void> {
 
 async function showHistory(_options: DashboardOptions): Promise<void> {
   const cwd = process.cwd();
-  const snapshotDbPath = join(cwd, 'agents', 'data', 'memory', 'session_snapshots.db');
+  // History lives in telemetry.db's session_history table (written by the
+  // dashboard on each refresh). The old path read session_snapshots.db — a
+  // table nothing writes, so the command always reported "no history" (dash
+  // audit).
+  const telemetryDbPath = join(cwd, 'agents', 'data', 'memory', 'telemetry.db');
 
-  if (!existsSync(snapshotDbPath)) {
-    console.log(chalk.dim('No session history found. Snapshots are saved automatically.'));
+  if (!existsSync(telemetryDbPath)) {
+    console.log(chalk.dim('No session history found. Start the dashboard to record sessions.'));
     return;
   }
 
   try {
-    const db = new Database(snapshotDbPath, { readonly: true });
+    const db = new Database(telemetryDbPath, { readonly: true });
     const rows = db
       .prepare(
-        'SELECT id, timestamp, duration_ms, total_cost, tasks_completed, models_used FROM session_snapshots ORDER BY timestamp DESC LIMIT 20'
+        `SELECT session_id, status, started_at, duration_ms, total_cost, task_count, model
+         FROM session_history ORDER BY started_at DESC LIMIT 20`
       )
       .all() as Array<Record<string, unknown>>;
     db.close();
 
     if (rows.length === 0) {
-      console.log(chalk.dim('No session snapshots recorded yet.'));
+      console.log(chalk.dim('No session history recorded yet.'));
       return;
     }
 
@@ -184,21 +189,21 @@ async function showHistory(_options: DashboardOptions): Promise<void> {
     console.log(divider(70));
     console.log('');
     console.log(
-      `  ${'Timestamp'.padEnd(22)} ${'Duration'.padEnd(12)} ${'Cost'.padEnd(10)} ${'Tasks'.padEnd(8)} Models`
+      `  ${'Started'.padEnd(22)} ${'Duration'.padEnd(12)} ${'Cost'.padEnd(10)} ${'Tasks'.padEnd(8)} ${'Status'.padEnd(8)} Model`
     );
     console.log(
       `  ${'─'.repeat(22)} ${'─'.repeat(12)} ${'─'.repeat(10)} ${'─'.repeat(8)} ${'─'.repeat(16)}`
     );
 
     for (const row of rows) {
-      const ts = ((row.timestamp as string) || '').slice(0, 19);
+      const ts = ((row.started_at as string) || '').slice(0, 19);
       const dur = row.duration_ms ? `${Math.round((row.duration_ms as number) / 1000)}s` : '?';
       const cost = row.total_cost ? `$${(row.total_cost as number).toFixed(4)}` : '$0';
-      const tasks = String(row.tasks_completed || 0);
-      const parsedModels = row.models_used ? JSON.parse(row.models_used as string) : null;
-      const models = Array.isArray(parsedModels) ? parsedModels.join(', ') : '?';
+      const tasks = String(row.task_count || 0);
+      const status = String(row.status || '-');
+      const model = String(row.model || 'unknown');
       console.log(
-        `  ${ts.padEnd(22)} ${dur.padEnd(12)} ${cost.padEnd(10)} ${tasks.padEnd(8)} ${models}`
+        `  ${ts.padEnd(22)} ${dur.padEnd(12)} ${cost.padEnd(10)} ${tasks.padEnd(8)} ${status.padEnd(8)} ${model}`
       );
     }
     console.log('');

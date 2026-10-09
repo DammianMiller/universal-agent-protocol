@@ -8,7 +8,7 @@
  * single source of truth and the config write is independently testable.
  */
 
-import { writeFileSync, mkdirSync, chmodSync } from 'fs';
+import { writeFileSync, mkdirSync, chmodSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { RoutingPresets, passthroughModelsForPreset, tiersToRoutingMatrix } from '../models/index.js';
 import { upsertProxyEnvVars } from './systemd-services.js';
@@ -547,9 +547,32 @@ export function writeProxyEnv(cwd: string, selections: WizardSelections): string
     const passthrough = routingPreset ? passthroughModelsForPreset(routingPreset) : '';
     lines.push(`ANTHROPIC_PASSTHROUGH_MODELS=${passthrough}`);
 
+    // Model placement (spec §4.3): MODE ships off — the proxy is
+    // byte-identical to the pre-placement build until the operator flips it
+    // to ask. CONTROLLER points at the co-located dashboard (default port
+    // 3847), whose loopback-only /api/placement/admit answers the gate;
+    // without a reachable dashboard the gate degrades to read-only
+    // admission (the proxy's own upstream-id cache).
+    // An operator who already flipped ask on must not lose it by re-running
+    // the wizard: preserve any existing non-off mode from the file being
+    // rewritten (runtime env always wins at the proxy, this is the default).
+    const envDir = join(cwd, '.uap');
+    const existingEnvPath = join(envDir, 'proxy.env');
+    let placementMode = 'off';
+    try {
+      const prev = readFileSync(existingEnvPath, 'utf-8');
+      const m = /^PROXY_PLACEMENT_MODE=(ask|auto)\s*$/m.exec(prev);
+      if (m) placementMode = m[1];
+    } catch {
+      /* absent or unreadable: emit the shipped default */
+    }
+    const dashboardPort = process.env.UAP_DASHBOARD_PORT ?? '3847';
+    lines.push(`PROXY_PLACEMENT_MODE=${placementMode}`);
+    lines.push(`PROXY_PLACEMENT_CONTROLLER=http://127.0.0.1:${dashboardPort}`);
+
     const dir = join(cwd, '.uap');
     mkdirSync(dir, { recursive: true });
-    const envPath = join(dir, 'proxy.env');
+    const envPath = existingEnvPath;
     writeFileSync(envPath, lines.join('\n') + '\n');
     // Mirror the passthrough into the systemd EnvironmentFile the running
     // service actually reads (this .uap/proxy.env is only the fallback loader).
@@ -560,6 +583,11 @@ export function writeProxyEnv(cwd: string, selections: WizardSelections): string
       upsertProxyEnvVars({
         ANTHROPIC_PASSTHROUGH_MODELS: passthrough,
         ...(slotsLine !== undefined ? { UAP_MODEL_SLOTS: slotsLine } : {}),
+        // Placement rides along for the same reason UAP_MODEL_SLOTS does: a
+        // systemd-managed proxy reads the EnvironmentFile, not this fallback
+        // loader — without the mirror, mode/controller would sit dormant.
+        PROXY_PLACEMENT_MODE: placementMode,
+        PROXY_PLACEMENT_CONTROLLER: `http://127.0.0.1:${dashboardPort}`,
       });
     } catch {
       /* proxy env sync is best-effort — .uap/proxy.env still written */

@@ -50,5 +50,8 @@
     <!-- Loaded AFTER tabs.js so its registerTab('policies') overrides the inline
          stub with the full policy-management panel (view/duplicate/reorder/AI-order/import/export). -->
     <script src="/dash/tab-policies.js"></script>
+    <!-- Loaded AFTER tabs.js so registerTab('models') overrides the routing-only
+         stub with the full Models & Placement panel (registry, ledger, preview). -->
+    <script src="/dash/tab-models.js"></script>
   </body>
 </html>

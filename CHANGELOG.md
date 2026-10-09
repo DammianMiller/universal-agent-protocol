@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.24.0 (2026-10-09)
+
+- feat(dashboard): always-on systemd activation + full panel utility pass
+
+
+## v2.23.0 (2026-10-09)
+
+- feat(placement): phase 4 — request-driven auto-load with a fail-closed policy
+
+
+## v2.22.0 (2026-10-09)
+
+- feat(placement): phase 3 — enforcement, mutation surfaces, live in-flight view
+- feat(placement): phase 2 proxy admission gate — 409 pending contract, per-target budgets
+- feat(dashboard): placement read routes + full Models tab
+- feat(coordination): target-keyed model leases and backpressure
+- feat(models): phase 1 placement ledger, admission math, impact preview
+- feat(models): phase 0 placement registry — load, merge, validate, measure
+- docs(specs): correct placement spec against verified review findings
+- docs(specs): operator-directed model placement design
+
+
 ## v2.21.3 (2026-10-07)
 
 - fix(scripts): derive every harness's model id from the qwen38 profile

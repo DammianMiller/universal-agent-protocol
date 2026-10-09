@@ -4306,15 +4306,32 @@ class TestGarbledArgsRetry(unittest.TestCase):
     """Tests for garbled tool arguments triggering retry via _validate_tool_call_arguments."""
 
     def test_garbled_runaway_braces_triggers_retry(self):
-        """Garbled brace imbalance should return an invalid_tool_args issue."""
-        # Valid JSON but with extreme brace imbalance in string value
-        garbled_args = '{"todos": "}}}}}}}}}}}}}"}'
+        """Unparseable runaway braces should return an invalid_tool_args issue.
+
+        Valid JSON with braces inside a string VALUE must NOT be flagged: a
+        live payload (2026-10-03) carried a Rust code excerpt with unmatched
+        closing braces in oldString, and the raw balance check burned three
+        session-contamination resets on a perfectly valid payload before the
+        check was gated behind JSON-parse failure.
+        """
+        # Truncated payload: the JSON closes, then runaway closers follow —
+        # unparseable. The JSON step catches it BEFORE the garbled classifier,
+        # so the issue names the syntax error (still invalid_tool_args, still
+        # retried) rather than "garbled".
+        garbled_args = '{"todos": "cut mid-generation"}}}}}}}'
         issue = proxy._validate_tool_call_arguments(
             "TodoWrite", garbled_args, {}, {"TodoWrite"}
         )
         self.assertTrue(issue.has_issue())
         self.assertEqual(issue.kind, "invalid_tool_args")
-        self.assertIn("garbled", issue.reason)
+        self.assertIn("invalid JSON arguments", issue.reason)
+        # Valid JSON, runaway braces as payload CONTENT (a code excerpt) —
+        # not an issue.
+        excerpt_args = '{"todos": "}}}}}}}}}}}}}"}'
+        issue = proxy._validate_tool_call_arguments(
+            "TodoWrite", excerpt_args, {}, {"TodoWrite"}
+        )
+        self.assertFalse(issue.has_issue())
 
     def test_garbled_repetitive_digits_triggers_retry(self):
         """Repetitive digit patterns should return an invalid_tool_args issue."""
@@ -4632,9 +4649,15 @@ class TestRetryGarbledImprovements(unittest.TestCase):
 
     def test_garbled_args_excerpt_in_issue(self):
         """_is_garbled_tool_arguments detects garbled content for logging."""
-        # Garbled pattern: runaway braces
-        garbled = '{"pattern": "test}}}}}}}}}}}}}}"}'
+        # Garbled pattern: runaway braces on an UNPARSEABLE payload
+        # (truncated JSON + trailing closers)
+        garbled = '{"pattern": "test"}}}}}}}}}}}}}}'
         self.assertTrue(proxy._is_garbled_tool_arguments(garbled))
+        # Valid JSON with runaway braces as string CONTENT (a code excerpt) —
+        # must NOT be flagged (live 2026-10-03: valid Rust excerpt, three
+        # wasted contamination resets)
+        excerpt = '{"pattern": "test}}}}}}}}}}}}}}"}'
+        self.assertFalse(proxy._is_garbled_tool_arguments(excerpt))
         # Clean pattern
         clean = '{"pattern": "hello", "path": "/src"}'
         self.assertFalse(proxy._is_garbled_tool_arguments(clean))

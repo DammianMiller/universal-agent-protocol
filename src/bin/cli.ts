@@ -58,6 +58,7 @@ const lazy = {
   doctor: () => import('../cli/doctor.js').then((m) => m.doctorCommand),
   loops: () => import('../cli/loops.js').then((m) => m.loopsCommand),
   inference: () => import('../cli/inference.js').then((m) => m.inferenceHealthCommand),
+  models: () => import('../cli/models.js').then((m) => m.modelsCommand),
   review: () => import('../cli/review.js').then((m) => m.reviewCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
@@ -627,6 +628,142 @@ program
     const cmd = await lazy.inference();
     await cmd(options);
   });
+
+// Model placement registry (spec: docs/specs/operator-model-placement.md) —
+// `models` (plural) is placement: where a model lives and what it costs.
+// The existing `uap model` (singular) is multi-model routing: which model
+// answers. Both surfaces cross-reference each other in help text.
+program
+  .command('models')
+  .description('Model placement registry: validate footprints, measure the live backend')
+  .addCommand(
+    new Command('validate')
+      .description('Cross-check the registry (repo + ~/.uap/model-registry.json) against the capacity policy')
+      .option('--repo-path <path>', 'explicit repo registry path (default: <project>/config/model-registry.json)')
+      .option('--local-path <path>', 'explicit machine-local registry path (default: ~/.uap/model-registry.json)')
+      .action(async (options) => {
+        const code = await (await lazy.models())('validate', options);
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('measure')
+      .description('Record the live backend\'s measured footprint into the machine-local registry')
+      .option('--model <key>', 'registry model key to attribute the measurement to')
+      .option('--config <key>', 'registry config key to attribute the measurement to')
+      .option('--endpoint <url>', 'inference base URL (default: http://127.0.0.1:8080)')
+      .option('--device <key>', 'device key the measurement is valid on (default: first gpu in the registry)')
+      .option('--dry-run', 'Print what would be written; write nothing')
+      .action(async (options) => {
+        const code = await (await lazy.models())('measure', { ...options, dryRun: options.dryRun === true });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('status')
+      .description('Sync and print the placement ledger: devices (probe fact), residents, headroom')
+      .option('--repo-path <path>', 'explicit repo registry path')
+      .option('--local-path <path>', 'explicit machine-local registry path')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (options) => {
+        const code = await (await lazy.models())('status', options);
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('pending')
+      .description('List parked placement requests awaiting the operator, with ranked options')
+      .option('--repo-path <path>', 'explicit repo registry path')
+      .option('--local-path <path>', 'explicit machine-local registry path')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (options) => {
+        const code = await (await lazy.models())('pending', options);
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    // Args as .argument(), NOT in the name: commander matches the invoked
+    // subcommand by NAME, and a name like 'apply <id> <option>' never
+    // matches 'apply' (verified live: help listed it, invocation didn't).
+    new Command('apply')
+      .argument('<placementId>', 'pending placement id (from `uap models pending`)')
+      .argument('<option>', '1-based option index (as printed by `uap models pending`)')
+      .description('The explicit operator yes: print the impact list, then enforce the placement (rollback on failure)')
+      .option('--yes', 'Actually enforce; without it, prints the impact list and the confirm command')
+      .option('--repo-path <path>', 'explicit repo registry path')
+      .option('--local-path <path>', 'explicit machine-local registry path')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (placementId, option, options) => {
+        const code = await (await lazy.models())('apply', {
+          ...options,
+          placementId,
+          option: Number(option),
+          yes: options.yes === true,
+        });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('dismiss')
+      .argument('<placementId>', 'pending placement id')
+      .description('Refuse a parked placement request; the client falls back on expiry')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (placementId, options) => {
+        const code = await (await lazy.models())('dismiss', { ...options, placementId });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('load')
+      .argument('<model>', 'registry model key (e.g. qwen3.8-27b)')
+      .description('Operator-initiated load: reuse/load-alongside only (displacement needs a pending request)')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (model, options) => {
+        const code = await (await lazy.models())('load', { ...options, model });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('unload')
+      .argument('<model>', 'registry model key whose live residents should be drained and stopped')
+      .description('Drain, stop, verify-free, and refresh for a model\'s live residents')
+      .option('--ledger-path <path>', 'explicit placement ledger path (default: ~/.uap/placement.json)')
+      .action(async (model, options) => {
+        const code = await (await lazy.models())('unload', { ...options, model });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('units')
+      .description('Write Conflicts= drop-ins for same-device registry units (systemd then refuses two residents per device)')
+      .option('--repo-path <path>', 'explicit repo registry path')
+      .option('--local-path <path>', 'explicit machine-local registry path')
+      .action(async (options) => {
+        const code = await (await lazy.models())('units', options);
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('auto')
+      .description('Auto-load policy: load-alongside always; displacement only for allowlisted models (request-driven, no manual apply). Off until --enable.')
+      .option('--enable', 'enable auto-load')
+      .option('--disable', 'disable auto-load; every park needs a manual apply again')
+      .option('--allow-displace <models>', 'comma-separated registry model keys whose displacement may auto-enforce')
+      .option('--disallow-displace <models>', 'comma-separated registry model keys to remove from the displacement allowlist')
+      .option('--yes', 'required with --allow-displace: the standing consent being recorded')
+      .option('--policy-path <path>', 'explicit policy file path (testing only: the controller reads ~/.uap/placement-auto.json or UAP_PLACEMENT_AUTO)')
+      .action(async (options) => {
+        const code = await (await lazy.models())('auto', {
+          enable: options.enable === true,
+          disable: options.disable === true,
+          allowDisplace: options.allowDisplace,
+          disallowDisplace: options.disallowDisplace,
+          yes: options.yes === true,
+          policyPath: options.policyPath,
+        });
+        if (code) process.exitCode = code;
+      }),
+  );
 
 // Quality-metrics gate — complexity/coverage/mutation policing with a ratchet
 program

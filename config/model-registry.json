@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "_comment": "Repo defaults for the model placement registry. Shape only: unit/service names, engines, profiles, affinity, and the config inventory. Measured footprints (resident_gpu_mib, host_rss_mib, device totals) are machine state and live in ~/.uap/model-registry.json, deep-merged over this file. A config without a measurement is 'unmeasured' and fails closed: it may be served if already resident, but it can never be loaded or evicted. See docs/specs/operator-model-placement.md §4.1.",
+  "devices": {
+    "gpu0": {
+      "kind": "gpu"
+    },
+    "cpu0": {
+      "kind": "cpu"
+    }
+  },
+  "models": {
+    "qwen3.8-flash-next": {
+      "display": "Qwen3.8 Flash Next",
+      "engine": "strata",
+      "unit": "uap-strata-server",
+      "service": "strata-server",
+      "launch": "/home/cogtek/dev/strata/run-iq3_xxs.sh",
+      "endpoint": "http://127.0.0.1:8080",
+      "task_affinity": ["code", "general"],
+      "affinity": { "device": ["gpu0"] },
+      "configs": {
+        "strata-iq3_s": {
+          "status": "unmeasured",
+          "note": "active backend on this host; run `uap models measure` to record its footprint"
+        }
+      },
+      "advertises": ["qwen3.8-flash-next-iq3_s", "gpt-5.1-codex"]
+    },
+    "qwen3.8-27b": {
+      "display": "Qwen3.8 27B",
+      "engine": "llama.cpp",
+      "task_affinity": ["code", "general"],
+      "affinity": { "device": ["gpu0"] },
+      "endpoint": "http://127.0.0.1:8080",
+      "advertises": ["Qwen3.8-27B"],
+      "configs": {
+        "llama-mtp": {
+          "status": "unmeasured",
+          "engine": "llama.cpp",
+          "unit": "uap-llama-server",
+          "profile": "config/llama-profiles/qwen38-27b-mtp.env"
+        },
+        "exl3-4bit": {
+          "status": "unmeasured",
+          "engine": "exl3",
+          "unit": "uap-exl3-server",
+          "profile": "config/exl3-profiles/qwen38-27b-exl3.env"
+        },
+        "flashnext": {
+          "status": "unmeasured",
+          "engine": "llama.cpp",
+          "unit": "uap-flashnext-server"
+        },
+        "signal": {
+          "status": "unmeasured",
+          "engine": "llama.cpp",
+          "unit": "uap-signal-server"
+        },
+        "gsq-rco": {
+          "status": "unmeasured",
+          "engine": "llama.cpp",
+          "unit": "uap-gsq-rco-server",
+          "service": "gsq-rco-server"
+        },
+        "ampere": {
+          "status": "unmeasured",
+          "engine": "llama.cpp",
+          "unit": "uap-ampere-server"
+        },
+        "swift": {
+          "status": "unmeasured",
+          "engine": "llama.cpp",
+          "unit": "uap-swift-server"
+        }
+      }
+    }
+  }
+}
