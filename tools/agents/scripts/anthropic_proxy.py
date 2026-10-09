@@ -5128,9 +5128,17 @@ def _placement_inflight_register(request: httpx.Request) -> tuple[str | None, di
     /slots, /health, /v1/models), the controller admit POST, and loopback
     refreshes stay out of the list — the drain view answers "is a resident
     generating", not "is the proxy talking".
+
+    Fail-soft on a request that is not shaped like an httpx.Request
+    (getattr guards, never attribute access): send() calls this BEFORE the
+    disconnect-holder branch, so a stubbed or bare request object (the
+    chokepoint tests stub the superclass send) must pass through
+    unregistered rather than raise. A real httpx.Request always has
+    .url/.method; anything else is by definition not a generation POST.
     """
-    path = request.url.path
-    if request.method != "POST" or not (
+    method = getattr(request, "method", None)
+    path = getattr(getattr(request, "url", None), "path", "")
+    if method != "POST" or not (
         path.endswith("/chat/completions") or path.endswith("/completions")
     ):
         return None, None
