@@ -177,10 +177,11 @@ describe('12: Workflow defaults fixed', () => {
     expect(source).toContain('1.7.0');
   });
 
-  it('deploy-publish should have dynamic release body', () => {
-    const source = readFileSync('.github/workflows/deploy-publish.yml', 'utf-8');
+  it('deploy-verify create-release has the dynamic release body (moved from the deleted deploy-publish.yml)', () => {
+    const source = readFileSync('.github/workflows/deploy-verify.yml', 'utf-8');
     expect(source).not.toContain('Validation toggle enabled');
     expect(source).toContain('CHANGELOG.md');
+    expect(source).toContain('Create GitHub Release');
   });
 });
 

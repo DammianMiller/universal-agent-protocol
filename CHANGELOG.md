@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.24.1 (2026-10-09)
+
+- fix(ci): one publish pipeline — delete the never-authorized auto-publisher
+- fix(ci): unblock PR CI — chokepoint fail-soft, stale garbled tests, harness deps
+
+
 ## v2.24.0 (2026-10-09)
 
 - feat(dashboard): always-on systemd activation + full panel utility pass

@@ -11,7 +11,13 @@ echo "=========================================="
 echo ""
 
 REPO="DammianMiller/universal-agent-protocol"
-WORKFLOW_ID="deploy-publish.yml"
+# The ONLY publish pipeline is npm-publish-manual.yml ("NPM Publish - Manual
+# Trigger"): npm's OIDC trusted-publisher entry is bound to that workflow, so
+# it is the one that can actually authorize a publish (it published 2.16.2).
+# deploy-publish.yml (the auto-publisher) was deleted — its publish step
+# failed ENEEDAUTH on every master push because npm could never authorize a
+# second workflow.
+WORKFLOW_ID="npm-publish-manual.yml"
 
 # Check if gh CLI is installed
 if ! command -v gh &> /dev/null; then
@@ -43,31 +49,37 @@ echo ""
 # Get workflow ID
 echo "🔄 Fetching workflow information..."
 WORKFLOW_ID=$(gh api "/repos/$REPO/actions/workflows" \
-  --jq '.workflows[] | select(.name == "Build, Test & Publish to NPM") | .id')
+  --jq '.workflows[] | select(.name == "NPM Publish - Manual Trigger") | .id')
 
 if [ -z "$WORKFLOW_ID" ]; then
-    echo "❌ Could not find workflow: $WORKFLOW_ID"
+    echo "❌ Could not find workflow: NPM Publish - Manual Trigger"
     exit 1
 fi
 
 echo "✅ Found workflow ID: $WORKFLOW_ID"
 echo ""
 
-# Trigger the workflow
-echo "🚀 Triggering publish workflow..."
-RESPONSE=$(gh api \
+# Trigger the workflow. The manual workflow takes a `version` input (and an
+# optional `force`); it builds, tests, and publishes exactly that version via
+# OIDC trusted publishing.
+echo "🚀 Triggering publish workflow for v${VERSION}..."
+gh api \
   --method POST \
   "/repos/$REPO/actions/workflows/${WORKFLOW_ID}/dispatches" \
   -f ref="master" \
-  -f inputs='{"publish":"true","dry_run":"false"}')
+  -F "inputs[version]=${VERSION}" \
+  -F "inputs[force]=false"
 
-echo "$RESPONSE" | jq '.workflow_run.id' > /tmp/run_id.txt
-RUN_ID=$(cat /tmp/run_id.txt)
-
-if [ -z "$RUN_ID" ]; then
+if [ $? -ne 0 ]; then
     echo "❌ Failed to trigger workflow"
     exit 1
 fi
+
+# The dispatch endpoint returns 204 (no body) on success — resolve the run by
+# the workflow + head SHA instead of parsing a response.
+sleep 5
+RUN_ID=$(gh api "/repos/$REPO/actions/workflows/${WORKFLOW_ID}/runs?head_sha=$(git rev-parse origin/master 2>/dev/null || git rev-parse master)" \
+  --jq '.workflow_runs[0].id' 2>/dev/null || echo "")
 
 echo ""
 echo "✅ Workflow triggered successfully!"

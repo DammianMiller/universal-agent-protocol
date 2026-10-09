@@ -243,10 +243,22 @@ describe('Phase 3: Architecture', () => {
   });
 
   describe('D8: GitHub workflow fixes', () => {
-    it('deploy-publish.yml includes NODE_AUTH_TOKEN for npm publish', () => {
-      const source = readFileSync('.github/workflows/deploy-publish.yml', 'utf-8');
-      expect(source).toContain('NODE_AUTH_TOKEN');
-      expect(source).toContain('NPM_TOKEN');
+    it('exactly one npm publish pipeline exists — the OIDC manual workflow', () => {
+      // deploy-publish.yml (the auto-publisher) was deleted: its publish step
+      // failed ENEEDAUTH on EVERY master push (v2.19.x–v2.24.0) because
+      // npm's OIDC trusted-publisher entry is bound to npm-publish-manual.yml
+      // only — a second workflow can never authorize. The old assertion
+      // (NODE_AUTH_TOKEN in deploy-publish.yml) had been passing only via
+      // comment text anyway.
+      expect(existsSync('.github/workflows/deploy-publish.yml')).toBe(false);
+      const manual = readFileSync('.github/workflows/npm-publish-manual.yml', 'utf-8');
+      expect(manual).toContain('id-token: write');
+      expect(manual).toContain('npm@^11.5.1');
+      expect(manual).toContain('npm publish --access public --provenance');
+      // The GitHub Release (the non-publish part of the deleted workflow)
+      // moved to deploy-verify.yml, gated on a green Build & Test.
+      const verify = readFileSync('.github/workflows/deploy-verify.yml', 'utf-8');
+      expect(verify).toContain('Create GitHub Release');
     });
 
     it('uap-compliance.yml grep pipe bug is fixed', () => {

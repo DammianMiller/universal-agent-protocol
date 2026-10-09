@@ -229,3 +229,53 @@ jobs:
         with:
           name: deploy-status-prod
           path: deploy-status/prod.json
+
+  # GitHub Release on master, moved here from deploy-publish.yml (deleted).
+  # That workflow's npm-publish step failed ENEEDAUTH on EVERY master push
+  # for a week (v2.19.x–v2.24.0): npm's OIDC trusted-publisher entry is bound
+  # to the "NPM Publish - Manual Trigger" workflow only, so an auto-publish
+  # from any other workflow can never authorize. ONE publish pipeline exists
+  # now — npm-publish-manual.yml (proven: it published 2.16.2). This release
+  # job is the non-publish part of the old workflow that was worth keeping:
+  # tag + GitHub Release on the default branch, only after verify is green.
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [verify]
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Get package version
+        id: get_version
+        run: echo "VERSION=$(node -p 'require(\"./package.json\").version')" >> $GITHUB_OUTPUT
+      - name: Check if tag exists
+        id: check_tag
+        env:
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: |
+          if git rev-parse "v${{ env.VERSION }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag v$VERSION already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Creating tag for first release of version..."
+          fi
+      - name: Create GitHub Release
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.get_version.outputs.VERSION }}
+          name: Release v${{ steps.get_version.outputs.VERSION }}
+          body: |
+            ## @miller-tech/uap v${{ steps.get_version.outputs.VERSION }}
+
+            See [CHANGELOG.md](https://github.com/DammianMiller/universal-agent-protocol/blob/master/CHANGELOG.md) for details.
+
+          draft: false
+          prerelease: false
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
