@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.24.0 (2026-10-09)
+
+- feat(dashboard): always-on systemd activation + full panel utility pass
+
+
 ## v2.23.0 (2026-10-09)
 
 - feat(placement): phase 4 — request-driven auto-load with a fail-closed policy
