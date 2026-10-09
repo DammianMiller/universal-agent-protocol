@@ -62,13 +62,19 @@ describe('Dashboard Display Fixes', () => {
   });
 
   describe('Web dashboard panels use correct classes', () => {
-    it('Policies panel is built via the shared panel() helper (class "panel")', () => {
+    it('Policies tab is owned by tab-policies.js; its panels use class "panel"', () => {
       // PR #410 (dashboard-uplift): panels moved from inline dashboard.html
-      // markup to web/dash/tabs.js, where every panel is built by the shared
-      // panel() helper — which stamps class 'panel' on its root div.
+      // markup to web/dash modules. The Policies tab now lives in
+      // tab-policies.js (the inline tabs.js copy was deleted — it was
+      // shadowed by the override and left a duplicate live-events filler
+      // behind); its Compliance & Audit panel is a class 'panel' root.
       const source = dashboardBundle();
-      expect(source).toContain("panel('Policies')");
+      expect(source).toContain("UAP.registerTab('policies'");
+      expect(source).toContain("'Compliance & Audit'");
       expect(source).toMatch(/el\('div', \{ class: 'panel' \}/);
+      // The shadowed inline copy must stay gone (architecture review P2):
+      // only ONE UAP.registerTab('policies') may exist in the bundle.
+      expect(source.match(/UAP\.registerTab\('policies'/g)?.length).toBe(1);
     });
   });
 

@@ -1,19 +1,21 @@
 /**
  * Dashboard Data Seeder
  *
- * Registers the dashboard server as an active agent and populates
- * empty databases with real data from worktrees and git history.
+ * Registers the dashboard server as an agent (status 'idle' — it is not doing
+ * agent WORK, so it must not inflate the "Active Agents" counts) and seeds
+ * policy files into an empty policies DB. Nothing else.
  *
- * IMPORTANT: This module NEVER generates synthetic/fake data.
- * All data comes from real sources: git log, worktree registry,
- * and existing database records. The periodic refresh only updates
- * the agent heartbeat — it does not inject fake tasks, memories,
- * policy executions, routing decisions, or analytics.
+ * IMPORTANT: This module NEVER generates synthetic/fake data. A git commit is
+ * not a task and a worktree is not a task — earlier versions fabricated
+ * `git-*` and `wt-*` task rows from them, which polluted task counts and the
+ * kanban with entities no one created or manages (dash audit). Those paths
+ * are gone. The periodic refresh only updates the agent heartbeat — it does
+ * not inject tasks, memories, policy executions, routing decisions, or
+ * analytics.
  */
 
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
 
 export interface SeederState {
@@ -30,13 +32,16 @@ export interface SeederState {
 let seederState: SeederState | null = null;
 
 export function seedDashboardData(cwd: string): SeederState {
-  const agentId = `dashboard-server-${Date.now()}`;
+  const agentId = `dashboard-server-${process.pid}`;
   const now = new Date().toISOString();
-  let tasksCreated = 0;
-  let deploysQueued = 0;
-  let batchesCreated = 0;
+  const tasksCreated = 0;
+  const deploysQueued = 0;
+  const batchesCreated = 0;
 
-  // 1. Register dashboard server as active agent
+  // 1. Register dashboard server as an agent — status 'idle'. It is a real
+  // coordination participant (it mutates tasks/policies via its routes), but
+  // it is not doing agent WORK, so 'active' would inflate the "Active Agents"
+  // tile and the agents panel.
   const coordDbPath = join(cwd, 'agents', 'data', 'coordination', 'coordination.db');
   let coordDb: Database.Database | null = null;
   if (existsSync(coordDbPath)) {
@@ -46,83 +51,31 @@ export function seedDashboardData(cwd: string): SeederState {
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_registry'")
         .all();
       if (hasAgents.length > 0) {
+        // Retire rows from previous dash processes (they are dead and their
+        // heartbeats are frozen — leaving them 'idle' would pile up forever).
+        coordDb
+          .prepare(
+            `UPDATE agent_registry SET status = 'completed' WHERE id LIKE 'dashboard-server-%' AND id != ?`
+          )
+          .run(agentId);
         coordDb
           .prepare(
             `INSERT OR REPLACE INTO agent_registry (id, name, session_id, status, current_task, started_at, last_heartbeat)
-           VALUES (?, ?, ?, 'active', 'dashboard-server', ?, ?)`
+           VALUES (?, ?, ?, 'idle', 'dashboard-server', ?, ?)`
           )
-          .run(agentId, 'Dashboard Server', `session-${Date.now()}`, now, now);
+          .run(agentId, 'Dashboard Server', `session-dash-${process.pid}`, now, now);
       }
     } catch {
       /* ignore */
     }
   }
 
-  // 2. Create tasks from active worktrees (only when task DB is empty)
-  try {
-    const wtDbPath = join(cwd, '.uap', 'worktree_registry.db');
-    if (existsSync(wtDbPath)) {
-      const wtDb = new Database(wtDbPath, { readonly: true });
-      const hasTable = wtDb
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='worktrees'")
-        .all();
-      if (hasTable.length > 0) {
-        const worktrees = wtDb
-          .prepare("SELECT id, slug, branch_name, status FROM worktrees WHERE status='active'")
-          .all() as Array<{ id: number; slug: string; branch_name: string; status: string }>;
-        const taskDbPath = join(cwd, '.uap', 'tasks', 'tasks.db');
-        if (existsSync(taskDbPath)) {
-          const taskDb = new Database(taskDbPath);
-          const existingCount = (
-            taskDb.prepare('SELECT COUNT(*) as c FROM tasks').get() as { c: number }
-          ).c;
-          if (existingCount === 0 && worktrees.length > 0) {
-            const insert = taskDb.prepare(
-              `INSERT OR IGNORE INTO tasks (id, title, type, status, priority, created_at, updated_at) VALUES (?, ?, 'task', 'in_progress', 2, ?, ?)`
-            );
-            for (const wt of worktrees) {
-              insert.run(`wt-${wt.id}`, `Worktree: ${wt.slug} (${wt.branch_name})`, now, now);
-              tasksCreated++;
-            }
-          }
-          taskDb.close();
-        }
-      }
-      wtDb.close();
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // 3. Create tasks from recent git commits (only real commits, INSERT OR IGNORE)
-  try {
-    const taskDbPath = join(cwd, '.uap', 'tasks', 'tasks.db');
-    if (existsSync(taskDbPath)) {
-      const gitLog = execSync('git log --oneline -10 --format="%H|%s"', {
-        encoding: 'utf-8',
-        cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-      if (gitLog) {
-        const taskDb = new Database(taskDbPath);
-        const insert = taskDb.prepare(
-          `INSERT OR IGNORE INTO tasks (id, title, type, status, priority, created_at, updated_at) VALUES (?, ?, ?, 'done', 3, ?, ?)`
-        );
-        for (const line of gitLog.split('\n').filter(Boolean)) {
-          const [hash, ...msgParts] = line.split('|');
-          const msg = msgParts.join('|');
-          if (!hash || !msg) continue;
-          const type = msg.startsWith('fix') ? 'bug' : msg.startsWith('feat') ? 'feature' : 'task';
-          insert.run(`git-${hash.slice(0, 8)}`, msg, type, now, now);
-          tasksCreated++;
-        }
-        taskDb.close();
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-
+  // NOTE: tasks.db is intentionally NOT seeded — not from worktrees (a
+  // worktree is not a task) and not from git log (a commit is not a task).
+  // Fabricated `wt-*`/`git-*` rows polluted the task counts and the kanban
+  // with entities no one created or manages. The Tasks tab is honestly
+  // empty until real tasks are created (via `uap task create` or the UI).
+  //
   // NOTE: deploy_queue / deploy_batches are intentionally NOT seeded from git.
   // A git tag or commit is not a deploy event; inserting them as status='completed'
   // deploys (timestamped at seed time) would be synthetic data — which this module

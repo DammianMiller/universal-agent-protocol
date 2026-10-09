@@ -15,10 +15,12 @@ import { fileURLToPath } from 'url';
 import { getDashboardData, probeDatabaseHealth } from './data-service.js';
 import { getPlacementState, getPlacementPending, getPlacementPreview, getPlacementAdmit } from './placement-routes.js';
 import { resolvePendingPlacement, dismissPendingPlacement, loadPlacement, unloadPlacement } from '../placement/enforce.js';
+import { autoPolicyPath, loadAutoPolicy, saveAutoPolicy } from '../placement/auto.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { heuristicOrder, buildOrderPrompt, parseOrderResponse, type OrderablePolicy } from '../policies/policy-order.js';
 import { readEventsSince, readRecentEvents } from '../utils/telemetry-store.js';
+import { loadPolicy, runDoctor, worstHealth } from '../capacity/probe.js';
 
 /** First prose sentence of a policy's markdown (its description), fail-soft. */
 function policyPromptDescription(md: string): string {
@@ -192,6 +194,9 @@ export function startDashboardServer(
   // Track SSE clients for live event streaming
   const sseClients = new Set<ServerResponse>();
   const cwd = process.cwd();
+  // In-flight /api/doctor run (probes block the loop; concurrent requests
+  // coalesce onto one sweep instead of serializing N of them).
+  let doctorInFlight: Promise<unknown> | null = null;
 
   // Mutation auth (security audit D1): the policy-mutation POST routes disable
   // security controls (delivery-enforcement, self-protect) and persist the
@@ -375,6 +380,45 @@ export function startDashboardServer(
         } catch (err) {
           res.writeHead(503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: `placement preview unavailable: ${(err as Error).message}` }));
+        }
+        return;
+      }
+
+      // API: Capacity doctor (`uap doctor` as a read route). Same shape the
+      // CLI prints with --json (reportVersion pins it). On-demand: the
+      // Overview tab fetches it once per visit (plus a Refresh button) — the
+      // probes are execFileSync-bounded (5s cap each), so it must NOT ride
+      // the 2s snapshot tick. Concurrent requests COALESCE onto the in-flight
+      // run (the probes block the event loop; two tabs must not serialize
+      // two full probe sweeps). Fail-open shape: policy-load errors surface
+      // as an `error` field, never a 500 crash of the panel.
+      if (url === '/api/doctor') {
+        try {
+          if (!doctorInFlight) {
+            doctorInFlight = (async () => {
+              try {
+                const loaded = loadPolicy(cwd);
+                const services = runDoctor(loaded.policy);
+                return {
+                  reportVersion: 1,
+                  policy: loaded.path,
+                  worst: worstHealth(services),
+                  services,
+                } as const;
+              } catch (err) {
+                return { reportVersion: 1, error: (err as Error).message } as const;
+              } finally {
+                doctorInFlight = null;
+              }
+            })();
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(await doctorInFlight));
+        } catch (err) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({ reportVersion: 1, error: (err as Error).message })
+          );
         }
         return;
       }
@@ -715,10 +759,63 @@ export function startDashboardServer(
       return false;
     }
   };
+  // Bind failure is the ONE error every deployment hits eventually (two
+  // projects, one 3847). Without this handler the process dies with a raw
+  // EADDRINUSE stack and a Restart=on-failure unit crash-loops against a
+  // port squatter. With it: say WHO owns the port (the fix depends on it —
+  // another UAP dashboard is a deliberate operator state, anything else is
+  // a genuine failure) and exit with a status systemd can act on.
+  // Attached to BOTH the http server AND the WebSocketServer: when ws wraps
+  // an existing server, the bind error surfaces on the WebSocketServer
+  // instance ('Emitted error event on WebSocketServer instance' — verified
+  // live), so an http-only handler never fires.
+  const onBindError = (err: NodeJS.ErrnoException): void => {
+    const die = (message: string, code: number): void => {
+      console.error(message);
+      process.exit(code);
+    };
+    if (err.code !== 'EADDRINUSE') {
+      die(`UAP Dashboard: server error: ${err.message} — exiting`, 1);
+      return;
+    }
+    const probeUrl = `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${requestedPort}/api/health`;
+    fetch(probeUrl, { signal: AbortSignal.timeout(1500) })
+      .then(async (r) => (r.ok ? ((await r.json()) as { service?: string; root?: string }) : null))
+      .then((body) => {
+        if (body?.service === 'uap-dashboard') {
+          // Exit 0 on purpose: the port's owner is a functioning UAP
+          // dashboard, so restarting cannot help — the operator must decide
+          // which project owns the port. A on-failure unit must NOT loop.
+          die(
+            `UAP Dashboard: port ${requestedPort} is already owned by another UAP dashboard` +
+              ` (root: ${body.root ?? 'unknown'} — it serves THAT project's data, not this one: ${cwd}).`,
+            0
+          );
+          return;
+        }
+        die(
+          `UAP Dashboard: port ${requestedPort} is busy (not a UAP dashboard) — ` +
+            `free it or run with --port <n>. (${err.message})`,
+          1
+        );
+      })
+      .catch(() => {
+        die(
+          `UAP Dashboard: port ${requestedPort} is busy and did not answer a health probe — ` +
+            `free it or run with --port <n>. (${err.message})`,
+          1
+        );
+      });
+  };
+  server.on('error', onBindError);
   const wss = new WebSocketServer({
     server,
     verifyClient: ({ origin }: { origin?: string }) => originAllowed(origin),
   });
+  // Bind errors surface HERE too (ws re-emits them on the WebSocketServer
+  // instance when it wraps the http server) — without this, a port conflict
+  // crashes with a raw stack instead of the owner report + exit contract.
+  wss.on('error', onBindError);
 
   const pushInterval = setInterval(async () => {
     if (wss.clients.size === 0 && sseClients.size === 0) return;
@@ -899,6 +996,7 @@ async function routeControl(url: string, cwd: string, body: Record<string, unkno
   if (url === '/api/placement/dismiss') return handlePlacementDismiss(body);
   if (url === '/api/placement/load') return handlePlacementLoad(cwd, body);
   if (url === '/api/placement/unload') return handlePlacementUnload(cwd, body);
+  if (url === '/api/placement/auto') return handlePlacementAuto(body);
   return undefined;
 }
 
@@ -939,4 +1037,41 @@ async function handlePlacementUnload(cwd: string, body: Record<string, unknown>)
   const model = typeof body.model === 'string' ? body.model : '';
   if (!model) throw new Error('model is required');
   return unloadPlacement(cwd, model);
+}
+
+/** Phase-4 auto policy (§4.4.1) — the UI twin of `uap models auto`: status
+ * read with no fields, enable/disable, and the displacement allowlist whose
+ * additions require the same explicit `yes` consent the CLI's --yes demands
+ * (what is being recorded is standing consent to evict unattended).
+ * NO policy_path from the body (security review S1): an HTTP caller must not
+ * redirect the policy write at an arbitrary filesystem path — the route always
+ * writes the single authority (`autoPolicyPath()`, env-overridable for tests
+ * via UAP_PLACEMENT_AUTO exactly like the CLI). */
+function handlePlacementAuto(body: Record<string, unknown>): unknown {
+  const stringList = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((m): m is string => typeof m === 'string' && m.length > 0) : [];
+  const enable = body.enable === true;
+  const disable = body.disable === true;
+  const allow = stringList(body.allow_displace);
+  const disallow = stringList(body.disallow_displace);
+  if (enable && disable) throw new Error('enable and disable are mutually exclusive');
+  const path = autoPolicyPath();
+  if (!enable && !disable && allow.length === 0 && disallow.length === 0) {
+    return loadAutoPolicy(path); // status: same shape the state payload serves
+  }
+  if (allow.length > 0 && body.yes !== true) {
+    throw new Error(
+      'allow_displace records standing consent to UNLOAD the current resident(s) and load the requested ' +
+        'model without an operator prompt — confirm with yes: true (the same gate as ' +
+        '`uap models auto --allow-displace <model> --yes`)'
+    );
+  }
+  const prev = loadAutoPolicy(path);
+  const next = { enabled: prev.enabled, allow_displace: [...prev.allow_displace] };
+  if (enable) next.enabled = true;
+  if (disable) next.enabled = false;
+  for (const m of allow) if (!next.allow_displace.includes(m)) next.allow_displace.push(m);
+  next.allow_displace = next.allow_displace.filter((m) => !disallow.includes(m));
+  saveAutoPolicy(next, path);
+  return next;
 }

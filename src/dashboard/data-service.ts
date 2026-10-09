@@ -503,6 +503,14 @@ export interface TaskData {
   blocked: number;
   open: number;
   items: TaskItem[];
+  /** How many not-done rows the 50-item board window actually shows vs. how
+   *  many exist — the board header must say "showing X of Y", not claim DB
+   *  totals over a truncated window (dash audit). */
+  boardShown: number;
+  boardTotal: number;
+  /** How many done rows the 10-item "recently done" strip shows vs. total. */
+  doneShown: number;
+  doneTotal: number;
 }
 
 export interface CoordData {
@@ -514,7 +522,7 @@ export interface CoordData {
   patternHits: number;
   patternSuccesses: number;
   activeWorktrees: number;
-  agents: Array<{ id: string; name: string; status: string; startedAt: string; type?: string; task?: string }>;
+  agents: Array<{ id: string; name: string; status: string; startedAt: string; type?: string; task?: string; lastHeartbeat?: string | null }>;
   skillsPerAgent: Record<string, string[]>;
   patternsPerAgent: Record<string, Array<{ id: string; category: string; uses: number }>>;
 }
@@ -867,9 +875,13 @@ function buildSessionTelemetry(
     // Read the latest REAL session. This is a read path — never fabricate one.
     // If none exists, synthesize an in-memory row with an honest (current) start
     // so uptime reflects reality instead of a seeded "-2h", and nothing is written.
+    // The synthetic id is STABLE per dash process (pid): persistSessionSnapshot
+    // runs INSERT OR REPLACE on every refresh tick, and a `session-${Date.now()}`
+    // id minted a FRESH row per 2s tick — ~43k rows/day of self-written
+    // "history" (found in the dash audit). A stable id replaces one row.
     const sessionRowRaw = db.prepare('SELECT * FROM sessions ORDER BY created_at DESC LIMIT 1').get();
     const sessionRow = (sessionRowRaw as Record<string, unknown> | undefined) ?? {
-      id: `session-${Date.now()}`,
+      id: `session-dash-${process.pid}`,
       created_at: new Date().toISOString(),
       status: 'active',
     };
@@ -1716,7 +1728,18 @@ export function getModelData(cwd: string): ModelData {
 
 export function getTaskData(cwd: string): TaskData {
   const taskDbPath = join(cwd, '.uap/tasks/tasks.db');
-  const result: TaskData = { total: 0, done: 0, inProgress: 0, blocked: 0, open: 0, items: [] };
+  const result: TaskData = {
+    total: 0,
+    done: 0,
+    inProgress: 0,
+    blocked: 0,
+    open: 0,
+    items: [],
+    boardShown: 0,
+    boardTotal: 0,
+    doneShown: 0,
+    doneTotal: 0,
+  };
 
   if (existsSync(taskDbPath)) {
     try {
@@ -1737,6 +1760,13 @@ export function getTaskData(cwd: string): TaskData {
       ).c;
       result.open = (
         db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status='open'").get() as { c: number }
+      ).c;
+      // Exact not-done population for the board window (NOT total−done: a
+      // status outside the done/wont_do set would make the subtraction lie).
+      result.boardTotal = (
+        db
+          .prepare("SELECT COUNT(*) as c FROM tasks WHERE status NOT IN ('done', 'wont_do')")
+          .get() as { c: number }
       ).c;
 
       // Fetch individual task items for kanban board (most recent 50)
@@ -1826,6 +1856,13 @@ export function getTaskData(cwd: string): TaskData {
         ...resolveGroup(r.id),
       }));
 
+      // Window honesty: the board shows the newest 50 not-done rows and the
+      // strip the newest 10 done rows. Report both window sizes against their
+      // true populations so the UI can say "showing X of Y".
+      result.boardShown = rows.length;
+      result.doneShown = doneRows.length;
+      result.doneTotal = result.done;
+
       db.close();
     } catch {
       /* ignore */
@@ -1883,7 +1920,7 @@ function getCoordData(cwd: string): CoordData {
           try {
             const agentRows = db
               .prepare(
-                'SELECT id, name, status, started_at, current_task FROM agent_registry ORDER BY started_at DESC LIMIT 20'
+                'SELECT id, name, status, started_at, current_task, last_heartbeat FROM agent_registry ORDER BY started_at DESC LIMIT 20'
               )
               .all() as Array<{
               id: string;
@@ -1891,6 +1928,7 @@ function getCoordData(cwd: string): CoordData {
               status: string;
               started_at: string;
               current_task: string | null;
+              last_heartbeat: string | null;
             }>;
             result.agents = agentRows.map((a) => ({
               id: a.id,
@@ -1898,6 +1936,9 @@ function getCoordData(cwd: string): CoordData {
               status: a.status,
               startedAt: a.started_at,
               task: a.current_task || '',
+              // Heartbeat age drives the agents-panel stale indicator; agents
+              // typically re-beat every 30s, so >5m means stale/absent.
+              lastHeartbeat: a.last_heartbeat || a.started_at || null,
             }));
           } catch {
             /* ignore */

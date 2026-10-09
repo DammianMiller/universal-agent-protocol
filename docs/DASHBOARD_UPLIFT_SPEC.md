@@ -26,14 +26,14 @@ web/dash/core.js            data layer + app shell: WS/SSE/poll channels, global
                             api() POST helper, expand/collapse helpers, drill navigation (goAgent(id)).
 web/dash/charts.js          uPlot chart + sparkline builders (ported 1:1 from current behaviour).
 web/dash/styles.css         all CSS (ported + new tab/drawer/table/control styles), tokens only.
-web/dash/tab-overview.js    aggregate KPIs + hero charts + live summaries with drill links.
-web/dash/tab-tasks.js       Tasks & Epics: kanban + table + create/edit/status/assignee/delete + epic ledger.
-web/dash/tab-agents.js      Agents & Sessions: agent grid -> per-agent drawer; session history -> per-session drawer.
-web/dash/tab-orchestration.js  mission->epic->task tree + agents + orchestrate on/off/auto + ledger controls.
-web/dash/tab-deliver.js     deliver run registry list + launch form + cancel/resume + per-run telemetry.
-web/dash/tab-policies.js    policies table (existing controls) + compliance + audit + live events.
-web/dash/tab-models.js      models/routing config + session usage + routing decisions.
-web/dash/tab-memory.js      L1-L4 + compression + hit/miss gauge + recent queries + savings-by-influence.
+web/dash/tabs.js            inline tabs: overview (+ service-health strip) / tasks & epics kanban /
+                            agents / orchestration / deliver / memory. (The six per-tab stub
+                            files were dead weight — never loaded by dashboard.html — and
+                            were removed.)
+web/dash/tab-policies.js    full policies panel (order/view/duplicate/import/export) +
+                            compliance + audit + live events.
+web/dash/tab-models.js      models & placement: registry, ledger, pending placement
+                            apply/dismiss, unload, auto-load policy, preview.
 ```
 Server change: `server.ts` static handler currently serves `/vendor/`; extend it to ALSO serve
 `/dash/` (same path-traversal guard, content types add `.css`, `.js`).

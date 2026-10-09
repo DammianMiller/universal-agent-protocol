@@ -31,6 +31,7 @@ import {
 import { computeOptions } from '../placement/admission.js';
 import {
   autoOptionFor,
+  autoPolicyPath,
   loadAutoPolicy,
   scheduleAutoResolution,
   type AutoPolicy,
@@ -65,6 +66,10 @@ export interface PlacementStatePayload {
   pending: PlacementLedger['pending'];
   models: PlacementModelSummary[];
   registry_errors: string[];
+  /** Phase-4 auto policy (§4.4.1): the UI is the operator's management
+   * surface for it — enabled state + the displacement allowlist, exactly
+   * what `uap models auto` prints. */
+  auto: AutoPolicy;
 }
 
 function summarizeRegistry(loaded: RegistryLoadResult): PlacementModelSummary[] {
@@ -98,7 +103,12 @@ function summarizeRegistry(loaded: RegistryLoadResult): PlacementModelSummary[] 
  * probes, residents reconciled from unit activity, pending parked requests). */
 export function getPlacementState(
   projectDir: string,
-  opts?: { loaded?: RegistryLoadResult; ledgerPath?: string; isActive?: (unit: string) => boolean },
+  opts?: {
+    loaded?: RegistryLoadResult;
+    ledgerPath?: string;
+    isActive?: (unit: string) => boolean;
+    autoPolicyPath?: string;
+  },
 ): PlacementStatePayload {
   const loaded = opts?.loaded ?? loadModelRegistry(projectDir);
   const ledgerPath = opts?.ledgerPath ?? placementLedgerPath();
@@ -110,6 +120,7 @@ export function getPlacementState(
     pending: ledger.pending,
     models: summarizeRegistry(loaded),
     registry_errors: loaded.errors,
+    auto: loadAutoPolicy(opts?.autoPolicyPath ?? autoPolicyPath()),
   };
 }
 
