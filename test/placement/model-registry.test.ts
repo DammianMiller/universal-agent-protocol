@@ -233,3 +233,62 @@ describe('validateRegistry', () => {
     expect(findings.some((f) => f.severity === 'error' && /no service by that name/.test(f.message))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Repo registry wiring: the ugc-factory brain (qwen3.6-27b via uap-dflash-server)
+// ---------------------------------------------------------------------------
+
+const repoRoot = new URL('../../', import.meta.url).pathname;
+
+describe('repo registry: ugc brain (qwen3.6-27b) wiring', () => {
+  let own: string;
+  afterAll(() => {
+    if (own) rmSync(own, { recursive: true, force: true });
+  });
+  it('ships the dflash config, advertises the ugc id, and fails closed until measured', () => {
+    own = mkdtempSync(join(tmpdir(), 'ugc-registry-'));
+    const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+    expect(loaded.errors).toEqual([]);
+    const entry = loaded.registry.models['qwen3.6-27b'];
+    expect(entry, 'config/model-registry.json must keep the qwen3.6-27b entry').toBeTruthy();
+    expect(entry.unit).toBe('uap-dflash-server');
+    expect(entry.engine).toBe('dflash');
+    expect(entry.advertises).toContain('qwen3.6-27b');
+    expect(entry.affinity?.device).toEqual(['gpu0']);
+    const cfg = entry.configs['dflash-q3_k_m'];
+    expect(cfg.unit).toBe('uap-dflash-server');
+    // The repo ships shape only: unmeasured configs can never load (spec §4.1)
+    // until `uap models measure` records this machine's footprint.
+    expect(isPlaceable(cfg)).toBe(false);
+  });
+
+  it('a measured machine-local overlay makes the ugc brain placeable', () => {
+    const overlayPath = join(own, 'ugc-measured.json');
+    writeFileSync(overlayPath, JSON.stringify({
+      version: 1,
+      models: {
+        'qwen3.6-27b': {
+          display: 'Qwen3.6 27B',
+          configs: {
+            'dflash-q3_k_m': {
+              unit: 'uap-dflash-server',
+              resident_gpu_mib: 16000,
+              host_rss_mib: 4000,
+              context_pool_cells: 16384,
+              kv_resident_cells: 16384,
+              kv_kind: 'tq3_0',
+              measured_at: '2026-10-10T00:00:00Z',
+              measured_on: 'gpu0',
+            },
+          },
+        },
+      },
+    }));
+    const loaded = loadModelRegistry(repoRoot, { localPath: overlayPath });
+    expect(loaded.errors).toEqual([]);
+    const cfg = loaded.registry.models['qwen3.6-27b'].configs['dflash-q3_k_m'];
+    expect(isPlaceable(cfg)).toBe(true);
+    // configCostMiB must be answerable within the measured pool.
+    expect(configCostMiB(cfg, 16384)).toBe(16000);
+  });
+});

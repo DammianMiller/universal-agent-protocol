@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { getPlacementState, getPlacementPending, getPlacementPreview, getPlacementAdmit, PLACEMENT_PENDING_TTL_MS } from '../../src/dashboard/placement-routes.js';
+import { getPlacementState, getPlacementPending, getPlacementPreview, getPlacementAdmit, PLACEMENT_PENDING_TTL_MS, resetColdProbeForTests } from '../../src/dashboard/placement-routes.js';
 import { loadModelRegistry, type ModelRegistry } from '../../src/placement/registry.js';
 import type { PlacementOption } from '../../src/placement/admission.js';
 import type { EnforceResult } from '../../src/placement/enforce.js';
@@ -137,6 +137,7 @@ describe('dashboard placement routes', () => {
 describe('placement admit (proxy gate controller)', () => {
   beforeEach(() => {
     resetAutoSchedulerForTests(); // auto-run state must not leak across cases
+    resetColdProbeForTests(); // probe-throttle window is process state too
   });
   const loaded = () => ({
     registry,
@@ -228,6 +229,80 @@ describe('placement admit (proxy gate controller)', () => {
     expect(getPlacementPending(ledgerPath).length).toBe(2);
   });
 
+  it('per-request cells: a 16k-pool config with no marginal-KV rate is auto-placeable only when the request fits the pool', async () => {
+    // The dflash shape (the ugc-factory motivating case): a small measured
+    // KV pool and NO kv_mib_per_1k_cells. cost(cells) is only known up to
+    // the pool, so the 32,768-cell default is beyond it — before the proxy
+    // threaded the request's real context need through, every such config
+    // was fail-closed-refused on every path, even for a 1.5k-token call.
+    const ledgerPath = freshLedger();
+    const smallPool: ModelRegistry = {
+      ...registry,
+      models: {
+        'qwen3.6-27b': {
+          display: 'Qwen3.6 27B',
+          engine: 'dflash',
+          unit: 'uap-dflash-server',
+          advertises: ['qwen3.6-27b'],
+          affinity: { device: ['gpu0'] },
+          configs: {
+            'dflash-q3_k_m': {
+              unit: 'uap-dflash-server',
+              resident_gpu_mib: 17080,
+              host_rss_mib: 13801,
+              context_pool_cells: 16384,
+              kv_resident_cells: 16384,
+              kv_kind: 'tq3_0',
+              measured_at: '2026-10-10T00:00:00Z',
+              measured_on: 'gpu0',
+            },
+          },
+        },
+      },
+    };
+    const loadedSmall = () => ({
+      registry: smallPool,
+      measuredFrom: new Map([['qwen3.6-27b/dflash-q3_k_m', 'repo']]),
+      errors: [],
+    });
+    seededDevices(ledgerPath, 23_000); // 17,080 MiB fits alongside the budget
+    const enforced: string[] = [];
+    const auto = {
+      policy: { enabled: true, allow_displace: [] },
+      enforce: async (_r: ModelRegistry, model: string) => {
+        enforced.push(model);
+        return { ok: true, steps: [] };
+      },
+    };
+    // No cells → the 32,768 default is beyond the pool with no marginal
+    // rate → cost unknown → fail-closed park; no run promised or scheduled.
+    const refused = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.6-27b', client: 'ugc-factory' }, {
+      loaded: loadedSmall(), ledgerPath, auto,
+    });
+    expect(refused.decision).toBe('park');
+    expect(refused.reason).toBe('not_resident');
+    expect(enforced).toEqual([]);
+
+    // The request's real need (prompt + generation headroom): 4,096 cells
+    // fit inside the measured pool → cost known → auto_loading + the run.
+    const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.6-27b', client: 'ugc-retry', cells: 4096 }, {
+      loaded: loadedSmall(), ledgerPath, auto,
+    });
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('auto_loading');
+    // The pending entry persists the context need so `uap models apply`
+    // re-runs the same cost math the controller ran.
+    const pending = getPlacementPending(ledgerPath);
+    expect(pending.find((p) => p.cells === 4096)?.client).toBe('ugc-retry');
+    await new Promise((r) => setTimeout(r, 20)); // let the background run finish
+    expect(enforced).toEqual(['qwen3.6-27b']);
+    // The run resolves only ITS entry; the cost-unknown park from the first
+    // call is still the operator's to answer (its math never became viable).
+    const remaining = getPlacementPending(ledgerPath);
+    expect(remaining.map((p) => p.client)).toEqual(['ugc-factory']);
+    expect(remaining[0].cells).toBeUndefined();
+  });
+
   it('still answers park when the ledger lock is unavailable (write fails, decision does not)', async () => {
     const ledgerPath = freshLedger();
     const { acquireLedgerLock, releaseLedgerLock } = await import('../../src/placement/ledger.js');
@@ -314,6 +389,71 @@ describe('placement admit (proxy gate controller)', () => {
     expect(enforced).toEqual([{ model: 'qwen3.8-flash-next-iq3_s', kind: 'load_alongside' }]);
     // Success resolved the pending entry: the client's next retry forwards.
     expect(getPlacementPending(ledgerPath)).toEqual([]);
+  });
+
+  it('cold-start: an empty-devices ledger is probed at admit time, so the first request after boot can auto-load', async () => {
+    // Without device facts every option refuses as "device not in ledger",
+    // and the dashboard's 2s refresh does NOT populate them — only the
+    // state route or a CLI run does. The first request after a dashboard
+    // boot would park not_resident forever, never auto-loading, until an
+    // operator happened to open the Models tab.
+    const ledgerPath = freshLedger();
+    const enforced: string[] = [];
+    // The probe seam: real nvidia-smi/MemAvailable readings vary with live
+    // machine state (a resident model can eat 17 GiB mid-suite); the test
+    // pins the facts the option math consumes.
+    const deviceProbe = () => ({
+      gpu0: { kind: 'gpu' as const, total_mib: 24576, reserved_mib: 1293, free_mib: 23_000, source: 'nvidia-smi' },
+      cpu0: { kind: 'cpu' as const, total_mib: 126944, reserved_mib: 8192, free_mib: 100_000, source: 'MemAvailable' },
+    });
+    const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code', cells: 4096 }, {
+      loaded: loaded(), ledgerPath, deviceProbe,
+      auto: {
+        policy: { enabled: true, allow_displace: [] },
+        enforce: async (_r: ModelRegistry, model: string) => {
+          enforced.push(model);
+          return { ok: true, steps: [] };
+        },
+      },
+    });
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('auto_loading');
+    // The probe persisted real device facts (registry totals + live free)
+    // for the option math that just ran.
+    const persisted = JSON.parse(readFileSync(ledgerPath, 'utf-8')) as { devices: Record<string, unknown> };
+    expect(Object.keys(persisted.devices)).toContain('gpu0');
+    expect(Object.keys(persisted.devices)).toContain('cpu0');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(enforced).toEqual(['qwen3.8-flash-next-iq3_s']);
+  });
+
+  it('cold-start probe throttle: a permanently failing probe spawns once per window, not once per admit', () => {
+    // The admit endpoint is loopback-gated but unauthenticated; without a
+    // retry window, a machine whose probe can never succeed (no driver,
+    // wedged nvidia-smi) turns every admit into a subprocess spawn.
+    // Fail-closed is still correct — every request parks — but bounded.
+    const ledgerPath = freshLedger();
+    let probeCalls = 0;
+    const deviceProbe = () => {
+      probeCalls += 1;
+      throw new Error('nvidia-smi: command not found');
+    };
+    const call = () =>
+      getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code', cells: 4096 }, {
+        loaded: loaded(), ledgerPath, deviceProbe,
+        auto: { policy: { enabled: true, allow_displace: [] } },
+      });
+    const first = call();
+    const second = call(); // inside the same window: no re-probe
+    expect(first.decision).toBe('park');
+    expect(first.reason).toBe('not_resident'); // fail-closed, no facts
+    expect(second.decision).toBe('park');
+    expect(second.reason).toBe('not_resident');
+    expect(second.placement_id).toBe(first.placement_id); // dedupe, same entry
+    expect(probeCalls).toBe(1);
+    // The ledger still has no device facts — nothing was persisted.
+    const persisted = JSON.parse(readFileSync(ledgerPath, 'utf-8')) as { devices: Record<string, unknown> };
+    expect(persisted.devices).toEqual({});
   });
 
   it('displacement auto-loads ONLY for allowlisted models; otherwise it parks for the operator', async () => {
@@ -480,6 +620,10 @@ describe('placement admit (proxy gate controller)', () => {
     const call = serverSrc.slice(serverSrc.indexOf('getPlacementAdmit(cwd'));
     const callArgs = call.slice(0, call.indexOf(');'));
     expect(callArgs).toContain('model_id');
+    // The route must forward the request's context need — dropping cells
+    // here is exactly the bug that fail-closed-refused every small-pool
+    // config (found live: the proxy sent cells, the ledger entry had none).
+    expect(callArgs).toContain('cells');
     expect(callArgs).not.toContain('auto');
   });
 });

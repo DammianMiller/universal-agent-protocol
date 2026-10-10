@@ -62,6 +62,13 @@ export const LedgerPendingSchema = z.object({
   created_at: z.string(),
   expires_at: z.string(),
   reason: z.string().optional(),
+  /** The request's context need in cells (tokens + generation headroom),
+   * as estimated by the proxy when it parked the request. Option math is
+   * per-request (spec §4.4): cost(config, cells) — without this, the
+   * operator's `apply` and the pending list would recompute options
+   * against the 32k default instead of what the parked client needs.
+   * Absent on entries parked by older proxies → the default applies. */
+  cells: z.number().int().positive().optional(),
 });
 export type LedgerPending = z.infer<typeof LedgerPendingSchema>;
 
@@ -253,9 +260,11 @@ export function syncLedger(
   registry: ModelRegistry,
   path: string = placementLedgerPath(),
   isActive: (unit: string) => boolean = () => false,
-  opts?: { gpuFree?: Map<number, number>; hostAvailable?: number | null },
+  opts?: { gpuFree?: Map<number, number>; hostAvailable?: number | null; deviceProbe?: typeof probeDeviceStates },
 ): PlacementLedger {
-  const devices = probeDeviceStates(registry, opts);
+  const devices = opts?.deviceProbe
+    ? opts.deviceProbe(registry, opts)
+    : probeDeviceStates(registry, opts);
   const residents = deriveLiveResidents(registry, isActive);
   return withLedger(path, (ledger) => {
     ledger.devices = devices;

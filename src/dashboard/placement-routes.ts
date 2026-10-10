@@ -17,6 +17,7 @@ import {
   loadLedger,
   withLedger,
   placementLedgerPath,
+  probeDeviceStates,
   residentTargetId,
   type LedgerPending,
   type PlacementLedger,
@@ -149,6 +150,14 @@ export interface PlacementAdmitRequest {
   model_id: string;
   client?: string;
   session?: string;
+  /** The request's context need in cells (tokens + generation headroom),
+   * estimated by the proxy from the request body. The admission cost is
+   * per-request (spec §4.4): cost(config, cells). Without it the controller
+   * assumes the 32,768-cell default, which fail-closed-refuses every config
+   * whose measured KV pool is smaller — a 16k-max-context backend could
+   * never be placed for a 1.5k-token request. Sanitized: an absent,
+   * non-finite, or non-positive value falls back to the default. */
+  cells?: number;
 }
 
 export interface PlacementAdmitAnswer {
@@ -181,6 +190,18 @@ function residentServes(
   return (registry.models[resident.model]?.advertises ?? []).includes(modelId);
 }
 
+/** Cold-start probe throttle: how often the admit path retries a device
+ * probe while the ledger has no device facts. The window bounds a
+ * permanently failing probe (missing driver, wedged nvidia-smi) to one
+ * subprocess spawn per window instead of one per admit. */
+const COLD_PROBE_RETRY_MS = 10_000;
+let coldProbeLastAt = 0;
+/** Test seam: the throttle window is process state; tests reset it so
+ * they don't depend on each other's probe timing. */
+export function resetColdProbeForTests(): void {
+  coldProbeLastAt = 0;
+}
+
 /** Admission decision for one gated request (spec §4.3).
 
  * Forward when a live resident already serves the requested id (reuse — no
@@ -188,10 +209,15 @@ function residentServes(
  * registry (fail-closed doctrine: unmeasured/unknown refuse with a note) and
  * a pending entry in the ledger for the dashboard to surface.
  *
- * Reads the ledger WITHOUT a device-probe sync on purpose: the proxy holds a
- * 2s timeout on this call, and the dashboard's placement-state poll keeps
- * the ledger fresh. A resident that just died answers `forward` at worst —
- * the request then hits a dead upstream and the proxy's existing
+ * Reads the ledger without the probe-heavy syncLedger refresh on purpose: the
+ * proxy holds a 2s timeout on this call, and the dashboard's placement-state
+ * poll keeps the ledger fresh. ONE bounded exception: a ledger with NO device
+ * facts (fresh boot, nothing ever synced) probes devices — nvidia-smi +
+ * MemAvailable, no unit or inflight probes, at most once per retry window —
+ * because "device not in ledger"
+ * would otherwise refuse every option and the first request after a boot
+ * could never auto-load. A resident that just died answers `forward` at
+ * worst — the request then hits a dead upstream and the proxy's existing
  * upstream-unavailable machinery (529 + health wait) takes over, which is the
  * same fail-open direction the proxy's own read-only path takes. */
 export function getPlacementAdmit(
@@ -203,11 +229,22 @@ export function getPlacementAdmit(
     /** Auto-resolution seam (phase 4): the policy is injected for tests;
      * `enforce` replaces the background enforcement entirely. */
     auto?: { policy?: AutoPolicy; enforce?: typeof enforceOption };
+    /** Test seam for the cold-start device probe (nvidia-smi + MemAvailable
+     * readings vary with live machine state; tests need deterministic facts). */
+    deviceProbe?: typeof probeDeviceStates;
   },
 ): PlacementAdmitAnswer {
   if (!request.model_id || typeof request.model_id !== 'string') {
     return { decision: 'park', reason: 'invalid_request' };
   }
+  // Request-driven context need: the proxy's honest estimate, clamped to
+  // positive integers; anything off-shape degrades to the computeOptions
+  // default rather than being trusted (the proxy is a local process, but
+  // the ledger persists what it says, so it is validated anyway).
+  const cells =
+    typeof request.cells === 'number' && Number.isInteger(request.cells) && request.cells > 0
+      ? request.cells
+      : undefined;
   const loaded = opts?.loaded ?? loadModelRegistry(projectDir);
   const registry = loaded.registry;
   const ledgerPath = opts?.ledgerPath ?? placementLedgerPath();
@@ -215,6 +252,37 @@ export function getPlacementAdmit(
   // dedupe scan (the locked write below re-reads — it must see the
   // authoritative state).
   const ledger = loadLedger(ledgerPath);
+
+  // Cold-start device facts: the admit path deliberately skips the heavy
+  // syncLedger refresh (unit probes, inflight asks), but a ledger with NO
+  // device facts refuses every option as "device not in ledger" — the
+  // first request after a dashboard boot could never auto-load, no matter
+  // the cells. Probe devices once (nvidia-smi + MemAvailable) only when
+  // the ledger has none. A failing or empty probe keeps the fail-closed
+  // refusal and is retried at most once per COLD_PROBE_RETRY_MS window —
+  // the loopback admit endpoint must not become a subprocess-spawn
+  // amplifier on a machine where the probe can never succeed.
+  if (Object.keys(ledger.devices).length === 0) {
+    const now = Date.now();
+    if (now - coldProbeLastAt >= COLD_PROBE_RETRY_MS) {
+      coldProbeLastAt = now;
+      try {
+        const devices = (opts?.deviceProbe ?? probeDeviceStates)(registry);
+        withLedger(ledgerPath, (l) => {
+          l.devices = devices;
+        });
+        ledger.devices = devices;
+      } catch (err) {
+        // No facts, no options — the park reason says not_resident. Log
+        // it: a permanently failing probe would otherwise fail silently
+        // on every first-request window.
+        console.warn(
+          `[placement] cold-start device probe failed (retry in ${Math.round(COLD_PROBE_RETRY_MS / 1000)}s):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
 
   // Forward on reuse: a live resident serves this id. Draining residents
   // don't count — a swap is in flight.
@@ -247,7 +315,7 @@ export function getPlacementAdmit(
   // promises a run that will be refused.
   let autoPlan: ReturnType<typeof autoOptionFor> = null;
   if (reason === 'not_resident') {
-    const options = computeOptions(registry, ledger, request.model_id).options;
+    const options = computeOptions(registry, ledger, request.model_id, { cells }).options;
     autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), request.model_id);
     if (autoPlan) reason = 'auto_loading';
   }
@@ -284,6 +352,7 @@ export function getPlacementAdmit(
     created_at: now.toISOString(),
     expires_at: expiresAt,
     reason,
+    cells,
   };
   let placementId = pending.id;
   let raceWinnerReason: string | undefined;
@@ -328,6 +397,9 @@ export function getPlacementAdmit(
     // once the load lands.
     scheduleAutoResolution(registry, request.model_id, autoPlan, placementId, {
       ledgerPath,
+      // The run's step-0 re-derive must see the same context need the
+      // option was computed against, or a small-pool load refuses itself.
+      cells,
       enforce: opts?.auto?.enforce,
     });
     return { decision: 'park', placement_id: placementId, reason };

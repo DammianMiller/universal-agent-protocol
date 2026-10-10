@@ -210,7 +210,7 @@ print(json.dumps(out))
       .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
       + `
 asks = []
-async def _placement_controller_admit(model_id, client_id, session_id):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
     asks.append([client_id, model_id])
     return {"decision": "park", "reason": "auto_loading", "placement_id": "plc-abc123"}
 async def main():
@@ -272,7 +272,7 @@ print(json.dumps(out))
       .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
       .replace('__IDS__', 'None')
       + `
-async def _placement_controller_admit(model_id, client_id, session_id):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
     return {"decision": "forward", "target_id": "gpu0:http://192.168.1.165:8080/v1"}
 
 # Awaited directly inside ONE coroutine, like the real handler: the gate is
@@ -293,7 +293,7 @@ print(json.dumps(asyncio.run(main())))
       .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
       .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
       + `
-async def _placement_controller_admit(model_id, client_id, session_id):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
     return {"decision": "park", "placement_id": "plc-7f2a", "reason": "no_measured_config"}
 resp = asyncio.run(_placement_admit('Qwen3.8-27B', 'claude-code', 's1'))
 body = json.loads(resp.body)
@@ -316,7 +316,7 @@ print(json.dumps(out))
       .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
       .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
       + `
-async def _placement_controller_admit(model_id, client_id, session_id):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
     return {"decision": "forward", "target_id": "gpu1:http://192.168.1.166:8080/v1"}
 async def main():
     resp = await _placement_admit('Qwen3.8-27B', 'claude-code', 's1')
@@ -650,5 +650,83 @@ print(json.dumps(main()))
     expect(out.before_read_live).toBe(true);
     expect(out.after_read).toEqual({ 'gpu0:http://192.168.1.165:8080/v1': [] });
     expect(out.distinct_ids).toBe(true);
+  });
+
+  it('sends the request context need (cells) to the controller — small-pool backends stay placeable', () => {
+    const out = runPython(GATE_PREAMBLE
+      .replace('__MODE__', 'ask')
+      .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
+      .replace('__IDS__', "['luce-dflash']")
+      + `
+PLACEMENT_CELLS_FLOOR = 1024
+PLACEMENT_GENERATION_HEADROOM_CELLS = 2048
+# Deterministic stand-in for the char-per-token estimator: the cells test
+# cares about the arithmetic (floor + headroom), not the heuristic.
+def estimate_total_tokens(anthropic_body):
+    return int(anthropic_body.get("n", 0))
+${sliceFunction(source, '_placement_request_cells')}
+${sliceFunction(source, '_placement_controller_admit')}
+
+seen = {}
+class _CapturingClient:
+    async def post(self, url, json=None, timeout=None):
+        seen['url'] = url
+        seen['payload'] = json
+        class _R:
+            status_code = 200
+            def json(self):
+                return {"decision": "park", "reason": "not_resident", "placement_id": "plc-aaa111"}
+        return _R()
+http_client = _CapturingClient()
+
+cells_small = _placement_request_cells({"n": 100})
+cells_zero = _placement_request_cells({"n": 0})
+resp = asyncio.run(_placement_admit('qwen3.6-27b', 'ugc-factory', 's1', cells_small))
+out = {
+    "cells_small": cells_small,
+    "cells_zero": cells_zero,
+    "parked": resp is not None and resp.status_code == 409,
+    "payload_has_cells": seen['payload'].get("cells"),
+    "payload_model": seen['payload'].get("model_id"),
+}
+print(json.dumps(out))
+`);
+    // estimate(100) + 2048 generation headroom.
+    expect(out.cells_small).toBe(2148);
+    // The floor keeps a degenerate estimate positive; headroom still applies.
+    expect(out.cells_zero).toBe(2048);
+    expect(out.parked).toBe(true);
+    // The controller MUST see the request's real need: without it a
+    // 16k-pool config is fail-closed-refused even for a 1.5k-token call.
+    expect(out.payload_has_cells).toBe(2148);
+    expect(out.payload_model).toBe('qwen3.6-27b');
+  });
+
+  it('omits cells from the payload when the caller has none — older controllers stay compatible', () => {
+    const out = runPython(GATE_PREAMBLE
+      .replace('__MODE__', 'ask')
+      .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
+      .replace('__IDS__', "['luce-dflash']")
+      + `
+seen = {}
+class _CapturingClient:
+    async def post(self, url, json=None, timeout=None):
+        seen['payload'] = json
+        class _R:
+            status_code = 200
+            def json(self):
+                return {"decision": "park", "reason": "not_resident", "placement_id": "plc-bbb222"}
+        return _R()
+http_client = _CapturingClient()
+
+resp = asyncio.run(_placement_admit('qwen3.6-27b', 'ugc-factory', 's1'))
+out = {
+    "parked": resp is not None and resp.status_code == 409,
+    "cells_in_payload": 'cells' in seen['payload'],
+}
+print(json.dumps(out))
+`);
+    expect(out.parked).toBe(true);
+    expect(out.cells_in_payload).toBe(false);
   });
 });

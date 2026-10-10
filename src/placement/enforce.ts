@@ -30,6 +30,7 @@ import {
   syncLedger,
   withLedger,
   placementLedgerPath,
+  type LedgerDeviceState,
   type LedgerResident,
   type PlacementLedger,
 } from './ledger.js';
@@ -73,6 +74,10 @@ export interface EnforceDeps {
   httpGetJson(url: string): Promise<unknown | null>;
   /** POST the proxy's /internal/placement/refresh; false = not refreshed. */
   refreshProxy(): Promise<boolean>;
+  /** Test seam: replaces syncLedger's live device probe (nvidia-smi +
+   * MemAvailable vary with machine state; enforcement math must be
+   * testable against deterministic facts). Absent = probe for real. */
+  probeDevices?(registry: ModelRegistry): Record<string, LedgerDeviceState>;
   sleep(ms: number): Promise<void>;
   nowMs(): number;
 }
@@ -176,6 +181,12 @@ export interface EnforceOpts {
    * config/model-registry.json merged with ~/.uap/model-registry.json). */
   repoPath?: string;
   localPath?: string;
+  /** The request's context need in cells. Step 0 re-derives the approved
+   * option from live state, and the cost is per-request (spec §4.4): with
+   * the 32k default a small-pool config's cost is unknown, the re-derive
+   * finds nothing, and a cells-correct option is refused as "drift" — the
+   * load never runs. */
+  cells?: number;
 }
 
 function loadRegistry(projectDir: string, opts: EnforceOpts): ModelRegistry {
@@ -201,12 +212,20 @@ export async function enforceOption(
   const deps = opts.deps ?? defaultEnforceDeps();
   const timeouts = opts.timeouts ?? enforcementTimeouts();
   const steps: EnforceStep[] = [];
-  const ledger: PlacementLedger = syncLedger(registry, ledgerPath, deps.isUnitActive);
+  const ledger: PlacementLedger = syncLedger(
+    registry,
+    ledgerPath,
+    deps.isUnitActive,
+    deps.probeDevices ? { deviceProbe: deps.probeDevices } : undefined,
+  );
   const victims = approved.victims ?? [];
   const fail = (error: string, rolledBack?: boolean): EnforceResult => ({ ok: false, steps, error, ...(rolledBack ? { rolledBack: true } : {}) });
 
   // Step 0 — re-derive the approved option from live state; abort on drift.
-  const rederived = computeOptions(registry, ledger, requestedModel).options.find(
+  // Per-request cost (spec §4.4): re-derive against the SAME context need
+  // the option was computed for (opts.cells), or a small-pool config whose
+  // option existed for a 2k-cell request "drifts" under the 32k default.
+  const rederived = computeOptions(registry, ledger, requestedModel, { cells: opts.cells }).options.find(
     (o) => o.kind === approved.kind && o.model === approved.model && o.config === approved.config,
   );
   if (!rederived) {
@@ -539,7 +558,14 @@ export async function resolvePendingPlacement(
   const pending = ledger.pending.find((p) => p.id === placementId);
   if (!pending) return { ok: false, steps: [], error: `no pending placement ${placementId}` };
   const loaded = loadRegistry(projectDir, opts);
-  const options = computeOptions(loaded, loadLedger(ledgerPath), pending.requested_model).options;
+  // Options are per-request (spec §4.4): recompute against the context the
+  // parked request needs (recorded by the proxy in the pending entry) — the
+  // 32k default fail-closed-refuses a small-pool config whose cost is known
+  // for THIS request, and then the operator's `apply N` could never reach
+  // the option `pending` just printed for the same entry.
+  const options = computeOptions(loaded, loadLedger(ledgerPath), pending.requested_model, {
+    cells: pending.cells,
+  }).options;
   const approved = options[optionIndex - 1];
   if (!approved) {
     return { ok: false, steps: [], error: `option ${optionIndex} does not exist (1-${options.length}); re-run \`uap models pending\`` };
@@ -558,7 +584,10 @@ export async function resolvePendingPlacement(
       };
     }
   }
-  const result = await enforceOption(loaded, pending.requested_model, approved, opts);
+  const result = await enforceOption(loaded, pending.requested_model, approved, {
+    ...opts,
+    cells: pending.cells,
+  });
   if (result.ok) {
     withLedger(ledgerPath, (l) => {
       l.pending = l.pending.filter((p) => p.id !== placementId);

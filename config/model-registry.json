@@ -10,6 +10,31 @@
     }
   },
   "models": {
+    "qwen3.6-27b": {
+      "display": "Qwen3.6 27B",
+      "engine": "dflash",
+      "task_affinity": ["general", "ugc"],
+      "affinity": { "device": ["gpu0"] },
+      "endpoint": "http://127.0.0.1:8080",
+      "unit": "uap-dflash-server",
+      "advertises": [
+        "qwen3.6-27b",
+        "Qwen3.6-27B",
+        "luce-dflash",
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6",
+        "claude-sonnet-5-20250514",
+        "claude-fable-5"
+      ],
+      "configs": {
+        "dflash-q3_k_m": {
+          "status": "unmeasured",
+          "engine": "dflash",
+          "unit": "uap-dflash-server",
+          "note": "lucebox-hub DFlash speculative-decoding server (Qwen3.6-27B Q3_K_M target + draft head); machine profile: ~/.config/uap/dflash-server.env. The ugc-factory brain (pay2u tools/ugc-factory) requests 'qwen3.6-27b' through the UAP proxy, so placement auto-loads this config on demand — run `uap models measure` to record this machine's footprint before it can load (fail-closed). The Claude contract ids are advertised here too: the proxy serves them locally (ANTHROPIC_PASSTHROUGH_MODELS=__local_only__), and without a registry mapping the placement gate would 409-park every SDK client that checks /v1/models and then asks for one."
+        }
+      }
+    },
     "qwen3.8-flash-next": {
       "display": "Qwen3.8 Flash Next",
       "engine": "strata",
