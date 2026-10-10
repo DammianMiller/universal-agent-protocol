@@ -50,7 +50,20 @@ export interface AutoPolicy {
   /** Registry model keys whose DISPLACEMENT may auto-enforce. Empty by
    * default: displacement always needs an explicit allowlist entry. */
   allow_displace: string[];
+  /** Idle-resident unload (§4.4.2): after this many seconds without a
+   * gated request served, an `unload_allow`-listed resident is unloaded
+   * by the dashboard's idle sweep. Absent (the default) = the feature
+   * is OFF — nobody's backend is stopped on a timer without this
+   * explicit opt-in. */
+  unload_idle_after_secs?: number;
+  /** Registry model keys that MAY be auto-unloaded when idle. Empty by
+   * default; the standing-consent twin of `allow_displace`. */
+  unload_allow?: string[];
 }
+
+/** Minimum idle window the policy will accept — under a minute the sweep
+ * would oscillate (unload, next request auto-loads, unload again). */
+export const MIN_UNLOAD_IDLE_SECS = 60;
 
 /** OPT-IN by design: a missing (or corrupt) policy file means NO auto
  * loading — every park waits for a manual `uap models apply`, exactly as
@@ -65,6 +78,20 @@ export function loadAutoPolicy(path: string = autoPolicyPath()): AutoPolicy {
   if (!existsSync(path)) return { ...DEFAULT_AUTO_POLICY };
   try {
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Partial<AutoPolicy>;
+    // Fail-closed field-by-field: an invalid idle window or a non-array
+    // allowlist drops JUST that knob (auto-unload stays off), never the
+    // whole policy — the operator's other consent records survive. Absent
+    // knobs are OMITTED, not defaulted, so `toEqual` round-trips and a
+    // pre-§4.4.2 policy file loads to its exact old shape.
+    const idle =
+      typeof raw.unload_idle_after_secs === 'number' &&
+      Number.isFinite(raw.unload_idle_after_secs) &&
+      raw.unload_idle_after_secs >= MIN_UNLOAD_IDLE_SECS
+        ? Math.floor(raw.unload_idle_after_secs)
+        : undefined;
+    const unloadAllow = Array.isArray(raw.unload_allow)
+      ? raw.unload_allow.filter((m): m is string => typeof m === 'string')
+      : undefined;
     return {
       // Explicit opt-in in the FILE too: only a literal `enabled: true`
       // enables; anything else (missing key, null, garbage) stays off.
@@ -72,6 +99,8 @@ export function loadAutoPolicy(path: string = autoPolicyPath()): AutoPolicy {
       allow_displace: Array.isArray(raw.allow_displace)
         ? raw.allow_displace.filter((m): m is string => typeof m === 'string')
         : [],
+      ...(idle !== undefined ? { unload_idle_after_secs: idle } : {}),
+      ...(unloadAllow !== undefined ? { unload_allow: unloadAllow } : {}),
     };
   } catch {
     // Fail closed on a corrupt policy: auto alongside off, displacement

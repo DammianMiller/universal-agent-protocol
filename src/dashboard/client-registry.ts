@@ -492,6 +492,10 @@ export async function ensureClientDashboard(hostCwd: string, clientPath: string)
   const childEnv = { ...process.env };
   delete childEnv.UAP_CLIENTS_REGISTRY;
   delete childEnv.UAP_CLIENTS_SCAN_ROOT;
+  // Client dashboards never run the idle sweep (§4.4.2): they share the
+  // host's ~/.uap ledger, and a second sweeper would race the operator's
+  // dashboard for the same residents. The host instance owns it.
+  childEnv.UAP_IDLE_SWEEP = '0';
   const child = spawn(cmd, [...preArgs, 'dashboard', 'serve', '--port', String(port), '--host', '127.0.0.1'], {
     cwd: resolved,
     detached: true,

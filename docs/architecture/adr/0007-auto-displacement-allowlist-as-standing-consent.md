@@ -58,3 +58,22 @@ already trust.
 - The proxy stays dumb (reason strings only); the controller remains the
   single decision-maker, and the policy file is the single authority
   (independent of `PROXY_PLACEMENT_MODE`).
+
+## Addendum (2026-10-11): idle unload uses the same doctrine
+
+Auto-load had no reverse: residents loaded by §4.4.1 held their device until
+a human stopped them. The idle sweep (spec §4.4.2) extends this ADR's
+reasoning to auto-UNLOAD, which is also an unattended change to what runs on
+the machine:
+
+- `unload_allow` is standing consent with the same shape as
+  `allow_displace`: `uap models auto --allow-unload <model> --yes` (the
+  `--yes` gate prints what stops, when), per-model revocation via
+  `--disallow-unload`, feature off with no `unload_idle_after_secs` recorded.
+- The consent subject is again the model, not the moment: the clock resets on
+  every gated request served, an unwatched resident's clock starts at first
+  observation (arming never evicts the already-idle), and unknown endpoint
+  state (`ss` unable to answer) is a refusal to unload, never a guess.
+- The stop reuses the operator's full `unloadPlacement` machinery — the
+  standing consent covers WHEN, and the drain/in-flight/rollback guards
+  still bound it per-event.

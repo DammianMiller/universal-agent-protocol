@@ -87,6 +87,12 @@ export const PlacementLedgerSchema = z.object({
   devices: z.record(z.string(), LedgerDeviceStateSchema),
   residents: z.array(LedgerResidentSchema),
   pending: z.array(LedgerPendingSchema),
+  /** Last-served clock for the idle sweep (§4.4.2): model key → epoch ms
+   * of the most recent gated request forwarded to a live resident of
+   * that model. Survives syncLedger's wholesale resident rebuild by
+   * living at the top level; entries for models with no live resident
+   * are harmless residue. Absent on pre-§4.4.2 ledgers → the default. */
+  usage: z.record(z.string(), z.number()).default({}),
 });
 export type PlacementLedger = z.infer<typeof PlacementLedgerSchema>;
 
@@ -99,7 +105,7 @@ export function placementLedgerPath(): string {
 }
 
 export function emptyLedger(): PlacementLedger {
-  return { version: LEDGER_VERSION, devices: {}, residents: [], pending: [] };
+  return { version: LEDGER_VERSION, devices: {}, residents: [], pending: [], usage: {} };
 }
 
 export function loadLedger(path: string = placementLedgerPath()): PlacementLedger {
@@ -157,12 +163,16 @@ export function releaseLedgerLock(path: string): void {
 
 /** Mutate the ledger under the advisory lock: re-read, apply, stamp
  * updated_at, write atomically. Throws (fails closed) when the lock cannot
- * be taken — two writers must never interleave. */
+ * be taken — two writers must never interleave. `lockTimeoutMs` bounds the
+ * wait (default 5000ms); hot-path callers that only ADVANCE a clock use a
+ * short fuse so contention costs them a lost update, never a stalled
+ * request (see the admit forward touch, placement-routes.ts). */
 export function withLedger(
   path: string = placementLedgerPath(),
   mutate: (ledger: PlacementLedger) => void,
+  opts: { lockTimeoutMs?: number } = {},
 ): PlacementLedger {
-  if (!acquireLedgerLock(path)) {
+  if (!acquireLedgerLock(path, opts.lockTimeoutMs)) {
     throw new Error(`placement ledger lock held longer than expected: ${path}.lock`);
   }
   try {
