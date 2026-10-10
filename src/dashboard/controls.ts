@@ -141,7 +141,7 @@ export function handleAgentCleanStale(): { cleaned: number } {
  *      node binary that runs the dashboard (no PATH, no shell).
  *   3. Bare 'uap' as the last resort (interactive PATH).
  */
-function resolveUapBin(): { cmd: string; preArgs: string[] } {
+export function resolveUapBin(): { cmd: string; preArgs: string[] } {
   if (process.env.UAP_BIN) return { cmd: process.env.UAP_BIN, preArgs: [] };
   try {
     // ESM: this file is <root>/dist/dashboard/controls.js
@@ -172,6 +172,11 @@ export function handleDeliverLaunch(cwd: string, body: Body): { launched: boolea
   if (body.model) args.push('--model', String(body.model));
   if (body.maxTurns) args.push('--max-turns', String(Math.max(1, Math.round(Number(body.maxTurns)) || 5)));
   const child = spawn(cmd, args, { cwd, detached: true, stdio: 'ignore' });
+  // resolveUapBin may fall through to bare 'uap' (PATH) — if that binary is
+  // missing, spawn emits an async 'error' that would crash the dashboard
+  // process. Swallow it; the launch already reported its pid optimistically
+  // and the run registry tells the truth a moment later.
+  child.once('error', () => {});
   child.unref();
   emitDeployEvent('deliver_launch', `Deliver run launched (pid ${child.pid ?? '?'}): ${instruction.slice(0, 80)}`, 'info', String(child.pid ?? ''));
   return { launched: true, pid: child.pid };
@@ -214,6 +219,7 @@ export function handleDeliverResume(cwd: string, runId: string): { runId: string
   if (!isValidRunId(runId)) throw new Error('invalid runId');
   const { cmd, preArgs } = resolveUapBin();
   const child = spawn(cmd, [...preArgs, 'deliver', '--resume', runId, '--json'], { cwd, detached: true, stdio: 'ignore' });
+  child.once('error', () => {}); // same missing-bin hazard as handleDeliverLaunch
   child.unref();
   emitDeployEvent('deliver_resume', `Deliver run ${runId} resumed (pid ${child.pid ?? '?'})`, 'info', runId);
   return { runId, resumed: true, pid: child.pid };

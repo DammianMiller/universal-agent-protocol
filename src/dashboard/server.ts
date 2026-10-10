@@ -21,6 +21,7 @@ import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { heuristicOrder, buildOrderPrompt, parseOrderResponse, type OrderablePolicy } from '../policies/policy-order.js';
 import { readEventsSince, readRecentEvents } from '../utils/telemetry-store.js';
 import { loadPolicy, runDoctor, worstHealth } from '../capacity/probe.js';
+import { getClientSummaries, ensureClientDashboard } from './client-registry.js';
 
 /** First prose sentence of a policy's markdown (its description), fail-soft. */
 function policyPromptDescription(md: string): string {
@@ -301,6 +302,24 @@ export function startDashboardServer(
         const data = await getDashboardData();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
+        return;
+      }
+
+      // API: Fleet of client folders — registry + auto-scan, with per-client
+      // fail-soft summaries (deliver runs, queue depth, git, health probe).
+      // Read-only (no token): identical authority to /api/dashboard, one
+      // client at a time. Method-guarded so a future POST /api/clients
+      // mutation can't silently fall through to this read handler instead
+      // of the token-gated control chokepoint.
+      if (url === '/api/clients' && req.method === 'GET') {
+        try {
+          const clients = await getClientSummaries(cwd, boundPort);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ clients }));
+        } catch (err) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `client fleet unavailable: ${(err as Error).message}` }));
+        }
         return;
       }
 
@@ -967,7 +986,7 @@ function parseJsonBody(body: string): Record<string, unknown> {
   }
 }
 
-const CONTROL_PREFIXES = ['/api/tasks', '/api/ledger', '/api/orchestrator', '/api/agents', '/api/deliver', '/api/placement'];
+const CONTROL_PREFIXES = ['/api/tasks', '/api/ledger', '/api/orchestrator', '/api/agents', '/api/deliver', '/api/placement', '/api/clients'];
 
 async function routeControl(url: string, cwd: string, body: Record<string, unknown>): Promise<unknown> {
   const seg = url.split('/').filter(Boolean); // ['api','tasks','<id>','update']
@@ -997,7 +1016,18 @@ async function routeControl(url: string, cwd: string, body: Record<string, unkno
   if (url === '/api/placement/load') return handlePlacementLoad(cwd, body);
   if (url === '/api/placement/unload') return handlePlacementUnload(cwd, body);
   if (url === '/api/placement/auto') return handlePlacementAuto(body);
+  // Fleet spawn-on-demand (Option B link-out): bring up the selected client's
+  // OWN dashboard server — full control stays on that instance, token-gated
+  // and loopback-bound exactly like this one. Registry-only: the path is
+  // resolved against listClients() inside, never trusted from the wire.
+  if (url === '/api/clients/serve') return handleClientsServe(cwd, body);
   return undefined;
+}
+
+async function handleClientsServe(cwd: string, body: Record<string, unknown>): Promise<unknown> {
+  const clientPath = typeof body.path === 'string' ? body.path : '';
+  if (!clientPath) throw new Error('path is required');
+  return ensureClientDashboard(cwd, clientPath);
 }
 
 async function handlePlacementResolve(cwd: string, body: Record<string, unknown>): Promise<unknown> {

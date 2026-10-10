@@ -53,5 +53,8 @@
     <!-- Loaded AFTER tabs.js so registerTab('models') overrides the routing-only
          stub with the full Models & Placement panel (registry, ledger, preview). -->
     <script src="/dash/tab-models.js"></script>
+    <!-- Loaded AFTER tabs.js; owns the Clients fleet tab outright (tab-policies.js
+         precedent): per-client cards + spawn-on-demand link-out. -->
+    <script src="/dash/tab-clients.js"></script>
   </body>
 </html>

@@ -26,6 +26,7 @@ const lazy = {
   model: () => import('../cli/model.js').then((m) => m.registerModelCommands),
   mcpRouter: () => import('../cli/mcp-router.js').then((m) => m.mcpRouterCommand),
   dashboard: () => import('../cli/dashboard.js').then((m) => m.dashboardCommand),
+  clients: () => import('../cli/clients.js').then((m) => m.clientsCommand),
   hooks: () => import('../cli/hooks.js'),
   patterns: () => import('../cli/patterns.js').then((m) => m.patternsCommand),
   skill: () => import('../cli/skill.js').then((m) => m.skillCommand),
@@ -2163,6 +2164,43 @@ program
       .option('-v, --verbose', 'Show detailed information')
       .action(async (options) => {
         (await lazy.dashboard())('history', options);
+      })
+  );
+
+// Client folder fleet — registry CLI behind the dashboard's Clients tab
+program
+  .command('clients')
+  .description('Client folder fleet: list, add, remove, scan (feeds the dashboard Clients tab)')
+  .addCommand(
+    new Command('list')
+      .description('Fleet summary for every discovered client (live reads)')
+      .action(async () => {
+        (await lazy.clients())('list', undefined, {});
+      })
+  )
+  .addCommand(
+    new Command('add')
+      .description('Pin a client folder manually')
+      .argument('<path>', 'Path to the client project root')
+      .option('--name <name>', 'Display name (defaults to the folder name)')
+      .option('--port <port>', 'Dashboard port for spawn-on-demand (default: 3861+)')
+      .action(async (path, options) => {
+        (await lazy.clients())('add', path, options);
+      })
+  )
+  .addCommand(
+    new Command('remove')
+      .description('Unpin a manually added client')
+      .argument('<path>', 'Path that was pinned with `add`')
+      .action(async (path) => {
+        (await lazy.clients())('remove', path, {});
+      })
+  )
+  .addCommand(
+    new Command('scan')
+      .description('Show what auto-scan discovers')
+      .action(async () => {
+        (await lazy.clients())('scan', undefined, {});
       })
   );
 
