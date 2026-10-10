@@ -21,7 +21,7 @@ import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { heuristicOrder, buildOrderPrompt, parseOrderResponse, type OrderablePolicy } from '../policies/policy-order.js';
 import { readEventsSince, readRecentEvents } from '../utils/telemetry-store.js';
 import { loadPolicy, runDoctor, worstHealth } from '../capacity/probe.js';
-import { getClientSummaries, ensureClientDashboard } from './client-registry.js';
+import { getClientSummaries, ensureClientDashboard, stopClientDashboard } from './client-registry.js';
 
 /** First prose sentence of a policy's markdown (its description), fail-soft. */
 function policyPromptDescription(md: string): string {
@@ -272,7 +272,13 @@ export function startDashboardServer(
     if (!isTokenBearingPage) {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Uap-Dashboard-Token');
+      // The mutation-token header is deliberately NOT advertised in the
+      // preflight allow-list: the same-origin UI needs no CORS permission
+      // for it, and a wildcard `Access-Control-Allow-Headers` would let any
+      // origin's scripted preflight ride the token header name (security
+      // review — the mutation surface now includes process termination via
+      // /api/clients/stop). Reads stay open; mutations stay same-origin.
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     }
 
     if (req.method === 'OPTIONS') {
@@ -1021,6 +1027,9 @@ async function routeControl(url: string, cwd: string, body: Record<string, unkno
   // and loopback-bound exactly like this one. Registry-only: the path is
   // resolved against listClients() inside, never trusted from the wire.
   if (url === '/api/clients/serve') return handleClientsServe(cwd, body);
+  // Fleet teardown: stops the client's own dashboard instance (pid recorded
+  // at spawn, ownership-verified before SIGTERM — see stopClientDashboard).
+  if (url === '/api/clients/stop') return handleClientsStop(cwd, body);
   return undefined;
 }
 
@@ -1028,6 +1037,12 @@ async function handleClientsServe(cwd: string, body: Record<string, unknown>): P
   const clientPath = typeof body.path === 'string' ? body.path : '';
   if (!clientPath) throw new Error('path is required');
   return ensureClientDashboard(cwd, clientPath);
+}
+
+async function handleClientsStop(cwd: string, body: Record<string, unknown>): Promise<unknown> {
+  const clientPath = typeof body.path === 'string' ? body.path : '';
+  if (!clientPath) throw new Error('path is required');
+  return stopClientDashboard(cwd, clientPath);
 }
 
 async function handlePlacementResolve(cwd: string, body: Record<string, unknown>): Promise<unknown> {

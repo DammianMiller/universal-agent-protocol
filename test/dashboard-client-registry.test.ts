@@ -4,6 +4,7 @@
  * probe root-matching, and the registry-only rule on spawn-on-demand.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { spawn } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -17,9 +18,11 @@ import {
   listClients,
   persistClientPort,
   probeDashboard,
+  recordClientPid,
   registryFilePath,
   removeManualClient,
   saveRegistryFile,
+  stopClientDashboard,
 } from '../src/dashboard/client-registry.js';
 import { saveRunState, type DeliverRunState } from '../src/delivery/run-state.js';
 import { startDashboardServer } from '../src/dashboard/server.js';
@@ -191,6 +194,122 @@ describe('probeDashboard: root-matched liveness', () => {
   });
 });
 
+describe('resolveUapBin util (extracted from controls.ts)', () => {
+  it('honors the UAP_BIN override verbatim', async () => {
+    process.env.UAP_BIN = '/custom/uap-test-bin';
+    try {
+      const { resolveUapBin } = await import('../src/utils/resolve-uap-bin.js');
+      expect(resolveUapBin()).toEqual({ cmd: '/custom/uap-test-bin', preArgs: [] });
+    } finally {
+      delete process.env.UAP_BIN;
+    }
+  });
+});
+
+describe('stopClientDashboard: verified teardown', () => {
+  /** Fake per-client dashboard: serves /api/health with {ok, root} on a port,
+   * with its cwd settable so the /proc ownership check can be exercised. */
+  function fakeDash(root: string, port: number, cwd: string) {
+    return spawn(process.execPath, [
+      '-e',
+      "require('http').createServer(function(q,s){s.end(JSON.stringify({ok:true,service:'uap-dashboard',root:process.argv[2]}))}).listen(Number(process.argv[1]),'127.0.0.1')",
+      String(port),
+      root,
+    ], { cwd, stdio: 'ignore' });
+  }
+
+  async function waitAlive(port: number, root: string, tries = 20): Promise<boolean> {
+    for (let i = 0; i < tries; i++) {
+      if (await probeDashboard(port, root)) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  }
+
+  function pinAlphaAt(port: number): void {
+    saveRegistryFile({ clients: [{ path: alpha, port }] });
+  }
+
+  it('stops a live dashboard after root-match + pid ownership checks, and clears the pid record', async () => {
+    pinAlphaAt(3951);
+    const child = fakeDash(alpha, 3951, alpha); // cwd = client root → ownership check passes
+    try {
+      expect(await waitAlive(3951, alpha)).toBe(true);
+      recordClientPid(alpha, child.pid!);
+      const res = await stopClientDashboard(hostDir, alpha);
+      expect(res).toEqual({ port: 3951, stopped: true, wasAlive: true });
+      expect(JSON.parse(readFileSync(regFile, 'utf-8')).pids?.[alpha]).toBeUndefined();
+    } finally {
+      try { child.kill('SIGKILL'); } catch { /* already stopped */ }
+    }
+  }, 15000);
+
+  it('refuses when the recorded pid is dead but a dashboard still answers', async () => {
+    pinAlphaAt(3952);
+    const child = fakeDash(alpha, 3952, alpha);
+    const dead = spawn(process.execPath, ['-e', 'process.exit(0)']);
+    try {
+      expect(await waitAlive(3952, alpha)).toBe(true);
+      await new Promise((r) => setTimeout(r, 300)); // let `dead` exit
+      recordClientPid(alpha, dead.pid!);
+      const res = await stopClientDashboard(hostDir, alpha);
+      expect(res.stopped).toBe(false);
+      expect(res.wasAlive).toBe(true);
+      expect(res.reason).toContain('gone');
+    } finally {
+      try { child.kill('SIGKILL'); } catch { /* nothing */ }
+    }
+  }, 15000);
+
+  it('refuses when the live pid belongs to a different directory (recycled pid)', async () => {
+    pinAlphaAt(3953);
+    const child = fakeDash(alpha, 3953, beta); // answers as alpha's root, but cwd is beta
+    try {
+      expect(await waitAlive(3953, alpha)).toBe(true);
+      recordClientPid(alpha, child.pid!);
+      const res = await stopClientDashboard(hostDir, alpha);
+      expect(res.stopped).toBe(false);
+      expect(res.reason).toContain('does not belong');
+    } finally {
+      try { child.kill('SIGKILL'); } catch { /* nothing */ }
+    }
+  }, 15000);
+
+  it('refuses a pid whose /proc starttime no longer matches (recycled pid identity)', async () => {
+    pinAlphaAt(3955);
+    const child = fakeDash(alpha, 3955, alpha);
+    try {
+      expect(await waitAlive(3955, alpha)).toBe(true);
+      // Live pid, correct cwd — but a recorded starttime that no longer
+      // matches: stop must refuse by identity, not liveness.
+      recordClientPid(alpha, child.pid!, 'definitely-not-the-real-starttime');
+      const res = await stopClientDashboard(hostDir, alpha);
+      expect(res.stopped).toBe(false);
+      expect(res.reason).toContain('recycled');
+    } finally {
+      try { child.kill('SIGKILL'); } catch { /* nothing */ }
+    }
+  }, 15000);
+
+  it('reports wasAlive:false and clears stale bookkeeping when nothing is listening', async () => {
+    pinAlphaAt(3954);
+    recordClientPid(alpha, 12345); // stale record, nothing on the port
+    const res = await stopClientDashboard(hostDir, alpha);
+    expect(res).toEqual({ port: 3954, stopped: false, wasAlive: false });
+    expect(JSON.parse(readFileSync(regFile, 'utf-8')).pids?.[alpha]).toBeUndefined();
+  });
+
+  it('refuses unregistered paths and the host itself', async () => {
+    const rogue = mkdtempSync(join(tmpdir(), 'uap-rogue-stop-'));
+    try {
+      await expect(stopClientDashboard(hostDir, rogue)).rejects.toThrow('client not in registry');
+    } finally {
+      rmSync(rogue, { recursive: true, force: true });
+    }
+    await expect(stopClientDashboard(hostDir, hostDir)).rejects.toThrow('served by this dashboard');
+  });
+});
+
 describe('ensureClientDashboard: registry-only spawn rule', () => {
   it('refuses to spawn for a path that is not in the registry', async () => {
     const { ensureClientDashboard } = await import('../src/dashboard/client-registry.js');
@@ -315,6 +434,12 @@ describe('fleet routes behind the dashboard server', () => {
         body: JSON.stringify({ path: '/etc' }),
       });
       expect(anonServe.status).toBe(401);
+      const anonStop = await fetch(`http://127.0.0.1:${port}/api/clients/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: '/etc' }),
+      });
+      expect(anonStop.status).toBe(401);
 
       // With the token, an unregistered path is rejected — never spawned.
       const authed = await fetch(`http://127.0.0.1:${port}/api/clients/serve`, {

@@ -98,6 +98,8 @@
 
     // Action: link out. Alive → straight to the client's dashboard; down →
     // spawn on demand first. The host entry links back to this dashboard.
+    // Alive non-host cards also get a Stop (the teardown twin of Launch —
+    // without it the tab would be an orphan factory).
     var actions = el('div', { class: 'toolbar', style: { marginBottom: '0' } });
     var url = c.host ? U.API_URL : 'http://127.0.0.1:' + c.port + '/';
     var btn = el('button', {
@@ -105,8 +107,26 @@
       onclick: function () { openClient(c, url); },
     }, c.dashboardAlive || c.host ? 'Open dashboard' : 'Launch dashboard');
     actions.appendChild(btn);
+    if (c.managed && !c.host && c.dashboardAlive) {
+      actions.appendChild(el('button', {
+        class: 'btn btn-danger',
+        onclick: function () { stopClient(c); },
+      }, 'Stop'));
+    }
     card.appendChild(actions);
     return card;
+  }
+
+  function stopClient(c) {
+    U.confirm('Stop the dashboard for ' + (c.name || 'this client') + '? Terminates that dashboard server only — deliver runs in that project keep running.', { danger: true, okLabel: 'Stop' }).then(function (ok) {
+      if (!ok) return;
+      U.api('/api/clients/stop', { path: c.path }).then(function (res) {
+        if (res && res.stopped) U.toast('Dashboard stopped', 'ok');
+        else if (res && !res.wasAlive) U.toast('No live dashboard for that client', 'ok');
+        else U.toast((res && res.reason) || 'Could not stop', 'err');
+        refresh();
+      });
+    });
   }
 
   function openClient(c, url) {

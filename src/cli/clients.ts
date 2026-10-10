@@ -14,6 +14,7 @@ import {
   registryFilePath,
   removeManualClient,
   scanRootFor,
+  stopClientDashboard,
 } from '../dashboard/client-registry.js';
 
 export interface ClientsOptions {
@@ -31,6 +32,22 @@ export async function clientsCommand(
   options: ClientsOptions = {}
 ): Promise<void> {
   const hostCwd = process.cwd();
+  try {
+    await dispatch(action, pathArg, options, hostCwd);
+  } catch (e) {
+    // Registry/stop rejections are operator errors ('client not in registry',
+    // 'not a directory'), not stack traces.
+    console.error((e as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+async function dispatch(
+  action: string,
+  pathArg: string | undefined,
+  options: ClientsOptions,
+  hostCwd: string
+): Promise<void> {
   switch (action) {
     case 'list':
       await listCmd(hostCwd);
@@ -44,14 +61,18 @@ export async function clientsCommand(
     case 'scan':
       scanCmd(hostCwd);
       break;
+    case 'stop':
+      await stopCmd(hostCwd, pathArg);
+      break;
     default:
-      console.log(`Usage: uap clients <list|add|remove|scan>
+      console.log(`Usage: uap clients <list|add|remove|scan|stop>
 
   list    Fleet summary for every discovered client (live reads: deliver
           runs, task queue, git, dashboard health probe)
   add     Pin a client folder manually: uap clients add <path> [--name n] [--port p]
   remove  Unpin a manually added client: uap clients remove <path>
   scan    Show what auto-scan discovers (managed + unmanaged folders)
+  stop    Stop a client's spawned dashboard: uap clients stop <path>
 
 Registry: ${registryFilePath()}`);
       break;
@@ -130,4 +151,21 @@ function scanCmd(hostCwd: string): void {
     console.log(`  ${pad(c.name, 26)} ${tags}${c.port ? `  (port ${c.port})` : ''}`);
   }
   console.log(`\n${entries.filter((c) => c.manual).length} pinned, ${entries.filter((c) => !c.manual).length} scanned.`);
+}
+
+async function stopCmd(hostCwd: string, pathArg: string | undefined): Promise<void> {
+  if (!pathArg) {
+    console.error('Usage: uap clients stop <path>');
+    process.exitCode = 1;
+    return;
+  }
+  const res = await stopClientDashboard(hostCwd, resolve(pathArg));
+  if (res.stopped) {
+    console.log(`Stopped client dashboard on :${res.port}`);
+  } else if (!res.wasAlive) {
+    console.log('No live dashboard for that client.');
+  } else {
+    console.error(`Could not stop: ${res.reason}`);
+    process.exitCode = 1;
+  }
 }

@@ -72,9 +72,21 @@ Consequences and guards:
   wants one click from the fleet view to a live dashboard; requiring a
   manual `uap dashboard serve` per client defeats the point.
 
-## Follow-ups (not blocking)
+## Follow-ups
 
-- `uap clients stop` / orphan reaping (spawned instances are currently
-  operator-managed).
-- Extract `resolveUapBin` out of `controls.ts` once a second
-  non-dashboard consumer appears.
+Completed on this branch:
+
+- **`uap clients stop` + tab Stop action** (spawned-instance teardown):
+  spawn-on-demand records the child pid in the registry (`pids` map —
+  host-owned bookkeeping in `~/.uap/clients.json`, never a write into the
+  client project). Stop requires BOTH a root-matched live probe and pid
+  ownership verification (`/proc/<pid>/cwd` must be the client root) before
+  SIGTERM — a recycled pid is never killed; on mismatch or missing evidence
+  it refuses and names the port for a manual stop. Stale pid records are
+  cleared opportunistically whenever a probe shows the dashboard gone.
+- **`resolveUapBin` extracted** to `src/utils/resolve-uap-bin.ts`
+  (`controls.ts` and `client-registry.ts` share it; the util lives one level
+  under `dist/` so the same-install `<root>/dist/bin/cli.js` resolution is
+  unchanged).
+
+None outstanding.

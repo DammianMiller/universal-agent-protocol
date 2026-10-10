@@ -23,7 +23,7 @@
  */
 
 import { spawn, execSync } from 'child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, writeFileSync } from 'fs';
 import { get as httpGet } from 'http';
 import { createServer as netCreateServer } from 'net';
 import { homedir } from 'os';
@@ -31,7 +31,7 @@ import { basename, dirname, join, resolve } from 'path';
 import { randomBytes } from 'crypto';
 import { listRuns } from '../delivery/run-state.js';
 import { getTaskData } from './data-service.js';
-import { resolveUapBin } from './controls.js';
+import { resolveUapBin } from '../utils/resolve-uap-bin.js';
 
 export interface ManualClientEntry {
   path: string;
@@ -46,6 +46,14 @@ export interface ClientsRegistryFile {
   /** Sticky dashboard ports, keyed by resolved client path. Written by
    * spawn-on-demand (persistClientPort) so live dashboards never drift. */
   ports?: Record<string, number>;
+  /** Pids of dashboards spawned on demand, keyed by resolved client path.
+   * Host-owned bookkeeping (the registry file lives in ~/.uap, never inside
+   * the client project — the Option B invariant). `uap clients stop` and the
+   * tab's Stop action verify ownership before signaling. */
+  pids?: Record<string, number>;
+  /** /proc/<pid>/stat starttime (field 22) recorded at spawn — the pid's
+   * recycling-safe identity. A mismatch at stop time means pid reuse. */
+  pidStarts?: Record<string, string>;
 }
 
 export interface ClientEntry {
@@ -253,6 +261,45 @@ export function persistClientPort(clientPath: string, port: number): void {
   saveRegistryFile({ ...reg, ports });
 }
 
+/** Record (or, with undefined, clear) the pid of a client's spawned dashboard.
+ * `start` is the pid's /proc starttime — recorded when readable so a later
+ * stop can refuse a recycled pid by identity, not just liveness.
+ *
+ * NOTE (security review P3): this is a load-modify-save over the whole
+ * registry file with no lock — concurrent serve/stop calls can lose one
+ * another's key writes (availability only: a lost pid record makes Stop
+ * refuse fail-closed; it can never mis-kill). Single-operator tool. */
+export function recordClientPid(clientPath: string, pid: number | undefined, start?: string | null): void {
+  const reg = loadRegistryFile();
+  const pids = { ...(reg.pids ?? {}) };
+  const pidStarts = { ...(reg.pidStarts ?? {}) };
+  const key = resolve(clientPath);
+  if (pid === undefined) {
+    delete pids[key];
+    delete pidStarts[key];
+  } else {
+    pids[key] = pid;
+    if (start) pidStarts[key] = start;
+    else delete pidStarts[key];
+  }
+  saveRegistryFile({ ...reg, pids, pidStarts });
+}
+
+/** Linux /proc/<pid>/stat starttime (field 22) — a recycling-safe pid
+ * identity. Null when /proc is unreadable (non-Linux, permissions, or the
+ * process is already gone). */
+function readPidStart(pid: number): string | null {
+  try {
+    // comm (field 2) may contain spaces and parens; everything after the
+    // LAST ')' is fields 3.. — starttime is field 22 → index 22-3 = 19.
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    const rest = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+    return rest[19] || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Registry mutation helpers (CLI `uap clients add/remove`). */
 export function addManualClient(hostCwd: string, path: string, opts: { name?: string; port?: number } = {}): ClientEntry {
   const abs = resolve(path);
@@ -456,6 +503,7 @@ export async function ensureClientDashboard(hostCwd: string, clientPath: string)
   // the host dashboard. Swallow it; the health loop below reports dead.
   const spawnFailed = new Promise<boolean>((ret) => child.once('error', () => ret(true)));
   child.unref();
+  if (child.pid !== undefined) recordClientPid(resolved, child.pid, readPidStart(child.pid));
 
   // Wait for the health endpoint so the UI can link straight in.
   for (let i = 0; i < 20; i++) {
@@ -466,4 +514,91 @@ export async function ensureClientDashboard(hostCwd: string, clientPath: string)
     if (await spawnFailed) break;
   }
   return { port, pid: child.pid, spawned: true, alive: false };
+}
+
+export interface StopResult {
+  port: number;
+  stopped: boolean;
+  wasAlive: boolean;
+  /** Why a live dashboard could not be stopped (never kill blindly). */
+  reason?: string;
+}
+
+/**
+ * Stop a client's spawned dashboard (the UI Stop action / `uap clients stop`).
+ *
+ * Never signals on liveness alone. The kill happens only after ALL of:
+ * (a) a root-matched live probe on the client's port,
+ * (b) the recorded pid is an integer > 1 and still alive,
+ * (c) identity pinning — the pid's /proc starttime matches the one recorded
+ *     at spawn (a recycled pid is refused by identity, not liveness), and
+ * (d) on Linux, `/proc/<pid>/cwd` is the client root.
+ * Where /proc is unreadable (non-Linux) the recorded evidence above is what
+ * we have — fail-open there, fail-closed on every mismatch.
+ */
+export async function stopClientDashboard(hostCwd: string, clientPath: string): Promise<StopResult> {
+  const resolved = resolve(clientPath);
+  const entry = listClients(hostCwd).find((c) => c.path === resolved);
+  if (!entry) throw new Error('client not in registry');
+  if (entry.host) throw new Error('client is served by this dashboard — stop the server it runs from');
+  const reg = loadRegistryFile();
+  const pid = reg.pids?.[resolved];
+
+  if (!(await probeDashboard(entry.port, resolved))) {
+    if (pid !== undefined) recordClientPid(resolved, undefined); // stale bookkeeping
+    return { port: entry.port, stopped: false, wasAlive: false };
+  }
+
+  if (pid === undefined || !Number.isInteger(pid) || pid <= 1) {
+    return {
+      port: entry.port, stopped: false, wasAlive: true,
+      reason: `a dashboard answers on :${entry.port} but its pid is not recorded — stop it manually`,
+    };
+  }
+  try {
+    process.kill(pid, 0); // ESRCH when recycled/dead; RangeError on garbage → refusal
+  } catch {
+    recordClientPid(resolved, undefined);
+    return {
+      port: entry.port, stopped: false, wasAlive: true,
+      reason: `recorded pid ${pid} is gone but a dashboard still answers on :${entry.port} — stop it manually`,
+    };
+  }
+  // Identity pinning: same pid, different process (reuse) → refuse.
+  const recordedStart = reg.pidStarts?.[resolved];
+  const currentStart = readPidStart(pid);
+  if (recordedStart && currentStart && recordedStart !== currentStart) {
+    return {
+      port: entry.port, stopped: false, wasAlive: true,
+      reason: `pid ${pid} was recycled (recorded start ${recordedStart} ≠ current ${currentStart}) — refusing to kill`,
+    };
+  }
+  try {
+    const procCwd = readlinkSync(`/proc/${pid}/cwd`);
+    if (resolve(procCwd) !== resolved) {
+      return {
+        port: entry.port, stopped: false, wasAlive: true,
+        reason: `pid ${pid} (cwd ${procCwd}) does not belong to this client — refusing to kill`,
+      };
+    }
+  } catch {
+    /* /proc unreadable (non-Linux or permission): recorded pid + root-matched probe is our evidence */
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    /* raced to exit — the confirmation loop decides */
+  }
+  for (let i = 0; i < 15; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    if (!(await probeDashboard(entry.port, resolved))) {
+      recordClientPid(resolved, undefined);
+      return { port: entry.port, stopped: true, wasAlive: true };
+    }
+  }
+  return {
+    port: entry.port, stopped: false, wasAlive: true,
+    reason: `SIGTERM sent to pid ${pid} but the dashboard on :${entry.port} is still answering`,
+  };
 }

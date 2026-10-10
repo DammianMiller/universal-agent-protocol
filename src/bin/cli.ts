@@ -2202,6 +2202,14 @@ program
       .action(async () => {
         (await lazy.clients())('scan', undefined, {});
       })
+  )
+  .addCommand(
+    new Command('stop')
+      .description("Stop a client's spawned dashboard (pid ownership-verified)")
+      .argument('<path>', 'Path to the client project root')
+      .action(async (path) => {
+        (await lazy.clients())('stop', path, {});
+      })
   );
 
 // Multi-Model Architecture commands - visible in --help, loaded on demand
