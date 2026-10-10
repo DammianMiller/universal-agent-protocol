@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.25.0 (2026-10-10)
+
+- feat(dashboard): Clients fleet tab — multi-client overview with spawn-on-demand link-out
+
+
 ## v2.24.1 (2026-10-09)
 
 - fix(ci): one publish pipeline — delete the never-authorized auto-publisher

@@ -18,6 +18,7 @@
     { id: 'deliver', label: 'Deliver' },
     { id: 'policies', label: 'Policies' },
     { id: 'models', label: 'Models' },
+    { id: 'clients', label: 'Clients' },
     { id: 'memory', label: 'Memory' },
   ];
 

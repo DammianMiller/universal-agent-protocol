@@ -491,6 +491,9 @@
   // shadowed inline copy (and its duplicate U.onEvents fill of the same
   // 'pol-live-events' element) was deleted (architecture review P2).
 
+  // NOTE: there is likewise no inline 'clients' tab — tab-clients.js (loaded
+  // after this file) owns the Clients fleet panel outright (same precedent).
+
   // ═══════════════════════════ MODELS ═══════════════════════════
   U.registerTab('models', (function () {
     function build(root, d) {

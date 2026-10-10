@@ -8,14 +8,12 @@
  */
 
 import { spawn } from 'child_process';
-import { existsSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
 import { TaskService } from '../tasks/service.js';
 import type { CreateTaskInput, UpdateTaskInput, TaskType, TaskStatus, TaskPriority } from '../tasks/types.js';
 import { initLedger, markItem, clearLedger } from '../delivery/completion-ledger.js';
 import type { LedgerStatus, NewItem } from '../delivery/completion-ledger.js';
 import { modifyUapConfig } from '../utils/config-loader.js';
+import { resolveUapBin } from '../utils/resolve-uap-bin.js';
 import { CoordinationService } from '../coordination/service.js';
 import { listRuns, loadRunState, requestStop, saveRunState, isValidRunId } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
@@ -130,33 +128,8 @@ export function handleAgentCleanStale(): { cleaned: number } {
 }
 
 // ── Deliver runs ──
-/**
- * Resolve the `uap` executable for spawning deliver runs.
- *
- * The old `spawn('uap', …)` trusted PATH — under systemd (uap-dashboard.service)
- * PATH often lacks the npm global bin, and the launch silently died with
- * ENOENT (dash audit: PATH hazard). Resolution order:
- *   1. UAP_BIN env override (operator/debug).
- *   2. This module's own install: <root>/dist/bin/cli.js run with the SAME
- *      node binary that runs the dashboard (no PATH, no shell).
- *   3. Bare 'uap' as the last resort (interactive PATH).
- */
-function resolveUapBin(): { cmd: string; preArgs: string[] } {
-  if (process.env.UAP_BIN) return { cmd: process.env.UAP_BIN, preArgs: [] };
-  try {
-    // ESM: this file is <root>/dist/dashboard/controls.js
-    const selfUrl = import.meta.url;
-    if (selfUrl.startsWith('file:')) {
-      const here = fileURLToPath(selfUrl);
-      const cli = join(dirname(here), '..', 'bin', 'cli.js');
-      if (existsSync(cli)) return { cmd: process.execPath, preArgs: [cli] };
-    }
-  } catch {
-    /* fall through to PATH */
-  }
-  return { cmd: 'uap', preArgs: [] };
-}
-
+// resolveUapBin lives in src/utils/resolve-uap-bin.ts — shared with the fleet
+// registry's spawn-on-demand (extracted when it gained a second consumer; ADR-0008).
 export function listDeliverRuns(cwd: string): DeliverRunState[] {
   try {
     return listRuns(cwd);
@@ -172,6 +145,11 @@ export function handleDeliverLaunch(cwd: string, body: Body): { launched: boolea
   if (body.model) args.push('--model', String(body.model));
   if (body.maxTurns) args.push('--max-turns', String(Math.max(1, Math.round(Number(body.maxTurns)) || 5)));
   const child = spawn(cmd, args, { cwd, detached: true, stdio: 'ignore' });
+  // resolveUapBin may fall through to bare 'uap' (PATH) — if that binary is
+  // missing, spawn emits an async 'error' that would crash the dashboard
+  // process. Swallow it; the launch already reported its pid optimistically
+  // and the run registry tells the truth a moment later.
+  child.once('error', () => {});
   child.unref();
   emitDeployEvent('deliver_launch', `Deliver run launched (pid ${child.pid ?? '?'}): ${instruction.slice(0, 80)}`, 'info', String(child.pid ?? ''));
   return { launched: true, pid: child.pid };
@@ -214,6 +192,7 @@ export function handleDeliverResume(cwd: string, runId: string): { runId: string
   if (!isValidRunId(runId)) throw new Error('invalid runId');
   const { cmd, preArgs } = resolveUapBin();
   const child = spawn(cmd, [...preArgs, 'deliver', '--resume', runId, '--json'], { cwd, detached: true, stdio: 'ignore' });
+  child.once('error', () => {}); // same missing-bin hazard as handleDeliverLaunch
   child.unref();
   emitDeployEvent('deliver_resume', `Deliver run ${runId} resumed (pid ${child.pid ?? '?'})`, 'info', runId);
   return { runId, resumed: true, pid: child.pid };
