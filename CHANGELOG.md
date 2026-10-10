@@ -2,7 +2,9 @@
 
 ## v2.25.0 (2026-10-10)
 
-- feat(dashboard): Clients fleet tab — multi-client overview with spawn-on-demand link-out
+- feat(placement): thread the per-request context need (cells) through admission — small-pool backends stay placeable for small requests
+- feat(placement): cold-start device probe at admit time, so the first request after a dashboard boot can auto-load (throttled, fail-closed)
+- feat(registry): qwen3.6-27b (dflash) entry, unmeasured until first placement
 
 
 ## v2.24.1 (2026-10-09)

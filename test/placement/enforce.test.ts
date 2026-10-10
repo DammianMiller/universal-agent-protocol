@@ -22,8 +22,9 @@ import {
   type PlacementInflightEntry,
 } from '../../src/placement/enforce.js';
 import type { PlacementOption } from '../../src/placement/admission.js';
-import { loadLedger, withLedger, type LedgerResident } from '../../src/placement/ledger.js';
-import { loadModelRegistry, type ModelRegistry } from '../../src/placement/registry.js';
+import { computeOptions } from '../../src/placement/admission.js';
+import { loadLedger, withLedger, type LedgerDeviceState, type LedgerResident } from '../../src/placement/ledger.js';
+import { loadModelRegistry, type MeasuredConfigEntry, type ModelRegistry } from '../../src/placement/registry.js';
 
 const registry: ModelRegistry = {
   version: 1,
@@ -90,6 +91,10 @@ interface FakeOpts {
   startFailsFor?: string;
   stopFailsFor?: string;
   healthOk?: boolean;
+  /** Deterministic device facts (syncLedger otherwise probes nvidia-smi and
+   * MemAvailable, whose live readings vary with whatever else the machine is
+   * running mid-suite). */
+  probe?: Record<string, LedgerDeviceState>;
 }
 
 interface FakeCalls {
@@ -135,6 +140,7 @@ function fakeDeps(o: FakeOpts = {}): { deps: EnforceDeps; calls: FakeCalls; acti
       clock += ms;
     },
     nowMs: () => clock,
+    ...(o.probe ? { probeDevices: () => o.probe as Record<string, LedgerDeviceState> } : {}),
   };
   return { deps, calls, active };
 }
@@ -156,6 +162,23 @@ function resident(model: string, config: string, unit: string, gpuMib: number): 
   return {
     model, config, device: 'gpu0', unit, state: 'hot',
     gpu_mib: gpuMib, host_rss_mib: 52857, holders: [], since: '2026-10-08T09:14:02Z',
+  };
+}
+
+/** The dflash shape: a 16k KV pool and NO marginal-KV rate — cost is known
+ * only up to the pool, so the 32,768-cell default computes zero options. */
+function smallPoolRegistry(): ModelRegistry {
+  const mtp = registry.models['qwen3.8-27b']!.configs['llama-mtp'] as MeasuredConfigEntry;
+  return {
+    ...registry,
+    models: {
+      'qwen3.8-27b': {
+        ...registry.models['qwen3.8-27b']!,
+        configs: {
+          'llama-mtp': { ...mtp, context_pool_cells: 16384, kv_resident_cells: 16384 },
+        },
+      },
+    },
   };
 }
 
@@ -195,6 +218,90 @@ describe('placement enforcement', () => {
     expect(calls.stop).toEqual([]);
     expect(calls.start).toEqual([]);
     expect(loadLedger(env.ledgerPath).pending).toEqual([]);
+  });
+
+  it('per-request cells: a small-pool config applies only against the parked request\'s recorded context need', async () => {
+    // The dflash shape: a 16k KV pool with no marginal-KV rate. Its cost is
+    // known only up to the pool, so the 32,768-cell default computes zero
+    // options — before cells threading, `uap models apply <id> 1` could
+    // never reach the option `uap models pending` printed for the entry.
+    const env = freshEnv();
+    const smallPool = smallPoolRegistry();
+    const repoPath = join(env.dir, 'small-pool-registry.json');
+    writeFileSync(repoPath, JSON.stringify(smallPool));
+    withLedger(env.ledgerPath, (l) => {
+      l.devices = {
+        gpu0: { kind: 'gpu', total_mib: 24576, free_mib: 23_000, reserved_mib: 1293, source: 'nvidia-smi' },
+        cpu0: { kind: 'cpu', total_mib: 126944, free_mib: 60_000, reserved_mib: 8192, source: 'MemAvailable' },
+      };
+      l.pending.push(
+        {
+          id: 'plc-cell01', requested_model: 'qwen3.8-27b-mtp', client: 'ugc-factory',
+          created_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+          reason: 'not_resident', cells: 4096,
+        },
+        {
+          id: 'plc-cell02', requested_model: 'qwen3.8-27b-mtp', client: 'legacy-client',
+          created_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+          reason: 'not_resident', // older proxy: no cells recorded
+        },
+      );
+    });
+    const { deps, calls } = fakeDeps({ probe: {
+      gpu0: { kind: 'gpu', total_mib: 24576, reserved_mib: 1293, free_mib: 23_000, source: 'nvidia-smi' },
+      cpu0: { kind: 'cpu', total_mib: 126944, reserved_mib: 8192, free_mib: 100_000, source: 'MemAvailable' },
+    } });
+    // No recorded need → the 32k default is beyond the pool → zero options,
+    // the honest fail-closed refusal (not a silent substitute). Runs FIRST:
+    // a successful enforcement below marks the model resident in this
+    // ledger, and a later case would resolve as reuse instead.
+    const noCells = await resolvePendingPlacement(env.dir, 'plc-cell02', 1, {
+      ledgerPath: env.ledgerPath, repoPath, deps, timeouts,
+    });
+    expect(noCells.ok).toBe(false);
+    expect(noCells.error).toContain('option 1 does not exist (1-0)');
+    // The recorded 4,096-cell need fits the pool → the option exists and
+    // the enforcement actually runs.
+    const withCells = await resolvePendingPlacement(env.dir, 'plc-cell01', 1, {
+      ledgerPath: env.ledgerPath, repoPath, deps, timeouts,
+    });
+    expect(withCells.ok).toBe(true);
+    expect(calls.start).toEqual(['uap-llama-server']);
+  });
+
+  it('enforceOption re-derives a small-pool option ONLY against the cells it was computed with (the auto-run drift bug)', async () => {
+    // The auto path computes the option cells-aware, then enforceOption's
+    // step-0 re-derive re-computed it against the 32k default: a small-pool
+    // option that existed for a 2k-cell request "drifted" and the load
+    // refused itself — silently, because the run never rejects.
+    const env = freshEnv();
+    const smallPool = smallPoolRegistry();
+    withLedger(env.ledgerPath, (l) => {
+      l.devices = {
+        gpu0: { kind: 'gpu', total_mib: 24576, free_mib: 23_000, reserved_mib: 1293, source: 'nvidia-smi' },
+        cpu0: { kind: 'cpu', total_mib: 126944, free_mib: 60_000, reserved_mib: 8192, source: 'MemAvailable' },
+      };
+    });
+    const options = computeOptions(smallPool, loadLedger(env.ledgerPath), 'qwen3.8-27b-mtp', { cells: 2048 }).options;
+    expect(options.length).toBe(1);
+    const approved = options[0]!;
+    const { deps, calls } = fakeDeps({ probe: {
+      gpu0: { kind: 'gpu', total_mib: 24576, reserved_mib: 1293, free_mib: 23_000, source: 'nvidia-smi' },
+      cpu0: { kind: 'cpu', total_mib: 126944, reserved_mib: 8192, free_mib: 100_000, source: 'MemAvailable' },
+    } });
+    const drifted = await enforceOption(smallPool, 'qwen3.8-27b-mtp', approved, {
+      ledgerPath: env.ledgerPath, deps, timeouts, // no cells: the old behavior
+    });
+    expect(drifted.ok).toBe(false);
+    expect(drifted.error).toContain('drifted');
+    expect(calls.start).toEqual([]);
+    const enforced = await enforceOption(smallPool, 'qwen3.8-27b-mtp', approved, {
+      ledgerPath: env.ledgerPath, deps, timeouts, cells: 2048,
+    });
+    expect(enforced.ok).toBe(true);
+    expect(calls.start).toEqual(['uap-llama-server']);
   });
 
   it('displace happy path: drain, stop, verify-free, start, verify-up, refresh, resolve', async () => {

@@ -1729,8 +1729,27 @@ async def _reconcile_wire_model(openai_body: dict) -> None:
         )
 
 
+# Placement cost is per-request (spec §4.4): the controller's 32,768-cell
+# default fail-closed-refuses any config whose measured KV pool is smaller,
+# even when THIS request fits comfortably (a 1.5k-token caption call against
+# a 16k-max-context backend). The proxy knows the request; it sends the
+# honest estimate so small-pool backends stay placeable for small requests.
+PLACEMENT_CELLS_FLOOR = 1024
+PLACEMENT_GENERATION_HEADROOM_CELLS = 2048
+
+
+def _placement_request_cells(body: dict) -> int:
+    """This request's context need in cells: estimated input tokens plus a
+    generation allowance, floored. An estimate, deliberately cheap — the
+    controller treats it as a bound on what the parked request costs, never
+    as a guarantee the backend can serve it (that is the backend's own
+    context cap to enforce, honestly, at request time)."""
+    estimated = estimate_total_tokens(body)
+    return max(PLACEMENT_CELLS_FLOOR, int(estimated) + PLACEMENT_GENERATION_HEADROOM_CELLS)
+
+
 async def _placement_controller_admit(
-    model_id: str, client_id: str, session_id: str | None
+    model_id: str, client_id: str, session_id: str | None, cells: int | None = None
 ) -> dict | None:
     """Ask the dashboard-hosted placement controller for an admit decision.
 
@@ -1744,6 +1763,8 @@ async def _placement_controller_admit(
         return None
     url = PROXY_PLACEMENT_CONTROLLER.rstrip("/") + "/api/placement/admit"
     payload = {"model_id": model_id, "client": client_id, "session": session_id}
+    if cells is not None:
+        payload["cells"] = cells
     try:
         r = await http_client.post(url, json=payload, timeout=2.0)
         if r.status_code == 200:
@@ -1815,7 +1836,7 @@ def _placement_park_response(wire_model: str, placement_id: str, reason: str) ->
 
 
 async def _placement_admit(
-    wire_model: str | None, client_id: str, session_id: str | None
+    wire_model: str | None, client_id: str, session_id: str | None, cells: int | None = None
 ) -> Response | None:
     """Placement admission gate (spec §4.3).
 
@@ -1831,6 +1852,11 @@ async def _placement_admit(
     /v1/chat/completions, /api/chat, /api/generate all reach it), and cloud
     passthrough has already returned above, so passthrough is exempt by
     construction.
+
+    ``cells`` is this request's context need (see
+    _placement_request_cells): the controller's option math is per-request,
+    and without it small-pool backends are fail-closed-refused even for
+    requests that fit.
     """
     if PROXY_PLACEMENT_MODE == "off" or not wire_model:
         return None
@@ -1859,7 +1885,7 @@ async def _placement_admit(
             wire_model, auto_entry["placement_id"], auto_entry.get("reason") or "not_resident"
         )
 
-    answer = await _placement_controller_admit(wire_model, client_id, session_id)
+    answer = await _placement_controller_admit(wire_model, client_id, session_id, cells)
     reason: str | None = None
     placement_id: str | None = None
     if answer is not None and answer.get("decision") == "forward":
@@ -15605,6 +15631,7 @@ async def messages(request: Request):
         model if isinstance(model, str) and model != "default" else None,
         client_id,
         session_id,
+        _placement_request_cells(body),
     )
     if parked is not None:
         return parked

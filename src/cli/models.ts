@@ -375,7 +375,10 @@ export async function modelsPendingCommand(opts: ModelsStatusOptions = {}): Prom
     console.log(`  client ${p.client ?? '?'}${p.session ? `, session ${p.session}` : ''}${p.pid ? `, pid ${p.pid}` : ''}`);
     console.log(`  parked ${p.created_at}, expires ${p.expires_at} (${expires > now ? `${Math.round((expires - now) / 1000)}s left` : 'EXPIRED'})`);
     console.log(`  reason: ${p.reason ?? 'parked'}`);
-    const options = computeOptions(loaded.registry, ledger, p.requested_model).options;
+    // Options are per-request (spec §4.4): recompute against the context the
+    // parked request actually needs, when the proxy recorded it — the 32k
+    // default would fail-closed-refuse a small-pool config that fits fine.
+    const options = computeOptions(loaded.registry, ledger, p.requested_model, { cells: p.cells }).options;
     if (options.length === 0) {
       console.log('  no viable option (unmeasured, unknown cost, or nothing fits)');
     }
@@ -417,7 +420,12 @@ export async function modelsApplyCommand(opts: ModelsApplyOptions = {}): Promise
     return 1;
   }
   const loaded = loadModelRegistry(projectDir, { repoPath: opts.repoPath, localPath: opts.localPath });
-  const options = computeOptions(loaded.registry, loadLedger(ledgerPath), pending.requested_model).options;
+  // The operator approves the option list the PARKED REQUEST computed against
+  // its own context need (recorded in the entry) — not the 32k default, which
+  // can refuse a config that serves this request fine.
+  const options = computeOptions(loaded.registry, loadLedger(ledgerPath), pending.requested_model, {
+    cells: pending.cells,
+  }).options;
   const approved = options[option - 1];
   if (!approved) {
     console.error(`option ${option} does not exist (1-${options.length})`);

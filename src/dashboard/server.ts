@@ -382,6 +382,9 @@ export function startDashboardServer(
           model_id: modelId,
           client: typeof parsed.client === 'string' ? parsed.client : undefined,
           session: typeof parsed.session === 'string' ? parsed.session : undefined,
+          // The request's context need — spec §4.4 cost is per-request.
+          // getPlacementAdmit sanitizes the shape, the route just forwards.
+          cells: typeof parsed.cells === 'number' ? parsed.cells : undefined,
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(answer));
