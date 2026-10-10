@@ -1,0 +1,46 @@
+{
+  "_profile": "qwen38-coder390",
+  "_description": "Qwen3.8-27B Coder390 EfficientThink (LynnStyle Q4 + Q8 MTP) — community post-train of the official Qwen3.8-27B (dense qwen35 arch, Apache-2.0; nerkyor/Qwen3.8-27B-Coder390-EfficientThink-Opus5.5-GPT6Astra-Grok4.7-DSV4Pro-K3-SFT-RLOO-MTP-DFlash2). Served by uap-coder390-server (llama.cpp continuity script, native draft-mtp from the checkpoint's blk.64 head, Q8 mmproj for vision). The tune's headline: EfficientThink — reasoning P50 down 44-53% and 94K-cap truncations down 13→3 on LCB vs the stock 27B, with LCB 89-90. No DFlash2 draft ships for GGUF (mutually exclusive upstream).",
+  "model": "qwen3.8-27b-coder390",
+  "max_tokens": 57344,
+  "_max_tokens_comment": "Same 50%-of-window ratio as qwen38. The tune is TRAINED to stop early (that is its whole point), but reasoning still spends completion budget in reasoning_content; keep the cap generous so a long-necessary derivation is never truncated into an empty answer — the failure this tune exists to fix must not be reintroduced by the server config. The proxy's PROXY_TOOL_TURN_MAX_TOKENS clamp still applies to tool turns.",
+  "temperature": 0.3,
+  "top_p": 0.9,
+  "top_k": 20,
+  "min_p": 0.05,
+  "repetition_penalty": 1.0,
+  "_sampling_comment": "UAP's tool-call-tuned values, carried from qwen38 (never vendor chat defaults). EfficientThink changes the model's reasoning LENGTH, not its sampling; these stay as-is until a `uap tune` pass on real agent traffic says otherwise.",
+  "stop_sequences": ["<|im_end|>"],
+  "timeout_ms": 300000,
+  "context_window": 114688,
+  "_context_window_comment": "LLAMA_CTX_SIZE=131072 is the single-rail TOTAL (one 24 GiB card holding 18.5 GiB weights + 0.6 mmproj + KV); the per-session cap sits 87.5% below the pool exactly like the strata precedent, leaving the engine its own scratch room. If the measure pass shows the q4_0 KV pool smaller than 131k cells, lower this to 0.875x of the measured pool.",
+  "optimize_for_tool_calls": true,
+  "mode_switch_buffer_tokens": 500,
+  "enable_thinking": true,
+  "_thinking_comment": "Top-level; the proxy probes the backend once and adapts (PROXY_CHAT_TEMPLATE_KWARGS=auto). The GGUF carries the chat template; the continuity script's qwen-sharp.jinja override is NOT used for this profile's unit — set LLAMA_CHAT_TEMPLATE_FILE=embedded in coder390-server.env if the qwen-sharp template proves incompatible (the tune was trained with its own template).",
+  "dynamic_temperature": {
+    "enabled": true,
+    "decay": 0.5,
+    "floor": 0.2,
+    "_comment": "On retry, temp = max(floor, base_temp * decay^attempt)."
+  },
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Reduces round-trips by encouraging multi-tool emission in one turn."
+  },
+  "concurrency": {
+    "max_parallel_requests": 1,
+    "_comment": "One rail, one 131k pool: a second hot session would overcommit the KV pool. Matches the strata single-rail posture (slots, proxy concurrency and admission move together).",
+    "kv_capacity_shared": true
+  },
+  "measured": {
+    "date": null,
+    "gpu": "NVIDIA GeForce RTX 3090, 24576 MiB",
+    "_gpu_comment": "Footprint not yet measured — run `uap models measure qwen3.8-27b-coder390/coder390-q4-lynn-mtp` after the first boot and record it here and in the registry (the admit gate refuses unmeasured models, fail-closed)."
+  },
+  "routing": {
+    "endpoint": "http://127.0.0.1:4000/v1",
+    "_comment": "Route through the anthropic-proxy, never the llama-server port directly. Clients select this profile with the header 'x-uap-model-profile: qwen38-coder390' (or a uap_model_profile body param); model-id routing uses the registry's advertises aliases."
+  }
+}
