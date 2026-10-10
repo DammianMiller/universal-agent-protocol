@@ -1,10 +1,8 @@
 # Changelog
 
-## v2.26.0 (2026-10-10)
+## v2.26.0 (2026-10-11)
 
 - feat(placement): idle-resident auto-unload (§4.4.2) — the consent-gated reverse of auto-load
-- feat(placement): thread per-request cells through admission + auto-load
-- feat(clients): verified stop teardown + shared resolveUapBin (ADR-0008 follow-ups)
 
 
 ## v2.25.0 (2026-10-10)
