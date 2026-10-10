@@ -113,4 +113,53 @@ describe('POST /api/placement/auto (dashboard auto-policy surface)', () => {
     const r = await post(port, { enable: true }, null);
     expect(r.status).toBe(401);
   }, 20000);
+
+  // --- §4.4.2 idle-unload knobs -------------------------------------------
+  it('rejects allow_unload without yes: true — stopping a resident unattended is standing consent', async () => {
+    const port = await boot();
+    const r = await post(port, { allow_unload: ['qwen3.8-flash-next'] });
+    expect(r.status).toBe(400);
+    const body = (await r.json()) as { error: string };
+    expect(body.error).toContain('yes: true');
+  }, 20000);
+
+  it('allow_unload with yes persists and survives an unrelated save (field preservation)', async () => {
+    const port = await boot();
+    const arm = await post(port, { allow_unload: ['qwen3.8-flash-next'], unload_idle_after_secs: 120, yes: true });
+    expect(arm.status).toBe(200);
+    expect(await arm.json()).toEqual({
+      enabled: false,
+      allow_displace: [],
+      unload_allow: ['qwen3.8-flash-next'],
+      unload_idle_after_secs: 120,
+    });
+    // The regression this pins: a save that knows NOTHING about unload must
+    // not rebuild the policy object and drop the idle-unload consent.
+    const unrelated = await post(port, { enable: true });
+    expect(await unrelated.json()).toEqual({
+      enabled: true,
+      allow_displace: [],
+      unload_allow: ['qwen3.8-flash-next'],
+      unload_idle_after_secs: 120,
+    });
+    const rm = await post(port, { disallow_unload: ['qwen3.8-flash-next'] });
+    expect(await rm.json()).toEqual({
+      enabled: true,
+      allow_displace: [],
+      unload_allow: [],
+      unload_idle_after_secs: 120,
+    });
+  }, 20000);
+
+  it('unload_idle_after_secs: rejects under the floor, accepts a number, and null disarms', async () => {
+    const port = await boot();
+    const tooSmall = await post(port, { unload_idle_after_secs: 5 });
+    expect(tooSmall.status).toBe(400);
+    const badType = await post(port, { unload_idle_after_secs: 'soon' });
+    expect(badType.status).toBe(400);
+    const arm = await post(port, { unload_idle_after_secs: 300 });
+    expect(await arm.json()).toEqual({ enabled: false, allow_displace: [], unload_idle_after_secs: 300 });
+    const disarm = await post(port, { unload_idle_after_secs: null });
+    expect(await disarm.json()).toEqual({ enabled: false, allow_displace: [] });
+  }, 20000);
 });

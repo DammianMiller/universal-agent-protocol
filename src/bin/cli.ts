@@ -751,7 +751,11 @@ program
       .option('--disable', 'disable auto-load; every park needs a manual apply again')
       .option('--allow-displace <models>', 'comma-separated registry model keys whose displacement may auto-enforce')
       .option('--disallow-displace <models>', 'comma-separated registry model keys to remove from the displacement allowlist')
-      .option('--yes', 'required with --allow-displace: the standing consent being recorded')
+      .option('--allow-unload <models>', 'comma-separated registry model keys that may be auto-unloaded once idle (standing consent; needs --yes)')
+      .option('--disallow-unload <models>', 'comma-separated registry model keys to remove from the idle-unload allowlist')
+      .option('--unload-idle-after-secs <secs>', 'arm idle-unload: no gated use for this many seconds and a listed resident is swept (min 60)')
+      .option('--unload-idle-off', 'disarm the idle-unload timer (allowlist is kept)')
+      .option('--yes', 'required with --allow-displace / --allow-unload: the standing consent being recorded')
       .option('--policy-path <path>', 'explicit policy file path (testing only: the controller reads ~/.uap/placement-auto.json or UAP_PLACEMENT_AUTO)')
       .action(async (options) => {
         const code = await (await lazy.models())('auto', {
@@ -759,6 +763,12 @@ program
           disable: options.disable === true,
           allowDisplace: options.allowDisplace,
           disallowDisplace: options.disallowDisplace,
+          allowUnload: options.allowUnload,
+          disallowUnload: options.disallowUnload,
+          unloadIdleAfterSecs: options.unloadIdleAfterSecs === undefined
+            ? undefined
+            : Number(options.unloadIdleAfterSecs),
+          unloadIdleAfterSecsOff: options.unloadIdleOff === true,
           yes: options.yes === true,
           policyPath: options.policyPath,
         });

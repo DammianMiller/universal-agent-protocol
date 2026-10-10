@@ -792,7 +792,8 @@ operator sees, under two rules:
    §6 phase-4 note for why this extends, not violates, "never displacement".
 
 The policy lives in `~/.uap/placement-auto.json` (`UAP_PLACEMENT_AUTO`):
-`{"enabled": bool, "allow_displace": [model keys]}`. **Opt-in, fail-closed**:
+`{"enabled": bool, "allow_displace": [model keys]}` plus the §4.4.2 knobs.
+**Opt-in, fail-closed**:
 a missing file, a corrupt file, or a missing `enabled: true` key all mean
 auto is OFF — every park waits for a manual apply, exactly as in phase 3.
 `uap models auto` with no flags prints status; `--enable`/`--disable` flip
@@ -849,6 +850,64 @@ auto-loads; the proxy's `PROXY_PLACEMENT_MODE` never reaches the
 controller. An operator running `mode=ask` with the auto policy enabled
 gets auto-loads — the policy file is the single authority, and
 `uap models auto --disable` is the off switch.
+
+#### 4.4.2 Idle-resident unload (the missing reverse)
+
+§4.4.1 closes the loop on the *load* side only: a parked request loads its
+model, but nothing ever unloads a resident again — the first auto-loaded
+model holds its device until a human remembers to stop it. The idle sweep
+(`src/placement/idle.ts`, wired into the dashboard process that already owns
+enforcement) is the consent-gated reverse:
+
+- **Off by default.** No `unload_idle_after_secs` in the policy → the sweep
+  is a per-tick no-op. The knob floors at 60 s — under a minute the sweep
+  would oscillate (unload, next request auto-loads, unload again).
+- **Consent per model.** `unload_allow` is the standing-consent twin of
+  `allow_displace` (`uap models auto --allow-unload <model> --yes`; the
+  dashboard's `/api/placement/auto` takes `allow_unload` with the same
+  `yes: true` gate). A resident not on the list is never touched.
+- **A gated request served resets the clock.** The admit forward path
+  records `usage[model] = now` in the ledger (top-level, so it survives
+  the resident rebuild in `syncLedger`). The touch is fail-soft with a
+  short lock fuse (250 ms): a ledger hiccup or lock contention loses the
+  touch, which only delays an unload — never blocks a forward.
+- **Arming never evicts the already-idle.** A resident with no usage record
+  gets its clock SEEDED at first observation; the sweep acts only on
+  windows it actually watched. A successful unload CLEARS the entry, so a
+  RELOADED model gets a fresh window instead of inheriting a stale clock
+  that predates it — and entries for models with no live resident are
+  pruned each tick, so residue cannot accumulate.
+- **The sweep never races placement's own work.** A model with a
+  non-expired pending entry (parked for the operator, or mid-auto-load)
+  is skipped — demand exists. A refused or faulting unload parks the
+  model in a 10-minute failure cooldown, the twin of auto-load's: a
+  persistently failing stop would otherwise drain→stop→restart the
+  backend every 60 s, unsupervised. Overlapping ticks are dropped (a
+  60 s drain window can exceed the 60 s cadence).
+- **Unknown means busy.** The usage clock only sees gated traffic, so the
+  sweep also probes the endpoint for ESTABLISHED connections (`ss`, scoped
+  to the backend's server-side sockets): a client past the gate (direct
+  curl, another agent on the port) resets the clock and skips the tick.
+  If `ss` cannot answer, the resident is skipped — a refusal to guess,
+  never a guess that it's idle.
+- **The stop is the operator's stop.** The sweep only decides WHEN; the
+  unload itself is `unloadPlacement` — drain, in-flight refusal (a
+  generation running at the final check aborts the stop), verify-free,
+  rollback. Fleet-spawned client dashboards set `UAP_IDLE_SWEEP=0`
+  (`false`/`off` also accepted), so exactly one sweeper touches the
+  shared ledger. Two OPERATOR-started dashboards would both sweep — same
+  pre-existing exposure as two manual unloads; run one.
+- **Policy edits take effect without a restart**: the sweep re-reads the
+  policy file every tick.
+- **Accepted loop surface (documented, not mitigated):** an unauthenticated
+  loopback caller can keep a resident pinned forever by re-admitting
+  (resetting its clock), or — with both auto-load and idle-unload armed —
+  drive park→load→idle→unload churn. The same caller could just use the
+  model; the allowlists still bound WHICH models are affected.
+
+The dashboard's `/api/placement/auto` preserves these fields across every
+save (spread, not rebuild), so an unrelated `--enable` cannot silently wipe
+the unload consent.
 
 ### 4.5 Impact preview
 

@@ -290,6 +290,19 @@ export function getPlacementAdmit(
     (r) => r.state !== 'draining' && residentServes(r, request.model_id, registry),
   );
   if (resident) {
+    // Idle-sweep clock (§4.4.2): a gated request just used this model.
+    // Fail-soft by design — the touch only delays a future idle unload,
+    // it must never block or slow the forward the proxy is waiting on
+    // (2s admit timeout). Two layers keep that promise: the SHORT lock fuse
+    // (250ms) bounds a contention stall, and the catch turns a lost touch
+    // into a later unload — the conservative direction either way.
+    try {
+      withLedger(ledgerPath, (l) => {
+        l.usage[resident.model] = Date.now();
+      }, { lockTimeoutMs: 250 });
+    } catch {
+      /* advisory clock only — see above */
+    }
     return { decision: 'forward', target_id: residentTargetId(resident) };
   }
 

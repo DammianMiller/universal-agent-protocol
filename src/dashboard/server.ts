@@ -15,7 +15,8 @@ import { fileURLToPath } from 'url';
 import { getDashboardData, probeDatabaseHealth } from './data-service.js';
 import { getPlacementState, getPlacementPending, getPlacementPreview, getPlacementAdmit } from './placement-routes.js';
 import { resolvePendingPlacement, dismissPendingPlacement, loadPlacement, unloadPlacement } from '../placement/enforce.js';
-import { autoPolicyPath, loadAutoPolicy, saveAutoPolicy } from '../placement/auto.js';
+import { autoPolicyPath, loadAutoPolicy, MIN_UNLOAD_IDLE_SECS, saveAutoPolicy, type AutoPolicy } from '../placement/auto.js';
+import { startIdleSweep } from '../placement/idle.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { heuristicOrder, buildOrderPrompt, parseOrderResponse, type OrderablePolicy } from '../policies/policy-order.js';
@@ -182,6 +183,9 @@ export function startDashboardServer(
   // Updated to the real bound port once the server is listening.
   let boundPort = requestedPort;
   const host = options.host || 'localhost';
+  // Idle-resident sweep handle (started in the listen callback once cwd's
+  // seeder has run; see §4.4.2). Stopped in close().
+  let idleSweeper: { stop: () => void } | null = null;
   // Precedence: explicit option (--refresh) > UAP_DASH_REFRESH_MS > 2000.
   // Floor 250ms — getDashboardData reads several DBs per snapshot, so a
   // too-small interval would peg the event loop. Ceiling 1h — past 2^31-1ms,
@@ -937,6 +941,18 @@ export function startDashboardServer(
       /* seeder failure is non-fatal */
     }
 
+    // Idle-resident sweep (§4.4.2): this process already owns placement
+    // enforcement, so it owns the reverse too — unloading residents whose
+    // idle clock ran out. OFF unless the policy armed it (per-tick re-read:
+    // operator edits take effect without a restart). Fleet-spawned CLIENT
+    // dashboards set UAP_IDLE_SWEEP=0 so exactly one sweeper touches the
+    // shared ledger.
+    if (!['0', 'false', 'off'].includes((process.env.UAP_IDLE_SWEEP ?? '').toLowerCase())) {
+      idleSweeper = startIdleSweep(cwd, {
+        log: (m) => console.warn(m),
+      });
+    }
+
     // Signal readiness with the actually-bound port (essential for port: 0).
     options.onListening?.({ port: boundPort, host });
   });
@@ -949,6 +965,12 @@ export function startDashboardServer(
     close: () => {
       clearInterval(eventPoller);
       clearInterval(pushInterval);
+      // Stop the idle-resident sweep before the rest of the teardown —
+      // a tick firing mid-close would race the server/ledger shutdown.
+      if (idleSweeper) {
+        idleSweeper.stop();
+        idleSweeper = null;
+      }
       // Cleanup seeder (clear heartbeat, mark agent completed)
       try {
         cleanupSeeder(cwd);
@@ -1104,7 +1126,16 @@ function handlePlacementAuto(body: Record<string, unknown>): unknown {
   const disallow = stringList(body.disallow_displace);
   if (enable && disable) throw new Error('enable and disable are mutually exclusive');
   const path = autoPolicyPath();
-  if (!enable && !disable && allow.length === 0 && disallow.length === 0) {
+  const allowUnload = stringList(body.allow_unload);
+  const disallowUnload = stringList(body.disallow_unload);
+  const idleSecs = body.unload_idle_after_secs;
+  // `null` explicitly disarms the timer; a number arms/updates it. Anything
+  // else in that field is a caller error, not a silent no-op.
+  if (idleSecs !== undefined && idleSecs !== null && typeof idleSecs !== 'number') {
+    throw new Error('unload_idle_after_secs must be a number of seconds, or null to disarm');
+  }
+  if (!enable && !disable && allow.length === 0 && disallow.length === 0 &&
+      allowUnload.length === 0 && disallowUnload.length === 0 && idleSecs === undefined) {
     return loadAutoPolicy(path); // status: same shape the state payload serves
   }
   if (allow.length > 0 && body.yes !== true) {
@@ -1114,12 +1145,39 @@ function handlePlacementAuto(body: Record<string, unknown>): unknown {
         '`uap models auto --allow-displace <model> --yes`)'
     );
   }
+  if (allowUnload.length > 0 && body.yes !== true) {
+    throw new Error(
+      'allow_unload records standing consent to STOP this model\'s resident automatically once it ' +
+        'goes idle — confirm with yes: true (the same gate as ' +
+        '`uap models auto --allow-unload <model> --yes`)'
+    );
+  }
   const prev = loadAutoPolicy(path);
-  const next = { enabled: prev.enabled, allow_displace: [...prev.allow_displace] };
+  // Spread prev (NOT a literal rebuild): every field the route doesn't
+  // know about must survive a save. The allowlists are cloned to fresh
+  // arrays so the in-place filtering below never mutates `prev`.
+  const allowDisplace = [...prev.allow_displace];
+  const unloadAllow = [...(prev.unload_allow ?? [])];
+  const touchesUnload =
+    allowUnload.length > 0 || disallowUnload.length > 0 || prev.unload_allow !== undefined;
+  // Old-shape policies keep their old-shape responses: unload_allow is only
+  // (re)written when the caller touches it or it already exists on disk.
+  const next: AutoPolicy = { ...prev, allow_displace: allowDisplace };
   if (enable) next.enabled = true;
   if (disable) next.enabled = false;
-  for (const m of allow) if (!next.allow_displace.includes(m)) next.allow_displace.push(m);
-  next.allow_displace = next.allow_displace.filter((m) => !disallow.includes(m));
+  for (const m of allow) if (!allowDisplace.includes(m)) allowDisplace.push(m);
+  next.allow_displace = allowDisplace.filter((m) => !disallow.includes(m));
+  if (touchesUnload) {
+    for (const m of allowUnload) if (!unloadAllow.includes(m)) unloadAllow.push(m);
+    next.unload_allow = unloadAllow.filter((m) => !disallowUnload.includes(m));
+  }
+  if (idleSecs === null) delete next.unload_idle_after_secs;
+  else if (idleSecs !== undefined) {
+    if (!Number.isFinite(idleSecs) || idleSecs < MIN_UNLOAD_IDLE_SECS) {
+      throw new Error(`unload_idle_after_secs must be >= ${MIN_UNLOAD_IDLE_SECS} (under a minute the sweep would thrash)`);
+    }
+    next.unload_idle_after_secs = Math.floor(idleSecs);
+  }
   saveAutoPolicy(next, path);
   return next;
 }

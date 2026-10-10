@@ -81,6 +81,39 @@ export function listeningPortPid(port: number): number | null {
   }
 }
 
+/** Established (in-use) TCP connections to a backend endpoint, via
+ * `ss -tn state established`. This is the idle sweep's port-level safety:
+ * clients that bypass the gate (curl straight at the port, another agent
+ * talking to the backend directly) are invisible to the gated usage
+ * clock — an ESTABLISHED connection means SOMETHING is talking to the
+ * resident right now and it must not be unloaded. Null when `ss` cannot
+ * answer: unknown is a refusal to unload, never a guess that it's idle.
+ * Scoped to SPORT only: every connection TO the backend has a server-side
+ * socket with local port = the backend port, while matching DPORT too
+ * would also count this machine's own outbound traffic to any remote host
+ * on that port number (false "busy" — safe, but it would defer the sweep
+ * forever). All same-device backends share one endpoint port (the
+ * Conflicts graph keeps exactly one live). */
+export function endpointEstablishedConns(endpoint: string | undefined): number | null {
+  const m = endpoint?.match(/:(\d+)(?:\/|$)/);
+  if (!m) return null; // no port in the endpoint — unknown, fail closed
+  const port = Number(m[1]);
+  if (!Number.isInteger(port) || port <= 0) return null;
+  try {
+    const out = execFileSync('ss', ['-tn', `state established`, `sport = :${port}`], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: PROBE_TIMEOUT_MS,
+    });
+    return out
+      .split('\n')
+      .filter((l) => l.trim() && !l.startsWith('State'))
+      .length;
+  } catch {
+    return null; // ss missing/unhappy — unknown, never "idle"
+  }
+}
+
 /** Whole-config GPU MiB: sum of nvidia-smi compute-apps memory across the
  * given PIDs. Null when none of them hold GPU memory — a refusal, not zero. */
 export function gpuComputeMiB(pids: number[]): number | null {

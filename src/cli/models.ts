@@ -61,6 +61,7 @@ import {
 import {
   autoPolicyPath,
   loadAutoPolicy,
+  MIN_UNLOAD_IDLE_SECS,
   saveAutoPolicy,
   type AutoPolicy,
 } from '../placement/auto.js';
@@ -531,6 +532,13 @@ export interface ModelsAutoOptions {
   /** Comma-separated registry model keys to (dis)allow for auto displacement. */
   allowDisplace?: string;
   disallowDisplace?: string;
+  /** Seconds of no gated use before an `--allow-unload` resident is swept (§4.4.2). */
+  unloadIdleAfterSecs?: number;
+  /** `null` disarms the idle timer. */
+  unloadIdleAfterSecsOff?: boolean;
+  /** Comma-separated registry model keys that may be auto-unloaded when idle. */
+  allowUnload?: string;
+  disallowUnload?: string;
   yes?: boolean;
   policyPath?: string;
 }
@@ -542,12 +550,21 @@ export function modelsAutoCommand(opts: ModelsAutoOptions = {}): number {
     console.error('--enable and --disable are mutually exclusive; pick one');
     return 1;
   }
+  if (opts.unloadIdleAfterSecs !== undefined && opts.unloadIdleAfterSecsOff) {
+    console.error('--unload-idle-after-secs and --unload-idle-off are mutually exclusive');
+    return 1;
+  }
   const wantsChange =
-    opts.enable === true || opts.disable === true || !!opts.allowDisplace || !!opts.disallowDisplace;
+    opts.enable === true || opts.disable === true || !!opts.allowDisplace || !!opts.disallowDisplace ||
+    opts.unloadIdleAfterSecs !== undefined || opts.unloadIdleAfterSecsOff === true ||
+    !!opts.allowUnload || !!opts.disallowUnload;
   if (!wantsChange) {
     console.log(`auto-load: ${policy.enabled ? 'enabled' : 'disabled'} (${path})`);
     console.log('  non-displacing options (load-alongside) load automatically when the policy is enabled');
     console.log(`  auto-displacement allowlist: ${policy.allow_displace.length ? policy.allow_displace.join(', ') : '(empty — displacement always parks for the operator)'}`);
+    console.log(`  idle-unload: ${policy.unload_idle_after_secs
+      ? `after ${policy.unload_idle_after_secs}s idle; allowlist: ${policy.unload_allow?.length ? policy.unload_allow.join(', ') : '(empty — nobody is swept)'}`
+      : '(off — no unload_idle_after_secs recorded)'}`);
     return 0;
   }
   const next: AutoPolicy = { ...policy, allow_displace: [...policy.allow_displace] };
@@ -572,6 +589,40 @@ export function modelsAutoCommand(opts: ModelsAutoOptions = {}): number {
       next.allow_displace = next.allow_displace.filter((x) => x !== m);
     }
     console.log(`auto-displacement allowed for: ${next.allow_displace.join(', ') || '(none)'}`);
+  }
+  if (opts.allowUnload) {
+    const adding = parseList(opts.allowUnload);
+    if (!opts.yes) {
+      console.log('idle-unload means: once these models have served no gated request for the');
+      console.log('armed idle window AND their endpoint has no established connections, the');
+      console.log('dashboard STOPS their resident automatically — full drain and in-flight');
+      console.log('checks included — with no operator prompt.');
+      console.log(`models: ${adding.join(', ')}`);
+      console.log(`confirm: uap models auto --allow-unload ${opts.allowUnload} --yes`);
+      return 1;
+    }
+    next.unload_allow = [...(next.unload_allow ?? [])];
+    for (const m of adding) if (!next.unload_allow.includes(m)) next.unload_allow.push(m);
+    console.log(`idle-unload allowed for: ${next.unload_allow.join(', ')}`);
+  }
+  if (opts.disallowUnload) {
+    next.unload_allow = [...(next.unload_allow ?? [])];
+    for (const m of parseList(opts.disallowUnload)) {
+      next.unload_allow = next.unload_allow.filter((x) => x !== m);
+    }
+    console.log(`idle-unload allowed for: ${next.unload_allow.join(', ') || '(none)'}`);
+  }
+  if (opts.unloadIdleAfterSecs !== undefined) {
+    if (!Number.isFinite(opts.unloadIdleAfterSecs) || opts.unloadIdleAfterSecs < MIN_UNLOAD_IDLE_SECS) {
+      console.error(`--unload-idle-after-secs must be >= ${MIN_UNLOAD_IDLE_SECS} (under a minute the sweep would thrash)`);
+      return 1;
+    }
+    next.unload_idle_after_secs = Math.floor(opts.unloadIdleAfterSecs);
+    console.log(`idle-unload timer: ${next.unload_idle_after_secs}s`);
+  }
+  if (opts.unloadIdleAfterSecsOff === true) {
+    delete next.unload_idle_after_secs;
+    console.log('idle-unload timer: (disarmed — allowlist left as recorded)');
   }
   saveAutoPolicy(next, path);
   console.log(`auto-load: ${next.enabled ? 'enabled' : 'disabled'} (policy written to ${path})`);
