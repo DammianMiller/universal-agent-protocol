@@ -1,6 +1,6 @@
 # Running UAP Against Local Models
 
-> UAP v1.224.0
+> UAP v2.29.0
 
 > **🏭 Where this fits:** BUILD — this is the station where a cheap local model
 > flails: plausible-but-wrong code, empty output, or a loop that never lands a

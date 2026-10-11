@@ -1,6 +1,6 @@
 # UAP vs Other Agent Harnesses and Tooling
 
-> Applies to UAP v1.224.0. Competitor profiles reflect public sources as of
+> Applies to UAP v2.29.0. Competitor profiles reflect public sources as of
 > September 2026; vendor-reported numbers are flagged as such, and claims we
 > could not verify are marked or omitted. UAP's own claims in this document
 > were verified against the code.

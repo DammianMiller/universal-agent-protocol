@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.29.1 (2026-10-11)
+
+- docs: the evolution story — Miller-Tech/Pay2U origin, eras, and refreshed entry docs
+
+
 ## v2.29.0 (2026-10-11)
 
 - feat(bridge): P3 autonomy — attention queue + AFK auto-decider

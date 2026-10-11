@@ -30,6 +30,7 @@ Env comes from `~/.config/uap/anthropic-proxy.env` / `llama-server.env` via
 | Deploy batcher windows | `coordination/deploy-batcher.ts:924` | `setTimeout` per action (commit 30 s / push 5 s / merge 10 s / deploy 60 s) | Batches git/deploy actions to reduce churn. |
 | Dashboard SSE poller | `dashboard/server.ts:101` | 2 s | Reads new `dashboard_events` rows, fans out to SSE clients (cross-process feed). |
 | Dashboard seeder heartbeat | `dashboard/data-seeder.ts:222` | 30 s | Liveness only; injects no fabricated data. |
+| Attention AFK decider sweep (v2.29) | `dashboard/server.ts` (same block as the idle-resident sweeper) | 60 s | `sweepExpired` — adopts grace-elapsed attention items' recorded safe defaults (logged), escalates no-default items. Rides the `UAP_IDLE_SWEEP` fleet-ownership guard; no-ops under `UAP_ATTENTION_OFF`; unref'd, never holds the process open. |
 | Recipe signal writer | `coordination/recipe-signal.ts:77` | per prompt (reactor) | Writes routing signals to `~/.cache/uap/recipe-signals`. |
 
 ## Event-driven lifecycle (not timed — triggered by harness hooks)
@@ -37,6 +38,7 @@ Env comes from `~/.config/uap/anthropic-proxy.env` / `llama-server.env` via
 | Trigger | Handler | Effect |
 |---|---|---|
 | SessionStart hook | `proxy-lifecycle.ts` `ensureProxy` | Reference-counted proxy start/adopt (idempotent; adopts a healthy existing proxy, claims ownership only if it spawned one). |
+| SessionStart hook | session-start.sh attention block (v2.29) | Fail-open `uap attention sweep --json` + `list --json` (each `timeout 10`); prints open asks + a while-you-were-away summary into the session banner. Silenced end-to-end by `UAP_ATTENTION_OFF`. |
 | Stop hook | `proxy-lifecycle.ts` `releaseProxy` | Deregister client; stop proxy only if owner AND last client. |
 | Stop hook | `handsfree stop-check` | Exit 2 to block premature session end while the ledger is incomplete (bounded). |
 | Stop hook | `hooks.ts:632` (`UAP_VERIFY_ON_STOP`) | Optionally runs `uap verify`. |

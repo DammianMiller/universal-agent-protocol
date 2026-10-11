@@ -1,6 +1,6 @@
 # Contributing to UAP
 
-`v1.224.0`
+`v2.29.0`
 
 Thanks for contributing to the Universal Agent Protocol. This guide covers the
 development setup, the worktree workflow, the completion gates every change must
@@ -24,7 +24,7 @@ cd universal-agent-protocol
 
 npm install        # install dependencies
 npm run build      # compile TypeScript (tsc) → dist/
-npm test           # run the test suite (459 vitest test files)
+npm test           # run the test suite (518 vitest test files)
 ```
 
 Common scripts (from `package.json`):
@@ -33,9 +33,9 @@ Common scripts (from `package.json`):
 |--------|--------------|
 | `npm run build` | `tsc` — compile to `dist/` |
 | `npm run dev` | `tsc --watch` — incremental rebuilds |
-| `npm test` | `vitest` — run all 459 vitest test files |
+| `npm test` | `vitest` — run all 518 vitest test files |
 | `npm run test:ci` | `vitest run` — non-watch test run for CI |
-| `npm run test:enforcers` | Python enforcer/proxy suite (~74 modules under `tools/agents/tests/`, ~1200 tests) |
+| `npm run test:enforcers` | Python enforcer/proxy suite (84 modules under `tools/agents/tests/`, 1,398 tests) |
 | `npm run test:coverage` | tests with V8 coverage |
 | `npm run bench` | benchmark suite (`vitest.bench.config.ts`) |
 | `npm run lint` | `eslint src --ext .ts` |
@@ -148,8 +148,8 @@ docs(architecture): rewrite protocol spec
 ## Project layout
 
 ```
-src/           26 subsystems, 367 TypeScript modules (see docs/architecture/OVERVIEW.md)
-test/          459 vitest test files
+src/           34 subsystems, 434 TypeScript modules (see docs/architecture/OVERVIEW.md)
+test/          518 vitest test files
 docs/          architecture, integrations, getting-started, reference
 web/           web dashboard
 tools/         agent tooling, including the Python enforcer/proxy tests

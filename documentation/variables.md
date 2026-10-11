@@ -65,6 +65,14 @@ to stop a model from persisting them.
 (moderate/aggressive), `UAP_HANDSFREE_PRELEDGER` (pre-ledger nudge; `0` disables),
 `UAP_HANDSFREE_PRELEDGER_MAX` (default 1), `UAP_HANDSFREE_MIN_TODOS` (default 3).
 
+### Operator attention queue (`UAP_ATTENTION*`, v2.29)
+`UAP_ATTENTION_GRACE_SECS` (runtime override of `attention.graceSecs`, the AFK decider's
+grace window; cap 86400; a cleared/empty value is treated as unset, failing safe to
+config), `UAP_ATTENTION_OFF` (`1` kill switch — no enqueue, no sweep, list returns
+nothing, no session-start hint; the file is left alone), `UAP_ATTENTION_QUEUE`
+(pins the queue FILE; default is the MAIN checkout's `.uap/attention.json`, shared
+across worktrees via `src/utils/checkout-root.ts`).
+
 ### Observability (`UAP_HALO_*`) — all local, no egress
 `UAP_HALO_TRACE` (**on by default**; `0` opts out), `UAP_HALO_TRACE_PATH`
 (`.uap/halo/traces.jsonl`), `UAP_HALO_PROJECT_ID` (`uap`), `UAP_HALO_TRACE_MAX_BYTES`

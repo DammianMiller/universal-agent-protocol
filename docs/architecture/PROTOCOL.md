@@ -1,6 +1,6 @@
 # The UAP Protocol
 
-`v1.224.0`
+`v2.29.0`
 
 > **🏭 Where this fits:** Cross-cutting (the factory rulebook) — with no shared
 > contract, each station's rules are guesswork and your agent slips broken work
@@ -77,6 +77,12 @@ hook, which MUST:
    this in the agent's context.
 2. **Clean stale state.** Deregister dead agents and release abandoned work
    claims so coordination state stays accurate.
+3. **Surface waiting decisions (v2.29).** Sweep the operator attention queue —
+   grace-elapsed asks adopt their recorded safe default (logged on the item,
+   never silent); asks with no safe default escalate — then emit a bounded
+   block of still-open asks (plus a while-you-were-away summary) into the
+   session banner. Item text is rendered with an untrusted-data disclaimer;
+   `UAP_ATTENTION_OFF=1` silences the rail end-to-end.
 
 The hook is **self-healing and fail-open**: it auto-creates missing
 coordination/memory DBs and never exits non-zero. Its output is advisory
