@@ -150,12 +150,19 @@ afterAll(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
-function freshEnv(): { dir: string; ledgerPath: string; repoPath: string } {
+function freshEnv(): { dir: string; ledgerPath: string; repoPath: string; localPath: string } {
   dir = mkdtempSync(join(tmpdir(), 'placement-enforce-'));
   const ledgerPath = join(dir, 'placement.json');
   const repoPath = join(dir, 'model-registry.json');
+  // Hermeticity: loadModelRegistry merges the developer's personal overlay
+  // (~/.uap/model-registry.json, or $UAP_MODEL_REGISTRY_LOCAL) whenever
+  // localPath is unset. Pinning a path that never exists keeps these fixture
+  // tests independent of machine state — an overlay entry under the same
+  // model key silently replaces the fixture config and flips every option
+  // lookup to not_in_registry.
+  const localPath = join(dir, 'no-local-overlay.json');
   writeFileSync(repoPath, JSON.stringify(registry));
-  return { dir, ledgerPath, repoPath };
+  return { dir, ledgerPath, repoPath, localPath };
 }
 
 function resident(model: string, config: string, unit: string, gpuMib: number): LedgerResident {
@@ -200,10 +207,10 @@ function park(ledgerPath: string, id: string, model: string): void {
   });
 }
 
-function optsFor(env: { ledgerPath: string; repoPath: string }, deps: EnforceDeps) {
+function optsFor(env: { ledgerPath: string; repoPath: string; localPath: string }, deps: EnforceDeps) {
   // One seam: unit activity rides on deps.isUnitActive (the fake's mutable
   // active list), not a second injectable predicate.
-  return { ledgerPath: env.ledgerPath, repoPath: env.repoPath, deps, timeouts };
+  return { ledgerPath: env.ledgerPath, repoPath: env.repoPath, localPath: env.localPath, deps, timeouts };
 }
 
 describe('placement enforcement', () => {
@@ -258,14 +265,14 @@ describe('placement enforcement', () => {
     // a successful enforcement below marks the model resident in this
     // ledger, and a later case would resolve as reuse instead.
     const noCells = await resolvePendingPlacement(env.dir, 'plc-cell02', 1, {
-      ledgerPath: env.ledgerPath, repoPath, deps, timeouts,
+      ledgerPath: env.ledgerPath, repoPath, localPath: env.localPath, deps, timeouts,
     });
     expect(noCells.ok).toBe(false);
     expect(noCells.error).toContain('option 1 does not exist (1-0)');
     // The recorded 4,096-cell need fits the pool → the option exists and
     // the enforcement actually runs.
     const withCells = await resolvePendingPlacement(env.dir, 'plc-cell01', 1, {
-      ledgerPath: env.ledgerPath, repoPath, deps, timeouts,
+      ledgerPath: env.ledgerPath, repoPath, localPath: env.localPath, deps, timeouts,
     });
     expect(withCells.ok).toBe(true);
     expect(calls.start).toEqual(['uap-llama-server']);
@@ -340,7 +347,7 @@ describe('placement enforcement', () => {
     };
     const { deps, calls } = fakeDeps({ active: [] });
     const result = await enforceOption(
-      loadModelRegistry(env.dir, { repoPath: env.repoPath }).registry,
+      loadModelRegistry(env.dir, { repoPath: env.repoPath, localPath: env.localPath }).registry,
       'qwen3.8-27b-mtp',
       approved,
       optsFor(env, deps),
