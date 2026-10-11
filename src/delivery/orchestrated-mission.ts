@@ -25,6 +25,7 @@
 import { extractContract } from './contract-extractor.js';
 import type { DeliveryResult } from './convergence-loop.js';
 import { parsePhaseArray } from './decompose.js';
+import type { TaskTiming } from './eta.js';
 import {
   orchestrate,
   type AssembledContext,
@@ -90,6 +91,13 @@ export interface OrchestratedMissionDeps {
    * root). Return null to skip; only invoked when isolation was active.
    */
   verifyCombined?: () => Promise<{ passed: boolean; feedback: string } | null>;
+  /**
+   * S1 ETA instrumentation: one wall-clock sample per task ATTEMPT (the
+   * convergence loop's own totalDurationMs). Fail-soft sink; deliver wires
+   * `createEtaRecorder` here. Called before success-dependent bookkeeping so
+   * failed attempts are recorded too.
+   */
+  recordTiming?: (t: TaskTiming) => void;
   /** Resume at the task boundary: accepted-task outcomes from an
    * interrupted run (seeded into the scheduler's done set + blackboard). */
   initialDone?: Array<{ id: string; summary: string; contract?: string }>;
@@ -192,6 +200,16 @@ export async function runOrchestratedMission(deps: OrchestratedMissionDeps): Pro
     try {
       const r = await deps.runLoop({ root, prompt: ctx.prompt, taskId: task.id, isolated });
       foldDeliveryResult(all, r);
+      // S1 ETA: one sample per attempt, failures included (a realistic ETA
+      // model must know how long the SLOW path takes, not just the fast one).
+      // Recorded before the success-dependent bookkeeping so a throwing
+      // completeTask cannot drop the sample.
+      deps.recordTiming?.({
+        taskId: task.id,
+        success: r.success,
+        durationMs: r.totalDurationMs,
+        turns: r.turns,
+      });
       deps.completeTask?.(taskRecord, r);
       const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
       // P4 - extract the VERIFIED public contract of what this task built so

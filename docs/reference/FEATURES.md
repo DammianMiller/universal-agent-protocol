@@ -99,8 +99,9 @@ Multi-model, two-tier (planner/executor) architecture.
 | Planner (`planner.ts`) | Decomposes tasks into subtasks (`TaskPlanner`). |
 | Executor (`executor.ts`) | Runs subtasks with retry/fallback (`TaskExecutor`, `MockModelClient`). |
 | Plan validator (`plan-validator.ts`) | Validates plans before build. |
+| Plan comprehension gate (`plan-readability.ts`) | Deterministic readability rules for plan artifacts — summary-first, abstraction progression, section budgets, jargon density, diagram-required — feeding `uap plan validate`; advisory by default, blocking under `plan.readability.strict`. |
 | Execution profiles (`execution-profiles.ts`, `profile-loader.ts`) | Named model profiles (`UAP_MODEL_PROFILE`). |
-| Analytics (`analytics.ts`) | Per-task token/cost/outcome metrics (`model_analytics.db`). |
+| Analytics (`analytics.ts`) | Per-task token/cost/outcome metrics (`model_analytics.db`), incl. `recentDurations` for the ETA estimator. |
 | OpenAI-compat client (`openai-compat-client.ts`) | OpenAI `/v1`-compatible client (default endpoint `http://localhost:4000/v1`). |
 
 ## Coordination (`src/coordination/`) — Line coordination & Prep
@@ -178,6 +179,7 @@ you'd run by hand.
 | Auto-optimizer (`auto-optimizer.ts`) | Dynamically enables aids. |
 | Ideation / practice / spec-imports | Divergent strategy seeds, best-practice cards, curated project seeds. |
 | HALO trace (`halo-trace.ts`) | Emits HALO spans. |
+| ETA instrumentation (`eta.ts`) | Fail-soft per-attempt wall-clock telemetry to the model-analytics store, keyed (model, task type, complexity) — the sample stream behind task ETAs. |
 | Integrity (`integrity.ts`) | Test-protection / integrity guard — stops the model from gutting the tests to "pass." |
 
 ## MCP Router (`src/mcp-router/`) — Cross-cutting (lean context)
@@ -222,6 +224,7 @@ Hierarchical MCP router that collapses 150+ MCP tools to 2
 |-----------|-------------|
 | Analyzers (`analyzers/`) | `analyzeProject(cwd)` builds a `ProjectAnalysis` (languages, frameworks, dirs) from `.uap.json`, git, package files. |
 | Generators (`generators/claude-md.ts`) | Handlebars-based CLAUDE.md / web AGENT.md generation from analysis + discovered skills. |
+| Self-knowledge card (`generators/self-card.ts`, `cli/self.ts`) | Version-pinned digest of UAP's own command/feature surface, built offline from the shipped docs, cached in `.uap/self-card.md`, searchable with `uap self query` — the agent expert on itself. |
 
 ## Observability & Telemetry — Feedback
 

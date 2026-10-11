@@ -307,9 +307,30 @@ export async function runPlanThoughtExperiment(
 /**
  * Free-text plan review for `uap plan validate` over a markdown plan artifact.
  * Same verdict contract and fail-soft rules as the phase thought experiment.
+ *
+ * `hints` (B1 plan-comprehension gate) are internally generated lines from
+ * `analyzePlanReadability` — deterministic readability findings the judge
+ * adjudicates, the same confirm-or-dismiss contract as the thought
+ * experiment's coherence hints. They MUST be machine-built, never raw
+ * model/user output.
  */
-export async function reviewPlanText(planText: string, executor: LoopExecutor): Promise<PlanReviewVerdict> {
+export async function reviewPlanText(
+  planText: string,
+  executor: LoopExecutor,
+  hints: string[] = []
+): Promise<PlanReviewVerdict> {
   const truncated = planText.length > 12000;
+  const shown = hints.slice(0, 12);
+  const hintBlock =
+    shown.length > 0
+      ? [
+          '',
+          ...shown,
+          ...(hints.length > shown.length
+            ? [`  (+${hints.length - shown.length} more findings omitted)`]
+            : []),
+        ]
+      : [];
   const prompt = [
     'You are a plan validator. Review the implementation plan below as if you',
     'had to execute it exactly as written. You did not author it; judge it',
@@ -323,7 +344,12 @@ export async function reviewPlanText(planText: string, executor: LoopExecutor): 
     '- missing prerequisite or verification steps for risky/irreversible actions',
     '- load-bearing assumptions stated nowhere and likely false',
     '- internal contradictions between sections',
-    'Do NOT fail a plan for style, brevity, or missing nice-to-haves.',
+    '- a structure that defeats a first read by a teammate: no opening summary of',
+    '  WHAT is being built, minutiae before the high-level design, or a task list',
+    '  large enough that a data-flow diagram is needed but absent',
+    'Do NOT fail a plan for mere brevity or missing nice-to-haves — but a plan a',
+    'competent teammate cannot skim top-down is a comprehension defect, not taste.',
+    ...hintBlock,
     '',
     'Respond with ONLY JSON: {"verdict": "pass" | "fail", "findings": ["<specific defect>", ...]}',
     '"fail" requires at least one concrete, execution-breaking finding.',

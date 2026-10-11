@@ -10,12 +10,26 @@ import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import type { TaskComplexity } from './types.js';
 
+/**
+ * S1 ETA rows (orchestrated task attempts, delivery/eta.ts) carry REAL
+ * durations and success but no token/cost data — the convergence loop's
+ * totals are not visible at the orchestrated-mission seam. Cost, token and
+ * task-count aggregates must not be diluted by zero-filled rows, so those
+ * views filter them out; duration/success views (getSuccessRate,
+ * getAvgLatency, recentDurations) deliberately keep them — the samples are
+ * genuine and feed the ETA estimator.
+ */
+const EXCLUDE_SYNTHETIC_ETA_ROWS =
+  "NOT (taskType = 'orchestrated' AND tokensIn = 0 AND tokensOut = 0 AND cost = 0)";
+
 export interface TaskOutcome {
   modelId: string;
   taskType: string;
   complexity: TaskComplexity;
   success: boolean;
   durationMs: number;
+  /** Turns spent on the attempt (ETA estimator input); 0 when unknown. */
+  turns?: number;
   tokensUsed: { input: number; output: number };
   cost: number;
   taskId?: string;
@@ -77,6 +91,7 @@ export class ModelAnalytics {
         complexity TEXT NOT NULL,
         success INTEGER NOT NULL,
         durationMs INTEGER NOT NULL,
+        turns INTEGER NOT NULL DEFAULT 0,
         tokensIn INTEGER NOT NULL DEFAULT 0,
         tokensOut INTEGER NOT NULL DEFAULT 0,
         cost REAL NOT NULL DEFAULT 0,
@@ -89,13 +104,21 @@ export class ModelAnalytics {
       CREATE INDEX IF NOT EXISTS idx_outcomes_time ON task_outcomes(timestamp);
       CREATE INDEX IF NOT EXISTS idx_outcomes_task ON task_outcomes(taskId);
     `);
+    // S1 ETA migration: databases created before `turns` existed lack the
+    // column; add it in place so the ETA estimator can query historical rows.
+    const columns = this.db.prepare('PRAGMA table_info(task_outcomes)').all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((c) => c.name === 'turns')) {
+      this.db.exec('ALTER TABLE task_outcomes ADD COLUMN turns INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   /**
    * Record a task outcome
    */
   recordOutcome(outcome: TaskOutcome): void {
-    const sql = `INSERT INTO task_outcomes (modelId, taskType, complexity, success, durationMs, tokensIn, tokensOut, cost, taskId, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const sql = `INSERT INTO task_outcomes (modelId, taskType, complexity, success, durationMs, turns, tokensIn, tokensOut, cost, taskId, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     this.db
       .prepare(sql)
       .run(
@@ -104,6 +127,7 @@ export class ModelAnalytics {
         outcome.complexity,
         outcome.success ? 1 : 0,
         outcome.durationMs,
+        outcome.turns ?? 0,
         outcome.tokensUsed.input,
         outcome.tokensUsed.output,
         outcome.cost,
@@ -163,8 +187,9 @@ export class ModelAnalytics {
       FROM task_outcomes
     `;
     const params: unknown[] = [];
+    sql += ` WHERE ${EXCLUDE_SYNTHETIC_ETA_ROWS}`;
     if (modelId) {
-      sql += ' WHERE modelId = ?';
+      sql += ' AND modelId = ?';
       params.push(modelId);
     }
     sql += ' GROUP BY modelId, taskType ORDER BY modelId, totalTasks DESC';
@@ -184,10 +209,11 @@ export class ModelAnalytics {
         SUM(tokensIn) as totalTokensIn,
         SUM(tokensOut) as totalTokensOut
       FROM task_outcomes
+      WHERE ${EXCLUDE_SYNTHETIC_ETA_ROWS}
     `;
     const params: unknown[] = [];
     if (since) {
-      sql += ' WHERE timestamp >= ?';
+      sql += ' AND timestamp >= ?';
       params.push(since.toISOString());
     }
     sql += ' GROUP BY modelId ORDER BY totalCost DESC';
@@ -207,6 +233,7 @@ export class ModelAnalytics {
         SUM(cost) as totalCost,
         CAST(SUM(success) AS REAL) / COUNT(*) as successRate
       FROM task_outcomes
+      WHERE ${EXCLUDE_SYNTHETIC_ETA_ROWS}
       GROUP BY modelId
       ORDER BY taskCount DESC
     `;
@@ -240,6 +267,7 @@ export class ModelAnalytics {
     const sql = `
       SELECT taskType, modelId, CAST(SUM(success) AS REAL) / COUNT(*) as rate, COUNT(*) as cnt
       FROM task_outcomes
+      WHERE ${EXCLUDE_SYNTHETIC_ETA_ROWS}
       GROUP BY taskType, modelId
       HAVING cnt >= 3
       ORDER BY taskType, rate DESC
@@ -266,6 +294,37 @@ export class ModelAnalytics {
       | { total: number | null }
       | undefined;
     return row?.total || 0;
+  }
+
+  /**
+   * S1 ETA: recent per-attempt durations for one (model, taskType,
+   * complexity) key, newest first — the sample stream the ETA estimator
+   * (delivery/eta) folds into forecasts.
+   */
+  recentDurations(
+    modelId: string,
+    taskType: string,
+    complexity: string,
+    limit = 50
+  ): Array<{ durationMs: number; success: boolean; turns: number; timestamp: string }> {
+    const rows = this.db
+      .prepare(
+        `SELECT durationMs, success, turns, timestamp FROM task_outcomes
+         WHERE modelId = ? AND taskType = ? AND complexity = ?
+         ORDER BY id DESC LIMIT ?`
+      )
+      .all(modelId, taskType, complexity, Math.max(1, limit)) as Array<{
+      durationMs: number;
+      success: number;
+      turns: number;
+      timestamp: string;
+    }>;
+    return rows.map((r) => ({
+      durationMs: r.durationMs,
+      success: r.success === 1,
+      turns: r.turns ?? 0,
+      timestamp: r.timestamp,
+    }));
   }
 
   close(): void {

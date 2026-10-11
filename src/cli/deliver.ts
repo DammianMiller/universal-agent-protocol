@@ -350,6 +350,7 @@ import { autoMineHaloTraces, summarizeWeaknesses, weaknessGuidance, loadPersiste
 import { createGitWorktreeProvider } from '../delivery/candidate-workspace.js';
 import { createTaskWorkspaceManager, resolveParallelTasks } from '../delivery/task-workspace.js';
 import { runOrchestratedMission as runOrchestratedMissionCore } from '../delivery/orchestrated-mission.js';
+import { createEtaRecorder } from '../delivery/eta.js';
 import { runCiReconverge } from '../delivery/ci-reconverge.js';
 import { runPhasedMission as runPhasedMissionCore } from '../delivery/phased-mission.js';
 import { changedFiles } from '../delivery/changed-files.js';
@@ -2886,6 +2887,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // HALO tracing (uap harness): spans per run/turn for systemic analysis.
   const haloTracer = createHaloDeliveryTracer({ instruction, modelId: model.id, projectRoot });
 
+  // S1 ETA instrumentation: per-attempt wall-clock samples into the model
+  // analytics store, keyed by this mission's model (fail-soft; UAP_ETA_OFF=1
+  // disables). One recorder per run — the DB handle must not multiply across
+  // epic-inner orchestration calls.
+  const etaRecordTiming = createEtaRecorder({ modelId: model.id });
+
   const modeNotes = [
     candidates ? `${candidates} candidates/turn` : null,
     seeds ? 'ideation seeds' : null,
@@ -3613,6 +3620,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       contextBudgetChars: Number(process.env.UAP_DELIVER_CONTEXT_BUDGET ?? 6000),
       maxTasks: Number(process.env.UAP_DELIVER_MAX_TASKS ?? 40),
       workspaceManager: parallelTasks > 1 ? createTaskWorkspaceManager(projectRoot) : null,
+      recordTiming: etaRecordTiming,
       note: (line) =>
         console.log(
           line.startsWith('▶')

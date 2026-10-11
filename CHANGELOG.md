@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.27.0 (2026-10-11)
+
+- feat(bridge): P1 legibility foundations — plan comprehension gate, self-card, ETA samples
+- test(placement): pin localPath in enforce fixtures — hermetic against the machine overlay
+- chore: correct the v2.26.0 changelog entry (stale lines from the bump script)
+
+
 ## v2.26.0 (2026-10-11)
 
 - feat(placement): idle-resident auto-unload (§4.4.2) — the consent-gated reverse of auto-load

@@ -72,7 +72,8 @@ runs, keeping `--help` fast.
 | [`schema-diff`](#schema-diff) | Detect breaking schema changes between branches |
 | [`policy`](#policy) | UAP policy management |
 | [`quality`](#quality) | Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types |
-| `plan` | Validate + record plan validation (validate-plan-on-change gate): `uap plan validate [file]` reviews the plan, then stamps |
+| `plan` | Validate + record plan validation (validate-plan-on-change gate): `uap plan validate [file]` runs the deterministic readability scan + model review, then stamps |
+| `self` | Self-knowledge card: build the version-pinned digest of UAP's own command/feature surface (`uap self card`), and answer "how do I X" offline (`uap self query "<question>"`) |
 | `principles` | Engineering principles: show them, and answer the backward-compatibility stance (`status \| ask \| compat \| maturity \| show`) |
 | `fidelity` | Inspect or set the maximum-fidelity verification mode (raised gates + always-on visual/vision review) |
 | `interaction` | Interaction gate: derive probes from the requirements and play the artifact through them |
@@ -1115,6 +1116,31 @@ a deliberate act — do it only with reviewer sign-off.
 
 ---
 
+## `self`
+
+The self-knowledge card (S2): a small, version-pinned digest of UAP's own
+command surface and feature catalog, generated offline from the docs that ship
+inside the installed package (`docs/reference/CLI.md` +
+`docs/reference/FEATURES.md`). An agent that must search online to learn its
+own features wastes turns and self-describes from stale sources; the card is
+the fix. Cached in the project's `.uap/self-card.md` and regenerated
+automatically when the installed version or the source docs change
+(fingerprint-pinned). The session-start hook keeps it fresh and surfaces a
+pointer block.
+
+| Subcommand | Key flags | Purpose |
+|------------|-----------|---------|
+| `card` | `--refresh`, `--json` | Ensure/build the card; `--refresh` forces a rebuild even when the pin matches |
+| `query <question>` | `--limit <n>`, `--json` | Ranked offline search over the card (commands + features, alias-aware) |
+
+```bash
+uap self card                       # ensure the card is fresh and print the pointer block
+uap self card --refresh --json      # force a rebuild, machine-readable stats
+uap self query "how do I run a controlled benchmark"
+```
+
+---
+
 ## `uap-omp`
 
 UAP integration commands for oh-my-pi (omp) users. Thin wrappers over the
@@ -1140,3 +1166,6 @@ installed omp scripts and SQLite memory store.
 | `UAP_ESCALATE_MODEL` | `deliver` | Stronger model preset for escalation |
 | `UAP_HALO_TRACE_PATH` | `harness` | Default HALO trace JSONL path |
 | `UAP_EMBEDDING_ENDPOINT` | memory/embeddings | Embedding service endpoint |
+| `UAP_PLAN_READABILITY` | `plan` | `0` disables the deterministic readability scan in `uap plan validate` |
+| `UAP_PLAN_READABILITY_STRICT` | `plan` | `1` makes error-severity readability findings block the validation stamp |
+| `UAP_ETA_OFF` | `deliver` | `1` disables per-attempt wall-clock telemetry to the model-analytics store |
