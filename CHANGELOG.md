@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.32.0 (2026-10-11)
+
+- fix(policies): review round — anchor keyed by main checkout root, grant ids sanitized, one-snapshot verify
+- fix(debt): resolve all 16 known-debt ledger items
+- docs: changelog — name the P5 surfaces feature in the v2.31.0 entry
+
+
 ## v2.31.0 (2026-10-11)
 
 - feat(bridge): P5 surfaces — the operator's own legibility (the `uap diff` local view, `uap eta` measured pace + handsfree/dashboard/reactor surfaces, `uap bench report` paired-delta reader; ADR 0012)
