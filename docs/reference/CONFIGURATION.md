@@ -28,7 +28,7 @@ source. Only options that exist in code are documented here.
 ### `.uap.json` schema (`src/types/config.ts`)
 
 Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
-`timeOptimization`, plus droids/commands/template sections.
+`timeOptimization`, `attention`, plus droids/commands/template sections.
 
 ```jsonc
 {
@@ -114,6 +114,9 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
 | `UAP_SNAPSHOT_DIR` | Base dir for `--keep-best` snapshots (absolute path) | `~/.cache/uap/snapshots` |
 | `UAP_SNAPSHOT_MAX_MB` | Skip the `--keep-best` snapshot (rollback disabled) when the tree exceeds this size | `4096` |
 | `UAP_DASH_REFRESH_MS` | Dashboard live snapshot push/poll interval in ms (`--refresh` flag wins; min 250) | `2000` |
+| `UAP_ATTENTION_GRACE_SECS` | Runtime override for `attention.graceSecs` (the AFK decider's grace window). Positive integer seconds, cap 86400; set-but-invalid (including a cleared/empty value) fails safe to the config value. | unset (config wins) |
+| `UAP_ATTENTION_OFF` | `1` is the kill switch for the attention rail: nothing new is enqueued from surfaces (e.g. a parked placement), nothing is auto-decided, `uap attention list` shows nothing, and the session-start hint prints nothing. The queue file itself is left alone. | unset |
+| `UAP_ATTENTION_QUEUE` | Pins the attention queue to an explicit FILE (default: the MAIN checkout's `.uap/attention.json`, so the dashboard, the CLI, and session hooks in any worktree share ONE queue). Tests and odd layouts only. | unset |
 | `HERMES_HOME` | Hermes home dir | `~/.hermes` |
 | `FACTORY_PROJECT_DIR` | Project dir in Factory hook commands | — |
 | `FORGE_UAP_PROJECT` | Project dir in ForgeCode hook scripts | `.` |
@@ -121,6 +124,12 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
 | `NODE_ENV` / `UAM_ENV` / `CI` | Serverless env detection | — |
 | `HOME` | `~/.uap/omp`, droids dir resolution | — |
 | `APPDATA` / `USERPROFILE` | Windows MCP config path expansion | — |
+
+### `.uap.json` `attention` section (top level)
+
+| Key | What it does | Default |
+|---|---|---|
+| `attention.graceSecs` | Operator attention queue (bridge P3): how long a pending ask waits for your answer before the AFK auto-decider may act (`uap attention sweep`, also swept at session start and on a 60s timer by the dashboard server). A grace-elapsed item with a recorded safe default ADOPTS it (logged, never silent); an item without one ESCALATES instead of silently expiring. The decider records its adoption only — the underlying system keeps its own lifecycle. Positive integer seconds, cap 86400 (24h); `0` adopts immediately. NOTE: an asking surface may pin an item's deadline to the ask's own expiry (a placement park's deadline is the pending entry's TTL) — the grace window is the fallback for asks without one. Overridden by `UAP_ATTENTION_GRACE_SECS`. The queue file is the MAIN checkout's `.uap/attention.json` (not per-worktree), overridable via `UAP_ATTENTION_QUEUE`. | `300` (5 min) |
 
 Per-model API key env var names are configurable via the model config field
 `apiKeyEnvVar` (`src/types/config.ts`), resolved indirectly in

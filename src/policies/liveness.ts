@@ -92,29 +92,13 @@ export interface LivenessCache {
 const CACHE_REL = join('.uap', 'policy-liveness.json');
 
 /**
- * The MAIN checkout root for a session cwd. The gate hook strips
- * `/.worktrees/<name>` to find it (${CHECKOUT_ROOT%%/.worktrees/*}); the
- * writers must anchor the same way or a worktree session — the workflow
- * CLAUDE.md MANDATES — writes the cache and reads the policy DB where the
- * gate never looks (review should-fix, 2026-07-13). policies.db lives ONLY
- * in the main checkout (the hook's own header documents this), so the DB
- * read must anchor too. Non-git roots (unit fixtures) pass through unchanged.
+ * The MAIN checkout root for a session cwd. Moved to
+ * src/utils/checkout-root.ts (memoized there) so the attention queue can
+ * anchor the same way without importing the policies layer; imported and
+ * re-exported here for existing callers.
  */
-export function mainCheckoutRoot(projectRoot: string): string {
-  try {
-    const r = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: projectRoot,
-      encoding: 'utf-8',
-    });
-    if (r.status !== 0) return projectRoot;
-    const top = (r.stdout ?? '').trim();
-    if (!top) return projectRoot;
-    const i = top.indexOf(`${sep}.worktrees${sep}`);
-    return i === -1 ? top : top.slice(0, i);
-  } catch {
-    return projectRoot;
-  }
-}
+import { mainCheckoutRoot } from '../utils/checkout-root.js';
+export { mainCheckoutRoot };
 
 /** Directories skills are resolved from, repo first then user-level. */
 function skillDirs(projectRoot: string): string[] {

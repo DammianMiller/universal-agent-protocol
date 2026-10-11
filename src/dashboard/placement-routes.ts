@@ -11,6 +11,7 @@
  * decision queue.
  */
 import { randomBytes } from 'crypto';
+import { enqueueAttention } from '../delivery/attention.js';
 import { isUnitActive } from '../placement/probes.js';
 import {
   syncLedger,
@@ -202,6 +203,14 @@ export function resetColdProbeForTests(): void {
   coldProbeLastAt = 0;
 }
 
+/** Model ids are opaque tokens, not prose. The registry's own ids never
+ * leave [A-Za-z0-9._-], and the client's model_id flows verbatim into
+ * operator-facing attention-queue text (title/detail) and from there into
+ * the session-start prompt — a hostile id must park as invalid_request
+ * BEFORE any queue write, so it can never become a durable, self-reasserting
+ * injection channel wearing the queue's trusted framing. */
+const MODEL_ID_RE = /^[A-Za-z0-9._-]+$/;
+
 /** Admission decision for one gated request (spec §4.3).
 
  * Forward when a live resident already serves the requested id (reuse — no
@@ -234,7 +243,7 @@ export function getPlacementAdmit(
     deviceProbe?: typeof probeDeviceStates;
   },
 ): PlacementAdmitAnswer {
-  if (!request.model_id || typeof request.model_id !== 'string') {
+  if (!request.model_id || typeof request.model_id !== 'string' || !MODEL_ID_RE.test(request.model_id)) {
     return { decision: 'park', reason: 'invalid_request' };
   }
   // Request-driven context need: the proxy's honest estimate, clamped to
@@ -423,5 +432,33 @@ export function getPlacementAdmit(
     // computed one (which may promise a load the winner never scheduled).
     return { decision: 'park', placement_id: placementId, reason: raceWinnerReason };
   }
+  // P3 — the ask that lingers: our pending entry landed, nothing auto-loads
+  // it, and the only outcomes are the operator applying an option or the
+  // TTL expiring. That is exactly an attention item (ask instead of
+  // silently lingering). Best-effort by construction: enqueueAttention is
+  // fail-open end-to-end and UAP_ATTENTION_OFF disables the rail — the
+  // admit path's 2s budget must never feel this.
+  //
+  // The item's grace deadline is PINNED to the pending entry's expiry: a
+  // generic 300s grace would outlive the 120s TTL and advertise an
+  // actionable swap for a pending that is already dead — and a sweep
+  // adopting "let it expire" before the expiry would be a false record.
+  // `not_resident` is the only park reason with options to apply; the
+  // no-option reasons (unknown_model, no_measured_config) ask the
+  // operator to LOOK, not to decide — the detail says so plainly.
+  const actionable = reason === 'not_resident';
+  enqueueAttention(projectDir, {
+    kind: 'review-request',
+    title: `Placement parked: ${request.model_id}`,
+    detail: actionable
+      ? `A gated request wants '${request.model_id}' (reason: ${reason}, placement ${pending.id}). Approve a swap with: uap models apply ${pending.id} <n> — or do nothing.`
+      : `A gated request wants '${request.model_id}' (reason: ${reason}, placement ${pending.id}). No registered option serves it — nothing to approve; it expires on its own.`,
+    source: `placement:${pending.id}`,
+    expiresAt: pending.expires_at,
+    safeDefault: {
+      decision: 'allow the parked request to expire',
+      rationale: 'the placement TTL is the default: the client falls back cleanly and nothing is loaded or evicted',
+    },
+  });
   return { decision: 'park', placement_id: placementId, reason };
 }

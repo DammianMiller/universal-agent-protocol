@@ -58,6 +58,7 @@ import {
   writePlacementUnitDropins,
   fetchProxyInflight,
 } from '../placement/enforce.js';
+import { resolveAttentionBySource } from '../delivery/attention.js';
 import {
   autoPolicyPath,
   loadAutoPolicy,
@@ -466,6 +467,11 @@ export async function modelsApplyCommand(opts: ModelsApplyOptions = {}): Promise
     console.error(`enforcement failed${result.rolledBack ? ' (rolled back)' : ''}: ${result.error}`);
     return 1;
   }
+  // P3: close the attention ask by origin — the operator answered through
+  // the placement surface; a later sweep must not record a false AFK
+  // adoption over this decision. Best-effort + idempotent (no open ask →
+  // resolves nothing).
+  resolveAttentionBySource(projectDir, `placement:${placementId}`, `operator applied option ${option}`);
   console.log('placement applied; the parked client is served on its next retry');
   return 0;
 }
@@ -477,6 +483,11 @@ export async function modelsDismissCommand(opts: { placementId?: string; ledgerP
     return 1;
   }
   const { dismissed } = dismissPendingPlacement(placementId, { ledgerPath: opts.ledgerPath });
+  if (dismissed) {
+    // Same origin-close as apply (see above); the queue root is the main
+    // checkout, so the CLI's cwd only needs to be inside the project.
+    resolveAttentionBySource(process.cwd(), `placement:${placementId}`, 'operator dismissed the parked request');
+  }
   console.log(dismissed ? `dismissed ${placementId}; the client falls back on its next retry` : `no pending placement ${placementId}`);
   return dismissed ? 0 : 1;
 }

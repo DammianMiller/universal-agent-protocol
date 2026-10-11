@@ -17,6 +17,7 @@ import { getPlacementState, getPlacementPending, getPlacementPreview, getPlaceme
 import { resolvePendingPlacement, dismissPendingPlacement, loadPlacement, unloadPlacement } from '../placement/enforce.js';
 import { autoPolicyPath, loadAutoPolicy, MIN_UNLOAD_IDLE_SECS, saveAutoPolicy, type AutoPolicy } from '../placement/auto.js';
 import { startIdleSweep } from '../placement/idle.js';
+import { resolveAttentionBySource, sweepExpired } from '../delivery/attention.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { heuristicOrder, buildOrderPrompt, parseOrderResponse, type OrderablePolicy } from '../policies/policy-order.js';
@@ -186,6 +187,11 @@ export function startDashboardServer(
   // Idle-resident sweep handle (started in the listen callback once cwd's
   // seeder has run; see §4.4.2). Stopped in close().
   let idleSweeper: { stop: () => void } | null = null;
+  // P3 attention decider handle — rides the SAME fleet-ownership guard as
+  // the idle sweeper (UAP_IDLE_SWEEP=0 marks a fleet-spawned CLIENT
+  // dashboard: exactly one sweeper may touch shared state). Stopped in
+  // close().
+  let attentionSweeper: NodeJS.Timeout | null = null;
   // Precedence: explicit option (--refresh) > UAP_DASH_REFRESH_MS > 2000.
   // Floor 250ms — getDashboardData reads several DBs per snapshot, so a
   // too-small interval would peg the event loop. Ceiling 1h — past 2^31-1ms,
@@ -951,6 +957,24 @@ export function startDashboardServer(
       idleSweeper = startIdleSweep(cwd, {
         log: (m) => console.warn(m),
       });
+      // P3: during a long unattended run — the exact AFK case this rail
+      // exists for — session starts are rare, and without a periodic
+      // sweep the decider would never fire between them while retry
+      // minted asks accumulate. 60s cadence: pending TTL is 120s and
+      // deadlines are pinned, so adoption lands within a minute of the
+      // real expiry. sweepExpired is fail-open and no-ops under
+      // UAP_ATTENTION_OFF.
+      attentionSweeper = setInterval(() => {
+        try {
+          const r = sweepExpired(cwd);
+          if (r.adopted + r.escalated > 0) {
+            console.warn(`[attention] sweep: ${r.adopted} auto-decided, ${r.escalated} escalated`);
+          }
+        } catch {
+          /* the timer must never kill the dashboard */
+        }
+      }, 60_000);
+      attentionSweeper.unref();
     }
 
     // Signal readiness with the actually-bound port (essential for port: 0).
@@ -970,6 +994,10 @@ export function startDashboardServer(
       if (idleSweeper) {
         idleSweeper.stop();
         idleSweeper = null;
+      }
+      if (attentionSweeper) {
+        clearInterval(attentionSweeper);
+        attentionSweeper = null;
       }
       // Cleanup seeder (clear heartbeat, mark agent completed)
       try {
@@ -1043,7 +1071,7 @@ async function routeControl(url: string, cwd: string, body: Record<string, unkno
   // The result object is returned whole (200) even on ok:false — the steps
   // and rollback detail are the operator's evidence, not an error string.
   if (url === '/api/placement/resolve') return handlePlacementResolve(cwd, body);
-  if (url === '/api/placement/dismiss') return handlePlacementDismiss(body);
+  if (url === '/api/placement/dismiss') return handlePlacementDismiss(cwd, body);
   if (url === '/api/placement/load') return handlePlacementLoad(cwd, body);
   if (url === '/api/placement/unload') return handlePlacementUnload(cwd, body);
   if (url === '/api/placement/auto') return handlePlacementAuto(body);
@@ -1088,13 +1116,25 @@ async function handlePlacementResolve(cwd: string, body: Record<string, unknown>
         )
         .map((v) => ({ model: v.model, config: v.config }))
     : undefined;
-  return resolvePendingPlacement(cwd, placementId, option, expectedVictims ? { expectedVictims } : {});
+  const result = await resolvePendingPlacement(cwd, placementId, option, expectedVictims ? { expectedVictims } : {});
+  // P3: the operator answered through the PLACEMENT surface, not the queue —
+  // close the attention ask by origin or a later sweep would record a false
+  // AFK adoption over a decision that was actually made. Best-effort: no
+  // open ask for this placement resolves nothing (idempotent).
+  if (result.ok) {
+    resolveAttentionBySource(cwd, `placement:${placementId}`, `operator applied option ${option} via the dashboard`);
+  }
+  return result;
 }
 
-function handlePlacementDismiss(body: Record<string, unknown>): unknown {
+function handlePlacementDismiss(cwd: string, body: Record<string, unknown>): unknown {
   const placementId = typeof body.placement_id === 'string' ? body.placement_id : '';
   if (!placementId) throw new Error('placement_id is required');
-  return dismissPendingPlacement(placementId);
+  const { dismissed } = dismissPendingPlacement(placementId);
+  if (dismissed) {
+    resolveAttentionBySource(cwd, `placement:${placementId}`, 'operator dismissed the parked request via the dashboard');
+  }
+  return { dismissed };
 }
 
 async function handlePlacementLoad(cwd: string, body: Record<string, unknown>): Promise<unknown> {
