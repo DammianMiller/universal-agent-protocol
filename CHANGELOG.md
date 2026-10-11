@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.28.0 (2026-10-11)
+
+- feat(bridge): P2 scheduling — dependency-triggered dispatch + per-leaf model dials
+- chore(hooks): live session-start hook picks up the shipped self-card injection (S2, PR #846)
+- feat(profiles): qwen38-coder390 — proxy profile for the Coder390 EfficientThink 27B service
+
+
 ## v2.27.0 (2026-10-11)
 
 - feat(bridge): P1 legibility foundations — plan comprehension gate, self-card, ETA samples

@@ -180,6 +180,8 @@ you'd run by hand.
 | Ideation / practice / spec-imports | Divergent strategy seeds, best-practice cards, curated project seeds. |
 | HALO trace (`halo-trace.ts`) | Emits HALO spans. |
 | ETA instrumentation (`eta.ts`) | Fail-soft per-attempt wall-clock telemetry to the model-analytics store, keyed (model, task type, complexity) — the sample stream behind task ETAs. |
+| Dependency-triggered dispatch (`task-orchestrator.ts`) | Completion-triggered task scheduling: a finished task's slot refills the moment it settles, and a dependent starts as soon as its last dependency succeeds — no wave barrier idles fast siblings behind slow ones. Settlement stays strictly sequential (one task at a time); which task settles next is timing-dependent. |
+| Per-leaf model dials (`decompose.ts`, `orchestrated-mission.ts`, `deliver.ts`) | Phases may carry an optional `model` key (planner-relayed from the mission's own list, or hand-authored); the dial binds that one task's convergence loop to the named preset — fail-closed to the mission model on unknown keys, non-isolated tasks, and the blind-executor path, with a plan-time lint warning at mission start. |
 | Integrity (`integrity.ts`) | Test-protection / integrity guard — stops the model from gutting the tests to "pass." |
 
 ## MCP Router (`src/mcp-router/`) — Cross-cutting (lean context)

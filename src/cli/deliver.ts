@@ -641,12 +641,90 @@ export function resolveRoutingId(opts: {
 }
 
 function resolveModel(presetId: string, endpointOverride?: string): ModelConfig {
-  const preset = ModelPresets[presetId];
+  // Object.hasOwn, not a bare lookup: "constructor"/"__proto__" are truthy
+  // on a plain object literal and would otherwise yield a FUNCTION as the
+  // model config (the prototype-chain class the routing-id check above
+  // documents). CLI input is trusted, but the check is free.
+  const preset = Object.hasOwn(ModelPresets, presetId) ? ModelPresets[presetId] : undefined;
   if (!preset) {
     const available = Object.keys(ModelPresets).join(', ');
     fail(`Unknown model preset '${presetId}'. Available: ${available}`);
   }
   return endpointOverride ? { ...preset, endpoint: endpointOverride } : preset;
+}
+
+/**
+ * C2 — the production phase→task projection (plan/author-emitted phases →
+ * orchestrator tasks). Extracted PURE and exported so a test pins every
+ * field it threads: this projection once silently dropped `criteria`
+ * (pre-existing debt, filed separately) and, on first review of the dials,
+ * dropped `model` two hops into a three-hop chain — both invisible to
+ * seam-injected runner tests.
+ */
+export function projectPhaseToTask(ph: DeliveryPhase): {
+  id: string;
+  title: string;
+  goal: string;
+  deps?: string[];
+  model?: string;
+} {
+  return {
+    id: ph.id,
+    title: ph.title,
+    goal: ph.goal,
+    ...(ph.deps ? { deps: ph.deps } : {}),
+    ...(ph.model ? { model: ph.model } : {}),
+  };
+}
+
+/**
+ * C2 — plan-time dial lint. An unknown dial fails closed at bind time, but
+ * bind time can be hours into a mission; warn ONCE at mission start so the
+ * typo surfaces while it is still cheap to fix. `honored=false` covers the
+ * phased runner, which ignores dials entirely.
+ */
+export function warnUnknownDials(phases: DeliveryPhase[], honored: boolean): void {
+  for (const ph of phases) {
+    if (!ph.model) continue;
+    if (!Object.hasOwn(ModelPresets, ph.model)) {
+      console.log(
+        chalk.yellow(
+          `⚠ plan: phase '${ph.id}' model dial '${ph.model}' is not a known preset — it will run on the mission model`
+        )
+      );
+    } else if (!honored) {
+      console.log(
+        chalk.yellow(
+          `⚠ plan: phase '${ph.id}' model dial '${ph.model}' is ignored by the phased runner — dials need orchestrated delivery (deliver.parallelTasks > 1)`
+        )
+      );
+    }
+  }
+}
+
+/**
+ * C2 — resolve a per-leaf model dial (a phase-authored `model` key) to a
+ * ModelConfig, or undefined when the key is unknown. Dials ride planner or
+ * hand-authored phases, so a typo must degrade to the mission model with a
+ * warning — never abort a long mission over a leaf's dial. Exported for
+ * tests (the fail-closed contract is the feature's security boundary).
+ * No endpoint override: the agentic executor chats at the mission's
+ * `opts.endpoint` and never reads `model.endpoint` — an override here would
+ * be dead symmetry with resolveModel.
+ */
+export function resolveDialOrWarn(dial: string, taskId: string): ModelConfig | undefined {
+  // Object.hasOwn, not a bare lookup: planner output is untrusted text, and
+  // "constructor"/"__proto__"/"toString" are truthy prototype-chain members
+  // that would otherwise sail past `!preset` and run the leaf on an unpinned
+  // model with no warning (security review finding).
+  const preset = Object.hasOwn(ModelPresets, dial) ? ModelPresets[dial] : undefined;
+  if (!preset) {
+    console.log(
+      chalk.yellow(`⚠ ${taskId}: model dial '${dial}' is not a known preset — running on the mission model`)
+    );
+    return undefined;
+  }
+  return preset;
 }
 
 /**
@@ -3607,15 +3685,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         ...contractLock,
       ].map((f) => f.toLowerCase())
     );
+    // C2 — surface unknown dials at mission START, not hours later at bind.
+    warnUnknownDials(taskPhases, true);
     return {
       instruction: missionText,
       projectRoot,
-      tasks: taskPhases.map((ph) => ({
-        id: ph.id,
-        title: ph.title,
-        goal: ph.goal,
-        ...(ph.deps ? { deps: ph.deps } : {}),
-      })),
+      // C2 BLOCKER fix (architect review): thread `model` through the
+      // production projection — seam-injected tests bypass this map, so the
+      // runner wiring was green while dials died here, two hops upstream.
+      tasks: taskPhases.map(projectPhaseToTask),
       parallelTasks,
       contextBudgetChars: Number(process.env.UAP_DELIVER_CONTEXT_BUDGET ?? 6000),
       maxTasks: Number(process.env.UAP_DELIVER_MAX_TASKS ?? 40),
@@ -3676,14 +3754,35 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         }
         return Promise.resolve(tieredRunner(combinedRungs, projectRoot, {}));
       },
-      runLoop: async ({ root, prompt, taskId, isolated }) => {
+      runLoop: async ({ root, prompt, taskId, isolated, model: dial }) => {
+        // C2 — per-leaf model dial: honored wherever a per-task executor can
+        // be bound (isolated agentic tasks). Unknown keys and unbindable tasks
+        // fail-closed to the mission model with a warning naming the ACTUAL
+        // reason — a dial must never abort the mission, and the shared
+        // non-isolated executor is deliberately model-bound at mission start
+        // (its write-allowlist refs are shared state no per-task rebuild may
+        // fork).
+        const dialModel = dial ? resolveDialOrWarn(dial, taskId) : undefined;
+        if (dial && !isolated) {
+          console.log(
+            chalk.yellow(
+              `⚠ ${taskId}: model dial '${dial}' needs per-task isolation (deliver.parallelTasks > 1) — running on the mission model`
+            )
+          );
+        } else if (dial && isolated && !agentic) {
+          console.log(
+            chalk.yellow(
+              `⚠ ${taskId}: model dial '${dial}' is ignored by the blind executor — dials bind only on the agentic path`
+            )
+          );
+        }
         // The agentic executor binds tools to a root at construction — give
         // an isolated task its own, with the same protections re-derived for
         // its tree. The blind executor is root-free (the per-task loop's
         // projectRoot directs the applier and gates).
         const exec =
           isolated && agentic
-            ? createAgenticExecutor(model, {
+            ? createAgenticExecutor(dialModel ?? model, {
                 projectRoot: root,
                 endpoint: agenticEndpoint,
                 // #2a per-tool-call heartbeat. Stamp projectRoot (NOT the
@@ -3763,6 +3862,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
    */
   const runPhasedMission = async (): Promise<DeliveryResult> => {
     const startCheckpoint = resumeCheckpoint;
+    // C2 — the phased runner ignores dials; say so once instead of silently.
+    warnUnknownDials(phases!, false);
     return runPhasedMissionCore({
       instruction,
       phases: phases!,

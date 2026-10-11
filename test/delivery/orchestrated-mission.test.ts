@@ -294,20 +294,28 @@ describe('spec bookkeeping + post-merge verification', () => {
 describe('P5 re-planning + aggregation', () => {
   it('a NEW_TASKS marker in a task output folds follow-up tasks into the DAG', async () => {
     const ran: string[] = [];
+    let childModel: string | undefined = 'never-ran';
     await runOrchestratedMission(
       baseDeps({
         tasks: [task('root')],
-        runLoop: async ({ taskId }) => {
+        runLoop: async ({ taskId, model }) => {
           ran.push(taskId);
+          if (taskId === 'child') childModel = model;
           return loopResult(
             taskId === 'root'
-              ? { finalOutput: 'NEW_TASKS: [{"id":"child","title":"Child","goal":"finish","deps":["root"]}]' }
+              ? {
+                  finalOutput:
+                    'NEW_TASKS: [{"id":"child","title":"Child","goal":"finish","deps":["root"],"model":"qwen38-coder390"}]',
+                }
               : {}
           );
         },
       })
     );
     expect(ran).toEqual(['root', 'child']);
+    // C2: the P5 feed threads the dial (dropping it here was an undocumented
+    // asymmetry vs planner/hand-authored phases).
+    expect(childModel).toBe('qwen38-coder390');
   });
 
   it('ignores a NEW_TASKS marker not directly followed by an array (prose + stray JSON)', async () => {
@@ -334,5 +342,29 @@ describe('P5 re-planning + aggregation', () => {
     expect(target.bestScore).toBe(0.9);
     expect(target.bestTurn).toBe(4);
     expect(target.finalFeedback).toBe('latest');
+  });
+});
+
+describe('C2 — per-leaf model dials', () => {
+  it('runLoop receives each task\'s dial, and undefined for undialed tasks', async () => {
+    const seen: Array<{ id: string; model: string | undefined }> = [];
+    await runOrchestratedMission(
+      baseDeps({
+        tasks: [
+          { ...task('design'), model: 'qwen38-coder390' },
+          task('fill', ['design']),
+          { ...task('docs', ['fill']), model: 'cheap-fast' },
+        ],
+        runLoop: async ({ taskId, model }) => {
+          seen.push({ id: taskId, model });
+          return loopResult();
+        },
+      })
+    );
+    expect(seen).toEqual([
+      { id: 'design', model: 'qwen38-coder390' },
+      { id: 'fill', model: undefined },
+      { id: 'docs', model: 'cheap-fast' },
+    ]);
   });
 });

@@ -106,9 +106,9 @@ function sweepStaleWorkspaces(): void {
 /**
  * Default fan-out when neither config nor env says otherwise. Parallel is the
  * DEFAULT since the default flip: independent READY tasks run concurrently,
- * each in its own detached git worktree (this module). The orchestrator's
- * wave slice (`ready.slice(0, concurrency)`) already caps a wave at the
- * number of independent READY tasks, so a small DAG never over-dispatches.
+ * each in its own detached git worktree (this module). Completion-triggered
+ * dispatch fills at most `concurrency` slots from the READY set, so a small
+ * DAG never over-dispatches.
  * Sized to a modest CPU budget, not inference slots (see the header notes).
  */
 export const DEFAULT_PARALLEL_TASKS = 4;

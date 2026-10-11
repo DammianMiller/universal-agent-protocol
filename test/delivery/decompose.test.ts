@@ -35,6 +35,23 @@ describe('parsePhaseArray', () => {
     expect(phases[1].scaffold).toBeUndefined();
   });
 
+  it('carries the per-leaf model dial through (C2), normalizing it like an id', () => {
+    const raw = JSON.stringify([
+      { id: 'design', title: 'Design', goal: 'the hard shape', model: 'Qwen38-Coder390' },
+      { id: 'fill', title: 'Fill', goal: 'mechanical implementation', deps: ['design'], model: '   ' },
+      { id: 'tests', title: 'Tests', goal: 'gate them', deps: ['fill'], model: 42 },
+      { id: 'logjob', title: 'Log', goal: 'dial with control chars', deps: ['tests'], model: 'ok\n⇉ injected' },
+    ]);
+    const phases = parsePhaseArray(raw);
+    // Lowercased to match the preset table's key style (ids/deps are too).
+    expect(phases[0].model).toBe('qwen38-coder390');
+    expect(phases[1].model).toBeUndefined(); // whitespace-only is absent, not ''
+    expect(phases[2].model).toBeUndefined(); // non-string never becomes a dial
+    // Control characters stripped — the dial feeds console warnings, so a
+    // 64-char budget alone would still admit log injection (ANSI, newlines).
+    expect(phases[3].model).toBe('ok⇉ injected');
+  });
+
   it('extracts a valid phase plan from noisy model output', () => {
     const raw = [
       'Here is the plan:',

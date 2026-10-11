@@ -137,8 +137,10 @@ export interface OrchestratorConfig {
   ) => Promise<OrchestratorTask[] | null>;
   /**
    * Dependency-aware parallel dispatch: max independent READY tasks running
-   * concurrently (wave-barrier scheduling: each wave completes before the
-   * next dispatches — simple and deterministic over maximal utilization).
+   * concurrently (completion-triggered scheduling: a finished task's slot
+   * refills immediately — no wave barrier idles fast siblings behind a slow
+   * one — while settlement stays sequential in completion order for
+   * deterministic graph state).
    * This PRIMITIVE still defaults to 1 (sequential): the orchestrator cannot
    * verify that the caller's runTask tolerates concurrent execution, so the
    * safe choice stays with the caller. The parallel-by-DEFAULT policy lives
@@ -281,7 +283,10 @@ function envInt(name: string, fallback: number, max: number): number {
 /**
  * P1 — execute the task DAG on a blackboard. Dependency-aware: a task runs
  * only after every dependency has SUCCEEDED; independent READY tasks dispatch
- * in parallel up to `concurrency` (this primitive defaults to 1 — the caller
+ * in parallel up to `concurrency`, and a completed task's slot refills the
+ * moment it settles (no wave barrier — a fast sibling never idles behind a
+ * slow one; settlement stays one-at-a-time in completion order)
+ * (this primitive defaults to 1 — the caller
  * vouches for a concurrency-safe runTask; deliver's wiring resolves a
  * parallel-by-default value behind the worktree-isolation predicate, see
  * task-workspace.ts / orchestrated-mission.ts). A task that fails gets ATG-style MINIMAL REPAIR before its
@@ -353,15 +358,18 @@ export async function orchestrate(config: OrchestratorConfig): Promise<Orchestra
         designLines = [];
       }
     }
-    const ctx = assembleTaskContext(task, config.mission, blackboard, config.maxDepSummaryChars, {
-      designLines,
-      budgetChars: budget,
-      ...(lastFailure ? { lastFailure } : {}),
-    });
-    // A throwing runTask becomes a failed outcome, never an abandoned graph:
-    // under parallel dispatch one rejection must not orphan in-flight siblings.
+    // A throwing runTask — or context assembly — becomes a failed outcome,
+    // never an abandoned graph: under parallel dispatch one rejection must
+    // not orphan in-flight siblings, and the completion race relies on every
+    // flight resolving (assembleTaskContext sits inside the try so the
+    // no-reject guarantee does not rest on its callers' input invariants).
     let outcome: TaskOutcome;
     try {
+      const ctx = assembleTaskContext(task, config.mission, blackboard, config.maxDepSummaryChars, {
+        designLines,
+        budgetChars: budget,
+        ...(lastFailure ? { lastFailure } : {}),
+      });
       outcome = await config.runTask(ctx, task);
     } catch (err) {
       outcome = {
@@ -513,44 +521,71 @@ export async function orchestrate(config: OrchestratorConfig): Promise<Orchestra
     return final;
   };
 
-  while (pending.length > 0) {
-    // Skip cascade: drop every task whose dependency already failed — never
-    // build against a broken base. Loops because each skip can cascade.
-    let cascading = true;
-    while (cascading) {
-      cascading = false;
-      for (let i = 0; i < pending.length; i++) {
-        const blockedBy = (pending[i].deps ?? []).filter((d) => failed.has(d));
-        if (blockedBy.length > 0) {
-          markSkipped(pending[i], blockedBy);
-          pending.splice(i, 1);
-          i--;
-          cascading = true;
+  // C1 — dependency-triggered dispatch: a task's slot refills the moment it
+  // settles, not when its whole wave drains. (The wave barrier left the fast
+  // sibling of a slow wave idle until the wave's last task finished.) In-flight
+  // tasks run independently to completion; settlement stays strictly
+  // sequential — one settleTask at a time — so graph mutations (blackboard
+  // writes, repair chains, P5 re-planning) never interleave. WHICH flight
+  // settles first is timing-dependent, so `outcomes` interleaving varies
+  // run-to-run; the per-id contract is last-entry-wins. Ready slots fill in
+  // graph order.
+  const inFlight: Array<{ task: OrchestratorTask; outcome: Promise<TaskOutcome> }> = [];
+  try {
+    while (pending.length > 0 || inFlight.length > 0) {
+      // Skip cascade: drop every task whose dependency already failed — never
+      // build against a broken base. Loops because each skip can cascade.
+      let cascading = true;
+      while (cascading) {
+        cascading = false;
+        for (let i = 0; i < pending.length; i++) {
+          const blockedBy = (pending[i].deps ?? []).filter((d) => failed.has(d));
+          if (blockedBy.length > 0) {
+            markSkipped(pending[i], blockedBy);
+            pending.splice(i, 1);
+            i--;
+            cascading = true;
+          }
         }
       }
-    }
-    if (pending.length === 0) break;
 
-    // Ready set: every dependency has SUCCEEDED. Nothing ready with work
-    // still pending means an unsatisfiable remainder (cycle degraded by
-    // topoOrder) — skip it rather than wedge.
-    const ready = pending.filter((t) => (t.deps ?? []).every((d) => done.has(d)));
-    if (ready.length === 0) {
-      for (const t of pending) markSkipped(t, (t.deps ?? []).filter((d) => !done.has(d)));
-      pending = [];
-      break;
-    }
+      // Ready set: every dependency has SUCCEEDED. Nothing ready with work
+      // still pending AND nothing in flight means an unsatisfiable remainder
+      // (cycle degraded by topoOrder) — skip it rather than wedge. In-flight
+      // work may still satisfy the remainder, so wait on it instead.
+      const ready = pending.filter((t) => (t.deps ?? []).every((d) => done.has(d)));
+      if (ready.length === 0 && inFlight.length === 0) {
+        for (const t of pending) markSkipped(t, (t.deps ?? []).filter((d) => !done.has(d)));
+        pending = [];
+        break;
+      }
 
-    // Dependency-aware dispatch: up to `concurrency` independent ready tasks
-    // run at once (they are mutually independent by construction — none can
-    // depend on another still-pending task). Settlement (repair, re-planning,
-    // bookkeeping) is sequential for deterministic graph state.
-    const wave = ready.slice(0, concurrency);
-    const waveIds = new Set(wave.map((t) => t.id));
-    pending = pending.filter((t) => !waveIds.has(t.id));
-    const results = await Promise.all(wave.map(async (t) => ({ task: t, outcome: await runOne(t) })));
-    for (const { task, outcome } of results) {
-      await settleTask(task, outcome);
+      // Fill free slots: ready tasks are mutually independent by construction
+      // (none depends on a still-pending task), so any subset may dispatch;
+      // fill in graph order up to `concurrency`.
+      while (inFlight.length < concurrency && ready.length > 0) {
+        const task = ready.shift()!;
+        pending = pending.filter((t) => t.id !== task.id);
+        inFlight.push({ task, outcome: runOne(task) });
+      }
+
+      // Race on completion: a finished task settles immediately; if several
+      // finished during the previous settle, graph order breaks the tie. The
+      // settle happens before the next fill, so slots never exceed
+      // `concurrency`, and runOne never rejects (a throwing runTask or context
+      // assembly becomes a failed outcome), so the race always resolves.
+      const winner = await Promise.race(inFlight.map((f) => f.outcome.then((o) => ({ flight: f, outcome: o }))));
+      inFlight.splice(inFlight.indexOf(winner.flight), 1);
+      await settleTask(winner.flight.task, winner.outcome);
+    }
+  } finally {
+    // A throwing settle (an unguarded seam callback such as onTask) must not
+    // abandon in-flight tasks mid-mutation: drain them so their workspaces
+    // merge back under the merge lock before the error propagates. Under the
+    // old wave barrier a settle-throw left nothing in flight;
+    // completion-triggered dispatch made this path reachable, so close it.
+    if (inFlight.length > 0) {
+      await Promise.allSettled(inFlight.map((f) => f.outcome));
     }
   }
 

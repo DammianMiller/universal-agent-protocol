@@ -297,6 +297,17 @@ if command -v uap >/dev/null 2>&1; then
   fi
 fi
 
+# S2 self-knowledge: keep the version-pinned self-card fresh so the agent
+# knows its own command surface without searching online, and surface a
+# one-block pointer to it (`uap self query "..."` answers follow-ups offline).
+# Fail-open, time-boxed, never blocks.
+if command -v uap >/dev/null 2>&1; then
+  _uap_self="$( ( cd "$PROJECT_DIR" 2>/dev/null && timeout 10 uap self card 2>/dev/null ) || true )"
+  if [ -n "$_uap_self" ]; then
+    output+=$'\n'"$_uap_self"$'\n'
+  fi
+fi
+
 if [ -n "$output" ]; then
   echo "$output"
 fi
