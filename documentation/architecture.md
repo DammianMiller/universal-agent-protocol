@@ -8,7 +8,7 @@ memory injection, policy enforcement, verification gates, and tool-output compre
 **What UAP is (implementation):** a TypeScript/Node CLI (`uap`, `src/bin/cli.ts`, 58
 top-level commands, ~210 registrations including subcommands) plus a Python FastAPI model proxy, wired into harnesses via shell
 hooks, four SQLite databases, an optional Docker Qdrant vector store, and a bubblewrap
-kernel sandbox. Version: **v2.29.0**.
+kernel sandbox. Version: **v2.30.0**.
 
 **Where it came from:** born as Miller-Tech's internal discipline layer for agentic
 development of its fintech app Pay2U and the Miller-Tech platform; every gate maps to a
@@ -20,13 +20,14 @@ failure class observed there. Origin story and eras:
 | Layer | Technology | Where |
 |---|---|---|
 | CLI + subsystems | TypeScript (Node ≥18), 434 modules in 34 `src/` subsystems | `src/` |
-| Model proxy | Python FastAPI/uvicorn, ~10.6k lines | `tools/agents/scripts/anthropic_proxy.py` |
+| Model proxy | Python FastAPI/uvicorn, ~10.6k lines; optional AF_UNIX surface (`PROXY_SOCKET`, 0600) alongside TCP | `tools/agents/scripts/anthropic_proxy.py` |
 | Policy enforcers | Python scripts (exit 0=allow / 2=block) | `src/policies/enforcers/*.py` → materialized to `.policy-tools/` |
 | Harness integration | Shell hook scripts installed into per-platform `settings.local.json` | `templates/hooks/`, `src/cli/hooks.ts` |
 | Persistence | SQLite ×4 (tasks, coordination, policies, telemetry) + JSON/JSONL ledgers | see table below |
 | Operator attention queue | JSON store in the MAIN checkout's `.uap/attention.json` (one per checkout, worktree-shared; `UAP_ATTENTION_QUEUE` pins a file) — sanitized at ingest AND load, fail-open, atomic unique-tmp writes | `src/delivery/attention.ts` |
+| Sandbox consent ledger | JSON store in the MAIN checkout's `.uap/sandbox-grants.json` (per-session TTL-bounded grants) + append-only `.uap/sandbox-audit.jsonl` — sanitize at ingest AND load, least-authority on failure, atomic unique-tmp writes | `src/policies/sandbox-grants.ts` |
 | Vector memory | Qdrant (auto-started Docker `uap-qdrant`, :6333) or cloud; in-memory fallback | `src/memory/serverless-qdrant.ts` |
-| Sandbox | bubblewrap (`bwrap`) read-only root + writable holes | `src/cli/sandbox.ts` |
+| Sandbox | bubblewrap (`bwrap`) read-only root + writable holes; P4: per-session grant holes (consent ledger) + `--net off` kernel egress boundary (own netns, nothing up) | `src/cli/sandbox.ts` |
 | Browser | CloakBrowser (Playwright-compatible, stealth) — execution/visual gates only | `src/browser/web-browser.ts` |
 | Services | systemd **user** units (`uap-anthropic-proxy`, llama-server), `Restart=always` | `src/cli/systemd-services.ts` |
 

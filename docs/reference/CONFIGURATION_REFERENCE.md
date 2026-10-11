@@ -29,6 +29,7 @@ uap config wizard               # interactive expert configurator (also: uap set
 - [Engineering principles](#principles) — How code should be written, and the backward-compatibility stance.
 - [Worktree workflow](#worktree) — Branch-per-feature isolation and auto-cleanup.
 - [Inference proxy tuning](#proxy) — Guardrails and context limits for a local model behind the proxy.
+- [Sandbox & session authority](#sandbox) — Kernel-enforced agent boundaries: the bubblewrap floor, per-session grants, and the network egress boundary.
 - [Dashboard](#dashboard) — The live analytics server and its mutation token.
 - [Token & time optimization](#optimization) — Context budgets, caching, batching, and parallelism.
 - [General](#general) — Project metadata and CLI behavior.
@@ -132,6 +133,18 @@ Runtime override of the delivery gate read by the hooks/enforcers from the shell
 When set to 1 for a single command, exempts that one sanctioned manual edit from the delivery gate.
 
 **Recommendation:** Use inline (`UAP_DELIVER_BYPASS=1 <cmd>`) for a one-off edit; never export it.
+
+### `delivery.protectIac`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | boolean |
+| **Default** | `false` |
+
+Refuse model writes to deploy/IaC files (Dockerfile, docker-compose, *.tf, *.tfvars, pulumi, serverless) during `uap deliver`. Permissive by default (false) so the model can edit IaC freely; set true to block IaC writes and snapshot/restore them against run_bash tampering. The `--protect-iac` CLI flag overrides this per-run.
+
+**Recommendation:** Leave false (permissive) for most projects — IaC edits are legitimate deliverable work. Set true only when the deploy topology is a fixed trust anchor the mission must not alter.
 
 ## Verification gates
 
@@ -256,6 +269,102 @@ Base URL of an OpenAI-compatible, image_url-capable endpoint used for aesthetic 
 Model id sent to the vision endpoint for aesthetic review (e.g. qwen3.8-27b).
 
 **Recommendation:** Set by `uap setup` to your local vision model. Required for blocking vision review under `max` fidelity.
+
+### `plan.readability.enabled`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | boolean |
+| **Default** | `true` |
+
+The plan-comprehension scan in `uap plan validate` (B1): deterministic readability rules over the plan artifact — executive summary first, detail progressing downward, section word budgets, jargon density, diagram required at a task-count threshold. Findings are advisory hints the judge-model review adjudicates.
+
+**Recommendation:** Leave on: the scan is local, instant, and advisory by default.
+
+### `plan.readability.strict`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | boolean |
+| **Default** | `false` |
+
+Give the readability scan deterministic teeth: error-severity findings (no opening summary, detail before the high level, missing diagram) fail `uap plan validate` outright instead of being adjudicated hints. `--force` / `UAP_PLAN_REVIEW_FORCE=1` remains the escape hatch.
+
+**Recommendation:** Enable once your plan templates reliably pass — it enforces plans a human can skim. Keep off while calibrating.
+
+### `plan.readability.minSummaryWords`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | number |
+| **Default** | `20` |
+
+Minimum prose words between the plan title and the first section — the executive-summary gate.
+
+**Recommendation:** 20 words is a two-sentence what-and-why. Lower for terse internal plans; 0 effectively disables the rule.
+
+### `plan.readability.maxWordsPerSection`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | number |
+| **Default** | `300` |
+
+Soft word budget per section before a readability warning fires.
+
+**Recommendation:** 300 keeps a section to one point. 0 disables the budget check.
+
+### `plan.readability.jargonDensityThreshold`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | number |
+| **Default** | `0.35` |
+
+Jargon tokens per prose word above which the plan earns a readability warning (camelCase/snake_case/acronyms in prose).
+
+**Recommendation:** 0.35 tolerates normal technical writing while catching identifier soup. Raise for deeply technical audiences.
+
+### `plan.readability.requireDiagramAtTasks`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | number |
+| **Default** | `5` |
+
+Task items (checklist + ordered steps) at which a data-flow diagram (mermaid or image) is required in the plan.
+
+**Recommendation:** 5 keeps small plans diagram-free while forcing one once the moving parts multiply. 0 disables the rule.
+
+### `UAP_PLAN_READABILITY`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Runtime kill switch for the plan readability scan: `0` skips it entirely in `uap plan validate`.
+
+**Recommendation:** Leave unset. Use inline `UAP_PLAN_READABILITY=0 uap plan validate` only when diagnosing a scan misfire.
+
+### `UAP_PLAN_READABILITY_STRICT`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | boolean |
+| **Default** | `false` |
+
+Runtime strict override for the plan readability scan: `1` makes error-severity findings block the validation stamp (same as `plan.readability.strict`).
+
+**Recommendation:** Use inline for CI enforcement without changing the project config; never export globally — a hard gate in every shell surprises interactive agents.
 
 ## Model routing
 
@@ -571,6 +680,54 @@ Batches git/deploy actions across agents to avoid conflicting concurrent pushes.
 
 <a id="orchestration"></a>Long-task autonomy: decompose, resume, and loop-to-100%.
 
+### `attention.graceSecs`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | number |
+| **Default** | `300` |
+
+Grace window before the AFK auto-decider may adopt an attention item's recorded safe default (`uap attention sweep`, also swept at session start). Items without a safe default escalate instead.
+
+**Recommendation:** 300s (five minutes) is long enough for a present operator to intercede and short enough that an unattended run never stalls on an ask. Raise for high-stakes decisions, 0 adopts immediately.
+
+### `UAP_ATTENTION_GRACE_SECS`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | number |
+| **Default** | `300` |
+
+Runtime override for the attention grace window; caps at 86,400 (24h).
+
+**Recommendation:** Use inline for a one-off long mission; set the project config key instead for a standing value.
+
+### `UAP_ATTENTION_OFF`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | boolean |
+| **Default** | `false` |
+
+Kill switch for the attention rail: `1` disables enqueue, sweep, AND list end-to-end (the queue file stays; nothing new is asked, nothing is auto-decided, no hint prints).
+
+**Recommendation:** Leave unset. Use inline when the queue is misbehaving; the rail is fail-open everywhere so a broken store never blocks work.
+
+### `UAP_ATTENTION_QUEUE`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | string |
+| **Default** | `` |
+
+Pins the attention queue to an explicit FILE. Default: the MAIN checkout's `.uap/attention.json`, so the dashboard, the CLI, and session hooks in any worktree share ONE queue.
+
+**Recommendation:** Tests and non-standard layouts only; unset means the default shared-per-checkout root.
+
 ### `handsfree.enabled`
 
 | | |
@@ -795,20 +952,6 @@ When the model self-reports "stuck" but keeps repeating the same failing tool, r
 
 **Recommendation:** Keep on for local models; harmless for cloud models (rarely triggers).
 
-### `PROXY_LOCKSTEP_BREAK`
-
-| | |
-|---|---|
-| **Where** | `.uap/proxy.env` |
-| **Type** | boolean (+ `PROXY_LOCKSTEP_PIVOT_AT` / `PROXY_LOCKSTEP_HARD_AT` numbers) |
-| **Default** | `true` (pivot at streak 2, hard stop at streak 4) |
-
-When the *identical* tool call fails with the *identical* error, escalates decisively: pivot directive → final warning → hard-fail the session with a 400, recording each tier to the loop-incident ledger (`UAP_LOOP_INCIDENTS`, default `~/.config/uap/loop-incidents.jsonl`). Both directives are always given before the stop, so the stop lands at `max(HARD_AT, PIVOT_AT + 2)` — never earlier. `uap loops` lists the ledger and prints a ready `uap ideate`/`uap deliver` handoff for the broken loop. A fresh human user turn re-arms the guard.
-
-**Dependency:** the streaks lockstep reads are fed by the ERROR-LOOP and DOUBLING-DOWN trackers — `PROXY_ERROR_LOOP=off` or `PROXY_DOUBLING_BREAK=off` silently disarms lockstep too. `PIVOT_AT=0` disables the guard; `HARD_AT=0` disables only the hard stop.
-
-**Recommendation:** Keep on — this is the guard that ends deterministic-failure loops in minutes instead of tens of wasted full-context turns.
-
 ### `PROXY_RECON_CONVERGENCE_THRESHOLD`
 
 | | |
@@ -856,6 +999,106 @@ Real-time flag adaptation (LLM Self-Tuning P4): the reactor emits per-session ad
 Proxy side of real-time adaptation: whether the serving proxy honors a fresh adaptation signal per request. Auto-on; harmless when no emitter is running (no signal to honor).
 
 **Recommendation:** Leave on. Set `false` only to make the proxy ignore adaptation signals even when the reactor emits them.
+
+## Sandbox & session authority
+
+<a id="sandbox"></a>Kernel-enforced agent boundaries: the bubblewrap floor, per-session grants, and the network egress boundary.
+
+### `PROXY_SOCKET`
+
+| | |
+|---|---|
+| **Where** | `.uap/proxy.env` |
+| **Type** | string |
+| **Default** | `` |
+
+AF_UNIX socket the inference proxy serves IN ADDITION to its TCP port — a permission-gated (0600) model-path choke point for sandboxed and multi-user setups (unset = off).
+
+**Recommendation:** Set in .uap/proxy.env to the checkout's `.uap/proxy.sock` on shared boxes; leave unset for single-user loopback setups.
+
+### `UAP_PROXY_SOCKET`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | string |
+| **Default** | `` |
+
+Where `uap proxy connect` looks for the proxy socket when re-serving it on local TCP (default: the checkout's `.uap/proxy.sock`).
+
+**Recommendation:** Leave unset (the default covers the standard layout); set only when the proxy socket lives elsewhere.
+
+### `UAP_SANDBOX_NET`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | enum (shared \| off) |
+| **Default** | `shared` |
+
+Default network mode for `uap sandbox`: shared (normal network) or off (own network namespace with nothing up — the kernel egress boundary; model access impossible by design). Strictly `shared` or `off`: any other value fails loud (exit 2), never a silent downgrade to shared.
+
+**Recommendation:** Leave shared; use `--net off` per-run for untrusted code, evals, and data-only work.
+
+### `UAP_SANDBOX_GRANTS`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | string |
+| **Default** | `` |
+
+Pins the per-session sandbox grant ledger to an explicit FILE. Default: the MAIN checkout's `.uap/sandbox-grants.json`, so every surface shares ONE consent ledger.
+
+**Recommendation:** Tests and non-standard layouts only; unset means the default shared-per-checkout ledger.
+
+### `UAP_SANDBOX_GRANTS_OFF`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | boolean |
+| **Default** | `false` |
+
+Kill switch for the grant ledger: `1` resolves zero grants (no extra writable holes). The sandbox itself and its kernel boundary are unaffected.
+
+**Recommendation:** Leave unset. Inline use only, when the ledger is misbehaving — the safe direction is always least authority.
+
+### `UAP_SANDBOX_WORKDIR`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | string |
+| **Default** | `` |
+
+Workdir `uap sandbox` makes writable (default: cwd). Refused when over-broad ($HOME, /, /home).
+
+**Recommendation:** Leave unset in hooks (cwd is right); set when the sandboxed command must run from elsewhere.
+
+### `UAP_SANDBOX_ALLOW`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | string |
+| **Default** | `` |
+
+Extra writable paths, colon-separated — UNRECORDED authority (pre-P4 escape hatch). Still honored, but named unrecorded in the audit trail and banner.
+
+**Recommendation:** Prefer `uap sandbox grant <path> --session <id> --reason "..."` (recorded, TTL-bounded, revocable); use this only in throwaway scripts.
+
+### `UAP_SANDBOX_AUDIT`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | string |
+| **Default** | `` |
+
+Pins the sandbox audit trail (JSONL, one line per grant/revoke/sandbox-run) to an explicit FILE. Default: `.uap/sandbox-audit.jsonl` at the main checkout root.
+
+**Recommendation:** Leave unset; ship the default trail to your audit tooling.
 
 ## Dashboard
 

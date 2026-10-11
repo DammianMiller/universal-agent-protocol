@@ -156,10 +156,13 @@ program
 
 program
   .command('proxy [subcommand] [value]')
-  .description('Reference-counted, session-scoped proxy + dashboard lifecycle: ensure | release | status | start | stop | restart | enable | disable | dashboard [on|off]')
+  .description('Reference-counted, session-scoped proxy + dashboard lifecycle: ensure | release | status | start | stop | restart | enable | disable | dashboard [on|off] | connect --socket <path>')
   .option('--client <id>', 'Client/session id (defaults to session env or parent pid)')
   .option('--client-pid <n>', 'Long-lived agent pid for liveness (hooks pass $PPID)')
   .option('--port <n>', 'Proxy port (default 4000 / $PROXY_PORT)')
+  .option('--socket <path>', 'connect: proxy AF_UNIX socket (default $UAP_PROXY_SOCKET)')
+  .option('--ready-file <path>', 'connect: touch this file once the relay is listening (readiness handshake)')
+  .option('--allow-anyone', 'connect: accept that the relay re-serves the 0600 socket on TCP — while it runs, EVERY local user can reach the model path')
   .option('--quiet', 'Suppress output (used by hooks)')
   .option('--if-enabled', 'No-op unless .uap.json proxy.autostart is true (hook-safe)')
   .option('--json', 'Machine-readable status output')
@@ -182,12 +185,21 @@ program
   .description(
     'Run a command with a kernel-enforced workdir boundary (bubblewrap): only the ' +
       'current dir + scratch are writable, so writes outside fail at the kernel — the ' +
-      'boundary --dangerously-skip-permissions cannot bypass. Usage: uap sandbox -- <command> [args...]',
+      'boundary --dangerously-skip-permissions cannot bypass. Optional P4 authorities: ' +
+      '`--net off` cuts the network namespace entirely (kernel egress boundary), ' +
+      'and per-session writable holes come from the consent ledger ' +
+      '(uap sandbox grant <path> --session <id> --reason "..." | grants | revoke <id>). ' +
+      'Usage: uap sandbox [--session <id>] [--net shared|off] -- <command> [args...]',
   )
   .argument('[command...]', 'Command to run sandboxed (prefix with -- to pass its flags through)')
+  .option('--session <id>', 'Session id the grant ledger is scoped to (default $UAP_SESSION_ID)')
+  .option('--net <mode>', 'Network mode: shared (default) or off (kernel egress boundary — no network at all)')
+  .option('--ttl <secs>', 'grant: seconds before the grant expires (default 8h, cap 7d)')
+  .option('--reason <why>', 'grant: WHY this authority is consented (required)')
+  .option('--json', 'grants: machine-readable list')
   .allowUnknownOption(true)
-  .action(async (command: string[]) => {
-    await (await lazy.sandbox())(command || []);
+  .action(async (command: string[], options: Record<string, unknown>) => {
+    await (await lazy.sandbox())(command || [], options);
   });
 
 program

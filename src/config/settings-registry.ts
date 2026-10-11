@@ -38,6 +38,7 @@ export type SettingCategoryId =
   | 'principles'
   | 'worktree'
   | 'proxy'
+  | 'sandbox'
   | 'dashboard'
   | 'optimization'
   | 'general';
@@ -87,6 +88,7 @@ export const CATEGORIES: readonly SettingCategory[] = [
   { id: 'principles', title: 'Engineering principles', blurb: 'How code should be written, and the backward-compatibility stance.' },
   { id: 'worktree', title: 'Worktree workflow', blurb: 'Branch-per-feature isolation and auto-cleanup.' },
   { id: 'proxy', title: 'Inference proxy tuning', blurb: 'Guardrails and context limits for a local model behind the proxy.' },
+  { id: 'sandbox', title: 'Sandbox & session authority', blurb: 'Kernel-enforced agent boundaries: the bubblewrap floor, per-session grants, and the network egress boundary.' },
   { id: 'dashboard', title: 'Dashboard', blurb: 'The live analytics server and its mutation token.' },
   { id: 'optimization', title: 'Token & time optimization', blurb: 'Context budgets, caching, batching, and parallelism.' },
   { id: 'general', title: 'General', blurb: 'Project metadata and CLI behavior.' },
@@ -582,6 +584,48 @@ export const SETTINGS: readonly SettingDef[] = [
     key: 'UAP_NO_SELF_UPDATE', kind: 'env', type: 'boolean', default: false, category: 'general', target: 'shell',
     description: 'Disables the automatic global-CLI version check/self-update on `uap setup`.',
     recommendation: 'Set in CI or pinned environments where you manage the UAP version yourself.',
+  },
+
+  // ── Sandbox & session authority (bridge P4) ────────────────────────────────
+  {
+    key: 'PROXY_SOCKET', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'proxyEnv',
+    description: 'AF_UNIX socket the inference proxy serves IN ADDITION to its TCP port — a permission-gated (0600) model-path choke point for sandboxed and multi-user setups (unset = off).',
+    recommendation: 'Set in .uap/proxy.env to the checkout\'s `.uap/proxy.sock` on shared boxes; leave unset for single-user loopback setups.',
+  },
+  {
+    key: 'UAP_PROXY_SOCKET', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'shell',
+    description: 'Where `uap proxy connect` looks for the proxy socket when re-serving it on local TCP (default: the checkout\'s `.uap/proxy.sock`).',
+    recommendation: 'Leave unset (the default covers the standard layout); set only when the proxy socket lives elsewhere.',
+  },
+  {
+    key: 'UAP_SANDBOX_NET', kind: 'env', type: 'enum', enumValues: ['shared', 'off'], default: 'shared', category: 'sandbox', target: 'shell',
+    description: 'Default network mode for `uap sandbox`: shared (normal network) or off (own network namespace with nothing up — the kernel egress boundary; model access impossible by design). Strictly `shared` or `off`: any other value fails loud (exit 2), never a silent downgrade to shared.',
+    recommendation: 'Leave shared; use `--net off` per-run for untrusted code, evals, and data-only work.',
+  },
+  {
+    key: 'UAP_SANDBOX_GRANTS', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'shell',
+    description: 'Pins the per-session sandbox grant ledger to an explicit FILE. Default: the MAIN checkout\'s `.uap/sandbox-grants.json`, so every surface shares ONE consent ledger.',
+    recommendation: 'Tests and non-standard layouts only; unset means the default shared-per-checkout ledger.',
+  },
+  {
+    key: 'UAP_SANDBOX_GRANTS_OFF', kind: 'env', type: 'boolean', default: false, category: 'sandbox', target: 'shell',
+    description: 'Kill switch for the grant ledger: `1` resolves zero grants (no extra writable holes). The sandbox itself and its kernel boundary are unaffected.',
+    recommendation: 'Leave unset. Inline use only, when the ledger is misbehaving — the safe direction is always least authority.',
+  },
+  {
+    key: 'UAP_SANDBOX_WORKDIR', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'shell',
+    description: 'Workdir `uap sandbox` makes writable (default: cwd). Refused when over-broad ($HOME, /, /home).',
+    recommendation: 'Leave unset in hooks (cwd is right); set when the sandboxed command must run from elsewhere.',
+  },
+  {
+    key: 'UAP_SANDBOX_ALLOW', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'shell',
+    description: 'Extra writable paths, colon-separated — UNRECORDED authority (pre-P4 escape hatch). Still honored, but named unrecorded in the audit trail and banner.',
+    recommendation: 'Prefer `uap sandbox grant <path> --session <id> --reason "..."` (recorded, TTL-bounded, revocable); use this only in throwaway scripts.',
+  },
+  {
+    key: 'UAP_SANDBOX_AUDIT', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'shell',
+    description: 'Pins the sandbox audit trail (JSONL, one line per grant/revoke/sandbox-run) to an explicit FILE. Default: `.uap/sandbox-audit.jsonl` at the main checkout root.',
+    recommendation: 'Leave unset; ship the default trail to your audit tooling.',
   },
 ];
 

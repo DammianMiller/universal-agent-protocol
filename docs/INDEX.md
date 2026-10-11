@@ -1,6 +1,6 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v2.29.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 434 TypeScript modules across 34 subsystems, 518 vitest suites (~6,050 tests) plus a ~1,400-test Python enforcer/proxy suite, 58 top-level CLI commands (~210 registrations including subcommands), 34 executable policy enforcers, 9 supported agent harnesses.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v2.30.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 436 TypeScript modules across 34 subsystems, 520 vitest suites (6,117 tests) plus a ~1,400-test Python enforcer/proxy suite, 58 top-level CLI commands (~210 registrations including subcommands), 34 executable policy enforcers, 9 supported agent harnesses.
 
 > **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
 > [`documentation/`](../documentation/architecture.md): architecture, flows, permissions
@@ -80,7 +80,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Self-Harness](design/SELF_HARNESS.md) | Self-improving harness (shipped as `uap self-harness`): autonomous mine→propose→validate loop over a bounded Mod DSL; cross-model transfer, online mining |
 | [LLM Self-Tuning (analysis)](design/LLM_SELF_TUNING_ANALYSIS.md) | The design behind `uap tune`: quality signal, LLM-guided + Gaussian-process flag search, closed-loop validation, model profiles, real-time adaptation |
 | [Product Naming (analysis)](design/PRODUCT_NAMING.md) | UAP rename candidates: availability sweeps (npm/PyPI/domains), AI-space collision checks, railway-theme shortlist, recommendation. No decision committed; availability data is point-in-time |
-| [ADRs](architecture/adr/) | Architecture decision records: [0001 AutoMode risk floor](architecture/adr/0001-automode-risk-floor.md) (Python heuristic scorer ahead of the TS SYS1 head), [0002 Evidence-bound ship](architecture/adr/0002-evidence-bound-ship.md) (gate evidence bound to the candidate SHA), … [0009 Completion-triggered dispatch + per-leaf model dials](architecture/adr/0009-completion-triggered-dispatch-and-per-leaf-model-dials.md) (bridge P2), [0010 Attention queue + AFK auto-decider](architecture/adr/0010-attention-queue-and-afk-auto-decider.md) (bridge P3) |
+| [ADRs](architecture/adr/) | Architecture decision records: [0001 AutoMode risk floor](architecture/adr/0001-automode-risk-floor.md) (Python heuristic scorer ahead of the TS SYS1 head), [0002 Evidence-bound ship](architecture/adr/0002-evidence-bound-ship.md) (gate evidence bound to the candidate SHA), … [0009 Completion-triggered dispatch + per-leaf model dials](architecture/adr/0009-completion-triggered-dispatch-and-per-leaf-model-dials.md) (bridge P2), [0010 Attention queue + AFK auto-decider](architecture/adr/0010-attention-queue-and-afk-auto-decider.md) (bridge P3), [0011 Sandbox grants + network egress boundary](architecture/adr/0011-sandbox-grants-and-network-egress-boundary.md) (bridge P4) |
 
 ## Reference
 

@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-500%2B_suites-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
-`v2.29.0` · 434 TypeScript modules across 34 subsystems · 518 vitest suites (~6,050 tests, + a ~1,400-test Python enforcer/proxy suite) · 9 agent harnesses
+`v2.30.0` · 436 TypeScript modules across 34 subsystems · 521 vitest suites (~6,090 tests, + a ~1,400-test Python enforcer/proxy suite) · 9 agent harnesses
 
 [Quickstart](#quickstart) · [Why UAP?](#why-uap) · [Origin & evolution](#origin--evolution) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
 
@@ -21,7 +21,7 @@
 
 UAP is a **Miller-Tech** tool, born from real work: while building the fintech app **Pay2U** and the **Miller-Tech platform** with AI coding agents, the same failures kept recurring — "done" code that never ran, edits on `main`, forgotten decisions, prose architecture rules that blocked nothing, agents that stall on any question or silently decide for you. The fix that worked, every time, was the same: **turn the software-engineering practice into an executable check the agent cannot route around. Enforce, don't suggest.**
 
-That principle became UAP — a discipline layer installed *underneath* the agent harness, putting a verification station at every point where agentic development actually breaks. It has shipped continuously since March 2026 — 694 versioned releases — hardened under its own gates (worktree isolation, parallel review, evidence-bound shipping), which makes the tool the proof of its own thesis. The full story — the Pay2U origin, the four eras (the floor → the verification spine → autonomy machinery → the 2026-10 bridge program responding to *Why Are Coding Agents So Dumb?*), and the ADR decision record — lives in **[The Evolution of UAP](docs/guides/EVOLUTION.md)**.
+That principle became UAP — a discipline layer installed *underneath* the agent harness, putting a verification station at every point where agentic development actually breaks. It has shipped continuously since March 2026 — 695 versioned releases — hardened under its own gates (worktree isolation, parallel review, evidence-bound shipping), which makes the tool the proof of its own thesis. The full story — the Pay2U origin, the four eras (the floor → the verification spine → autonomy machinery → the 2026-10 bridge program responding to *Why Are Coding Agents So Dumb?*), and the ADR decision record — lives in **[The Evolution of UAP](docs/guides/EVOLUTION.md)**.
 
 ---
 
