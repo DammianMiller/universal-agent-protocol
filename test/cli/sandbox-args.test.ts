@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { planSandbox, sandboxCustomHeaders, type SandboxPlanInput } from '../../src/cli/sandbox.js';
@@ -96,7 +96,57 @@ describe('D2 — per-session grants open holes the ledger consented to', () => {
     expect(argv).toContain(`--bind ${granted} ${granted}`);
     expect(argv).not.toContain(vanished);
     expect(r.plan!.grantedPaths).toEqual([granted]);
-    expect(r.plan!.notes.some((n) => n.includes('do not exist'))).toBe(true);
+    expect(r.plan!.notes.some((n) => n.includes('were not opened'))).toBe(true);
+  });
+
+  it('re-resolves granted paths at PLAN time and refuses a symlink swapped in after load (TOCTOU)', () => {
+    // The row's path was realpath-validated at load; the planner must not
+    // trust the row's word for it — a symlink to $HOME swapped in during
+    // the load→exec window would bind the operator's home writable. In the
+    // CLI the sandbox home IS the real $HOME, so the production semantics
+    // are exercised by passing the real home here.
+    const real = join(dir, 'real-hole');
+    mkdirSync(real);
+    const homeLink = join(dir, 'innocuous');
+    const home = process.env.HOME || '';
+    symlinkSync(home, homeLink);
+    const evilLink = join(dir, 'evil');
+    symlinkSync(home, evilLink);
+    const grants: ResolvedGrants = { grants: [], paths: [homeLink, evilLink, real] };
+    const r = plan({ grants, home });
+    const argv = r.plan!.argv.join(' ');
+    expect(argv).toContain(`--bind ${real} ${real}`);
+    // The symlink rows are re-resolved and the resolved value re-checked:
+    // $HOME is over-broad, so those rows open NOTHING.
+    expect(r.plan!.grantedPaths).toEqual([real]);
+    expect(argv).not.toContain(`--bind ${home} ${home}`);
+    // A symlink to a legitimately grantable dir binds the RESOLVED path,
+    // not the link name (the resolution, not the row, chooses the target).
+    const dirLink = join(dir, 'dir-link');
+    symlinkSync(real, dirLink);
+    const r2 = plan({ grants: { grants: [], paths: [dirLink] }, home });
+    expect(r2.plan!.grantedPaths).toEqual([real]);
+  });
+
+  it('ro-binds the consent ledger and audit file so the sandboxed side can neither plant rows nor forge audit lines', () => {
+    // P4 security review finding 1: the ledger/audit live inside the
+    // writable hole, so without a ro-bind a sandboxed agent plants a
+    // well-formed `paths:["/etc"]` row and the NEXT run opens it.
+    const ledger = join(dir, '.uap', 'sandbox-grants.json');
+    const audit = join(dir, '.uap', 'sandbox-audit.jsonl');
+    mkdirSync(join(dir, '.uap'));
+    writeFileSync(ledger, '[]');
+    writeFileSync(audit, '');
+    const r = plan({ grantsLedgerPath: ledger, auditLogPath: audit });
+    const argv = r.plan!.argv.join(' ');
+    expect(argv).toContain(`--ro-bind ${ledger} ${ledger}`);
+    expect(argv).toContain(`--ro-bind ${audit} ${audit}`);
+    // A MISSING file gets /dev/null bound at its path: planting one must
+    // be equally impossible (it reads empty and refuses writes).
+    const r2 = plan({ grantsLedgerPath: join(dir, '.uap', 'absent.json'), auditLogPath: join(dir, '.uap', 'gone.jsonl') });
+    const argv2 = r2.plan!.argv.join(' ');
+    expect(argv2).toContain(`--ro-bind /dev/null ${join(dir, '.uap', 'absent.json')}`);
+    expect(argv2).toContain(`--ro-bind /dev/null ${join(dir, '.uap', 'gone.jsonl')}`);
   });
 });
 

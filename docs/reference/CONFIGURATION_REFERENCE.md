@@ -1036,7 +1036,7 @@ Where `uap proxy connect` looks for the proxy socket when re-serving it on local
 | **Type** | enum (shared \| off) |
 | **Default** | `shared` |
 
-Default network mode for `uap sandbox`: shared (normal network) or off (own network namespace with nothing up — the kernel egress boundary; model access impossible by design).
+Default network mode for `uap sandbox`: shared (normal network) or off (own network namespace with nothing up — the kernel egress boundary; model access impossible by design). Strictly `shared` or `off`: any other value fails loud (exit 2), never a silent downgrade to shared.
 
 **Recommendation:** Leave shared; use `--net off` per-run for untrusted code, evals, and data-only work.
 

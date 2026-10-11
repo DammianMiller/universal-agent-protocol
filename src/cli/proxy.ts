@@ -805,6 +805,9 @@ export async function proxyCommand(
       // (PROXY_SOCKET) on a local TCP port for clients that cannot speak
       // AF_UNIX. Runnable by hand / from scripts — see ADR 0011 for why no
       // sandbox mode auto-launches it (the '--net proxy' design was cut).
+      // The relay voids the socket's 0600 per-user gate for as long as it
+      // runs, so it refuses without an explicit --allow-anyone (P4 security
+      // review finding 3).
       const socket = String((options as { socket?: string }).socket || process.env.UAP_PROXY_SOCKET || '').trim();
       if (!socket) {
         console.error(
@@ -820,6 +823,7 @@ export async function proxyCommand(
         listenPort,
         quiet: options.quiet === true,
         readyFile: options.readyFile,
+        allowAnyone: (options as { allowAnyone?: boolean }).allowAnyone === true,
       });
       return;
     }

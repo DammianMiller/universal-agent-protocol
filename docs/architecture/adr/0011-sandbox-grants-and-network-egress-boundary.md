@@ -61,6 +61,31 @@ pins an explicit file):
   hard TTL bound (a planted `expiresAt: "9999"` must never load).
   `UAP_SANDBOX_GRANTS_OFF=1` resolves zero grants; the sandbox's kernel
   boundary itself is never disabled by any of this.
+- **Consent must come from the operator, not from inside the sandbox**
+  (the security review's forgeability finding, three parts):
+  1. `grant`/`revoke` are REFUSED when `UAP_SANDBOX_ACTIVE=1` — that env
+     is set by the sandbox itself on the untrusted side, so an agent
+     cannot write new authority or remove the operator's (listing stays
+     allowed: read-only).
+  2. The planner `--ro-bind`s the ledger and audit files over their host
+     paths in EVERY sandbox namespace (a missing file gets `/dev/null`
+     bound at the path). A bind-mounted file cannot be unlinked, replaced,
+     or written inside the namespace, so the sandboxed agent can neither
+     plant grant rows nor forge audit lines — the load-path re-validation
+     checks SHAPE, but shape cannot establish WHO consented; the kernel
+     mount does.
+  3. Granted paths are re-resolved (`realpath`) at PLAN time and the
+     resolved value is re-checked for breadth, closing the load→exec
+     TOCTOU window where a concurrent process could swap a granted path
+     for a symlink. (A microsecond window between this resolution and
+     bwrap's own remains — accepted, documented.)
+- Fail-closed everywhere authority is parsed: a garbage or negative
+  `--ttl` is REFUSED (the old expression silently granted the 8h default
+  — the wrong direction); `--ttl 0` floors to 1s; an unknown
+  `UAP_SANDBOX_NET` value fails loud with exit 2 rather than silently
+  meaning FULL network; and every persist is followed by a reload
+  verification (a concurrent writer's lost update is retried once, then
+  reported as failure — never a silent success).
 
 ### D1 — the network egress boundary
 
@@ -75,10 +100,20 @@ audit-logged (`netMode: shared|off`).
 **Also shipped: the proxy's unix-socket surface** — `PROXY_SOCKET=<path>`
 makes `anthropic_proxy.py` serve the SAME app on an AF_UNIX socket
 (0600, parent dir 0700) alongside its TCP port: a permission-gated model
-choke point for shared boxes. `uap proxy connect --socket <path> [--port N]`
-re-serves that socket on local TCP for clients that cannot speak AF_UNIX.
-Stale-socket policy: a live listener owns its path (refuse to evict), a
-corpse is reclaimed.
+choke point for shared boxes. Stale-socket policy (hardened by the
+security review): a live listener owns its path — and "live" includes a
+socket that cannot be dialed (`EACCES`/`EPERM` is not proof of death, so
+another user's socket is never evicted and impersonated); only a refused
+or missing socket is a corpse. A non-socket file at the path is NEVER
+unlinked (`PROXY_SOCKET` can arrive from the operator's env or the
+sandbox-writable `.uap/proxy.env`, so a typo or planted value must not
+become an arbitrary-file-delete primitive), and a group/other-writable
+parent dir draws a warning (another local user could unlink or squat the
+path). `uap proxy connect --socket <path> [--port N] --allow-anyone`
+re-serves that socket on local TCP for clients that cannot speak
+AF_UNIX — behind an explicit consent flag, because while the relay runs
+it inverts the socket's gate: every local user can reach the model path
+through the loopback port.
 
 ### D1's rejected design: the "only proxy" netns (and why)
 
@@ -134,3 +169,16 @@ actually holds.
   revoke — is the natural next surface and a candidate for the P5
   "Surfaces" phase; the per-checkout-root anchoring already guarantees it
   would read the same ledger the sandbox does.
+- Follow-up (trust anchoring, longer-term): the ledger and audit still
+  live under the main checkout root — writable by the OPERATOR side of
+  every run. The ro-bind closes the sandboxed side, and the load path
+  validates shape; what neither can do is prove WHO wrote a row that
+  predates the ro-bind (a historical plant opens until revoked). Anchoring
+  consent to something outside the checkout's write reach (per-user state,
+  or a signed ledger) is the structural fix and stays open on purpose —
+  the P4 threat model closes the agent-side vectors; the operator-side
+  residual is accepted and named here.
+- Residual, accepted: the microsecond TOCTOU between the planner's
+  `realpath` and bwrap's own bind (a concurrent process with write on a
+  granted path's parent could still race it), and the unpruned audit JSONL
+  (bounded by run count; the operator ships it to their own tooling).

@@ -154,7 +154,7 @@ proof of its own thesis.**
 
 As of v2.30.0: **436 TypeScript modules across 34 `src/` subsystems**, 58
 top-level CLI commands (~210 registrations including subcommands), **34
-executable policy enforcers**, **520 vitest suites (6,108 tests)** plus a
+executable policy enforcers**, **520 vitest suites (6,117 tests)** plus a
 ~1,400-test Python enforcer/proxy suite, and **9 supported harnesses**. The
 feature-by-feature catalog, mapped to pipeline stations, is
 [FEATURES.md](../reference/FEATURES.md); the "what applies automatically"

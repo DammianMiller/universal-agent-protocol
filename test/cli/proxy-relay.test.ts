@@ -109,7 +109,22 @@ describe('startProxyRelay', () => {
 });
 
 describe('proxyConnectCommand (the CLI surface)', () => {
-  it('lands a bind failure as a clean error + exit 1, not an unhandled rejection', async () => {
+  it('refuses without --allow-anyone: the relay voids the socket gate, so consent is explicit', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-relay-'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const prevCode = process.exitCode;
+    try {
+      await proxyConnectCommand({ socket: join(dir, 'x.sock'), quiet: true });
+      expect(process.exitCode).toBe(1);
+      expect(errSpy.mock.calls.flat().join(' ')).toContain('--allow-anyone');
+      expect(errSpy.mock.calls.flat().join(' ')).toMatch(/every local user/i);
+    } finally {
+      process.exitCode = prevCode;
+      errSpy.mockRestore();
+    }
+  });
+
+  it('with --allow-anyone, a bind failure lands as a clean error + exit 1, not an unhandled rejection', async () => {
     dir = mkdtempSync(join(tmpdir(), 'uap-relay-'));
     const sockPath = join(dir, 'proxy.sock');
     await mockProxySocket(sockPath);
@@ -124,7 +139,7 @@ describe('proxyConnectCommand (the CLI surface)', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const prevCode = process.exitCode;
     try {
-      await proxyConnectCommand({ socket: sockPath, listenPort: takenPort, quiet: true });
+      await proxyConnectCommand({ socket: sockPath, listenPort: takenPort, quiet: true, allowAnyone: true });
       // A rejected listen promise escaping here would fail the test as an
       // unhandled rejection; reaching this line means it was caught.
       expect(process.exitCode).toBe(1);
@@ -139,7 +154,7 @@ describe('proxyConnectCommand (the CLI surface)', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const prevCode = process.exitCode;
     try {
-      await proxyConnectCommand({ socket: '' });
+      await proxyConnectCommand({ socket: '', allowAnyone: true });
       expect(process.exitCode).toBe(1);
       expect(errSpy.mock.calls.flat().join(' ')).toMatch(/--socket/);
     } finally {

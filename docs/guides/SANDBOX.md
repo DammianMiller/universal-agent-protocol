@@ -89,9 +89,20 @@ Rules worth knowing:
   (`--session`, `--net`, `--ttl`, `--reason`, `--json`) are parsed as sandbox options, not
   passed through. The grant verbs are intercepted only when there is no `--` —
   `uap sandbox -- revoke …` runs a binary named `revoke`, not the ledger verb.
+- **Consent comes from the operator, never from inside a sandbox.** `grant`/`revoke` are
+  refused when `UAP_SANDBOX_ACTIVE=1` (that flag is set by the sandbox on the untrusted
+  side); listing stays available. And the ledger + audit files are mounted READ-ONLY into
+  every sandbox namespace — a bind-mounted file cannot be unlinked, replaced, or written
+  inside it — so a sandboxed agent can neither plant grant rows nor forge audit lines.
 - A grant is refused without `--session`, `--reason`, or a grantable target (an existing
   absolute path; `/`, `/home`, and `$HOME` itself are refused — an over-broad grant IS a
-  sandbox escape, checked after symlink resolution).
+  sandbox escape, checked after symlink resolution, and re-resolved at plan time to close
+  the swap race).
+- `--ttl` fails CLOSED on garbage: a non-numeric or negative value is refused (not
+  silently upgraded to the 8h default); `--ttl 0` means "expires immediately" (floored to
+  1s). Grants default to **8h** and hard-cap at **7d**; an identical open grant is renewed,
+  not duplicated; expired grants are invisible to the sandbox. Every persist is
+  re-verified against a concurrent writer before success is reported.
 - Grants default to **8h** and hard-cap at **7d**; an identical open grant is renewed, not
   duplicated; expired grants are invisible to the sandbox.
 - The ledger lives at the MAIN checkout's `.uap/sandbox-grants.json` (one ledger per
@@ -136,7 +147,7 @@ AF_UNIX).
 | `UAP_SANDBOX_OFF=1` | Run the command as-is, no sandbox (for debugging). |
 | `UAP_SANDBOX_ALLOW=/path:/other` | Extra writable prefixes — UNRECORDED (audited as `unrecordedAllow`; prefer `uap sandbox grant`). |
 | `UAP_SANDBOX_WORKDIR=/path` | Override the resolved workdir. |
-| `UAP_SANDBOX_NET=off` | Default the network mode for every run (`shared` otherwise). |
+| `UAP_SANDBOX_NET=off` | Default the network mode for every run. Strictly `shared` or `off` — any other value fails LOUD (exit 2), never a silent downgrade to shared. |
 | `PROXY_SANDBOX_UNREACHABLE_PREFIXES` | Change which tool prefixes are stripped (proxy side). |
 
 Treat all of these as trusted-launch-environment settings — they widen the boundary, and

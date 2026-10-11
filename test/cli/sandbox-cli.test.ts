@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, chmodSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, chmodSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -53,6 +53,7 @@ beforeEach(() => {
   delete process.env.UAP_SANDBOX_ALLOW;
   delete process.env.UAP_SANDBOX_NET;
   delete process.env.UAP_SANDBOX_GRANTS_OFF;
+  delete process.env.UAP_SANDBOX_ACTIVE;
   delete process.env.UAP_SESSION_ID;
   delete process.env.CLAUDE_SESSION_ID;
   delete process.env.ANTHROPIC_CUSTOM_HEADERS;
@@ -147,6 +148,71 @@ describe('the --net contract (loud, never a silent downgrade)', () => {
     // The audit records the boundary that actually engaged.
     const audit = readFileSync(join(dir, 'audit.jsonl'), 'utf-8');
     expect(audit).toContain('"netMode":"off"');
+  });
+
+  it("fails LOUD on a garbage UAP_SANDBOX_NET env value (never a silent downgrade to shared)", async () => {
+    // 'OFF', '0ff' previously parsed as "not off" → shared — the exact
+    // hole the boundary exists to close (P4 security review finding 4).
+    for (const bad of ['OFF', '0ff', 'proxy']) {
+      process.env.UAP_SANDBOX_NET = bad;
+      const code = await runExpectExit(['true'], {});
+      expect(code).toBe(2);
+      expect(errText()).toContain(`unknown UAP_SANDBOX_NET value '${bad}'`);
+      // Nothing launched under the typo'd mode.
+      expect(calls.spawn.some((c) => c.cmd === 'bwrap' && !c.args.includes('--version'))).toBe(false);
+      logSpy.mockClear();
+      errSpy.mockClear();
+      exitSpy.mockClear();
+    }
+    // Whitespace is a shell quirk, not a typo: 'off ' still means OFF.
+    process.env.UAP_SANDBOX_NET = 'off ';
+    await runToSpawn(['true'], {});
+    expect(calls.spawn.some((c) => c.cmd === 'bwrap' && c.args.includes('--unshare-net'))).toBe(true);
+  });
+});
+
+describe('consent cannot come from inside the sandbox (P4 security review finding 1)', () => {
+  it('refuses grant and revoke when UAP_SANDBOX_ACTIVE=1 — the agent must not self-consent', async () => {
+    process.env.UAP_SANDBOX_ACTIVE = '1';
+    const g = await runExpectExit(['grant', hole], { session: 's-cli', reason: 'self-consent attempt' });
+    expect(g).toBe(2);
+    expect(errText()).toContain('refusing to grant/revoke from inside a sandbox');
+    const r = await runExpectExit(['revoke', 'sbg-anything'], {});
+    expect(r).toBe(2);
+    expect(errText()).toContain('refusing to grant/revoke from inside a sandbox');
+    // And no authority was written despite the refusals.
+    expect(existsSync(join(dir, 'grants.json'))).toBe(false);
+  });
+
+  it('still allows LISTING grants from inside a sandbox (read-only, the agent sees what it was granted)', async () => {
+    process.env.UAP_SANDBOX_ACTIVE = '1';
+    await sandboxCommand(['grants'], { session: 's-cli', json: true });
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(logLines().at(-1)).toBe('[]');
+  });
+
+  it('ro-binds the ledger and audit into every sandbox plan so a sandboxed agent cannot plant rows', async () => {
+    // Finding 1's second half: the consent store lives inside the writable
+    // hole, so the namespace must mount it read-only (a bind-mounted file
+    // cannot be unlinked or replaced inside the ns).
+    await runToSpawn(['true'], {});
+    const run = calls.spawn.find((c) => c.cmd === 'bwrap' && !c.args.includes('--version'));
+    expect(run).toBeDefined();
+    const ledger = process.env.UAP_SANDBOX_GRANTS!;
+    const audit = process.env.UAP_SANDBOX_AUDIT!;
+    expect(run!.args).toContain('--ro-bind');
+    expect(run!.args).toEqual(expect.arrayContaining(['--ro-bind', '/dev/null', ledger]));
+    expect(run!.args).toEqual(expect.arrayContaining(['--ro-bind', '/dev/null', audit]));
+  });
+
+  it('ro-binds a REAL ledger file (not /dev/null) once the operator has granted', async () => {
+    const r = grantAuthority(dir, { sessionId: 's-real', paths: [hole], reason: 'ro-bind probe' });
+    expect(r.ok).toBe(true);
+    await runToSpawn(['true'], { session: 's-real' });
+    const run = calls.spawn.find((c) => c.cmd === 'bwrap' && !c.args.includes('--version'));
+    expect(run!.args).toEqual(
+      expect.arrayContaining(['--ro-bind', join(dir, 'grants.json'), join(dir, 'grants.json')]),
+    );
   });
 });
 

@@ -131,6 +131,7 @@ import contextlib
 import contextvars
 from typing import Awaitable, Callable
 import copy
+import errno
 import hashlib
 import json
 import logging
@@ -17594,13 +17595,23 @@ _MAX_SUN_PATH = 107
 
 
 def _socket_is_live(path: str) -> bool:
-    """True when a server already ACCEPTS connections on this socket path."""
+    """True when a server already ACCEPTS on this path — or when we cannot
+    PROVE it dead.
+
+    P4 security review: only ENOENT/ECONNREFUSED mean "corpse". An EACCES/
+    EPERM dial failure means a live socket we cannot reach (another user's
+    0600 socket in a shared dir) — evicting it would let THIS process
+    impersonate their endpoint, so it is treated as live: never evict what
+    you cannot prove dead.
+    """
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(0.5)
             s.connect(path)
         return True
-    except OSError:
+    except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EPERM):
+            return True  # owned by someone else — live, hands off
         return False
 
 
@@ -17612,6 +17623,16 @@ def _prepare_proxy_socket(path: str):
     refused/absent socket is a corpse from a crashed run — unlink and rebind.
     The bind is the boundary, so the permissions are tight: socket 0600,
     parent directory 0700 (only the owning user can even dial it).
+
+    P4 security-review gates:
+    - NEVER unlink a non-socket: PROXY_SOCKET can come from the operator's
+      environment or `.uap/proxy.env` (which lives inside the sandbox-writable
+      checkout), so a typo or a planted value must not become an
+      arbitrary-file-delete primitive. Only a unix socket file is reclaimable.
+    - WARN when the parent dir is group/other-writable: another local user
+      could unlink or squat the socket path (newly-created parents are 0700;
+      an operator-made shared dir is theirs to judge, but the consequence is
+      named).
     """
     if not path:
         return None
@@ -17629,11 +17650,39 @@ def _prepare_proxy_socket(path: str):
     except OSError as exc:
         logger.error("SOCKET: cannot create %s (%s) — unix-socket surface off.", parent, exc)
         return None
+    try:
+        parent_mode = stat.S_IMODE(os.stat(parent).st_mode)
+        if parent_mode & 0o022:
+            logger.warning(
+                "SOCKET: parent %s is group/other-writable (%04o) — another "
+                "local user can unlink or squat the socket path; prefer 0700.",
+                parent,
+                parent_mode,
+            )
+    except OSError:
+        pass  # vanished between makedirs and stat — the bind will tell us
     if os.path.exists(path):
+        try:
+            st = os.lstat(path)
+        except OSError as exc:
+            logger.error("SOCKET: cannot stat %s (%s) — surface off.", path, exc)
+            return None
+        if not stat.S_ISSOCK(st.st_mode):
+            # A regular file (operator typo, or planted via proxy.env):
+            # unlinking it would DESTROY data and rebind would squat the
+            # name. Refuse — the operator can move the file aside by hand.
+            logger.error(
+                "SOCKET: %s exists but is not a unix socket — refusing to "
+                "replace it; unix-socket surface off for THIS process (TCP "
+                "unaffected).",
+                path,
+            )
+            return None
         if _socket_is_live(path):
             logger.error(
-                "SOCKET: %s is served by a live proxy — refusing to evict it; "
-                "unix-socket surface off for THIS process (TCP unaffected).",
+                "SOCKET: %s is served by a live proxy (or cannot be proven "
+                "dead) — refusing to evict it; unix-socket surface off for "
+                "THIS process (TCP unaffected).",
                 path,
             )
             return None

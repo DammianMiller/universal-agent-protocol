@@ -91,6 +91,25 @@ describe('grant validation — authority is refused, not guessed', () => {
       const ttl = (Date.parse(r.grant.expiresAt) - Date.parse(r.grant.grantedAt)) / 1000;
       expect(ttl).toBeGreaterThanOrEqual(1);
     }
+    const z = grantAuthority(dir, { ...INPUT, paths: [hole], ttlSecs: 0 });
+    expect(z.ok).toBe(true);
+    if (z.ok) {
+      const ttl = (Date.parse(z.grant.expiresAt) - Date.parse(z.grant.grantedAt)) / 1000;
+      expect(ttl).toBe(1); // 0s means "expires immediately", NEVER "8h default"
+    }
+  });
+
+  it('fails CLOSED on garbage or negative TTLs (the P4 security-review fix)', () => {
+    // 'abc' → NaN from the CLI parse; -5 is a demand for negative
+    // authority. Both must be REFUSED, not silently upgraded to the 8h
+    // default (the old expression failed open — the wrong direction for
+    // an authority store).
+    const nan = grantAuthority(dir, { ...INPUT, paths: [hole], ttlSecs: Number('abc') });
+    expect(nan.ok).toBe(false);
+    if (!nan.ok) expect(nan.error).toMatch(/--ttl/);
+    const neg = grantAuthority(dir, { ...INPUT, paths: [hole], ttlSecs: -5 });
+    expect(neg.ok).toBe(false);
+    if (!neg.ok) expect(neg.error).toMatch(/--ttl/);
   });
 });
 

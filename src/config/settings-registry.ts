@@ -599,7 +599,7 @@ export const SETTINGS: readonly SettingDef[] = [
   },
   {
     key: 'UAP_SANDBOX_NET', kind: 'env', type: 'enum', enumValues: ['shared', 'off'], default: 'shared', category: 'sandbox', target: 'shell',
-    description: 'Default network mode for `uap sandbox`: shared (normal network) or off (own network namespace with nothing up — the kernel egress boundary; model access impossible by design).',
+    description: 'Default network mode for `uap sandbox`: shared (normal network) or off (own network namespace with nothing up — the kernel egress boundary; model access impossible by design). Strictly `shared` or `off`: any other value fails loud (exit 2), never a silent downgrade to shared.',
     recommendation: 'Leave shared; use `--net off` per-run for untrusted code, evals, and data-only work.',
   },
   {

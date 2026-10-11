@@ -162,6 +162,7 @@ program
   .option('--port <n>', 'Proxy port (default 4000 / $PROXY_PORT)')
   .option('--socket <path>', 'connect: proxy AF_UNIX socket (default $UAP_PROXY_SOCKET)')
   .option('--ready-file <path>', 'connect: touch this file once the relay is listening (readiness handshake)')
+  .option('--allow-anyone', 'connect: accept that the relay re-serves the 0600 socket on TCP — while it runs, EVERY local user can reach the model path')
   .option('--quiet', 'Suppress output (used by hooks)')
   .option('--if-enabled', 'No-op unless .uap.json proxy.autostart is true (hook-safe)')
   .option('--json', 'Machine-readable status output')

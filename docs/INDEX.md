@@ -1,6 +1,6 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v2.30.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 436 TypeScript modules across 34 subsystems, 520 vitest suites (6,108 tests) plus a ~1,400-test Python enforcer/proxy suite, 58 top-level CLI commands (~210 registrations including subcommands), 34 executable policy enforcers, 9 supported agent harnesses.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v2.30.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 436 TypeScript modules across 34 subsystems, 520 vitest suites (6,117 tests) plus a ~1,400-test Python enforcer/proxy suite, 58 top-level CLI commands (~210 registrations including subcommands), 34 executable policy enforcers, 9 supported agent harnesses.
 
 > **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
 > [`documentation/`](../documentation/architecture.md): architecture, flows, permissions

@@ -272,13 +272,19 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
     return { ok: false, error: 'a grant grants something: pass at least one writable path' };
   }
 
-  const ttl = Math.min(
-    Math.max(
-      1,
-      Number.isFinite(input.ttlSecs) && (input.ttlSecs as number) > 0 ? Math.floor(input.ttlSecs as number) : DEFAULT_GRANT_TTL_SECS,
-    ),
-    MAX_GRANT_TTL_SECS,
-  );
+  // TTL is FAIL-CLOSED on garbage: undefined → the 8h default, but a
+  // non-numeric or negative --ttl is REFUSED outright (the P4 security
+  // review caught the old expression silently treating bad input as "give
+  // 8h anyway" — the wrong direction for authority). 0 floors to 1s: a
+  // zero-second grant is a recorded consent that expires immediately.
+  let ttl: number;
+  if (input.ttlSecs === undefined) {
+    ttl = DEFAULT_GRANT_TTL_SECS;
+  } else if (!Number.isFinite(input.ttlSecs) || input.ttlSecs < 0) {
+    return { ok: false, error: `--ttl must be a non-negative number of seconds (got '${input.ttlSecs}')` };
+  } else {
+    ttl = Math.min(Math.max(1, Math.floor(input.ttlSecs)), MAX_GRANT_TTL_SECS);
+  }
   const now = new Date();
   const grant: SandboxGrant = {
     id: `sbg-${randomUUID().slice(0, 8)}`,
@@ -290,30 +296,49 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
     expiresAt: new Date(now.getTime() + ttl * 1000).toISOString(),
   };
 
-  const existing = loadGrants(projectRoot).filter((g) => g.expiresAt > now.toISOString());
-  // Dedupe: an identical open grant (same session + same paths) is refreshed,
-  // not duplicated — a second `grant` for the same hole renews its TTL.
-  const twin = existing.find(
-    (g) => g.sessionId === grant.sessionId && g.paths.length === grant.paths.length && grant.paths.every((p) => g.paths.includes(p)),
-  );
-  if (twin) {
-    twin.expiresAt = grant.expiresAt;
-    twin.reason = grant.reason;
-    twin.grantedAt = grant.grantedAt;
-    // A failed persist must not be reported as a renewal: the OLD expiry
-    // stays active (the safe direction), and the operator keeps the truth.
-    if (!persistGrants(projectRoot, existing)) {
-      return { ok: false, error: 'ledger persist failed — the renewal is NOT active (the previous expiry stands)' };
+  for (let attempt = 0; ; attempt++) {
+    const existing = loadGrants(projectRoot).filter((g) => g.expiresAt > now.toISOString());
+    // Dedupe: an identical open grant (same session + same paths) is refreshed,
+    // not duplicated — a second `grant` for the same hole renews its TTL.
+    const twin = existing.find(
+      (g) => g.sessionId === grant.sessionId && g.paths.length === grant.paths.length && grant.paths.every((p) => g.paths.includes(p)),
+    );
+    if (twin) {
+      twin.expiresAt = grant.expiresAt;
+      twin.reason = grant.reason;
+      twin.grantedAt = grant.grantedAt;
+      // A failed persist must not be reported as a renewal: the OLD expiry
+      // stays active (the safe direction), and the operator keeps the truth.
+      if (!persistGrants(projectRoot, existing)) {
+        return { ok: false, error: 'ledger persist failed — the renewal is NOT active (the previous expiry stands)' };
+      }
+      // Lost-update guard: load→modify→persist has no lock, and the atomic
+      // rename prevents corruption, not lost updates — a concurrent writer
+      // landing after ours drops our renewal while we report success.
+      // Verify ours survived; retry once against the fresh state.
+      const after = loadGrants(projectRoot).find((g) => g.id === twin.id);
+      if (!after || after.expiresAt !== twin.expiresAt) {
+        if (attempt === 0) continue;
+        return { ok: false, error: 'ledger changed under a concurrent writer — renewal not confirmed; retry the grant' };
+      }
+      audit(projectRoot, { ts: grant.grantedAt, action: 'grant-renewed', grantId: twin.id, sessionId, paths, reason });
+      return { ok: true, grant: twin };
     }
-    audit(projectRoot, { ts: grant.grantedAt, action: 'grant-renewed', grantId: twin.id, sessionId, paths, reason });
-    return { ok: true, grant: twin };
+    const all = [...existing, grant];
+    if (!persistGrants(projectRoot, all)) {
+      return { ok: false, error: 'ledger persist failed — the grant is NOT active (refusing to report success)' };
+    }
+    // Lost-update guard (same shape as the renewal path): two concurrent
+    // grants can both read-modify-write and silently drop the loser's row
+    // while its CLI reports success — verify the row survived before
+    // claiming the grant active.
+    if (!loadGrants(projectRoot).some((g) => g.id === grant.id)) {
+      if (attempt === 0) continue;
+      return { ok: false, error: 'ledger changed under a concurrent writer — the grant is NOT confirmed; retry' };
+    }
+    audit(projectRoot, { ts: grant.grantedAt, action: 'grant', grantId: grant.id, sessionId, paths, reason, ttlSecs: ttl });
+    return { ok: true, grant };
   }
-  const all = [...existing, grant];
-  if (!persistGrants(projectRoot, all)) {
-    return { ok: false, error: 'ledger persist failed — the grant is NOT active (refusing to report success)' };
-  }
-  audit(projectRoot, { ts: grant.grantedAt, action: 'grant', grantId: grant.id, sessionId, paths, reason, ttlSecs: ttl });
-  return { ok: true, grant };
 }
 
 /** List grants, optionally scoped to one session. Expired rows are inert. */
@@ -328,12 +353,21 @@ export function listAuthority(projectRoot: string, sessionId?: string): SandboxG
  *  success over a live grant would be a false consent record. */
 export function revokeAuthority(projectRoot: string, grantId: string): boolean {
   const id = clean(grantId, 64);
-  const all = loadGrants(projectRoot);
-  const keep = all.filter((g) => g.id !== id);
-  if (keep.length === all.length) return false;
-  if (!persistGrants(projectRoot, keep)) return false;
-  audit(projectRoot, { ts: new Date().toISOString(), action: 'revoke', grantId: id });
-  return true;
+  for (let attempt = 0; ; attempt++) {
+    const all = loadGrants(projectRoot);
+    const keep = all.filter((g) => g.id !== id);
+    if (keep.length === all.length) return false;
+    if (!persistGrants(projectRoot, keep)) return false;
+    // Lost-update guard (P4 security review): a concurrent writer landing
+    // after our persist can resurrect the row; verify the removal actually
+    // landed before reporting success, retrying once against fresh state.
+    if (loadGrants(projectRoot).some((g) => g.id === id)) {
+      if (attempt === 0) continue;
+      return false;
+    }
+    audit(projectRoot, { ts: new Date().toISOString(), action: 'revoke', grantId: id });
+    return true;
+  }
 }
 
 /**
@@ -368,6 +402,8 @@ export function auditSandboxUse(
     netMode,
     // The legacy env is still honored (backwards compatibility) but named in
     // the audit: unrecorded authority is exactly what this ledger replaced.
-    unrecordedAllow: legacyAllow,
+    // Control chars are cleaned here too — the audit line is operator-
+    // terminal output as much as JSONL.
+    unrecordedAllow: legacyAllow.map((p) => clean(p, 512)),
   });
 }

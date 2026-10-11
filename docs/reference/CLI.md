@@ -642,6 +642,9 @@ Ports/hosts: `UAP_DASH_PORT` (3847), `UAP_DASH_HOST` (localhost),
 | `--client <id>` | Client/session id (defaults to the session env or parent pid) |
 | `--client-pid <n>` | Long-lived agent pid for liveness (hooks pass `$PPID`) |
 | `--port <n>` | Proxy port (default 4000 / `$PROXY_PORT`) |
+| `--socket <path>` | `connect`: proxy AF_UNIX socket (default `$UAP_PROXY_SOCKET`) |
+| `--ready-file <path>` | `connect`: touch this file (with the bound port) once listening |
+| `--allow-anyone` | `connect`: REQUIRED consent — see the warning below |
 | `--if-enabled` | No-op unless `.uap.json` `proxy.autostart` is true (hook-safe) |
 | `--no-dashboard` | Don't start the ride-along dashboard on this `ensure`/`start` |
 | `--quiet` / `--json` | Suppress output (hooks) / machine-readable status |
@@ -650,7 +653,7 @@ Ports/hosts: `UAP_DASH_PORT` (3847), `UAP_DASH_HOST` (localhost),
 uap proxy status --json    # includes a `dashboard` block (port, url, healthy, owner)
 uap proxy restart          # e.g. after changing PROXY_* in .uap/proxy.env
 uap proxy dashboard off    # opt out of the ride-along dashboard
-uap proxy connect --socket ~/.uap/proxy.sock --port 4000   # re-serve the socket on TCP
+uap proxy connect --socket ~/.uap/proxy.sock --port 4000 --allow-anyone
 ```
 
 `connect` (bridge P4) is the companion to the proxy's optional AF_UNIX surface
@@ -659,6 +662,13 @@ and pipes every byte to the socket, for clients that cannot speak AF_UNIX. It
 is fail-closed (an upstream failure destroys the client connection instead of
 hanging it) and touches a `--ready-file` once listening, so wrappers can wait
 out the boot race.
+
+**Why `--allow-anyone` is required:** the 0600 socket exists so only the
+owning USER can reach the model path; the relay re-serves it on loopback
+TCP, and while it runs EVERY local user can reach the model path through
+it — the gate, inverted. The command refuses to start without the explicit
+flag, says so on stderr while it runs, and should be stopped when the work
+is done.
 
 The proxy binds `127.0.0.1` by default; see the proxy `PROXY_*` settings in the
 [Configuration Reference](CONFIGURATION_REFERENCE.md) and [Local Models](../guides/LOCAL_MODELS.md).

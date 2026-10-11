@@ -57,6 +57,8 @@ import {
   resolveSessionGrants,
   revokeAuthority,
   auditSandboxUse,
+  sandboxGrantsPath,
+  sandboxAuditPath,
   type GrantInput,
   type ResolvedGrants,
 } from '../policies/sandbox-grants.js';
@@ -99,6 +101,14 @@ export interface SandboxPlanInput {
   envNet?: string;
   /** $ANTHROPIC_CUSTOM_HEADERS — appended to, never clobbered. */
   existingCustomHeaders?: string;
+  /** The grant-ledger file and audit JSONL, ro-bound into the namespace so
+   *  a sandboxed agent can neither plant rows nor forge audit lines (a
+   *  bind-mounted file cannot be unlinked or replaced inside the ns).
+   *  Resolved by the CALLER (they honor the env overrides). P4 security
+   *  review: without this, the consent store lives inside the writable
+   *  hole and consent is forgeable by the very thing it guards against. */
+  grantsLedgerPath?: string;
+  auditLogPath?: string;
 }
 
 export interface SandboxPlan {
@@ -158,13 +168,35 @@ export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; erro
   }
   const grantedPaths: string[] = [];
   for (const p of input.grants.paths) {
-    if (existsSync(p)) {
-      grantedPaths.push(p);
-      args.push('--bind', p, p);
+    // TOCTOU (P4 security review): the row's path was realpath-validated at
+    // LOAD; a concurrent writer could swap it for a symlink in the
+    // load→exec window. Resolve AGAIN at plan time, re-check breadth on the
+    // RESOLVED value, and bind what the resolution says — not the row's
+    // word for it. (A microsecond window remains between this resolution
+    // and bwrap's own; documented as residual in ADR 0011.)
+    let resolved: string;
+    try {
+      resolved = realpathSync(p);
+    } catch {
+      continue; // vanished between load and plan — open nothing
     }
+    if (resolved === '/' || resolved === '/home' || resolved === input.home) continue;
+    grantedPaths.push(resolved);
+    args.push('--bind', resolved, resolved);
   }
   for (const p of input.legacyAllow) {
     if (p && existsSync(p)) args.push('--bind', p, p);
+  }
+  // The consent store must be TAMPER-PROOF from the untrusted side: ro-bind
+  // the ledger and audit files over their host paths so a sandboxed agent
+  // can neither plant grant rows nor forge audit lines (P4 security review
+  // — a planted well-formed `paths:["/etc"]` row opened the hole for real).
+  // A bind-mounted file cannot be unlinked or replaced inside the namespace;
+  // a MISSING file gets /dev/null bound at its path so planting one is
+  // equally impossible (it reads empty and refuses writes).
+  for (const target of [input.grantsLedgerPath, input.auditLogPath]) {
+    if (!target) continue;
+    args.push('--ro-bind', existsSync(target) ? target : '/dev/null', target);
   }
 
   const setenv: Record<string, string> = {
@@ -181,7 +213,7 @@ export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; erro
   }
   if (grantedPaths.length > 0) notes.push(`granted holes: ${grantedPaths.join(', ')}`);
   if (input.grants.paths.length > 0 && grantedPaths.length !== input.grants.paths.length) {
-    notes.push('(some granted paths do not exist and were not opened)');
+    notes.push('(some granted paths were not opened: no longer present, or their plan-time resolution is over-broad)');
   }
   if (input.legacyAllow.filter(Boolean).length > 0) {
     notes.push(`UNRECORDED allow (legacy env, consider 'uap sandbox grant'): ${input.legacyAllow.join(':')}`);
@@ -271,6 +303,14 @@ function resolveSessionGrantsSafe(projectRoot: string, session: string): Resolve
 async function grantVerb(args: string[], options: Record<string, unknown>): Promise<void> {
   const verb = args[0];
   const projectRoot = process.cwd();
+  if ((verb === 'grant' || verb === 'revoke') && process.env.UAP_SANDBOX_ACTIVE === '1') {
+    // Consent cannot come from the thing being guarded (P4 security
+    // review): UAP_SANDBOX_ACTIVE is set by the sandbox itself, on the
+    // UNTRUSTED side, so a shell inside a sandbox must not be able to
+    // write new authority or remove the operator's. Listing stays
+    // available (read-only — the agent can see what it was granted).
+    fail('refusing to grant/revoke from inside a sandbox — consent must come from the operator (run it outside the sandbox)');
+  }
   if (verb === 'grant') {
     const paths = args.slice(1);
     const input: GrantInput = {
@@ -377,6 +417,14 @@ export async function sandboxCommand(command: string[], options: Record<string, 
     fail(`unknown --net mode '${String(rawNet)}' (shared | off)`);
   }
   const netOpt: SandboxNetMode | undefined = rawNet === 'off' ? 'off' : rawNet === 'shared' ? 'shared' : undefined;
+  // The env default is validated exactly like the flag (P4 security review):
+  // 'OFF', 'off ', '0ff' silently meaning FULL network is the exact hole
+  // the boundary exists to close. Whitespace is trimmed (shell quirks),
+  // anything else fails loud.
+  const envNet = process.env.UAP_SANDBOX_NET?.trim();
+  if (envNet && envNet !== 'shared' && envNet !== 'off') {
+    fail(`unknown UAP_SANDBOX_NET value '${envNet}' (shared | off)`);
+  }
   const legacyAllow = (process.env.UAP_SANDBOX_ALLOW || '').split(':');
   const grants = resolveSessionGrantsSafe(process.cwd(), session);
 
@@ -388,8 +436,12 @@ export async function sandboxCommand(command: string[], options: Record<string, 
     home,
     legacyAllow,
     grants,
-    envNet: process.env.UAP_SANDBOX_NET,
+    envNet,
     existingCustomHeaders: process.env.ANTHROPIC_CUSTOM_HEADERS,
+    // Ro-bound into the namespace by the planner: the consent store must be
+    // untouchable from the sandboxed side (P4 security review finding 1).
+    grantsLedgerPath: sandboxGrantsPath(process.cwd()),
+    auditLogPath: sandboxAuditPath(process.cwd()),
   });
   if (planned.error) fail(planned.error);
   const plan = planned.plan!;

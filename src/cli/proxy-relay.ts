@@ -10,11 +10,13 @@
  * unmodified, to the socket — one hop, no parsing, no buffering policy of
  * its own: the proxy keeps every guardrail.
  *
- * Run it by hand wherever a TCP-only client must reach a socket-served
- * proxy. (An in-sandbox auto-wired version — a `--net proxy` mode that ran
- * this relay inside a cut network namespace — was designed and then CUT:
- * rootless Linux cannot express that boundary; see ADR 0011 for the
- * empirical reasoning.)
+ * THE GATE IT VOIDS, STATED PLAINLY (P4 security review): the 0600 socket
+ * exists precisely so that only the owning USER can reach the model path.
+ * The relay re-serves it on loopback TCP, and on a multi-user box every
+ * local user can dial a loopback port. So the relay refuses to run unless
+ * the operator passes `--allow-anyone`, and while it runs it says so on
+ * stderr every start: the TCP surface is the socket's gate, temporarily
+ * turned inside out. Stop the relay when the work is done.
  *
  * Fail-closed both ways: an upstream (socket) failure destroys the client
  * connection instead of hanging it — the client sees a refused connection
@@ -31,13 +33,19 @@ export interface RelayOptions {
   listenPort?: number;
   /** Bind host (default 127.0.0.1 — loopback only). */
   listenHost?: string;
-  /** Suppress the startup line (scripts, wrappers). */
+  /** Suppress the startup line (scripts, wrappers). The multi-user warning
+   *  still prints on stderr — it is the operator's informed-consent line. */
   quiet?: boolean;
   /** Touch this file (containing the bound port) once the TCP listener is
    *  bound — a readiness handshake for wrappers that must not race the
    *  relay's boot. The file records the ACTUAL bound port, so an ephemeral
    *  `--listen 0` handshake carries a dialable number. */
   readyFile?: string;
+  /** Informed consent for voiding the socket's 0600 user gate (P4 security
+   *  review): the relay is a TCP re-serve of a per-user socket, and while it
+   *  runs every local user can reach the model path through it. The CLI
+   *  refuses to start without this. */
+  allowAnyone?: boolean;
 }
 
 /**
@@ -94,6 +102,21 @@ export function startProxyRelay(opts: RelayOptions): Promise<net.Server> {
 
 /** CLI entry: run the relay in the foreground until killed. */
 export async function proxyConnectCommand(opts: RelayOptions): Promise<void> {
+  if (!opts.allowAnyone) {
+    // Informed consent, not a speed bump: the 0600 socket's whole point is
+    // that only the owning user reaches the model path; a loopback TCP
+    // re-serve is that gate, inverted, for anyone local. Refusing without
+    // the explicit flag keeps "uap proxy connect" from quietly reintroducing
+    // the port ADR 0011 took away (P4 security review).
+    console.error(
+      'uap proxy connect: refusing without --allow-anyone.\n' +
+        'The relay re-serves the 0600 unix socket on a local TCP port — while it runs,\n' +
+        'EVERY local user can reach the model path through it (the per-user gate is void).\n' +
+        'Pass --allow-anyone to accept that, and stop the relay when the work is done.',
+    );
+    process.exitCode = 1;
+    return;
+  }
   let server: net.Server;
   try {
     server = await startProxyRelay(opts);
@@ -105,6 +128,12 @@ export async function proxyConnectCommand(opts: RelayOptions): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // The consent line for what is now running: not suppressed by --quiet —
+  // quiet is for scripts capturing stdout; this is the operator's warning.
+  const boundPort = (server.address() as net.AddressInfo | null)?.port ?? opts.listenPort ?? 4000;
+  console.error(
+    `uap proxy connect: WARNING — while this relay runs, every local user can reach the model path via 127.0.0.1:${boundPort}.`,
+  );
   // Foreground until SIGINT/SIGTERM; exit 0 on a clean shutdown signal so a
   // wrapping script's status belongs to the work, not the relay.
   const stop = () => {

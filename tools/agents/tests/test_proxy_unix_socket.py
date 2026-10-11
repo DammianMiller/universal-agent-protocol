@@ -4,8 +4,10 @@ choke point).
 The socket is a permission-gated transport for the model gateway — only the
 owning user can dial it (0600 socket in a 0700 parent) — serving alongside
 the TCP port. Its preparation is the boundary itself: correct bind, tight
-permissions, stale-corpse cleanup, and refusal to evict a live proxy's
-socket.
+permissions, stale-corpse cleanup, refusal to evict a live proxy's socket
+(including one that cannot be dialed — EACCES is not proof of death), refusal
+to replace a non-socket file at the path, and a warning when the parent dir
+is group/other-writable.
 """
 import contextlib
 import importlib.util
@@ -104,6 +106,50 @@ class ProxySocketPrepTest(unittest.TestCase):
             self.assertTrue(proxy._socket_is_live(self.sock_path))
         finally:
             live.close()
+
+    def test_refuses_to_evict_a_live_socket_it_cannot_dial(self):
+        # EACCES must read as LIVE, not corpse (P4 security review): another
+        # user's 0600 socket in a shared dir cannot be proven dead, and
+        # evicting it would let this process impersonate their endpoint.
+        # Simulated same-user: chmod 000 on the socket makes connect() fail
+        # with EACCES while the server keeps accepting on its own fd.
+        live = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        live.bind(self.sock_path)
+        live.listen(8)
+        os.chmod(self.sock_path, 0o000)
+        try:
+            prepared = proxy._prepare_proxy_socket(self.sock_path)
+            self.assertIsNone(prepared, "an undialable LIVE socket must not be evicted")
+            self.assertTrue(os.path.exists(self.sock_path), "the socket file must survive")
+        finally:
+            os.chmod(self.sock_path, 0o600)
+            live.close()
+
+    def test_never_replaces_a_regular_file(self):
+        # PROXY_SOCKET can arrive from the operator's env or .uap/proxy.env
+        # (inside the sandbox-writable checkout): a typo or planted value
+        # must not become an arbitrary-file-delete primitive. The file must
+        # survive byte-for-byte.
+        data = b'{"important": "operator data"}'
+        with open(self.sock_path, "wb") as f:
+            f.write(data)
+        prepared = proxy._prepare_proxy_socket(self.sock_path)
+        self.assertIsNone(prepared, "a non-socket at the path must disable the surface")
+        with open(self.sock_path, "rb") as f:
+            self.assertEqual(f.read(), data, "the file must be untouched")
+
+    def test_warns_when_the_parent_dir_is_shared(self):
+        # A group/other-writable parent lets another local user unlink or
+        # squat the socket path; the operator gets the consequence named.
+        os.chmod(os.path.dirname(self.sock_path), 0o770)
+        try:
+            with self.assertLogs("uap.anthropic_proxy", level="WARNING") as logs:
+                prepared = proxy._prepare_proxy_socket(self.sock_path)
+            self.assertIsNotNone(prepared)
+            self.assertTrue(any("group/other-writable" in line for line in logs.output), logs.output)
+            self._close_quietly(prepared)
+        finally:
+            os.chmod(os.path.dirname(self.sock_path), 0o755)
 
     def test_empty_and_too_long_paths_disable_the_surface(self):
         self.assertIsNone(proxy._prepare_proxy_socket(""))
