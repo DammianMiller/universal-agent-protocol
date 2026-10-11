@@ -38,6 +38,11 @@ import {
 import { isAbsolute, join, relative, resolve, sep } from 'path';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
 import { reviewPlanText, type PlanReviewVerdict } from '../delivery/plan-check.js';
+import {
+  analyzePlanReadability,
+  resolvePlanReadabilityConfig,
+  type PlanReadabilityReport,
+} from '../models/plan-readability.js';
 
 export interface PlanOptions {
   json?: boolean;
@@ -60,6 +65,8 @@ export interface PlanReviewOutcome {
   file?: string;
   findings: string[];
   reason?: string;
+  /** B1 plan-comprehension scan — present whenever a review resolved plan text. */
+  readability?: PlanReadabilityReport;
 }
 
 function stateDir(cwd: string): string {
@@ -101,6 +108,12 @@ export interface PlanState {
   validated?: Record<string, string>;
   /** Audit trail of pending entries dropped as unreachable (most recent last). */
   cleared?: Array<{ key: string; reason: string; at: number }>;
+  /**
+   * B1 plan-comprehension scan record for the latest stamp. Additive: the
+   * Python enforcer (validate_plan_on_change.py) reads only pending/validated,
+   * so older/newer readers coexist with this key.
+   */
+  readability?: Pick<PlanReadabilityReport, 'passed' | 'strict' | 'findings'>;
 }
 
 /** Path key shared with the enforcer: repo-relative, forward slashes. */
@@ -412,6 +425,11 @@ async function runPlanReview(
   if (!text.trim()) {
     return { status: 'skipped', file, findings: [], reason: 'plan artifact is empty' };
   }
+  // B1 plan-comprehension gate: the deterministic readability scan rides the
+  // review path (UAP_PLAN_REVIEW=0 restores stamp-only and skips it too). Its
+  // findings are adjudicated hints for the judge unless strict mode is on,
+  // which planCommand enforces — the scan itself never throws.
+  const readability = analyzePlanReadability(text, resolvePlanReadabilityConfig(undefined, cwd));
   let executor: LoopExecutor;
   try {
     executor = deps.reviewExecutor ?? (await buildReviewExecutor());
@@ -439,11 +457,17 @@ async function runPlanReview(
     if (!out || !out.trim()) unavailable = 'reviewer returned an empty completion';
     return out;
   };
-  const verdict: PlanReviewVerdict = await reviewPlanText(text, observed);
+  const verdict: PlanReviewVerdict = await reviewPlanText(text, observed, readability.hintBlock);
   if (unavailable) {
-    return { status: 'skipped', file, findings: [], reason: `reviewer unavailable (${unavailable})` };
+    return {
+      status: 'skipped',
+      file,
+      findings: [],
+      reason: `reviewer unavailable (${unavailable})`,
+      readability,
+    };
   }
-  return { status: verdict.verdict, file, findings: verdict.findings };
+  return { status: verdict.verdict, file, findings: verdict.findings, readability };
 }
 
 export async function planCommand(
@@ -455,6 +479,14 @@ export async function planCommand(
   if (action === 'validate') {
     const reviewWanted = (options.review ?? true) && process.env.UAP_PLAN_REVIEW !== '0';
     const force = options.force === true || process.env.UAP_PLAN_REVIEW_FORCE === '1';
+    // B1 interaction note: the readability scan rides the REVIEW path, so
+    // strict mode is inert when the review is disabled. A silent no-op gate is
+    // worse than a loud one — say it.
+    if (!reviewWanted && resolvePlanReadabilityConfig(undefined, cwd).strict) {
+      console.warn(
+        '⚠ plan.readability.strict is set, but the readability scan rides the review path — UAP_PLAN_REVIEW=0 / --no-review disables both. This run records NO readability check.'
+      );
+    }
     const explicitFile = options.file ?? (deps.argv ? argvPlanFile(deps.argv) : undefined);
     const review = reviewWanted
       ? await runPlanReview(cwd, explicitFile, deps)
@@ -466,6 +498,26 @@ export async function planCommand(
       } else {
         console.log(`✗ Plan review FAILED — validation NOT recorded (${review.file}).`);
         review.findings.forEach((f, i) => console.log(`  ${i + 1}. ${f}`));
+        console.log('  Fix the plan and re-run `uap plan validate` (or UAP_PLAN_REVIEW_FORCE=1 with justification).');
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    // B1 strict mode: deterministic readability errors block the stamp. This is
+    // the operator opt-in (`plan.readability.strict: true` /
+    // UAP_PLAN_READABILITY_STRICT=1) — pattern-matched heuristics do not
+    // hard-block by default; they are adjudicated by the review. A scan that
+    // ran while the reviewer was unreachable still blocks under strict: the
+    // scan is local, so there is no offline deadlock to fail open for.
+    const readability = review.readability;
+    if (readability && !readability.disabled && readability.strict && !readability.passed && !force) {
+      const errors = readability.findings.filter((f) => f.severity === 'error');
+      if (options.json) {
+        console.log(JSON.stringify({ ok: false, review, blocked_by: 'readability' }));
+      } else {
+        console.log(`✗ Plan readability gate FAILED — validation NOT recorded (${review.file}).`);
+        errors.forEach((f) => console.log(`  [${f.rule}] ${f.message}`));
         console.log('  Fix the plan and re-run `uap plan validate` (or UAP_PLAN_REVIEW_FORCE=1 with justification).');
       }
       process.exitCode = 1;
@@ -500,10 +552,15 @@ export async function planCommand(
         // hash we cannot stand behind.
       }
     }
-    writeFileSync(
-      statePath(cwd),
-      JSON.stringify({ ...prev, validated_at: now, review, pending, validated }, null, 2)
-    );
+    const stateRecord: PlanState = { ...prev, validated_at: now, review, pending, validated };
+    if (readability && !readability.disabled) {
+      stateRecord.readability = {
+        passed: readability.passed,
+        strict: readability.strict,
+        findings: readability.findings,
+      };
+    }
+    writeFileSync(statePath(cwd), JSON.stringify(stateRecord, null, 2));
     if (options.json) {
       console.log(JSON.stringify({ ok: true, validated_at: now, review }));
       return;
@@ -515,6 +572,15 @@ export async function planCommand(
       review.findings.forEach((f, i) => console.log(`  ${i + 1}. ${f}`));
     } else {
       console.log(`✓ Plan validation recorded (review skipped: ${review.reason}).`);
+    }
+    if (readability && !readability.disabled && readability.findings.length > 0) {
+      console.log(
+        `  Readability findings (${readability.passed ? 'warnings only' : 'ERRORS, advisory unless strict'} — ` +
+          'enforce with plan.readability.strict in .uap.json):'
+      );
+      readability.findings
+        .slice(0, 5)
+        .forEach((f) => console.log(`    [${f.severity}] ${f.rule}: ${f.message}`));
     }
     const left = outstandingPlans(cwd);
     const remaining = [...left.pending, ...left.drifted];

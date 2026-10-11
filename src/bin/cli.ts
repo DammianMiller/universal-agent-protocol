@@ -65,6 +65,7 @@ const lazy = {
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
   plan: () => import('../cli/plan.js').then((m) => m.planCommand),
+  self: () => import('../cli/self.js').then((m) => m.selfCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -1213,6 +1214,24 @@ program
   .action(async (action, file, options) => {
     const cmd = await lazy.plan();
     await cmd(action, { json: Boolean(options.json), file, review: options.review, force: Boolean(options.force) });
+  });
+
+// S2 self-knowledge card — UAP's own manual, built offline from shipped docs
+program
+  .command('self')
+  .description('Self-knowledge card: the version-pinned digest of UAP\'s own commands/features, and offline search over it')
+  .argument('[action]', 'card | query <question> (default: card)')
+  .argument('[question]', 'query: the question to answer from the card')
+  .option('--json', 'Emit JSON')
+  .option('--refresh', 'card: rebuild even when the version pin still matches')
+  .option('--limit <n>', 'query: max results (default 5)')
+  .action(async (action, question, options) => {
+    const cmd = await lazy.self();
+    await cmd(action, question, {
+      json: Boolean(options.json),
+      refresh: Boolean(options.refresh),
+      limit: options.limit !== undefined ? Number(options.limit) : undefined,
+    });
   });
 
 // Paired UAP benchmark — controlled UAP-on vs UAP-off A/B

@@ -198,6 +198,46 @@ export const SETTINGS: readonly SettingDef[] = [
     description: 'Model id sent to the vision endpoint for aesthetic review (e.g. qwen3.8-27b).',
     recommendation: 'Set by `uap setup` to your local vision model. Required for blocking vision review under `max` fidelity.',
   },
+  {
+    key: 'plan.readability.enabled', kind: 'json', type: 'boolean', default: true, category: 'verification',
+    description: 'The plan-comprehension scan in `uap plan validate` (B1): deterministic readability rules over the plan artifact — executive summary first, detail progressing downward, section word budgets, jargon density, diagram required at a task-count threshold. Findings are advisory hints the judge-model review adjudicates.',
+    recommendation: 'Leave on: the scan is local, instant, and advisory by default.',
+  },
+  {
+    key: 'plan.readability.strict', kind: 'json', type: 'boolean', default: false, category: 'verification',
+    description: 'Give the readability scan deterministic teeth: error-severity findings (no opening summary, detail before the high level, missing diagram) fail `uap plan validate` outright instead of being adjudicated hints. `--force` / `UAP_PLAN_REVIEW_FORCE=1` remains the escape hatch.',
+    recommendation: 'Enable once your plan templates reliably pass — it enforces plans a human can skim. Keep off while calibrating.',
+  },
+  {
+    key: 'plan.readability.minSummaryWords', kind: 'json', type: 'number', min: 0, default: 20, category: 'verification',
+    description: 'Minimum prose words between the plan title and the first section — the executive-summary gate.',
+    recommendation: '20 words is a two-sentence what-and-why. Lower for terse internal plans; 0 effectively disables the rule.',
+  },
+  {
+    key: 'plan.readability.maxWordsPerSection', kind: 'json', type: 'number', min: 0, default: 300, category: 'verification',
+    description: 'Soft word budget per section before a readability warning fires.',
+    recommendation: '300 keeps a section to one point. 0 disables the budget check.',
+  },
+  {
+    key: 'plan.readability.jargonDensityThreshold', kind: 'json', type: 'number', min: 0, max: 1, default: 0.35, category: 'verification',
+    description: 'Jargon tokens per prose word above which the plan earns a readability warning (camelCase/snake_case/acronyms in prose).',
+    recommendation: '0.35 tolerates normal technical writing while catching identifier soup. Raise for deeply technical audiences.',
+  },
+  {
+    key: 'plan.readability.requireDiagramAtTasks', kind: 'json', type: 'number', min: 0, default: 5, category: 'verification',
+    description: 'Task items (checklist + ordered steps) at which a data-flow diagram (mermaid or image) is required in the plan.',
+    recommendation: '5 keeps small plans diagram-free while forcing one once the moving parts multiply. 0 disables the rule.',
+  },
+  {
+    key: 'UAP_PLAN_READABILITY', kind: 'env', type: 'boolean', default: true, category: 'verification', target: 'shell',
+    description: 'Runtime kill switch for the plan readability scan: `0` skips it entirely in `uap plan validate`.',
+    recommendation: 'Leave unset. Use inline `UAP_PLAN_READABILITY=0 uap plan validate` only when diagnosing a scan misfire.',
+  },
+  {
+    key: 'UAP_PLAN_READABILITY_STRICT', kind: 'env', type: 'boolean', default: false, category: 'verification', target: 'shell',
+    description: 'Runtime strict override for the plan readability scan: `1` makes error-severity findings block the validation stamp (same as `plan.readability.strict`).',
+    recommendation: 'Use inline for CI enforcement without changing the project config; never export globally — a hard gate in every shell surprises interactive agents.',
+  },
 
   // ── Model routing ─────────────────────────────────────────────────────────
   {
