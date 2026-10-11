@@ -1100,6 +1100,18 @@ Pins the sandbox audit trail (JSONL, one line per grant/revoke/sandbox-run) to a
 
 **Recommendation:** Leave unset; ship the default trail to your audit tooling.
 
+### `UAP_SANDBOX_ANCHOR_DIR`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | string |
+| **Default** | `` |
+
+Pins the DIRECTORY holding the consent-ledger trust anchors (one 0600 JSON per checkout, the tamper-evidence hash of the sanitized ledger). Default: `$XDG_STATE_HOME/uap/sandbox-anchors` (or `~/.local/state/uap/sandbox-anchors`) — OUTSIDE the checkout's write reach by design.
+
+**Recommendation:** Tests and non-standard layouts only; leave unset so the anchor stays outside the tree it vouches for.
+
 ## Dashboard
 
 <a id="dashboard"></a>The live analytics server and its mutation token.

@@ -14,6 +14,10 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, join, resolve } from 'path';
 import { termSafe } from '../utils/terminal-safe.js';
 
+/** One report file read is bounded (P5 polish): these are small harness
+ *  artifacts, and a multi-GB or planted file must not be slurped whole. */
+const MAX_REPORT_BYTES = 4 * 1024 * 1024;
+
 export interface BenchReportOptions {
   /** A specific paired-run dir (default: the newest under benchmark-results). */
   dir?: string;
@@ -92,11 +96,21 @@ export function listPairedReportDirs(root = join(process.cwd(), 'benchmark-resul
 export function loadReport(dir: string): LoadedReport | null {
   try {
     const reportPath = join(dir, 'report.json');
+    const st = statSync(reportPath);
+    // Bounded read (P5 polish): these are small harness artifacts — a huge
+    // or planted report.json must not be slurped whole. Oversized is NAMED
+    // and skipped, never a silent drop or a crash.
+    if (st.size > MAX_REPORT_BYTES) {
+      console.warn(
+        `[bench report] ${basename(dir)}/report.json is ${st.size} bytes (over the ${MAX_REPORT_BYTES} read cap) — skipped`
+      );
+      return null;
+    }
     const raw = JSON.parse(readFileSync(reportPath, 'utf-8')) as LoadedReport['report'] & {
       report?: LoadedReport['report'];
     };
     const report = raw.report ?? raw;
-    return { dir, mtimeMs: statSync(reportPath).mtimeMs, report };
+    return { dir, mtimeMs: st.mtimeMs, report };
   } catch {
     return null;
   }
@@ -202,11 +216,22 @@ export function renderComparison(a: LoadedReport, b: LoadedReport): string {
  * Print the stored report.md. The harness writes report.json THEN report.md —
  * an interrupted run can leave the first without the second. That is a
  * missing-file degradation, never a stack trace: say so, fall back to the
- * delta summary, exit non-zero.
+ * delta summary, exit non-zero. An oversized report.md is the same
+ * degradation (bounded read, P5 polish): named, never slurped.
  */
 function printFullReport(loaded: LoadedReport): void {
   try {
-    console.log(readFileSync(join(loaded.dir, 'report.md'), 'utf-8'));
+    const mdPath = join(loaded.dir, 'report.md');
+    const st = statSync(mdPath);
+    if (st.size > MAX_REPORT_BYTES) {
+      console.error(
+        chalk.red(`report.md in ${basename(loaded.dir)}/ is ${st.size} bytes (over the ${MAX_REPORT_BYTES} read cap) — showing the summary instead.`)
+      );
+      console.log(renderReportSummary(loaded));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(readFileSync(mdPath, 'utf-8'));
   } catch {
     console.error(
       chalk.red(`No report.md stored in ${basename(loaded.dir)}/ — the run may have been interrupted; showing the summary instead.`)

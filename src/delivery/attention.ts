@@ -29,7 +29,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { mainCheckoutRoot } from '../utils/checkout-root.js';
 
@@ -232,7 +232,12 @@ function loadQueue(projectRoot: string): AttentionItem[] {
 function persistQueue(projectRoot: string, items: AttentionItem[]): boolean {
   try {
     const path = attentionQueuePath(projectRoot);
-    mkdirSync(join(projectRoot, '.uap'), { recursive: true });
+    // Create the TARGET's directory (not <projectRoot>/.uap): the queue may
+    // live at the MAIN checkout root while cwd is a worktree subdir, or at
+    // a UAP_ATTENTION_QUEUE override — mkdir-ing somewhere other than the
+    // write target fails the write it was supposed to enable (the same
+    // finding the P5 review fixed in persistGrants).
+    mkdirSync(dirname(path), { recursive: true });
     // Unique tmp name: two writers sharing a fixed `.tmp` can interleave-
     // truncate each other's file across the rename, and a predictable name
     // in the shared .uap/ root is a symlink-clobber target. The unique

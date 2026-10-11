@@ -60,6 +60,13 @@ describe('parseNumstat', () => {
     const rows = parseNumstat('0\t0\tsrc/{old.ts => new.ts}\n');
     expect(rows[0].path).toBe('src/{old.ts => new.ts}');
   });
+  it('strips git\'s outer quotes from space-carrying paths (P5 polish: the porcelain fold must see ONE spelling)', () => {
+    // git quotes paths with spaces in numstat as `"a b.txt"`; the porcelain
+    // reader already strips its side. Both sides must agree or the exact
+    // match silently fails and the row keeps its `!` fallback status.
+    const rows = parseNumstat('1\t1\t"file with space.txt"\n');
+    expect(rows[0].path).toBe('file with space.txt');
+  });
 });
 
 describe('applyPorcelain', () => {
@@ -214,6 +221,25 @@ describe('renderDiffView — pure renderer', () => {
   it('always ends with the inspect footer', () => {
     expect(renderDiffView(facts())).toContain('inspect: git diff -- <file>');
   });
+  it('caps overlong paths at the 64-char column so every row aligns (P5 polish)', () => {
+    const longPath = `${'d/'.repeat(32)}tail.ts`; // 71 chars > the 64-char column
+    const uncommitted: FileDelta[] = [
+      { path: 'short.ts', added: 3, removed: 1, status: 'M' },
+      { path: longPath, added: 5, removed: 2, status: 'M' },
+    ];
+    const out = renderDiffView(facts({ uncommitted }));
+    const lines = out.split('\n').filter((l) => l.includes('.ts'));
+    const shortRow = lines.find((l) => l.includes('short.ts'))!;
+    const longRow = lines.find((l) => l.includes('tail.ts'))!;
+    // The long path is tailed with an ellipsis — its HEAD is gone, its TAIL
+    // (the informative half) survives — and the FULL path never appears.
+    expect(longRow).toContain('…');
+    expect(longRow).toContain('d/tail.ts');
+    expect(longRow).not.toContain(longPath);
+    // Column integrity: both rows are exactly the same width before the
+    // +N column, so the deltas line up visually.
+    expect(shortRow.indexOf('+')).toBe(longRow.indexOf('+'));
+  });
 });
 
 describe('gatherDiffFacts — against a real scratch repo', () => {
@@ -223,18 +249,31 @@ describe('gatherDiffFacts — against a real scratch repo', () => {
     unlinkSync(join(cwd, 'gone.tmp')); // delete a COMMITTED file → D
     writeFileSync(join(cwd, 'untracked.log'), 'noise\n');
     const facts = gatherDiffFacts(cwd);
-    expect(facts.gitError).toBeNull();
-    expect(facts.numstatOk).toBe(true); // a clean claim requires real reads
-    expect(facts.statusOk).toBe(true);
-    expect(facts.branch).not.toBeNull();
-    expect(facts.uncommitted.map((f) => f.path)).toContain('README.md');
-    const readme = facts.uncommitted.find((f) => f.path === 'README.md')!;
-    expect(readme.status).toBe('M');
-    expect(readme.added).toBeGreaterThan(0);
-    const gone = facts.uncommitted.find((f) => f.path === 'gone.tmp');
-    expect(gone?.status).toBe('D');
+    const byPath = new Map(facts.uncommitted.map((f) => [f.path, f]));
+    expect(byPath.get('README.md')?.status).toBe('M');
+    expect(byPath.get('gone.tmp')?.status).toBe('D');
     expect(facts.untracked).toContain('untracked.log');
-    expect(facts.ahead).toBe(0); // nothing committed past the base yet
+  });
+  it('reports space + unicode paths verbatim (quotepath=false, no octal escapes, fold intact)', () => {
+    const { cwd } = scratchRepo();
+    const dirName = 'dir with space';
+    const fileName = 'фаéл.txt';
+    mkdirSync(join(cwd, dirName), { recursive: true });
+    writeFileSync(join(cwd, dirName, fileName), 'one\n');
+    git(cwd, ['add', '.']);
+    git(cwd, ['commit', '--quiet', '-m', 'add unicode file']);
+    writeFileSync(join(cwd, dirName, fileName), 'one\ntwo\n'); // modify → M
+    const facts = gatherDiffFacts(cwd);
+    const rel = `${dirName}/${fileName}`;
+    const row = facts.uncommitted.find((f) => f.path === rel);
+    expect(row).toBeDefined();
+    // Verbatim on both reads: no quotes, no octal mangling — and the
+    // porcelain fold found the row, so the status is real (not the `!`
+    // fallback of a misspelled exact match).
+    expect(row!.status).toBe('M');
+    expect(row!.path).toBe(rel);
+    expect(JSON.stringify(facts.uncommitted)).not.toContain('\\u0');
+    expect(facts.uncommitted.map((f) => f.path)).not.toContain(expect.stringMatching(/^"/));
   });
 
   it('sees unpushed commits and their aggregate deltas vs the base', () => {

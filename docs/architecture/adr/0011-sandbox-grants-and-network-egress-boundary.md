@@ -161,24 +161,43 @@ actually holds.
   `--net proxy,via:root` could revisit). None are rootless today, so none
   are claimed.
 - Debt, accepted: the sandbox's `UAP_SANDBOX_ALLOW` continues to work
-  unrecorded (compatibility), but every use is audited and named;
-  the audit JSONL is append-only and unpruned (bounded by run count, not
-  trimmed — the operator ships it to their own tooling).
-- Follow-up (operator surface): the CLI is today the only grant consumer.
-  A dashboard grants view — active authority per session, one click to
-  revoke — is the natural next surface and a candidate for the P5
-  "Surfaces" phase; the per-checkout-root anchoring already guarantees it
-  would read the same ledger the sandbox does.
-- Follow-up (trust anchoring, longer-term): the ledger and audit still
-  live under the main checkout root — writable by the OPERATOR side of
-  every run. The ro-bind closes the sandboxed side, and the load path
-  validates shape; what neither can do is prove WHO wrote a row that
-  predates the ro-bind (a historical plant opens until revoked). Anchoring
-  consent to something outside the checkout's write reach (per-user state,
-  or a signed ledger) is the structural fix and stays open on purpose —
-  the P4 threat model closes the agent-side vectors; the operator-side
-  residual is accepted and named here.
+  unrecorded (compatibility), but every use is audited and named. The
+  audit JSONL is now BOUNDED (debt item 3, shipped): every line carries a
+  monotonic `seq`, and past 12,000 lines it compacts to the newest 10,000
+  with an `audit-compaction` marker recording the drop — a pruned trail is
+  an EXPECTED state, never a silent one.
+- Follow-up (operator surface) — **SHIPPED** as the dashboard's Sandbox
+  Grants section (debt item 16): `uap dashboard` (session view) lists the
+  active authority per session — id, session, remaining TTL, reason,
+  paths, and the revoke command per grant — plus the trust-anchor verdict
+  from the tamper-evidence work above (an INTEGRITY MISMATCH renders red,
+  rows listed-but-unverified, same contract as the CLI listing). The
+  per-checkout-root anchoring guarantees it reads the same ledger the
+  sandbox does.
+- Follow-up (trust anchoring) — **SHIPPED** as the out-of-checkout
+  tamper-evidence anchor (`src/policies/sandbox-anchor.ts`, debt item 2):
+  every successful grant/renew/revoke writes a 0600 anchor at
+  `$XDG_STATE_HOME/uap/sandbox-anchors/<hash-of-root>.json`
+  (`UAP_SANDBOX_ANCHOR_DIR` pins the dir for tests) recording the SHA-256
+  of the sanitized ledger as of that recorded operation. Verification
+  (`uap sandbox grants` states it; the launch path enforces it) compares
+  the on-disk ledger against the anchor: a mismatch means something with
+  the CHECKOUT's write reach changed the ledger outside a recorded
+  consent operation — new grants are refused, and the session resolves
+  ZERO grant-derived holes (fail-closed; the kernel boundary is
+  unaffected). A `revoke` on a mismatched ledger still removes authority
+  (the safe direction) but re-anchors the remaining rows as the new
+  baseline and names that at the moment it stops being detectable.
+  What this remains honest about: it is tamper-EVIDENCE, not origin
+  proof. The anchor lives in the user's state dir, so a same-user process
+  OUTSIDE the checkout can still write it; a plant that predates the
+  first anchor is baselined into it (bootstrap cannot verify history);
+  and true origin proof (a different uid, a signed ledger, a hardware
+  key) stays open on purpose — the P4 threat model closed the agent-side
+  vectors, and the anchor now closes the checkout-write-reach side of the
+  operator residual.
 - Residual, accepted: the microsecond TOCTOU between the planner's
   `realpath` and bwrap's own bind (a concurrent process with write on a
-  granted path's parent could still race it), and the unpruned audit JSONL
-  (bounded by run count; the operator ships it to their own tooling).
+  granted path's parent could still race it), and the anchor's same-user
+  limit named above. The audit JSONL is no longer unpruned — it is
+  seq-stamped and compacted with a recorded marker.

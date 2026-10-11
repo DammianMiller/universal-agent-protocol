@@ -627,6 +627,11 @@ export const SETTINGS: readonly SettingDef[] = [
     description: 'Pins the sandbox audit trail (JSONL, one line per grant/revoke/sandbox-run) to an explicit FILE. Default: `.uap/sandbox-audit.jsonl` at the main checkout root.',
     recommendation: 'Leave unset; ship the default trail to your audit tooling.',
   },
+  {
+    key: 'UAP_SANDBOX_ANCHOR_DIR', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'shell',
+    description: 'Pins the DIRECTORY holding the consent-ledger trust anchors (one 0600 JSON per checkout, the tamper-evidence hash of the sanitized ledger). Default: `$XDG_STATE_HOME/uap/sandbox-anchors` (or `~/.local/state/uap/sandbox-anchors`) — OUTSIDE the checkout\'s write reach by design.',
+    recommendation: 'Tests and non-standard layouts only; leave unset so the anchor stays outside the tree it vouches for.',
+  },
 ];
 
 // ── Lookup helpers ──────────────────────────────────────────────────────────

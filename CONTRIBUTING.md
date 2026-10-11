@@ -24,7 +24,7 @@ cd universal-agent-protocol
 
 npm install        # install dependencies
 npm run build      # compile TypeScript (tsc) → dist/
-npm test           # run the test suite (518 vitest test files)
+npm test           # run the test suite (530 vitest test files)
 ```
 
 Common scripts (from `package.json`):
@@ -33,7 +33,7 @@ Common scripts (from `package.json`):
 |--------|--------------|
 | `npm run build` | `tsc` — compile to `dist/` |
 | `npm run dev` | `tsc --watch` — incremental rebuilds |
-| `npm test` | `vitest` — run all 518 vitest test files |
+| `npm test` | `vitest` — run all 530 vitest test files |
 | `npm run test:ci` | `vitest run` — non-watch test run for CI |
 | `npm run test:enforcers` | Python enforcer/proxy suite (84 modules under `tools/agents/tests/`, 1,398 tests) |
 | `npm run test:coverage` | tests with V8 coverage |
@@ -84,7 +84,21 @@ completion; CI and UAP's policy enforcers check them too.
 
 1. **New tests** — add test cases (vitest, under `test/`) covering the changed
    behavior. Aim for at least two cases per behavioral change.
-2. **Tests pass** — `npm test` with no failures.
+2. **Tests pass** — `npm test` with no failures. A handful of skips is
+   expected and deliberate:
+   - **Root-only trust tests** (11, in `test/cli/policy-gate-liveness.test.ts`
+     and `test/cli/policy-gate-operator-overrides.test.ts`): the property
+     under test is that only a ROOT-owned file is trusted, and a non-root
+     process cannot mint that fixture by construction — so the trusted-file
+     cases are `it.runIf(IS_ROOT)`. They stay skipped in every non-root run
+     (including CI); run them deliberately with
+     `sudo npx vitest run test/cli/policy-gate-liveness.test.ts test/cli/policy-gate-operator-overrides.test.ts`.
+     The user-owned-refusal case (the actual security property) runs
+     everywhere.
+   - **The dashboard performance-panel stub** (1, in
+     `test/optimization-sweep-3.test.ts`): the render half is `it.skip` with
+     a `TODO(dashboard-uplift)` — the panel is not yet ported into a
+     web/dash tab module. The data-service half of the intent stays green.
 3. **Build** — `npm run build` succeeds with zero errors.
 4. **Lint & type-check** — `npm run lint` and `npx tsc --noEmit` pass cleanly.
 5. **Version bump** — bump via the scripts below (no manual edits to
@@ -149,7 +163,7 @@ docs(architecture): rewrite protocol spec
 
 ```
 src/           34 subsystems, 434 TypeScript modules (see docs/architecture/OVERVIEW.md)
-test/          518 vitest test files
+test/          530 vitest test files
 docs/          architecture, integrations, getting-started, reference
 web/           web dashboard
 tools/         agent tooling, including the Python enforcer/proxy tests

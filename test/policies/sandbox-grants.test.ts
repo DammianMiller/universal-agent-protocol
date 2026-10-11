@@ -20,9 +20,13 @@ import {
   validateGrantPath,
   sandboxGrantsPath,
   sandboxAuditPath,
+  verifyLedgerIntegrity,
+  AUDIT_MAX_LINES,
+  AUDIT_PRUNE_TRIGGER,
   DEFAULT_GRANT_TTL_SECS,
   MAX_GRANT_TTL_SECS,
 } from '../../src/policies/sandbox-grants.js';
+import { anchorPath, readAnchor } from '../../src/policies/sandbox-anchor.js';
 
 let dir: string;
 let hole: string;
@@ -35,12 +39,16 @@ beforeEach(() => {
   delete process.env.UAP_SANDBOX_GRANTS;
   delete process.env.UAP_SANDBOX_AUDIT;
   delete process.env.UAP_SANDBOX_GRANTS_OFF;
+  // Pin the trust anchor into the per-test tmp dir: without this, every
+  // mutation test would write a REAL anchor into the operator's state dir.
+  process.env.UAP_SANDBOX_ANCHOR_DIR = join(dir, 'anchors');
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   delete process.env.UAP_SANDBOX_GRANTS;
   delete process.env.UAP_SANDBOX_AUDIT;
   delete process.env.UAP_SANDBOX_GRANTS_OFF;
+  delete process.env.UAP_SANDBOX_ANCHOR_DIR;
 });
 
 const INPUT = {
@@ -141,6 +149,10 @@ describe('session scoping + expiry + revocation', () => {
     expect(resolveSessionGrants(dir, 'sess-nobody').paths).toEqual([]);
 
     // Expired: write a grant that lapsed a minute ago directly to the ledger.
+    // The anchor is removed first so this plants an EXPIRY scenario, not a
+    // tamper scenario (a planted row over an anchored state fails the
+    // integrity check — covered in the trust-anchor block below).
+    rmSync(anchorPath(dir), { force: true });
     writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
       {
         id: 'sbg-dead', sessionId: 'sess-abc', paths: [hole], net: 'none',
@@ -291,5 +303,145 @@ describe('validateGrantPath', () => {
     expect(validateGrantPath('relative')).toBeNull();
     expect(validateGrantPath('/')).toBeNull();
     expect(validateGrantPath(join(dir, 'nope'))).toBeNull();
+  });
+});
+
+describe('trust anchor — tamper evidence (ADR 0011 follow-up, shipped)', () => {
+  const soon = () => new Date(Date.now() + 3600_000).toISOString();
+
+  it('bootstraps on the first recorded mutation and then verifies ok', () => {
+    // Pre-bootstrap: no anchor, verification is honest about it.
+    expect(verifyLedgerIntegrity(dir).state).toBe('unanchored');
+    const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g.ok) throw new Error(g.error);
+    expect(verifyLedgerIntegrity(dir).state).toBe('ok');
+    const anchor = readAnchor(dir);
+    expect(anchor).not.toBeNull();
+    expect(anchor?.ledgerHead).toMatch(/^[0-9a-f]{64}$/);
+    expect(anchor?.mutations).toBe(1);
+    expect(anchor?.updatedBy.length).toBeGreaterThan(0);
+    // The anchor is per-checkout-root and OUTSIDE the checkout. With the
+    // pin cleared (path COMPUTATION only — nothing is written), the default
+    // must live under the user's state dir, keyed by a hash of the root,
+    // never its literal path.
+    process.env.UAP_SANDBOX_ANCHOR_DIR = '';
+    const defaultPath = anchorPath(dir);
+    process.env.UAP_SANDBOX_ANCHOR_DIR = join(dir, 'anchors');
+    expect(defaultPath).not.toContain(dir);
+    expect(defaultPath).toMatch(/sandbox-anchors\/[0-9a-f]+\.json$/);
+  });
+
+  it('detects a ledger changed outside a recorded consent operation', () => {
+    const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g.ok) throw new Error(g.error);
+    // A planted well-formed row lands via checkout write reach (the ADR's
+    // exact threat): shape-valid, TTL-valid, grantable path — only the
+    // out-of-checkout anchor catches it.
+    writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
+      {
+        id: 'sbg-planted', sessionId: 'sess-abc', paths: [hole], reason: 'planted consent',
+        grantedBy: 'attacker', grantedAt: new Date().toISOString(), expiresAt: soon(),
+      },
+    ]));
+    const v = verifyLedgerIntegrity(dir);
+    expect(v.state).toBe('mismatch');
+    expect(v.detail).toMatch(/anchor/);
+    // Fail-CLOSED at the launch surface: zero grant-derived holes.
+    expect(resolveSessionGrants(dir, 'sess-abc').paths).toEqual([]);
+    // The inspection surface still SHOWS the rows (they are unverified, not
+    // invisible) — the CLI stamps them; the policy returns them.
+    expect(listAuthority(dir).map((x) => x.id)).toEqual(['sbg-planted']);
+  });
+
+  it('refuses to mint new consent on a tampered ledger', () => {
+    const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g.ok) throw new Error(g.error);
+    writeFileSync(sandboxGrantsPath(dir), '[]');
+    const r = grantAuthority(dir, { ...INPUT, sessionId: 'sess-new', paths: [hole] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/integrity/);
+  });
+
+  it('fail-closes the launch surface loudly on mismatch', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g.ok) throw new Error(g.error);
+    writeFileSync(sandboxGrantsPath(dir), '[]');
+    expect(resolveSessionGrants(dir, 'sess-abc').paths).toEqual([]);
+    expect(err).toHaveBeenCalled();
+    expect(String(err.mock.calls[0][0])).toMatch(/INTEGRITY MISMATCH/);
+    err.mockRestore();
+  });
+
+  it('revoke still works on a tampered ledger (least authority) and re-anchors the baseline loudly', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g.ok) throw new Error(g.error);
+    // Tamper: swap the reason out from under the anchored state.
+    const rows = JSON.parse(readFileSync(sandboxGrantsPath(dir), 'utf-8')) as { id: string }[];
+    rows[0].reason = 'rewritten';
+    writeFileSync(sandboxGrantsPath(dir), JSON.stringify(rows));
+    expect(revokeAuthority(dir, g.grant.id)).toBe(true);
+    // The revoke re-anchored the post-revoke state, and named the laundering.
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls[0][0])).toMatch(/integrity verification/);
+    expect(verifyLedgerIntegrity(dir).state).toBe('ok');
+    expect(listAuthority(dir).length).toBe(0);
+    warn.mockRestore();
+  });
+
+  it('keeps the ledger operative when the anchor cannot be written', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // A FILE where the anchor dir should be: the anchor write fails loudly,
+    // the grant still lands (the ledger is the operative record).
+    writeFileSync(join(dir, 'anchors'), 'in the way');
+    process.env.UAP_SANDBOX_ANCHOR_DIR = join(dir, 'anchors');
+    const r = grantAuthority(dir, { ...INPUT, paths: [hole] });
+    expect(r.ok).toBe(true);
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls[0][0])).toMatch(/trust-anchor write failed/);
+    expect(verifyLedgerIntegrity(dir).state).toBe('unanchored');
+    expect(listAuthority(dir).length).toBe(1);
+    warn.mockRestore();
+  });
+});
+
+describe('audit trail — sequence stamping + bounded retention (debt item 3)', () => {
+  it('stamps every line with a monotonic seq', () => {
+    const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g.ok) throw new Error(g.error);
+    revokeAuthority(dir, g.grant.id);
+    const seqs = readFileSync(sandboxAuditPath(dir), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => (JSON.parse(l) as { seq: number }).seq);
+    expect(seqs).toEqual([1, 2]);
+  });
+
+  it('compacts past the trigger, records the drop, and never reuses a seq', () => {
+    const seed = Array.from(
+      { length: AUDIT_PRUNE_TRIGGER },
+      (_, i) => JSON.stringify({ ts: new Date().toISOString(), action: 'noop', seq: i + 1 }),
+    );
+    writeFileSync(sandboxAuditPath(dir), `${seed.join('\n')}\n`);
+    const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g.ok) throw new Error(g.error);
+    const lines = readFileSync(sandboxAuditPath(dir), 'utf-8').trim().split('\n');
+    expect(lines.length).toBe(AUDIT_MAX_LINES + 2); // kept window + new grant + marker
+    const parsed = lines.map((l) => JSON.parse(l) as { seq: number; action?: string; dropped?: number });
+    const marker = parsed[parsed.length - 1];
+    expect(marker.action).toBe('audit-compaction');
+    // Dropped = everything beyond the kept window: the 12,000 seed + the
+    // new grant line = 12,001 written; the newest 10,000 + the grant line
+    // survive = 10,001; the marker itself is NEW content, not dropped.
+    expect(marker.dropped).toBe(seed.length + 1 - (AUDIT_MAX_LINES + 1));
+    expect(marker.seq).toBe(seed.length + 2); // the grant got seed+1, the marker seed+2
+    // The kept window preserves order, and the newest line is the marker.
+    expect(parsed[0].seq).toBe(seed.length - AUDIT_MAX_LINES + 1);
+    // A post-compaction append continues the sequence, never reusing a seq.
+    revokeAuthority(dir, g.grant.id);
+    const after = readFileSync(sandboxAuditPath(dir), 'utf-8').trim().split('\n');
+    const lastSeq = (JSON.parse(after[after.length - 1]) as { seq: number }).seq;
+    expect(lastSeq).toBe(seed.length + 3);
   });
 });

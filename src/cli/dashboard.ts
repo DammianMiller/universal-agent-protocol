@@ -33,8 +33,118 @@ import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { getPolicyGate } from '../policies/policy-gate.js';
 import { ModelRouter } from '../models/router.js';
 import { ModelPresets, type MultiModelConfig } from '../models/types.js';
-import { getModelAnalytics } from '../models/analytics.js';
+import { getModelAnalytics, ModelAnalytics } from '../models/analytics.js';
 import { detectExecutionProfile } from '../models/execution-profiles.js';
+import { ewmaEstimate, formatDurationMs } from '../delivery/eta-estimate.js';
+import { listAuthority, verifyLedgerIntegrity } from '../policies/sandbox-grants.js';
+
+// ---------------------------------------------------------------------------
+// Sandbox Grants (debt item 16) — the ADR 0011-named operator surface.
+// ---------------------------------------------------------------------------
+
+/** Humanize the remaining TTL of a grant (ISO expiry) for one glance. */
+function humanRemaining(expiresAt: string): string {
+  const ms = Date.parse(expiresAt) - Date.now();
+  if (!Number.isFinite(ms)) return 'unknown';
+  if (ms <= 0) return 'expired';
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `~${Math.max(1, mins)}m left`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `~${hours}h ${mins % 60}m left`;
+  return `~${Math.floor(hours / 24)}d left`;
+}
+
+/**
+ * The dashboard's Sandbox Grants section as plain lines — active authority
+ * per session, the trust-anchor verdict, and the revoke command per grant.
+ * The ADR 0011-named surface ("a dashboard grants view... one click to
+ * revoke" — the CLI's one click is the printed command). Pure w.r.t.
+ * projectRoot + the env pins, so tests seed a ledger and call directly.
+ * A line starting with ⚠ is a warning the caller colors red.
+ */
+export function sandboxGrantsLines(projectRoot: string, maxGrants = 6): { lines: string[]; mismatch: boolean } {
+  const lines: string[] = [];
+  const integrity = verifyLedgerIntegrity(projectRoot);
+  const active = listAuthority(projectRoot);
+  lines.push('Sandbox Grants (active authority)');
+  if (active.length === 0) {
+    lines.push('  no active grants — the default is least authority');
+  } else {
+    for (const g of active.slice(0, maxGrants)) {
+      lines.push(
+        `  ${g.id}  session '${g.sessionId}'  ${humanRemaining(g.expiresAt)}  (granted by ${g.grantedBy})`
+      );
+      lines.push(`    reason: ${g.reason}`);
+      for (const p of g.paths.slice(0, 3)) lines.push(`      ${p}`);
+      if (g.paths.length > 3) lines.push(`      … and ${g.paths.length - 3} more path(s)`);
+      lines.push(`    revoke: uap sandbox revoke ${g.id}`);
+    }
+    if (active.length > maxGrants) lines.push(`  … and ${active.length - maxGrants} more grant(s)`);
+  }
+  if (integrity.state === 'ok') {
+    lines.push('  ledger verified against its trust anchor');
+  } else if (integrity.state === 'unanchored') {
+    lines.push(`  ${integrity.detail}`);
+  } else {
+    lines.push(`  ⚠ INTEGRITY MISMATCH — ${integrity.detail}.`);
+    lines.push('  ⚠ Rows above are listed but UNVERIFIED; a sandbox session opens ZERO grant-derived holes.');
+  }
+  return { lines, mismatch: integrity.state === 'mismatch' };
+}
+
+// ---------------------------------------------------------------------------
+// Measured Pace (bridge P5: S1b) — the compute/render split.
+// ---------------------------------------------------------------------------
+
+/** One row of the dashboard's Measured Pace table (plain display strings —
+ *  the caller pads and colors). */
+export interface PaceRow {
+  modelId: string;
+  key: string;
+  perTask: string;
+  spread: string;
+  n: string;
+  successPct: string;
+}
+
+/**
+ * Compute the Measured Pace rows + honest caveats: the agent's own EWMA
+ * estimate per (model, taskType, complexity) key — the operator's legibility
+ * surface for "how long does this model actually take here". Only keys with
+ * a real estimate get a row; the honest caveats (thin keys, keys beyond the
+ * cap) travel as counts.
+ *
+ * Extracted from the render so the shaping contract is testable WITHOUT the
+ * cwd-pinned `getModelAnalytics()` singleton — tests construct their own
+ * instance at a tmp path and pass it in. Pure with respect to the instance.
+ */
+export async function computeMeasuredPace(
+  analytics: ModelAnalytics,
+  cap = 8,
+): Promise<{ rows: PaceRow[]; thin: number; more: number }> {
+  const allPaceKeys = analytics.distinctOutcomeKeys();
+  const paceKeys = allPaceKeys.slice(0, cap);
+  const rows: PaceRow[] = [];
+  for (const k of paceKeys) {
+    const est = ewmaEstimate(analytics.recentDurations(k.modelId, k.taskType, k.complexity));
+    if (!est) continue;
+    // Foreign strings (the id especially can arrive from env/config) are
+    // termSafe'd at the compute choke point; the caller only pads/colors.
+    rows.push({
+      modelId: termSafe(k.modelId),
+      key: termSafe(`${k.taskType}/${k.complexity}`),
+      perTask: `~${formatDurationMs(est.etaMs)}`,
+      spread: `${formatDurationMs(est.minMs)}–${formatDurationMs(est.maxMs)}`,
+      n: `${est.samples}/${est.observed}`,
+      successPct: (100 * est.successRate).toFixed(0) + '%',
+    });
+  }
+  return {
+    rows,
+    thin: paceKeys.length - rows.length,
+    more: Math.max(0, allPaceKeys.length - cap),
+  };
+}
 
 type DashboardAction =
   | 'overview'
@@ -1604,7 +1714,7 @@ async function showPoliciesDashboard(options: DashboardOptions): Promise<void> {
       console.log(sectionHeader(`Policy Checks for Task: ${options.taskId}`));
       console.log('');
       const taskAudit = await gate.getAuditTrail(undefined, 50);
-      const taskEntries = taskAudit.filter((e: any) => e.taskId === options.taskId);
+      const taskEntries = taskAudit.filter((e) => e.taskId === options.taskId);
       if (taskEntries.length > 0) {
         for (const entry of taskEntries) {
           const icon = entry.allowed ? chalk.green('PASS') : chalk.red('BLOCK');
@@ -1746,44 +1856,38 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
     // for "how long does this model actually take here". Only keys with a
     // real estimate get a row; the honest caveat (spread, n, failure rate)
     // travels with the number.
-    const allPaceKeys = analytics.distinctOutcomeKeys();
-    const paceKeys = allPaceKeys.slice(0, 8);
-    if (paceKeys.length > 0) {
-      const { ewmaEstimate, formatDurationMs } = await import('../delivery/eta-estimate.js');
-      const rows = paceKeys
-        .map((k) => {
-          const samples = analytics.recentDurations(k.modelId, k.taskType, k.complexity);
-          return { key: k, est: ewmaEstimate(samples) };
-        })
-        .filter((r) => r.est);
-      const thin = paceKeys.filter((k) => !rows.some((r) => r.key === k)).length;
-      if (rows.length > 0) {
-        console.log(sectionHeader('Measured Pace (ETA — from this project\'s own history)'));
-        console.log('');
+    const pace = await computeMeasuredPace(analytics);
+    if (pace.rows.length > 0) {
+      console.log(sectionHeader('Measured Pace (ETA — from this project\'s own history)'));
+      console.log('');
+      console.log(
+        `  ${'Model'.padEnd(14)} ${'Key'.padEnd(22)} ${'Per task'.padEnd(10)} ${'Spread'.padEnd(16)} ${'N'.padEnd(8)} Success`
+      );
+      console.log(
+        `  ${'─'.repeat(14)} ${'─'.repeat(22)} ${'─'.repeat(10)} ${'─'.repeat(16)} ${'─'.repeat(8)} ${'─'.repeat(7)}`
+      );
+      for (const r of pace.rows) {
         console.log(
-          `  ${'Model'.padEnd(14)} ${'Key'.padEnd(22)} ${'Per task'.padEnd(10)} ${'Spread'.padEnd(16)} ${'N'.padEnd(8)} Success`
+          `  ${chalk.cyan(r.modelId.padEnd(14))} ${r.key.padEnd(22)}` +
+            ` ${r.perTask.padEnd(10)} ${r.spread.padEnd(16)} ${r.n.padEnd(8)} ${r.successPct}`
         );
-        console.log(
-          `  ${'─'.repeat(14)} ${'─'.repeat(22)} ${'─'.repeat(10)} ${'─'.repeat(16)} ${'─'.repeat(8)} ${'─'.repeat(7)}`
-        );
-        for (const r of rows) {
-          const successPct = (100 * r.est!.successRate).toFixed(0) + '%';
-          console.log(
-            `  ${chalk.cyan(termSafe(r.key.modelId).padEnd(14))} ${termSafe(`${r.key.taskType}/${r.key.complexity}`).padEnd(22)}` +
-              ` ${(`~${formatDurationMs(r.est!.etaMs)}`).padEnd(10)}` +
-              ` ${`${formatDurationMs(r.est!.minMs)}–${formatDurationMs(r.est!.maxMs)}`.padEnd(16)}` +
-              ` ${`${r.est!.samples}/${r.est!.observed}`.padEnd(8)} ${successPct}`
-          );
-        }
-        if (allPaceKeys.length > 8) {
-          console.log(chalk.dim(`  (… and ${allPaceKeys.length - 8} more key(s) with history beyond the top 8 by attempts)`));
-        }
-        if (thin > 0) {
-          console.log(chalk.dim(`  (+${thin} more key(s) with history too thin to estimate — needs ≥3 successes)`));
-        }
-        console.log('');
       }
+      if (pace.more > 0) {
+        console.log(chalk.dim(`  (… and ${pace.more} more key(s) with history beyond the top 8 by attempts)`));
+      }
+      if (pace.thin > 0) {
+        console.log(chalk.dim(`  (+${pace.thin} more key(s) with history too thin to estimate — needs ≥3 successes)`));
+      }
+      console.log('');
     }
+
+    // Sandbox grants (debt item 16, the ADR 0011-named surface): what extra
+    // writable holes are open, for which sessions, and whether the consent
+    // ledger verifies against its out-of-checkout trust anchor. ⚠ lines are
+    // warnings — color them red.
+    const grantsSection = sandboxGrantsLines(process.cwd());
+    for (const l of grantsSection.lines) console.log(l.startsWith('⚠') ? chalk.red(l) : l);
+    console.log('');
 
     // Execution profile for executor
     const executorModel = roles.executor || 'qwen35-a3b';

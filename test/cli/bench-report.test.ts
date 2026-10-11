@@ -69,13 +69,15 @@ function runDir(root: string, name: string, rep: LoadedReport['report'], mtime: 
   return dir;
 }
 
-async function run(opts: Record<string, unknown>): Promise<{ out: string; err: string; code: number | undefined }> {
+async function run(opts: Record<string, unknown>): Promise<{ out: string; err: string; warn: string; code: number | undefined }> {
   const logs: string[] = [];
   const errs: string[] = [];
+  const warns: string[] = [];
   vi.spyOn(console, 'log').mockImplementation((m?: unknown) => void logs.push(String(m)));
   vi.spyOn(console, 'error').mockImplementation((m?: unknown) => void errs.push(String(m)));
+  vi.spyOn(console, 'warn').mockImplementation((m?: unknown) => void warns.push(String(m)));
   await benchReportCommand(opts as never);
-  return { out: logs.join('\n'), err: errs.join('\n'), code: process.exitCode };
+  return { out: logs.join('\n'), err: errs.join('\n'), warn: warns.join('\n'), code: process.exitCode };
 }
 
 describe('listPairedReportDirs', () => {
@@ -291,5 +293,53 @@ describe('benchReportCommand — the CLI wrapper', () => {
     expect(out).not.toContain('\u001b'); // the ESC byte is gone — no OSC 52 clipboard write
     expect(out).not.toContain('\u0007'); // the BEL byte is gone too
     expect(out).toContain('evil]52;c;base64 vs uap-off'); // visible text survives
+  });
+});
+
+describe('bounded reads — a huge artifact is named, never slurped (P5 polish)', () => {
+  const HUGE = 5 * 1024 * 1024; // over the 4 MiB read cap
+
+  it('refuses an oversized report.json loudly when pinned with --dir (warn names the cap)', async () => {
+    const root = tmp();
+    const hugeDir = join(root, 'paired-huge');
+    mkdirSync(hugeDir, { recursive: true });
+    writeFileSync(
+      join(hugeDir, 'report.json'),
+      `${JSON.stringify(report({})).slice(0, -1)},"pad":"${'x'.repeat(HUGE)}"}`
+    );
+    const r = await run({ dir: hugeDir });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('No readable report.json');
+    expect(r.warn).toContain('paired-huge/report.json');
+    expect(r.warn).toContain('read cap');
+  });
+
+  it('keeps listing honest when an oversized (non-newest) report sits on disk: counted, never read', async () => {
+    const root = tmp();
+    runDir(root, 'good', report({}), new Date('2026-10-11T10:00:00Z'));
+    const hugeDir = join(root, 'paired-huge');
+    mkdirSync(hugeDir, { recursive: true });
+    writeFileSync(
+      join(hugeDir, 'report.json'),
+      `${JSON.stringify(report({})).slice(0, -1)},"pad":"${'x'.repeat(HUGE)}"}`
+    );
+    // Deterministically OLDER than paired-good, whatever the wall clock says.
+    utimesSync(join(hugeDir, 'report.json'), new Date('2026-10-09T10:00:00Z'), new Date('2026-10-09T10:00:00Z'));
+    const r = await run({ root });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('paired-good'); // the newest renders
+    expect(r.out).toContain('2 report(s) on disk'); // counted by existence
+    expect(r.out).not.toContain('paired-huge'); // but never read or rendered
+    expect(r.warn).toBe(''); // the summary reads ONE report; it cannot warn about files it never opens
+  });
+
+  it('--full degrades on an oversized report.md (summary fallback, exit 1)', async () => {
+    const root = tmp();
+    const dir = runDir(root, 'bigmd', report({}), new Date('2026-10-11T10:00:00Z'), false);
+    writeFileSync(join(dir, 'report.md'), 'x'.repeat(HUGE));
+    const r = await run({ dir, full: true });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('over the 4194304 read cap');
+    expect(r.out).toContain('Paired bench report — paired-bigmd'); // the summary fallback
   });
 });
