@@ -6,6 +6,7 @@ import { maybeBoardInjection } from './board-inject.js';
 import { maybeCollaborationInjection } from './collaboration-inject.js';
 import { maybeStateInjection } from '../state/reactor-inject.js';
 import { maybePersistenceInjection } from './persistence-inject.js';
+import { maybeEtaInjection } from './eta-inject.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -201,6 +202,17 @@ export function resolve(
       ? maybePersistenceInjection(ctx.cwd)
       : null;
 
+  // Measured pace (bridge P5: S1b): inject the agent's OWN EWMA pace for the
+  // active model — the one planning number a local model never has. Fires
+  // only on SOLID estimates (>= 6 successful samples); thin data would inject
+  // exactly the confident noise the block exists to replace. Deduped per
+  // session via `eta:pace`.
+  const etaKey = 'eta:pace';
+  const etaInject =
+    ctx.cwd && !(ctx.surfaced ?? []).includes(etaKey)
+      ? maybeEtaInjection(ctx.cwd)
+      : null;
+
   // #3-B: delivery routing. Surface up-front (deduped per session via
   // `deliver:routing`) whenever the task routes to a code capability, so the
   // agent calls deliver instead of editing source directly and tripping the gate.
@@ -281,6 +293,10 @@ export function resolve(
     if (persistInject) {
       blocks.push(`## Hands-free build — keep going until 100% complete\n${persistInject}`);
       keys.push(persistKey);
+    }
+    if (etaInject) {
+      blocks.push(etaInject);
+      keys.push(etaKey);
     }
     if (boardInject) {
       blocks.push(`## Collaboration board\n${boardInject}`);

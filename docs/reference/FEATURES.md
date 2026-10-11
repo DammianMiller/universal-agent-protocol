@@ -180,6 +180,9 @@ you'd run by hand.
 | Ideation / practice / spec-imports | Divergent strategy seeds, best-practice cards, curated project seeds. |
 | HALO trace (`halo-trace.ts`) | Emits HALO spans. |
 | ETA instrumentation (`eta.ts`) | Fail-soft per-attempt wall-clock telemetry to the model-analytics store, keyed (model, task type, complexity) — the sample stream behind task ETAs. |
+| EWMA estimator + pace surfaces (`eta-estimate.ts`, `eta.ts` CLI, `eta-inject.ts`) | The reader for the ETA sample stream: an exponentially-weighted fold of successful-attempt durations (half-life in samples, recency weighs most) with honesty rules enforced — fewer than 3 successes is NOT an estimate (3–5 = thin, caveat shown; ≥6 = solid), the min/max spread always travels with the number, and wall-time projections scale by the key's attempts-per-success so failures are never laundered into pace. Surfaces: `uap eta` (one key or `--all`, naming too-thin keys), the handsfree status wall-clock line, the dashboard's Measured Pace section, and the `eta:pace` reactor block (solid estimates only — a thin-data guess would inject exactly the confident noise it replaces). |
+| Local diff view (`diff.ts`) | `uap diff` — one honest render of what the agent changed around here: uncommitted rows with per-file +N/-N and git status glyphs, untracked paths, totals, and unpushed commits vs the base with ahead/behind and aggregate deltas. Safe-git (execFileSync arg arrays, 5s timeout, fsmonitor/untrackedCache/ext-diff defeated); degrades to an explicit `git:` error line outside a repo, never a crash — and a FAILED or timed-out read renders `working tree: UNKNOWN`, never a false "clean"; binary files render `±` (unknown), not `0`. |
+| Paired bench report reader (`bench-report.ts`) | `uap bench report` — the surface for runs `uap bench paired` already wrote: the newest run's deltas with CI, verdict, and McNemar discordant count always attached; `--compare` shows run-to-run drift (held/flipped verdicts, delta drift); `--full` reprints the stored report.md (degrading to the summary with a reason when it is missing, never a stack trace). A delta is never cited without its discrimination status — an unusable run is NO MEASUREMENT. |
 | Dependency-triggered dispatch (`task-orchestrator.ts`) | Completion-triggered task scheduling: a finished task's slot refills the moment it settles, and a dependent starts as soon as its last dependency succeeds — no wave barrier idles fast siblings behind slow ones. Settlement stays strictly sequential (one task at a time); which task settles next is timing-dependent. |
 | Per-leaf model dials (`decompose.ts`, `orchestrated-mission.ts`, `deliver.ts`) | Phases may carry an optional `model` key (planner-relayed from the mission's own list, or hand-authored); the dial binds that one task's convergence loop to the named preset — fail-closed to the mission model on unknown keys, non-isolated tasks, and the blind-executor path, with a plan-time lint warning at mission start. |
 | Attention queue (`attention.ts`) | The ask-instead-of-stop rail: decisions that are genuinely the operator's (a parked placement awaiting swap approval, grant requests) are recorded with context and a SAFE DEFAULT into the main checkout's `.uap/attention.json`, and the agent keeps working. `uap attention list/ack/decide`; the AFK auto-decider (`sweep` — at session start, on a 60s dashboard timer) adopts recorded safe defaults once the grace window elapses (logged, never silent; a site can pin the deadline to the ask's own expiry) and escalates items without one. Fail-open storage, sanitized at ingest AND on load, `UAP_ATTENTION_OFF` kill switch. |
@@ -287,9 +290,11 @@ similarity, and system resource detection.
 The `uap` CLI is the single door into the whole factory (top-level commands):
 `init`, `setup`, `analyze`, `generate`, `memory`, `patterns`, `worktree`,
 `sync`, `droids`, `expert-route`, `deliver`, `verify`, `harness` (HALO),
-`bench`, `self-harness`, `tune`, `config`, `design`, `proxy`, `orchestrator`,
+`bench` (incl. `bench report` — the paired-run delta reader), `self-harness`,
+`tune`, `config`, `design`, `proxy`, `orchestrator`,
 `handsfree` (`hf`), `challenge`, `sandbox`, `react`, `ideate`, `coord`, `agent`,
 `deploy`, `task`, `compliance`, `coordination`, `skill`, `update`,
 `dashboard` (alias `dash`), `model`, `mcp-router`, `hooks`, `tool-calls`,
+`eta` (measured pace), `diff` (local diff view),
 `mcp-setup`, `schema-diff`, `policy`, `uap-omp`. See
 [CLI reference](CLI.md) for every command and flag.

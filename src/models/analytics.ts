@@ -67,12 +67,21 @@ export interface SessionModelUsage {
   successRate: number;
 }
 
+/**
+ * The default on-disk location of the analytics store (S1a's sample stream).
+ * Exported so read-only consumers can check EXISTENCE without opening (and
+ * thereby creating) the store — `new ModelAnalytics()` on a missing path
+ * materializes it.
+ */
+export function resolveAnalyticsDbPath(dbPath?: string): string {
+  return dbPath || join(process.cwd(), 'agents', 'data', 'memory', 'model_analytics.db');
+}
+
 export class ModelAnalytics {
   private db: InstanceType<typeof Database>;
 
   constructor(dbPath?: string) {
-    const resolvedPath =
-      dbPath || join(process.cwd(), 'agents', 'data', 'memory', 'model_analytics.db');
+    const resolvedPath = resolveAnalyticsDbPath(dbPath);
     const dir = join(resolvedPath, '..');
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
@@ -166,6 +175,29 @@ export class ModelAnalytics {
     }
     const row = this.db.prepare(sql).get(...params) as { avg: number | null } | undefined;
     return row?.avg || 0;
+  }
+
+  /**
+   * S1 ETA: every distinct (modelId, taskType, complexity) key that has at
+   * least one row — the enumeration the ETA surfaces (`uap eta --all`, the
+   * dashboard's measured-pace section) walk. Ordered most-attempts-first so
+   * the surface's default truncation keeps the keys with real history.
+   */
+  distinctOutcomeKeys(minAttempts = 1): Array<{ modelId: string; taskType: string; complexity: string; attempts: number }> {
+    return this.db
+      .prepare(
+        `SELECT modelId, taskType, complexity, COUNT(*) as attempts
+         FROM task_outcomes
+         GROUP BY modelId, taskType, complexity
+         HAVING COUNT(*) >= ?
+         ORDER BY attempts DESC, modelId, taskType, complexity`
+      )
+      .all(Math.max(1, minAttempts)) as Array<{
+      modelId: string;
+      taskType: string;
+      complexity: string;
+      attempts: number;
+    }>;
   }
 
   /**

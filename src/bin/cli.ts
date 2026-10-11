@@ -46,8 +46,11 @@ const lazy = {
   interaction: () => import('../cli/interaction.js').then((m) => m.interactionCommand),
   orchestratorToggle: () => import('../cli/orchestrator-toggle.js').then((m) => m.orchestratorToggleCommand),
   handsfree: () => import('../cli/handsfree.js').then((m) => m.handsfreeCommand),
+  eta: () => import('../cli/eta.js').then((m) => m.etaCommand),
+  diff: () => import('../cli/diff.js').then((m) => m.diffCommand),
   proxy: () => import('../cli/proxy.js').then((m) => m.proxyCommand),
   benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
+  benchReport: () => import('../cli/bench-report.js').then((m) => m.benchReportCommand),
   tune: () => import('../cli/self-tuning.js').then((m) => m.tuneCommand),
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
@@ -1293,6 +1296,46 @@ bench
   )
   .action(async (options) => {
     const cmd = await lazy.benchPaired();
+    await cmd(options);
+  });
+bench
+  .command('report')
+  .description('Read the latest paired report (or --dir); --compare shows run-to-run delta drift. Deltas always carry their discrimination status')
+  .option('--dir <dir>', 'A specific paired-run dir (default: newest under benchmark-results)')
+  .option('--compare', 'Compare the two newest runs: which deltas held, flipped, narrowed')
+  .option('--full', 'Print the stored report.md instead of the compact delta summary')
+  .option('--json', 'Emit the raw report JSON')
+  .action(async (options) => {
+    const cmd = await lazy.benchReport();
+    await cmd(options);
+  });
+
+// Measured pace — the agent's own EWMA ETA over its recorded attempts (P5: S1b)
+program
+  .command('eta')
+  .description('Measured pace: the EWMA ETA for a (model, taskType, complexity) key, from this project\'s own recorded attempts')
+  .option('-m, --model <id>', 'Model id (default: the active/executor model)')
+  .option('--task-type <t>', "Sample key: task type (default 'orchestrated')")
+  .option('--complexity <c>', 'Sample key: complexity tier (default medium)')
+  .option('--all', 'List every key with history (estimates + too-thin keys)')
+  .option('--limit <n>', 'Sample window size (default 50)')
+  .option('--half-life <n>', 'EWMA half-life in samples (default 10)')
+  .option('--db <path>', 'Pin the analytics DB path (tests, odd layouts)')
+  .option('--json', 'Emit JSON')
+  .action(async (options) => {
+    const cmd = await lazy.eta();
+    await cmd(options);
+  });
+
+// Local diff view — what the agent changed around here (P5: S3)
+program
+  .command('diff')
+  .description('Local diff view: uncommitted + unpushed changes at a glance, with per-file deltas and inspection commands')
+  .option('--base <ref>', 'Base ref for the unpushed view (default: master)')
+  .option('--max <n>', 'Per-section file cap (default 40)')
+  .option('--json', 'Emit the raw facts as JSON')
+  .action(async (options) => {
+    const cmd = await lazy.diff();
     await cmd(options);
   });
 

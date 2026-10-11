@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import ora from 'ora';
+import { termSafe } from '../utils/terminal-safe.js';
 import { existsSync, statSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -1738,6 +1739,50 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
     } else {
       console.log(chalk.dim('  No model usage recorded this session'));
       console.log('');
+    }
+
+    // Measured pace (bridge P5: S1b): the agent's own EWMA estimates per
+    // (model, taskType, complexity) key — the operator's legibility surface
+    // for "how long does this model actually take here". Only keys with a
+    // real estimate get a row; the honest caveat (spread, n, failure rate)
+    // travels with the number.
+    const allPaceKeys = analytics.distinctOutcomeKeys();
+    const paceKeys = allPaceKeys.slice(0, 8);
+    if (paceKeys.length > 0) {
+      const { ewmaEstimate, formatDurationMs } = await import('../delivery/eta-estimate.js');
+      const rows = paceKeys
+        .map((k) => {
+          const samples = analytics.recentDurations(k.modelId, k.taskType, k.complexity);
+          return { key: k, est: ewmaEstimate(samples) };
+        })
+        .filter((r) => r.est);
+      const thin = paceKeys.filter((k) => !rows.some((r) => r.key === k)).length;
+      if (rows.length > 0) {
+        console.log(sectionHeader('Measured Pace (ETA — from this project\'s own history)'));
+        console.log('');
+        console.log(
+          `  ${'Model'.padEnd(14)} ${'Key'.padEnd(22)} ${'Per task'.padEnd(10)} ${'Spread'.padEnd(16)} ${'N'.padEnd(8)} Success`
+        );
+        console.log(
+          `  ${'─'.repeat(14)} ${'─'.repeat(22)} ${'─'.repeat(10)} ${'─'.repeat(16)} ${'─'.repeat(8)} ${'─'.repeat(7)}`
+        );
+        for (const r of rows) {
+          const successPct = (100 * r.est!.successRate).toFixed(0) + '%';
+          console.log(
+            `  ${chalk.cyan(termSafe(r.key.modelId).padEnd(14))} ${termSafe(`${r.key.taskType}/${r.key.complexity}`).padEnd(22)}` +
+              ` ${(`~${formatDurationMs(r.est!.etaMs)}`).padEnd(10)}` +
+              ` ${`${formatDurationMs(r.est!.minMs)}–${formatDurationMs(r.est!.maxMs)}`.padEnd(16)}` +
+              ` ${`${r.est!.samples}/${r.est!.observed}`.padEnd(8)} ${successPct}`
+          );
+        }
+        if (allPaceKeys.length > 8) {
+          console.log(chalk.dim(`  (… and ${allPaceKeys.length - 8} more key(s) with history beyond the top 8 by attempts)`));
+        }
+        if (thin > 0) {
+          console.log(chalk.dim(`  (+${thin} more key(s) with history too thin to estimate — needs ≥3 successes)`));
+        }
+        console.log('');
+      }
     }
 
     // Execution profile for executor
