@@ -73,6 +73,17 @@ nothing, no session-start hint; the file is left alone), `UAP_ATTENTION_QUEUE`
 (pins the queue FILE; default is the MAIN checkout's `.uap/attention.json`, shared
 across worktrees via `src/utils/checkout-root.ts`).
 
+### Sandbox authority (`UAP_SANDBOX*`, `PROXY_SOCKET`, v2.30)
+`UAP_SANDBOX_NET` (`off` defaults every `uap sandbox` run to the kernel egress
+boundary — own netns, nothing up; `shared` otherwise), `UAP_SANDBOX_GRANTS`
+(pins the per-session grant-ledger FILE; default the MAIN checkout's
+`.uap/sandbox-grants.json`), `UAP_SANDBOX_GRANTS_OFF` (`1` resolves zero grants —
+least authority), `UAP_SANDBOX_AUDIT` (pins the audit JSONL; default
+`.uap/sandbox-audit.jsonl`), `PROXY_SOCKET` (proxy env: serve the model gateway
+on an AF_UNIX socket, 0600, in addition to TCP — the permission-gated model
+choke point; unset = off), `UAP_PROXY_SOCKET` (where `uap proxy connect` looks
+for that socket; default the checkout's `.uap/proxy.sock`). See ADR 0011.
+
 ### Observability (`UAP_HALO_*`) — all local, no egress
 `UAP_HALO_TRACE` (**on by default**; `0` opts out), `UAP_HALO_TRACE_PATH`
 (`.uap/halo/traces.jsonl`), `UAP_HALO_PROJECT_ID` (`uap`), `UAP_HALO_TRACE_MAX_BYTES`

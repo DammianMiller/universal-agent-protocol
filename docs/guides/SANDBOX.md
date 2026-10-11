@@ -67,13 +67,72 @@ tool whose name starts with a prefix in `PROXY_SANDBOX_UNREACHABLE_PREFIXES` (de
 back to `WebFetch` / local reads instead. (This is the "strip unreachable browser MCP tools
 from sandboxed sessions" behavior.)
 
+## Per-session grants (P4: recorded authority)
+
+`UAP_SANDBOX_ALLOW` widens the boundary but nobody consented on the record. Bridge Phase 4
+adds a **consent ledger**: every extra writable hole is a *grant* — scoped to a session,
+bounded by a TTL, stated with a reason, recorded with who consented, and audit-logged on
+use.
+
+```bash
+# consent to one more hole for this session (reason is REQUIRED)
+uap sandbox grant /var/cache/ccache --session my-session --reason "shared compiler cache" --ttl 3600
+uap sandbox grants [--session <id>] [--json]      # inspect
+uap sandbox revoke sbg-557c11d5                  # take it back
+# then run with the session that owns the grants
+uap sandbox --session my-session -- claude --dangerously-skip-permissions
+```
+
+Rules worth knowing:
+
+- A grant is refused without `--session`, `--reason`, or a grantable target (an existing
+  absolute path; `/`, `/home`, and `$HOME` itself are refused — an over-broad grant IS a
+  sandbox escape).
+- Grants default to **8h** and hard-cap at **7d**; an identical open grant is renewed, not
+  duplicated; expired grants are invisible to the sandbox.
+- The ledger lives at the MAIN checkout's `.uap/sandbox-grants.json` (one ledger per
+  checkout, shared by every surface — the ADR 0010 anchor). Every sandbox run appends to
+  `.uap/sandbox-audit.jsonl`: which grants were used, which network mode engaged, and any
+  legacy `UAP_SANDBOX_ALLOW` entries labeled `unrecordedAllow` — still honored, now named.
+- `UAP_SANDBOX_GRANTS_OFF=1` resolves zero grants; `UAP_SANDBOX_GRANTS` pins the ledger
+  file (tests, odd layouts).
+
+See [ADR 0011](../architecture/adr/0011-sandbox-grants-and-network-egress-boundary.md) for
+the design and its trust model (the ledger is shared-write state, so it is sanitized at
+ingest AND on load — a planted row must not become a kernel-writable hole).
+
+## Network egress boundary (P4: `--net off`)
+
+The P0 sandbox shares the host network (the agent must reach the proxy). For runs that
+should have **no network at all** — untrusted code, evals, data-only work — `--net off`
+adds `--unshare-net` with nothing brought up: no TCP, no DNS, not even loopback, at the
+kernel. Any `connect()` fails; a harness that needs the model fails loudly with connection
+refused, which is the boundary working.
+
+```bash
+uap sandbox --net off -- npm test          # kernel-enforced zero egress
+UAP_SANDBOX_NET=off uap sandbox -- ...     # default the mode for every run
+```
+
+Every run's actual mode (`shared` / `off`) is audit-logged. There is deliberately **no
+`--net proxy`** (netns cut with a single hole to the proxy): rootless Linux cannot express
+it — AF_UNIX sockets are network-namespace-scoped, bwrap closes every inherited fd, and
+the userspace network stacks have no outbound allowlist. A boundary that only works with
+the right helper installed would be a suggestion, not enforcement. The full analysis and
+the rejected alternatives live in
+[ADR 0011](../architecture/adr/0011-sandbox-grants-and-network-egress-boundary.md); the
+model-path choke point that DOES hold is the proxy's `PROXY_SOCKET` (0600 AF_UNIX socket,
+plus `uap proxy connect` to re-serve it on local TCP for clients that cannot speak
+AF_UNIX).
+
 ## Escape hatches (operator-only)
 
 | Variable | Effect |
 |---|---|
 | `UAP_SANDBOX_OFF=1` | Run the command as-is, no sandbox (for debugging). |
-| `UAP_SANDBOX_ALLOW=/path:/other` | Extra writable prefixes. |
+| `UAP_SANDBOX_ALLOW=/path:/other` | Extra writable prefixes — UNRECORDED (audited as `unrecordedAllow`; prefer `uap sandbox grant`). |
 | `UAP_SANDBOX_WORKDIR=/path` | Override the resolved workdir. |
+| `UAP_SANDBOX_NET=off` | Default the network mode for every run (`shared` otherwise). |
 | `PROXY_SANDBOX_UNREACHABLE_PREFIXES` | Change which tool prefixes are stripped (proxy side). |
 
 Treat all of these as trusted-launch-environment settings — they widen the boundary, and
@@ -81,9 +140,11 @@ the model should never be able to set them for itself.
 
 ## Limits (be honest about them)
 
-- **Network is not restricted.** A sandboxed agent can still make outbound network calls;
-  the sandbox is a *filesystem* boundary. Egress control is the proxy's job
-  (`ANTHROPIC_PASSTHROUGH_MODELS=__local_only__` for the cloud path).
+- **Network is restricted only in `--net off` mode.** In the default `shared` mode a
+  sandboxed agent can still make outbound network calls; the sandbox's default is a
+  *filesystem* boundary. Model-path gating is the proxy's job
+  (`ANTHROPIC_PASSTHROUGH_MODELS=__local_only__` for the cloud path, and the
+  `PROXY_SOCKET` unix surface for per-user permission gating).
 - **The writable holes are real writable areas.** Anything under the workdir, `/tmp`, or
   `~/.cache`/`~/.claude`/`~/.npm` can be modified — including caches that persist across
   runs.

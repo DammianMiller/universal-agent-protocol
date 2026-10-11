@@ -1,0 +1,122 @@
+# ADR 0011: Per-session sandbox grants and the network egress boundary
+
+- Status: Proposed
+- Date: 2026-10-11 (branch `feature/356-bridge-p4-security`)
+- Spec: bridge-program Phase 4 (D2 session authority, D1 network egress
+  boundary), responding to the "agents with too much authority" gap in
+  mtlynch.io's *Why Are Coding Agents So Dumb?*
+- Supersedes: none — extends the P0 bubblewrap sandbox (`uap sandbox`) and
+  the inference proxy; no existing schema changes.
+
+## Context
+
+`uap sandbox` (the P0 floor) is all-or-nothing authority: the workdir and
+scratch are writable, everything else is EROFS, and the only escape hatch
+was `UAP_SANDBOX_ALLOW=path:path` — an **unrecorded** env var: no session
+scope, no expiry, no reason, invisible to the operator, surviving forever
+in shell histories and hook templates. Meanwhile the sandbox shared the
+host network by design (the agent must reach the proxy), so "too much
+authority" had two open faces: unrecorded write holes and unrestricted
+network egress.
+
+The bar (EVOLUTION.md): **every new authority must state who consented.**
+
+## Decision
+
+### D2 — the consent ledger (`src/policies/sandbox-grants.ts`)
+
+Every extra writable hole is a **grant**, recorded in
+`.uap/sandbox-grants.json` at the main checkout root (the
+`mainCheckoutRoot` anchor the attention queue established in ADR 0010 —
+one ledger per checkout, shared by every surface; `UAP_SANDBOX_GRANTS`
+pins an explicit file):
+
+- `uap sandbox grant <path...> --session <id> --reason "..." [--ttl N]`
+  creates a grant `{id, sessionId, paths[], reason, grantedBy, grantedAt,
+  expiresAt}`. A grant is refused without a session, a stated reason, or a
+  grantable target (existing absolute path; `/`, `/home`, `$HOME` itself
+  are refused — an over-broad grant IS a sandbox escape). Default TTL 8h,
+  hard cap 7d: authority is bounded by construction. An identical open
+  grant is RENEWED, not duplicated.
+- `uap sandbox -- <cmd> --session <id>` resolves the session's ACTIVE
+  grants and opens exactly those `--bind` holes; `uap sandbox grants` /
+  `revoke <id>` list and remove them.
+- Every run appends a line to `.uap/sandbox-audit.jsonl` — the consent
+  record: which grants were used, which network mode engaged, and any
+  legacy `UAP_SANDBOX_ALLOW` entries labeled `unrecordedAllow` (still
+  honored for compatibility, now named in the audit and the banner).
+- Store rules inherited from ADR 0010's hardened queue: sanitize at ingest
+  AND on load (the ledger is shared-write `.uap/` and a planted row must
+  not become a kernel-writable hole), atomic writes with unique tmp
+  names, malformed rows dropped, and an unreadable ledger treated as
+  EMPTY — the safe direction for an authority store is least authority.
+  `UAP_SANDBOX_GRANTS_OFF=1` resolves zero grants; the sandbox's kernel
+  boundary itself is never disabled by any of this.
+
+### D1 — the network egress boundary
+
+**Shipped: `--net off`** — `uap sandbox --net off` adds `--unshare-net`
+with nothing brought up: no TCP, no DNS, not even loopback, at the kernel.
+Any `connect()` fails. This is the complete boundary, intended for
+untrusted code, evals, and data-only work; a harness that needs the model
+fails loudly with connection refused, which is the boundary working. The
+net mode defaults from `UAP_SANDBOX_NET=off`; every run's actual mode is
+audit-logged (`netMode: shared|off`).
+
+**Also shipped: the proxy's unix-socket surface** — `PROXY_SOCKET=<path>`
+makes `anthropic_proxy.py` serve the SAME app on an AF_UNIX socket
+(0600, parent dir 0700) alongside its TCP port: a permission-gated model
+choke point for shared boxes. `uap proxy connect --socket <path> [--port N]`
+re-serves that socket on local TCP for clients that cannot speak AF_UNIX.
+Stale-socket policy: a live listener owns its path (refuse to evict), a
+corpse is reclaimed.
+
+### D1's rejected design: the "only proxy" netns (and why)
+
+The intended D1 was a netns cut with a SINGLE hole to the proxy: bwrap
+`--unshare-net` plus a bind-mounted `PROXY_SOCKET`, with an in-namespace
+relay re-serving the proxy on `127.0.0.1:4000`. **It cannot work on
+rootless Linux**, and the failure is worth recording because the design
+looks correct on paper:
+
+1. **AF_UNIX pathname sockets are network-namespace-scoped.** The socket
+   file bind-mounts fine, but `connect()` looks the listener up in the
+   CONNECTING process's netns unix-socket table and finds nothing:
+   empirically `ECONNREFUSED` from inside the namespace while the same
+   socket answers on the host (verified on Linux 7.2, bwrap 0.11). The
+   hole through the wall is a file that carries no reachability.
+2. **bwrap closes every inherited fd** (verified: an fd handed to the
+   child via `stdio` slot 3 arrives closed), so an SCM_RIGHTS broker that
+   passes pre-connected proxy sockets across the wall is impossible too.
+3. **The userspace network stacks cannot express the policy.**
+   pasta/slirp4netns bridge a rootless netns to the host, but neither
+   offers an outbound port allowlist — attaching one would give the
+   sandbox FULL egress, the exact opposite of the boundary.
+
+A boundary that requires a helper that isn't installed, or a mechanism
+the kernel doesn't provide, would be a suggestion rather than enforcement.
+So `--net proxy` was **cut, not faked**: the two REAL modes are `shared`
+(no claim) and `off` (kernel-complete), and the model-path choke point
+(`PROXY_SOCKET`, 0600) ships on the proxy side where permission gating
+actually holds.
+
+## Consequences
+
+- Write authority beyond the workdir now requires a recorded, bounded,
+  revocable consent — and the pre-P4 unrecorded escape hatch is still
+  honored but is named in every audit line and banner.
+- `--net off` gives untrusted-code runs a complete, kernel-enforced
+  egress boundary today.
+- Model-path gating becomes a socket permission problem (0600/0700) for
+  multi-user or sandboxed-adjacent setups, rather than a TCP port anyone
+  on the box can dial.
+- The "agent session with ONLY model egress" use case remains open. The
+  honest paths to it: (a) upstream `pasta`-class outbound filtering, if it
+  ever grows port allowlists; (b) a setuid/privileged broker that can
+  join the sandbox netns; (c) rootful sandboxing (a future
+  `--net proxy,via:root` could revisit). None are rootless today, so none
+  are claimed.
+- Debt, accepted: the sandbox's `UAP_SANDBOX_ALLOW` continues to work
+  unrecorded (compatibility), but every use is audited and named;
+  the audit JSONL is append-only and unpruned (bounded by run count, not
+  trimmed — the operator ships it to their own tooling).

@@ -6,12 +6,42 @@
  * the KERNEL — for Write/Edit tools, Bash, and any subprocess alike.
  *
  * This is the workdir boundary that `--dangerously-skip-permissions` cannot
- * bypass: the client can't escape the mount namespace. Network is shared so the
- * agent still reaches the local proxy (127.0.0.1:4000).
+ * bypass: the client can't escape the mount namespace.
+ *
+ * Bridge Phase 4 adds two authorities on top of that floor:
+ *
+ * - Per-session GRANTS (`uap sandbox grant`, D2): extra writable holes
+ *   recorded in a consent ledger (session-scoped, TTL-bounded, reason-
+ *   stated, audit-logged). The pre-P4 answer, `UAP_SANDBOX_ALLOW=path:path`,
+ *   still works but is UNRECORDED authority — it is honored for backwards
+ *   compatibility and named as unrecorded in the audit and the banner.
+ *
+ * - The NETWORK EGRESS BOUNDARY (`--net off`, D1): the sandbox gets its own
+ *   network namespace (--unshare-net) and NOTHING is brought up — no TCP,
+ *   no DNS, no loopback, no egress of any kind, at the kernel. This is the
+ *   complete boundary, for untrusted code, evals, and data-only work; model
+ *   access is impossible by design (a harness that needs the model will fail
+ *   loudly with connection refused).
+ *
+ *   Why there is no "--net proxy" (netns cut with a single hole to the
+ *   proxy): rootless Linux cannot express it. AF_UNIX pathname sockets are
+ *   NETWORK-NAMESPACE-SCOPED — a socket bind-mounted across the netns wall
+ *   is unreachable (empirically ECONNREFUSED, see ADR 0011), bwrap closes
+ *   every inherited fd (so no SCM_RIGHTS broker), and the userspace network
+ *   helpers (pasta/slirp4netns) provide no outbound port allowlist. A
+ *   boundary that only works when the right helper is present would be a
+ *   suggestion, not enforcement — so the shipped modes are the two REAL
+ *   ones: shared (no claim) and off (kernel-complete). The proxy's own
+ *   PROXY_SOCKET (0600 AF_UNIX) remains the model-path choke point for
+ *   every non-sandboxed surface; `uap proxy connect` re-serves it on local
+ *   TCP for clients that cannot speak AF_UNIX.
  *
  * Env:
  *   UAP_SANDBOX_WORKDIR   workdir to make writable (default: cwd)
- *   UAP_SANDBOX_ALLOW     extra writable paths, colon-separated
+ *   UAP_SANDBOX_ALLOW     extra writable paths, colon-separated (UNRECORDED)
+ *   UAP_SANDBOX_NET       'off' to default the net mode (shared otherwise)
+ *   UAP_SANDBOX_GRANTS    pins the grant ledger file (tests, odd layouts)
+ *   UAP_SANDBOX_GRANTS_OFF=1  resolve zero grants (escape hatch; the sandbox itself stays)
  *   UAP_SANDBOX_OFF=1     bypass the sandbox entirely (run the command as-is)
  */
 
@@ -19,6 +49,159 @@ import { spawnSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import chalk from 'chalk';
+import {
+  grantAuthority,
+  listAuthority,
+  resolveSessionGrants,
+  revokeAuthority,
+  auditSandboxUse,
+  type GrantInput,
+  type ResolvedGrants,
+} from '../policies/sandbox-grants.js';
+
+function fail(msg: string, code = 2): never {
+  console.error(`uap sandbox: ${msg}`);
+  process.exit(code);
+}
+
+function hasBwrap(): boolean {
+  const r = spawnSync('bwrap', ['--version'], { stdio: 'ignore' });
+  return !r.error && r.status === 0;
+}
+
+// ---------------------------------------------------------------------------
+// Pure planner — unit-testable without bubblewrap.
+// ---------------------------------------------------------------------------
+
+export type SandboxNetMode = 'shared' | 'off';
+
+export interface SandboxPlanInput {
+  /** Command to run inside the sandbox. */
+  command: string[];
+  /** Session id (scopes the grant lookup; empty = no grants). */
+  session?: string;
+  /** Net mode: 'shared' (default) or 'off' (the kernel egress boundary). */
+  net?: SandboxNetMode;
+  /** Writable workdir. */
+  workdir: string;
+  /** $HOME inside the sandbox. */
+  home: string;
+  /** Legacy unrecorded extra writable paths (UAP_SANDBOX_ALLOW, split). */
+  legacyAllow: string[];
+  /** Session-resolved grants (empty when the ledger is off/unreadable). */
+  grants: ResolvedGrants;
+}
+
+export interface SandboxPlan {
+  /** Full bwrap argv (bwrap args first, then the inner command). */
+  argv: string[];
+  /** The command bwrap execs (argv tail) — the session command, verbatim. */
+  inner: string[];
+  /** Extra env delivered via --setenv. */
+  setenv: Record<string, string>;
+  /** The net mode actually engaged ('off' = kernel egress boundary). */
+  netMode: SandboxNetMode;
+  /** Granted writable holes actually opened for this run. */
+  grantedPaths: string[];
+  /** Human-readable lines for the launch banner (already colored upstream). */
+  notes: string[];
+}
+
+function planError(msg: string): { error: string; plan?: undefined } {
+  return { error: msg };
+}
+
+/** Compute the bwrap invocation. Pure: no spawn, no fs mutation. */
+export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; error?: string } {
+  const workdir = input.workdir;
+  // Guard: never sandbox with an over-broad workdir — it would expose the tree.
+  if (workdir === input.home || workdir === '/' || workdir === '/home') {
+    return planError(`refusing to sandbox with workdir='${workdir}' (too broad)`);
+  }
+  const netMode: SandboxNetMode =
+    input.net === 'off' || input.net === 'shared'
+      ? input.net
+      : process.env.UAP_SANDBOX_NET === 'off'
+        ? 'off'
+        : 'shared';
+
+  // Read-only root with writable "holes".
+  const args: string[] = [
+    '--ro-bind', '/', '/',
+    '--dev', '/dev',
+    '--proc', '/proc',
+    '--tmpfs', '/run',
+    '--die-with-parent',
+    '--new-session',
+    '--unshare-pid',
+  ];
+  if (netMode === 'off') {
+    // The egress boundary: a network namespace with NOTHING brought up —
+    // not even loopback. Any connect() fails at the kernel.
+    args.push('--unshare-net');
+  }
+  // writable holes:
+  args.push('--bind', workdir, workdir, '--bind', '/tmp', '/tmp', '--tmpfs', '/var/tmp');
+  for (const rel of ['.claude', '.cache', '.npm']) {
+    const p = join(input.home, rel);
+    if (existsSync(p)) args.push('--bind', p, p);
+  }
+  const grantedPaths: string[] = [];
+  for (const p of input.grants.paths) {
+    if (existsSync(p)) {
+      grantedPaths.push(p);
+      args.push('--bind', p, p);
+    }
+  }
+  for (const p of input.legacyAllow) {
+    if (p && existsSync(p)) args.push('--bind', p, p);
+  }
+
+  const setenv: Record<string, string> = {
+    HOME: input.home,
+    UAP_SANDBOX_ACTIVE: '1',
+  };
+  if (input.session) setenv.UAP_SESSION_ID = input.session;
+
+  const notes: string[] = [];
+  if (netMode === 'off') {
+    notes.push('net: OFF (kernel egress boundary — no network at all, not even loopback; model access impossible by design)');
+  } else {
+    notes.push('net: shared (the sandbox has normal network)');
+  }
+  if (grantedPaths.length > 0) notes.push(`granted holes: ${grantedPaths.join(', ')}`);
+  if (input.grants.paths.length > 0 && grantedPaths.length !== input.grants.paths.length) {
+    notes.push('(some granted paths do not exist and were not opened)');
+  }
+  if (input.legacyAllow.filter(Boolean).length > 0) {
+    notes.push(`UNRECORDED allow (legacy env, consider 'uap sandbox grant'): ${input.legacyAllow.join(':')}`);
+  }
+
+  const argv = [...args];
+  for (const [k, v] of Object.entries(setenv)) {
+    argv.push('--setenv', k, v);
+  }
+  // Tell the proxy this session is sandboxed so it can strip MCP tools the
+  // bubblewrap sandbox can't reach (the claude-in-chrome browser extension
+  // socket is unreachable here — offering browser_batch guarantees dead-end
+  // loops). Claude Code forwards ANTHROPIC_CUSTOM_HEADERS verbatim to its
+  // endpoint; append rather than clobber any pre-existing value.
+  const customHeaders = sandboxCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS);
+  argv.push('--setenv', 'ANTHROPIC_CUSTOM_HEADERS', customHeaders);
+  argv.push('--chdir', workdir, ...input.command);
+
+  return {
+    plan: {
+      argv,
+      inner: input.command,
+      setenv: { ...setenv, ANTHROPIC_CUSTOM_HEADERS: customHeaders },
+      netMode,
+      grantedPaths,
+      notes,
+    },
+  };
+}
 
 /**
  * Build the ANTHROPIC_CUSTOM_HEADERS value for a sandboxed session: append the
@@ -38,17 +221,87 @@ export function sandboxCustomHeaders(existing: string | undefined): string {
   return already ? prior : `${prior}\n${marker}`;
 }
 
-function fail(msg: string, code = 2): never {
-  console.error(`uap sandbox: ${msg}`);
-  process.exit(code);
+// ---------------------------------------------------------------------------
+// Grant verbs (D2).
+// ---------------------------------------------------------------------------
+
+const GRANT_VERBS = new Set(['grant', 'grants', 'revoke']);
+
+function grantsDisabled(): boolean {
+  const v = process.env.UAP_SANDBOX_GRANTS_OFF;
+  return v === '1' || v === 'true' || v === 'yes';
 }
 
-function hasBwrap(): boolean {
-  const r = spawnSync('bwrap', ['--version'], { stdio: 'ignore' });
-  return !r.error && r.status === 0;
+function resolveSessionGrantsSafe(projectRoot: string, session: string): ResolvedGrants {
+  const none: ResolvedGrants = { grants: [], paths: [] };
+  if (!session || grantsDisabled()) return none;
+  try {
+    return resolveSessionGrants(projectRoot, session);
+  } catch (err) {
+    console.warn(
+      `[sandbox] grant resolution failed (continuing with NO granted holes): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return none;
+  }
 }
 
-export async function sandboxCommand(command: string[]): Promise<void> {
+async function grantVerb(args: string[], options: Record<string, unknown>): Promise<void> {
+  const verb = args[0];
+  const projectRoot = process.cwd();
+  if (verb === 'grant') {
+    const paths = args.slice(1);
+    const input: GrantInput = {
+      sessionId: String(options.session || process.env.UAP_SESSION_ID || ''),
+      paths,
+      reason: String(options.reason || ''),
+      ttlSecs: options.ttl === undefined ? undefined : Number(options.ttl),
+    };
+    const r = grantAuthority(projectRoot, input);
+    if (!r.ok) fail(r.error);
+    console.log(
+      chalk.green(`✓ grant ${r.grant.id}`) +
+        ` — session '${r.grant.sessionId}' may write:\n  ${r.grant.paths.join('\n  ')}` +
+        chalk.dim(`\n  reason: ${r.grant.reason}\n  expires: ${r.grant.expiresAt} (granted by ${r.grant.grantedBy})`),
+    );
+    return;
+  }
+  if (verb === 'grants') {
+    const sid = String(options.session || '');
+    const all = listAuthority(projectRoot, sid || undefined);
+    if (options.json) {
+      console.log(JSON.stringify(all, null, 2));
+      return;
+    }
+    if (all.length === 0) {
+      console.log(sid ? `No active grants for session '${sid}'.` : 'No active grants.');
+      return;
+    }
+    for (const g of all) {
+      console.log(
+        `${chalk.green(g.id)} session '${g.sessionId}' expires ${g.expiresAt}` +
+          `\n  ${g.paths.join('\n  ')}` +
+          chalk.dim(`\n  reason: ${g.reason} (granted by ${g.grantedBy})`),
+      );
+    }
+    return;
+  }
+  if (verb === 'revoke') {
+    const id = args[1];
+    if (!id) fail('usage: uap sandbox revoke <grantId>');
+    if (!revokeAuthority(projectRoot, id)) fail(`no grant '${id}' in the ledger`);
+    console.log(chalk.green(`✓ revoked ${id}`));
+    return;
+  }
+  fail(`unknown sandbox grant verb '${verb}' (grant | grants | revoke)`);
+}
+
+// ---------------------------------------------------------------------------
+// Command entry.
+// ---------------------------------------------------------------------------
+
+export async function sandboxCommand(command: string[], options: Record<string, unknown> = {}): Promise<void> {
   // Strip a leading '--' separator if commander passed it through.
   if (command[0] === '--') command = command.slice(1);
 
@@ -58,8 +311,17 @@ export async function sandboxCommand(command: string[]): Promise<void> {
     process.exit(r.status ?? (r.error ? 127 : 0));
   }
 
+  // Grant verbs are ledger operations, not sandbox runs.
+  if (GRANT_VERBS.has(command[0])) {
+    await grantVerb(command, options);
+    return;
+  }
+
   if (command.length === 0) {
-    fail('no command given. Usage: uap sandbox -- <command> [args...]');
+    fail(
+      'no command given. Usage: uap sandbox [--session <id>] [--net shared|off] -- <command> [args...]; ' +
+        `authority: uap sandbox grant <path...> --session <id> --reason "..." | grants | revoke <id>`,
+    );
   }
   if (!hasBwrap()) {
     fail(
@@ -77,46 +339,38 @@ export async function sandboxCommand(command: string[]): Promise<void> {
     workdir = process.env.UAP_SANDBOX_WORKDIR || process.cwd();
   }
 
-  // Guard: never sandbox with an over-broad workdir — it would expose the tree.
-  if (workdir === home || workdir === '/' || workdir === '/home') {
-    fail(`refusing to sandbox with workdir='${workdir}' (too broad)`);
+  const session = String(options.session || process.env.UAP_SESSION_ID || process.env.CLAUDE_SESSION_ID || '');
+  const netOpt: SandboxNetMode | undefined =
+    options.net === 'off' ? 'off' : options.net === 'shared' ? 'shared' : undefined;
+  const legacyAllow = (process.env.UAP_SANDBOX_ALLOW || '').split(':');
+  const grants = resolveSessionGrantsSafe(process.cwd(), session);
+
+  const planned = planSandbox({
+    command,
+    session: session || undefined,
+    net: netOpt,
+    workdir,
+    home,
+    legacyAllow,
+    grants,
+  });
+  if (planned.error) fail(planned.error);
+  const plan = planned.plan!;
+
+  // The consent record: who granted, what was opened, what ran unrecorded,
+  // and the net boundary actually engaged.
+  auditSandboxUse(process.cwd(), session, grants, legacyAllow.filter(Boolean), plan.netMode);
+
+  console.error(chalk.dim(`uap sandbox: workdir ${workdir} (writable); everything else is EROFS`));
+  for (const n of plan.notes) console.error(chalk.dim(`  ${n}`));
+  if (!session && grantsDisabled()) console.error(chalk.dim('  grants: ledger off (UAP_SANDBOX_GRANTS_OFF=1)'));
+  if (!session) {
+    console.error(
+      chalk.dim('  grants: none (no --session; grant one with: uap sandbox grant <path> --session <id> --reason "...")'),
+    );
   }
 
-  // Read-only root with writable "holes".
-  const args: string[] = [
-    '--ro-bind', '/', '/',
-    '--dev', '/dev',
-    '--proc', '/proc',
-    '--tmpfs', '/run',
-    '--die-with-parent',
-    '--unshare-pid',
-    '--new-session',
-    // writable holes:
-    '--bind', workdir, workdir,
-    '--bind', '/tmp', '/tmp',
-    '--tmpfs', '/var/tmp',
-  ];
-  for (const rel of ['.claude', '.cache', '.npm']) {
-    const p = join(home, rel);
-    if (existsSync(p)) args.push('--bind', p, p);
-  }
-  for (const p of (process.env.UAP_SANDBOX_ALLOW || '').split(':')) {
-    if (p && existsSync(p)) args.push('--bind', p, p);
-  }
-  // Tell the proxy this session is sandboxed so it can strip MCP tools the
-  // bubblewrap sandbox can't reach (the claude-in-chrome browser extension
-  // socket is unreachable here — offering browser_batch guarantees dead-end
-  // loops). Claude Code forwards ANTHROPIC_CUSTOM_HEADERS verbatim to its
-  // endpoint; append rather than clobber any pre-existing value.
-  const customHeaders = sandboxCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS);
-  args.push(
-    '--setenv', 'HOME', home,
-    '--setenv', 'UAP_SANDBOX_ACTIVE', '1',
-    '--setenv', 'ANTHROPIC_CUSTOM_HEADERS', customHeaders,
-    '--chdir', workdir,
-  );
-
-  const r = spawnSync('bwrap', [...args, ...command], { stdio: 'inherit' });
+  const r = spawnSync('bwrap', plan.argv, { stdio: 'inherit' });
   if (r.error) fail(`failed to launch bwrap: ${r.error.message}`, 127);
   process.exit(r.status ?? 1);
 }

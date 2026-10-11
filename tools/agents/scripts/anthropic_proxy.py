@@ -110,6 +110,11 @@ Usage
     # set that on a box running a real Ollama, which owns 11434):
     PROXY_OLLAMA_PORT=11434 python anthropic_proxy.py
 
+    # Unix-socket surface for sandboxed sessions (bridge P4 egress boundary;
+    # unset = off). The socket is the ONLY network reach of a
+    # `uap sandbox --net=proxy` session:
+    PROXY_SOCKET=/path/to/repo/.uap/proxy.sock python anthropic_proxy.py
+
     # Via npx (after npm install):
     npx uap-anthropic-proxy
 
@@ -17571,6 +17576,86 @@ class _CompanionListener(uvicorn.Server):
         yield
 
 
+# ===========================================================================
+# Unix-socket surface — PROXY_SOCKET (bridge Phase 4: D1 egress boundary)
+# ===========================================================================
+# `uap sandbox --net=proxy` cuts a sandboxed session's network namespace
+# entirely (--unshare-net): no TCP, no DNS, no direct egress of any kind.
+# The ONE network reach left to the session is this AF_UNIX socket,
+# bind-mounted through the namespace wall — so every byte a sandboxed agent
+# sends to a model flows through this proxy's guardrails by construction,
+# and nothing else flows anywhere.
+PROXY_SOCKET = os.environ.get("PROXY_SOCKET", "").strip()
+# sun_path is 108 bytes on Linux including the trailing NUL; refuse longer
+# paths with a clear error instead of a truncated silent bind.
+_MAX_SUN_PATH = 107
+
+
+def _socket_is_live(path: str) -> bool:
+    """True when a server already ACCEPTS connections on this socket path."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            s.connect(path)
+        return True
+    except OSError:
+        return False
+
+
+def _prepare_proxy_socket(path: str):
+    """Bind the AF_UNIX listener, or return None (socket surface stays off).
+
+    Stale-socket policy: a successful connect() means another live proxy owns
+    the path — refuse to double-bind rather than evict a running service; a
+    refused/absent socket is a corpse from a crashed run — unlink and rebind.
+    The bind is the boundary, so the permissions are tight: socket 0600,
+    parent directory 0700 (only the owning user can even dial it).
+    """
+    if not path:
+        return None
+    if len(path.encode()) > _MAX_SUN_PATH:
+        logger.error(
+            "SOCKET: PROXY_SOCKET path too long (%d > %d bytes, sun_path "
+            "limit) — unix-socket surface disabled, TCP unaffected.",
+            len(path.encode()),
+            _MAX_SUN_PATH,
+        )
+        return None
+    parent = os.path.dirname(path)
+    try:
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        logger.error("SOCKET: cannot create %s (%s) — unix-socket surface off.", parent, exc)
+        return None
+    if os.path.exists(path):
+        if _socket_is_live(path):
+            logger.error(
+                "SOCKET: %s is served by a live proxy — refusing to evict it; "
+                "unix-socket surface off for THIS process (TCP unaffected).",
+                path,
+            )
+            return None
+        try:
+            os.unlink(path)  # corpse from a crashed run
+        except OSError as exc:
+            logger.error("SOCKET: cannot unlink stale %s (%s) — surface off.", path, exc)
+            return None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(path)
+        os.chmod(path, 0o600)
+        sock.listen(128)
+    except OSError as exc:
+        logger.error("SOCKET: bind %s failed (%s) — surface off.", path, exc)
+        try:
+            sock.close()
+        except Exception:
+            pass
+        return None
+    logger.info("SOCKET: serving on unix socket %s (0600) — sandbox egress boundary.", path)
+    return sock
+
+
 async def _run_proxy_servers() -> None:
     """Serve the app on PROXY_PORT, plus the Ollama surface port when enabled.
 
@@ -17651,6 +17736,41 @@ async def _run_proxy_servers() -> None:
             )
             tasks.append(companion_task)
             tasks.append(_tie_companion())
+    # --- P4 unix-socket surface: the sandbox egress boundary (PROXY_SOCKET).
+    # Same guard/tie pattern as the Ollama companion: a socket-surface failure
+    # must only ever disable the socket, never the primary, and one SIGTERM
+    # (or a primary death) must take the socket listener down with it.
+    proxy_sock = _prepare_proxy_socket(PROXY_SOCKET) if PROXY_SOCKET else None
+    if proxy_sock is not None:
+        sock_companion = _CompanionListener(
+            uvicorn.Config(
+                app,
+                log_level=PROXY_LOG_LEVEL.lower(),
+                log_config=None,  # the primary already owns logging config
+                lifespan="off",  # app startup must not run twice
+            )
+        )
+
+        async def _serve_socket_guarded() -> None:
+            try:
+                await sock_companion.serve(sockets=[proxy_sock])
+            except BaseException as exc:  # containment is the point
+                logger.error(
+                    "SOCKET: unix listener died (%s: %s) — socket surface "
+                    "disabled, Anthropic/OpenAI surface unaffected.",
+                    type(exc).__name__,
+                    exc,
+                )
+
+        socket_task = asyncio.ensure_future(_serve_socket_guarded())
+
+        async def _tie_socket() -> None:
+            while not primary_task.done() and not primary.should_exit:
+                await asyncio.sleep(0.25)
+            sock_companion.should_exit = True
+
+        tasks.append(socket_task)
+        tasks.append(_tie_socket())
     # return_exceptions: a companion bind failure (the advisory check raced)
     # must not cancel the primary. A primary failure still exits the process,
     # because _tie_companion flags the companion and every task then ends —
@@ -17666,15 +17786,16 @@ if __name__ == "__main__":
     # never stop the proxy). Say what it found, so a miss is visible in the
     # journal instead of showing up later as unexplained default behaviour.
     logger.info(
-        "proxy env: %s | auth=%s | bind=%s:%d | ollama=%s",
+        "proxy env: %s | auth=%s | bind=%s:%d | ollama=%s | socket=%s",
         f"loaded {_PROXY_ENV_FILE_LOADED}" if _PROXY_ENV_FILE_LOADED else "no proxy.env found",
         "enabled" if PROXY_AUTH_TOKEN else "DISABLED",
         PROXY_HOST,
         PROXY_PORT,
         f"port {PROXY_OLLAMA_PORT}" if PROXY_OLLAMA_PORT > 0 else "off",
+        PROXY_SOCKET or "off",
     )
     _assert_bind_is_authenticated(PROXY_HOST, PROXY_AUTH_TOKEN)
-    if PROXY_OLLAMA_PORT > 0:
+    if PROXY_OLLAMA_PORT > 0 or PROXY_SOCKET:
         asyncio.run(_run_proxy_servers())
     else:
         # Legacy single-port path kept byte-identical to the pre-Ollama

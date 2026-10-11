@@ -1,7 +1,7 @@
 # UAP CLI Reference
 
 > Complete command reference for the Universal Agent Protocol command-line interface (`uap`).
-> Version v2.29.0.
+> Version v2.30.0.
 
 > **🏭 Where this fits:** Every station — this is the control panel for the whole
 > line. **What it delivers:** one binary that drives each stage of your
@@ -650,7 +650,15 @@ Ports/hosts: `UAP_DASH_PORT` (3847), `UAP_DASH_HOST` (localhost),
 uap proxy status --json    # includes a `dashboard` block (port, url, healthy, owner)
 uap proxy restart          # e.g. after changing PROXY_* in .uap/proxy.env
 uap proxy dashboard off    # opt out of the ride-along dashboard
+uap proxy connect --socket ~/.uap/proxy.sock --port 4000   # re-serve the socket on TCP
 ```
+
+`connect` (bridge P4) is the companion to the proxy's optional AF_UNIX surface
+(`PROXY_SOCKET`, served 0600): a small relay that accepts on a local TCP port
+and pipes every byte to the socket, for clients that cannot speak AF_UNIX. It
+is fail-closed (an upstream failure destroys the client connection instead of
+hanging it) and touches a `--ready-file` once listening, so wrappers can wait
+out the boot race.
 
 The proxy binds `127.0.0.1` by default; see the proxy `PROXY_*` settings in the
 [Configuration Reference](CONFIGURATION_REFERENCE.md) and [Local Models](../guides/LOCAL_MODELS.md).
@@ -709,10 +717,25 @@ current dir + scratch are writable, so writes outside fail at the kernel — the
 boundary `--dangerously-skip-permissions` cannot bypass.
 
 ```bash
-uap sandbox -- <command> [args...]
+uap sandbox [--session <id>] [--net shared|off] -- <command> [args...]
 ```
 
-See [Sandbox](../guides/SANDBOX.md).
+Bridge P4 authorities on top of the floor:
+
+- `--net off` — the kernel egress boundary: own network namespace with nothing
+  up (no TCP, no DNS, not even loopback). For untrusted code, evals, and
+  data-only work; a harness that needs the model fails loudly by design.
+- per-session writable holes from the consent ledger (reason REQUIRED, TTL
+  default 8h / cap 7d, audit-logged):
+
+```bash
+uap sandbox grant <path...> --session <id> --reason "..." [--ttl <secs>]
+uap sandbox grants [--session <id>] [--json]
+uap sandbox revoke <grantId>
+```
+
+See [Sandbox](../guides/SANDBOX.md) and
+[ADR 0011](../architecture/adr/0011-sandbox-grants-and-network-egress-boundary.md).
 
 ---
 

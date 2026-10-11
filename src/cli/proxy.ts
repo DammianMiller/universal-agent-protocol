@@ -546,6 +546,10 @@ export interface ProxyOptions {
   value?: string;
   /** Skip the ride-along dashboard for this invocation (`--no-dashboard`). */
   dashboard?: boolean;
+  /** `connect`: AF_UNIX socket of the proxy (or set UAP_PROXY_SOCKET). */
+  socket?: string;
+  /** `connect`: readiness-handshake file (touched once listening). */
+  readyFile?: string;
 }
 
 export async function proxyCommand(
@@ -796,9 +800,30 @@ export async function proxyCommand(
       return;
     }
 
+    case 'connect': {
+      // The in-sandbox TCP→unix relay (`uap sandbox --net=proxy` launches it
+      // inside the namespace; it is also runnable by hand for diagnostics).
+      const socket = String((options as { socket?: string }).socket || process.env.UAP_PROXY_SOCKET || '').trim();
+      if (!socket) {
+        console.error(
+          chalk.red('uap proxy connect requires --socket <path> (the proxy AF_UNIX socket, or set UAP_PROXY_SOCKET)'),
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const listenPort = Number(options.port || process.env.PROXY_PORT || 4000);
+      const { proxyConnectCommand } = await import('./proxy-relay.js');
+      await proxyConnectCommand({
+        socket,
+        listenPort,
+        quiet: options.quiet === true,
+        readyFile: options.readyFile,
+      });
+      return;
+    }
     default:
       console.error(
-        chalk.red(`Unknown proxy subcommand '${sub}'. Use: ensure | release | status | start | stop | restart | enable | disable | dashboard`)
+        chalk.red(`Unknown proxy subcommand '${sub}'. Use: ensure | release | status | start | stop | restart | enable | disable | dashboard | connect`)
       );
       process.exitCode = 1;
   }

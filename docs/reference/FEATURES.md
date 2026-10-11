@@ -1,6 +1,6 @@
 # Feature Catalog
 
-> Universal Agent Protocol (UAP) v2.29.0
+> Universal Agent Protocol (UAP) v2.30.0
 
 > **🏭 Where this fits:** Every station on the line — this catalog is the parts list for the whole factory. **What it delivers:** each feature below is mapped to the stage of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md) it protects, so you can see exactly where your agent's work stops being plausible-looking and starts being genuinely shippable. For *why* the catalog grew this way — the Miller-Tech / Pay2U origin, the hardening eras, and the 2026-10 bridge program — see [The Evolution of UAP](../guides/EVOLUTION.md).
 
@@ -183,6 +183,7 @@ you'd run by hand.
 | Dependency-triggered dispatch (`task-orchestrator.ts`) | Completion-triggered task scheduling: a finished task's slot refills the moment it settles, and a dependent starts as soon as its last dependency succeeds — no wave barrier idles fast siblings behind slow ones. Settlement stays strictly sequential (one task at a time); which task settles next is timing-dependent. |
 | Per-leaf model dials (`decompose.ts`, `orchestrated-mission.ts`, `deliver.ts`) | Phases may carry an optional `model` key (planner-relayed from the mission's own list, or hand-authored); the dial binds that one task's convergence loop to the named preset — fail-closed to the mission model on unknown keys, non-isolated tasks, and the blind-executor path, with a plan-time lint warning at mission start. |
 | Attention queue (`attention.ts`) | The ask-instead-of-stop rail: decisions that are genuinely the operator's (a parked placement awaiting swap approval, grant requests) are recorded with context and a SAFE DEFAULT into the main checkout's `.uap/attention.json`, and the agent keeps working. `uap attention list/ack/decide`; the AFK auto-decider (`sweep` — at session start, on a 60s dashboard timer) adopts recorded safe defaults once the grace window elapses (logged, never silent; a site can pin the deadline to the ask's own expiry) and escalates items without one. Fail-open storage, sanitized at ingest AND on load, `UAP_ATTENTION_OFF` kill switch. |
+| Sandbox grants + egress boundary (`sandbox-grants.ts`, `sandbox.ts`) | Recorded authority for the bubblewrap sandbox: extra writable holes are per-session GRANTS (`uap sandbox grant <path> --session <id> --reason "..."`, TTL 8h default / 7d cap, revocable) from a consent ledger at the main checkout root, audit-logged per run — the legacy `UAP_SANDBOX_ALLOW` env still works but is named UNRECORDED in the audit. `--net off` is the kernel egress boundary: own network namespace with nothing up (no TCP, no DNS, not even loopback) for untrusted code, evals, and data-only work. The proxy's optional `PROXY_SOCKET` (0600 AF_UNIX) is the permission-gated model choke point; `uap proxy connect` re-serves it on local TCP for AF_UNIX-less clients. |
 | Integrity (`integrity.ts`) | Test-protection / integrity guard — stops the model from gutting the tests to "pass." |
 
 ## MCP Router (`src/mcp-router/`) — Cross-cutting (lean context)
