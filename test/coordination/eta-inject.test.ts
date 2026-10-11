@@ -10,6 +10,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { maybeEtaInjection } from '../../src/coordination/eta-inject.js';
 import { ModelAnalytics } from '../../src/models/analytics.js';
+import { resolve } from '../../src/coordination/reactor.js';
 
 const MODEL = 'eta-inject-test-model';
 const savedModel = process.env.UAP_ACTIVE_MODEL;
@@ -119,5 +120,42 @@ describe('maybeEtaInjection — the solid-estimate gate', () => {
     writeFileSync(join(dir, 'blocker'), '');
     expect(maybeEtaInjection(process.cwd(), join(dir, 'blocker', 'model_analytics.db'))).toBeNull();
     expect(existsSync(join(dir, 'blocker', 'model_analytics.db'))).toBe(false);
+  });
+});
+
+describe('reactor wiring — the eta:pace surfaced key (dedupe per session)', () => {
+  it('surfaces the measured-pace block once and suppresses it when eta:pace is already surfaced', () => {
+    // The store must live where the REACTOR's cwd points (the injection
+    // resolves agents/data/memory/model_analytics.db under ctx.cwd — the
+    // fix that made this wiring testable without process.chdir).
+    const dir = join(tmpdir(), `uap-eta-wiring-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    mkdirSync(join(dir, 'agents', 'data', 'memory'), { recursive: true });
+    dirs.push(dir);
+    process.env.UAP_ACTIVE_MODEL = MODEL;
+    seed(join(dir, 'agents', 'data', 'memory', 'model_analytics.db'), 6);
+
+    const r1 = resolve({ event: 'user-prompt', promptText: 'plan the next benchmark run', cwd: dir });
+    expect(r1.inject).toMatch(/Measured pace/);
+    expect(r1.surfacedKeys).toContain('eta:pace');
+
+    // Second resolve with the surfaced key recorded (what the per-session
+    // caller persists): the block must not fire again.
+    const r2 = resolve({
+      event: 'user-prompt',
+      promptText: 'plan the next benchmark run',
+      cwd: dir,
+      surfaced: ['eta:pace'],
+    });
+    expect(r2.inject ?? '').not.toMatch(/Measured pace/);
+  });
+
+  it('never materializes the project store through the reactor path (requireExisting holds at the wiring)', () => {
+    const dir = join(tmpdir(), `uap-eta-wiring2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    mkdirSync(dir, { recursive: true });
+    dirs.push(dir);
+    process.env.UAP_ACTIVE_MODEL = MODEL;
+    const r = resolve({ event: 'user-prompt', promptText: 'plan the next benchmark run', cwd: dir });
+    expect(r.inject ?? '').not.toMatch(/Measured pace/);
+    expect(existsSync(join(dir, 'agents', 'data', 'memory', 'model_analytics.db'))).toBe(false);
   });
 });

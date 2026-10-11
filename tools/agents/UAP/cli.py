@@ -25,12 +25,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+# Same dir as this script when run directly (python3 cli.py) or imported.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paths import main_checkout_root
+
 
 class UAPCLI:
     """Universal Agent Protocol CLI."""
 
     def __init__(self):
-        self.project_root = Path(__file__).parent.parent.parent
+        # The data layer is SHARED across worktrees: resolve the MAIN
+        # checkout root (git-common-dir works even from a linked worktree)
+        # instead of the file's own checkout — which, pre-reorg, also
+        # resolved one level short (to tools/, pointing at a nonexistent
+        # tools/agents/data/).
+        self.project_root = main_checkout_root(Path(__file__))
         self.db_path = self.project_root / "agents/data/memory/short_term.db"
         self.coord_db_path = (
             self.project_root / "agents/data/coordination/coordination.db"
@@ -200,8 +209,10 @@ class UAPCLI:
             try:
                 with open(pkg_path, "r") as f:
                     return json.load(f).get("version", "0.0.0")
-            except Exception:
-                pass
+            except Exception as exc:
+                # Loud, never silent — a failed version read degrades to
+                # "unknown", it doesn't vanish (repo posture).
+                print(f"[uap] package.json unreadable ({exc}); version unknown", file=sys.stderr)
         return "0.0.0"
 
     def _run_verification_tests(

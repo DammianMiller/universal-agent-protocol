@@ -73,8 +73,8 @@ export interface SessionModelUsage {
  * thereby creating) the store — `new ModelAnalytics()` on a missing path
  * materializes it.
  */
-export function resolveAnalyticsDbPath(dbPath?: string): string {
-  return dbPath || join(process.cwd(), 'agents', 'data', 'memory', 'model_analytics.db');
+export function resolveAnalyticsDbPath(dbPath?: string, cwd: string = process.cwd()): string {
+  return dbPath || join(cwd, 'agents', 'data', 'memory', 'model_analytics.db');
 }
 
 export class ModelAnalytics {

@@ -103,12 +103,23 @@ Rules worth knowing:
   1s). Grants default to **8h** and hard-cap at **7d**; an identical open grant is renewed,
   not duplicated; expired grants are invisible to the sandbox. Every persist is
   re-verified against a concurrent writer before success is reported.
-- Grants default to **8h** and hard-cap at **7d**; an identical open grant is renewed, not
-  duplicated; expired grants are invisible to the sandbox.
 - The ledger lives at the MAIN checkout's `.uap/sandbox-grants.json` (one ledger per
   checkout, shared by every surface — the ADR 0010 anchor). Every sandbox run appends to
   `.uap/sandbox-audit.jsonl`: which grants were used, which network mode engaged, and any
   legacy `UAP_SANDBOX_ALLOW` entries labeled `unrecordedAllow` — still honored, now named.
+  Audit lines carry a monotonic `seq` and the file is BOUNDED: past 12,000 lines it
+  compacts to the 10,000 newest event lines — plus the triggering event and one
+  `audit-compaction` marker recording the drop, so the file lands at 10,002.
+- **Tamper evidence (the ADR 0011 trust anchor).** Every recorded grant/renew/revoke also
+  writes a 0600 anchor OUTSIDE the checkout
+  (`$XDG_STATE_HOME/uap/sandbox-anchors/<hash-of-root>.json`) recording the hash of the
+  sanitized ledger. On load, the ledger is re-hashed and compared: if something with the
+  checkout's write reach changed it outside a recorded consent operation, `uap sandbox
+  grants` stamps the listing INTEGRITY MISMATCH (rows shown but unverified), new grants
+  are REFUSED, and a sandbox session opens ZERO grant-derived holes — the kernel boundary
+  itself is unaffected. Revoking still works (removing authority is the safe direction)
+  and re-anchors the remaining rows as the new baseline, naming the prior mismatch
+  loudly. `UAP_SANDBOX_ANCHOR_DIR` pins the anchor dir (tests, odd layouts).
 - `UAP_SANDBOX_GRANTS_OFF=1` resolves zero grants; `UAP_SANDBOX_GRANTS` pins the ledger
   file (tests, odd layouts).
 

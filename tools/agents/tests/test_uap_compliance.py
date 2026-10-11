@@ -16,13 +16,23 @@ import sys
 import unittest
 from pathlib import Path
 
+# Shared resolution: the data layer lives at the MAIN checkout root (shared
+# across worktrees) — same module the CLI itself uses.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "UAP"))
+from paths import main_checkout_root
+
 
 class TestUAPCompliance(unittest.TestCase):
     """Test suite for UAP protocol compliance."""
 
     def setUp(self):
         """Setup test fixtures."""
-        self.project_root = Path(__file__).parent.parent.parent
+        # The pre-reorg depth arithmetic resolved to tools/ (pointing the
+        # suite at a nonexistent tools/agents/data/); and a worktree copy
+        # of this file used to look inside the worktree, where no data
+        # exists. Resolve the MAIN checkout root instead — the shared data
+        # layer the session-start hook and the TS CLI both use.
+        self.project_root = main_checkout_root(Path(__file__))
         self.db_path = self.project_root / "agents/data/memory/short_term.db"
         self.coord_db_path = (
             self.project_root / "agents/data/coordination/coordination.db"

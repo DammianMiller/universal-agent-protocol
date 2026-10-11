@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, chmodSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, chmodSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -49,6 +49,9 @@ beforeEach(() => {
   // worktree), but every store honors its env override (workers can't chdir).
   process.env.UAP_SANDBOX_GRANTS = join(dir, 'grants.json');
   process.env.UAP_SANDBOX_AUDIT = join(dir, 'audit.jsonl');
+  // Pin the trust anchor too: without this, a seeded grant would write a
+  // REAL anchor into the operator's state dir.
+  process.env.UAP_SANDBOX_ANCHOR_DIR = join(dir, 'anchors');
   delete process.env.UAP_SANDBOX_OFF;
   delete process.env.UAP_SANDBOX_ALLOW;
   delete process.env.UAP_SANDBOX_NET;
@@ -73,6 +76,7 @@ beforeEach(() => {
 afterEach(() => {
   process.argv = prevArgv;
   rmSync(dir, { recursive: true, force: true });
+  delete process.env.UAP_SANDBOX_ANCHOR_DIR;
 });
 
 afterAll(() => {
@@ -189,6 +193,27 @@ describe('consent cannot come from inside the sandbox (P4 security review findin
     await sandboxCommand(['grants'], { session: 's-cli', json: true });
     expect(exitSpy).not.toHaveBeenCalled();
     expect(logLines().at(-1)).toBe('[]');
+  });
+  it('stamps the grants listing with the anchor verdict (ADR 0011): red banner for humans, stderr-only for --json', async () => {
+    // Seed + ANCHOR via the policy (a recorded consent operation).
+    const g = grantAuthority(process.cwd(), { sessionId: 's-cli', paths: [hole], reason: 'seed consent' });
+    if (!g.ok) throw new Error(g.error);
+    // Tamper: something with checkout write reach rewrites the ledger
+    // without going through grant/revoke.
+    const rows = JSON.parse(readFileSync(join(dir, 'grants.json'), 'utf-8')) as Record<string, unknown>[];
+    rows[0].reason = 'rewritten by an unrecorded writer';
+    writeFileSync(join(dir, 'grants.json'), JSON.stringify(rows));
+    // Human path: the banner is red and on stdout, rows still listed.
+    await sandboxCommand(['grants'], {});
+    expect(logLines().join('\n')).toMatch(/INTEGRITY MISMATCH/);
+    expect(logLines().join('\n')).toMatch(/seed consent|rewritten/); // rows are shown, stamped unverified
+    // --json: the data stays pure on stdout; the alarm rides stderr.
+    logSpy.mockClear();
+    errSpy.mockClear();
+    await sandboxCommand(['grants'], { json: true });
+    expect(logLines().at(-1)).toBe(JSON.stringify(rows, null, 2));
+    expect(logLines().join('\n')).not.toMatch(/INTEGRITY/);
+    expect(errText()).toMatch(/INTEGRITY MISMATCH/);
   });
 
   it('ro-binds the ledger and audit into every sandbox plan so a sandboxed agent cannot plant rows', async () => {

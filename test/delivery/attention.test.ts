@@ -281,6 +281,25 @@ describe('review hardening (security F1/F3/F5 + architecture B1/M1/M2/M3)', () =
     expect(attentionQueuePath(dir)).toBe(join(dir, 'pinned-queue.json'));
     delete process.env.UAP_ATTENTION_QUEUE;
   });
+  it('B1 persist: a pinned queue in a MISSING directory is created there — the mkdir targets the write, not <root>/.uap', () => {
+    // The pinned-path persist bug (the same finding P5 fixed in
+    // persistGrants): mkdir used to create <projectRoot>/.uap while the
+    // write went to the UAP_ATTENTION_QUEUE pin — a pinned path whose
+    // parent did not exist FAILED despite the mkdir. It must persist to
+    // exactly where the pin says.
+    const pinned = join(dir, 'nested', 'queue-dir', 'attention.json');
+    process.env.UAP_ATTENTION_QUEUE = pinned;
+    try {
+      const item = enqueueAttention(dir, {
+        source: 'test/pin-mkdir', kind: 'review-request', title: 'pinned persist', safeDefault: undefined,
+      })!;
+      expect(item.title).toBe('pinned persist');
+      expect(readFileSync(pinned, 'utf-8')).toContain('pinned persist');
+      expect(listAttention(dir).length).toBe(1);
+    } finally {
+      delete process.env.UAP_ATTENTION_QUEUE;
+    }
+  });
 
   it('M2: the CLI default view is the OPEN set (pending + acknowledged + escalated); an unknown --status errors', async () => {
     const pendingItem = enqueue()!;

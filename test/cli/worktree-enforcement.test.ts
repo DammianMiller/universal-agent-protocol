@@ -69,4 +69,21 @@ describe('a worktree must inherit enforcement', () => {
     // The MCP router config is how the agent reaches `uap deliver` at all.
     expect(existsSync(join(wt, '.mcp.json'))).toBe(true);
   }, 30_000);
+
+  it('installing into the worktree leaves the MAIN checkout untouched (the clobbering concern, pinned)', async () => {
+    // `uap worktree create` runs `hooks install --projectDir <worktree>`:
+    // every installer must scope to that projectDir. The parent checkout's
+    // hook/config dirs (including any the operator hand-tuned) must never
+    // receive so much as a byte. (Debt item 14, verified + pinned: the
+    // tracked .claude/hooks are byte-identical to templates/hooks, so the
+    // copy is a content no-op on tracked files; the parent is never a target.)
+    const wt = join(root, '.worktrees', 'scoped');
+    mkdirSync(join(root, '.worktrees'), { recursive: true });
+    sh(`git worktree add -q -b feature/scoped ${JSON.stringify(wt)}`, root);
+    await hooksCommand('install', { projectDir: wt });
+    expect(existsSync(join(wt, '.claude', 'hooks', 'uap-policy-gate.sh'))).toBe(true); // went to the worktree
+    expect(existsSync(join(wt, '.opencode', 'hooks', 'uap-policy-gate.sh'))).toBe(true);
+    expect(existsSync(join(root, '.claude'))).toBe(false); // the parent never received hooks
+    expect(existsSync(join(root, '.opencode'))).toBe(false);
+  }, 30_000);
 });

@@ -14,6 +14,7 @@
 import { resolveActiveModel } from '../delivery/handsfree-config.js';
 import { estimatePace, formatDurationMs } from '../delivery/eta-estimate.js';
 import { termSafeBounded } from '../utils/terminal-safe.js';
+import { resolveAnalyticsDbPath } from '../models/analytics.js';
 
 /**
  * Return the measured-pace block for injection, or null when there is no
@@ -25,11 +26,19 @@ import { termSafeBounded } from '../utils/terminal-safe.js';
  * store would materialize an empty analytics DB per fresh checkout, and a
  * read surface must not create the thing it reads. No store on disk ⇒ no
  * block, no side effect.
+ *
+ * The store resolves from the `cwd` the REACTOR passes (every other
+ * injection surface reads project state through that cwd; a process.cwd()
+ * default here would read the wrong checkout whenever the reactor runs
+ * from a nested directory, and made the per-prompt wiring untestable
+ * without chdir). `resolveAnalyticsDbPath(cwd)` keeps the on-disk location
+ * ONE rule shared with the recorder, not a copied literal.
  */
 export function maybeEtaInjection(cwd: string, dbPath?: string): string | null {
   try {
     const modelId = resolveActiveModel(cwd);
-    const est = estimatePace({ modelId, dbPath, requireExisting: true });
+    const store = resolveAnalyticsDbPath(dbPath, cwd);
+    const est = estimatePace({ modelId, dbPath: store, requireExisting: true });
     if (!est || est.confidence !== 'solid') return null;
     // The model id comes from env/config the repo can control; the block
     // presents itself as MEASURED data, so the display string is sanitized

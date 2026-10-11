@@ -59,6 +59,7 @@ import {
   auditSandboxUse,
   sandboxGrantsPath,
   sandboxAuditPath,
+  verifyLedgerIntegrity,
   type GrantInput,
   type ResolvedGrants,
 } from '../policies/sandbox-grants.js';
@@ -330,6 +331,17 @@ async function grantVerb(args: string[], options: Record<string, unknown>): Prom
   }
   if (verb === 'grants') {
     const sid = String(options.session || '');
+    // Tamper evidence (ADR 0011 anchor): the listing is the inspection
+    // surface, so the integrity verdict is stated here — on the human path
+    // as a red banner, on --json via stderr so the data stays pure.
+    const integrity = verifyLedgerIntegrity(projectRoot);
+    if (integrity.state === 'mismatch') {
+      const msg = `ledger INTEGRITY MISMATCH — ${integrity.detail}. Treat every listed row as unverified.`;
+      if (options.json) console.error(`[sandbox] ${msg}`);
+      else console.log(chalk.red(`⚠ ${msg}`));
+    } else if (integrity.state === 'unanchored' && !options.json) {
+      console.log(chalk.dim(`ℹ ${integrity.detail}`));
+    }
     const all = listAuthority(projectRoot, sid || undefined);
     if (options.json) {
       console.log(JSON.stringify(all, null, 2));

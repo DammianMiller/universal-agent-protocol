@@ -4,7 +4,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { registerConfigCommands } from '../cli/config-command.js';
 import { existsSync, readFileSync } from 'fs';
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 // Lazy import helpers - commands are loaded on-demand to reduce startup time (~10x faster --help)
@@ -2546,7 +2546,10 @@ uapOmpCmd.addCommand(
         const uapOmpDir = process.env.HOME + '/.uap/omp';
         const dashboardScript = `${uapOmpDir}/commands/uap-dashboard.sh`;
         if (existsSync(dashboardScript)) {
-          execSync(`bash "${dashboardScript}"`, { stdio: 'inherit' });
+          // Argv array, never a shell: the path interpolates into a command
+          // string at the old call site (prepass debt) and a hostile HOME
+          // must not become a shell metacharacter.
+          execFileSync('bash', [dashboardScript], { stdio: 'inherit' });
         } else {
           console.error('UAP dashboard not installed. Run: uap-omp install');
         }
@@ -2562,17 +2565,25 @@ uapOmpCmd.addCommand(
   new Command('memory')
     .description('Manage UAP memory for oh-my-pi')
     .addCommand(
-      new Command('status').description('Show memory status').action(() => {
+      new Command('status').description('Show memory status').action(async () => {
         try {
           const uapOmpDir = process.env.HOME + '/.uap/omp';
           const dbPath = `${uapOmpDir}/memory/short_term.db`;
           if (existsSync(dbPath)) {
-            execSync(
-              `sqlite3 "${dbPath}" "SELECT COUNT(*) as total, COUNT(DISTINCT type) as types FROM memories;"`,
-              {
-                stdio: 'inherit',
-              }
-            );
+            // The omp memory DB is better-sqlite3's own format: read it with
+            // the library (lazy — keeps `uap --help` fast), never the sqlite3
+            // CLI through a shell. The old call interpolated the path into
+            // `execSync` (prepass debt).
+            const { default: Database } = await import('better-sqlite3');
+            const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+            try {
+              const row = db
+                .prepare('SELECT COUNT(*) as total, COUNT(DISTINCT type) as types FROM memories')
+                .get() as { total: number; types: number };
+              console.log(`total: ${row.total}\ntypes: ${row.types}`);
+            } finally {
+              db.close();
+            }
           } else {
             console.log('No memory database found. Run: uap-omp install');
           }
@@ -2587,20 +2598,37 @@ uapOmpCmd.addCommand(
         .description('Query memory for relevant context')
         .argument('<search>', 'Search term')
         .option('-n, --limit <number>', 'Max results', '5')
-        .action((search, options) => {
+        .action(async (search, options) => {
           try {
             const uapOmpDir = process.env.HOME + '/.uap/omp';
             const dbPath = `${uapOmpDir}/memory/short_term.db`;
             if (existsSync(dbPath)) {
-              // Sanitize search term to prevent SQL injection
-              const sanitizedSearch = search.replace(/'/g, "''");
-              const sanitizedLimit = parseInt(options.limit, 10) || 5;
-              execSync(
-                `sqlite3 "${dbPath}" "SELECT content, type, importance FROM memories WHERE content LIKE '%${sanitizedSearch}%' ORDER BY importance DESC LIMIT ${sanitizedLimit};"`,
-                {
-                  stdio: 'inherit',
+              // Parameterized LIKE + bound LIMIT: the search term is
+              // user/LLM-controlled and must never reach a shell or be
+              // spliced into SQL text (the old `execSync` call was a real
+              // injection surface — `$()` inside its double quotes executed).
+              // LIKE wildcards in the TERM are escaped too: a literal `%`
+              // search is a literal-% search, not "dump the whole table".
+              const { default: Database } = await import('better-sqlite3');
+              const parsedLimit = parseInt(options.limit, 10);
+              const limit = Number.isFinite(parsedLimit) ? parsedLimit : 5;
+              const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+              try {
+                const rows = db
+                  .prepare(
+                    "SELECT content, type, importance FROM memories WHERE content LIKE ? ESCAPE '\\' ORDER BY importance DESC LIMIT ?"
+                  )
+                  .all(`%${String(search).replace(/[\\%_]/g, (m) => `\\${m}`)}%`, Math.max(1, limit)) as Array<{
+                  content: string;
+                  type: string;
+                  importance: number;
+                }>;
+                for (const r of rows) {
+                  console.log(`[${r.type}] (i${r.importance}) ${r.content}`);
                 }
-              );
+              } finally {
+                db.close();
+              }
             } else {
               console.log('No memory database found. Run: uap-omp install');
             }
@@ -2622,7 +2650,9 @@ uapOmpCmd.addCommand(
           const uapOmpDir = process.env.HOME + '/.uap/omp';
           const worktreesFile = `${uapOmpDir}/worktrees.json`;
           if (existsSync(worktreesFile)) {
-            execSync(`cat "${worktreesFile}" | jq '.'`, { stdio: 'inherit' });
+            // Pretty-print it ourselves: no shell, no `cat | jq` dependency
+            // (the old pipe interpolated the path through execSync).
+            console.log(JSON.stringify(JSON.parse(readFileSync(worktreesFile, 'utf-8')), null, 2));
           } else {
             console.log('No worktrees tracked. Run: uap-omp install');
           }
@@ -2659,7 +2689,9 @@ uapOmpCmd.addCommand(
         try {
           const scriptPath = join(__dirname, '../../scripts/omp/uap-omp.sh');
           if (existsSync(scriptPath)) {
-            execSync(`bash "${scriptPath}" install`, { stdio: 'inherit' });
+            // Argv array, never a shell (prepass debt: the path used to
+            // interpolate into an execSync command string).
+            execFileSync('bash', [scriptPath, 'install'], { stdio: 'inherit' });
           } else {
             console.error('UAP hooks script not found. Please rebuild with: npm run build');
           }
@@ -2674,7 +2706,7 @@ uapOmpCmd.addCommand(
         try {
           const scriptPath = join(__dirname, '../../scripts/omp/uap-omp.sh');
           if (existsSync(scriptPath)) {
-            execSync(`bash "${scriptPath}" status`, { stdio: 'inherit' });
+            execFileSync('bash', [scriptPath, 'status'], { stdio: 'inherit' });
           } else {
             console.error('UAP hooks script not found. Please rebuild with: npm run build');
           }

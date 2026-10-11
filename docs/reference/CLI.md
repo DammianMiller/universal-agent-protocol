@@ -809,6 +809,12 @@ uap sandbox grants [--session <id>] [--json]
 uap sandbox revoke <grantId>
 ```
 
+  The grants listing states the ledger's tamper-evidence verdict (ADR 0011):
+  a ledger that fails its out-of-checkout anchor check is stamped INTEGRITY
+  MISMATCH — rows are still listed but marked unverified, new grants are
+  refused, and a sandbox session opens ZERO grant-derived holes. With
+  `--json` the alarm rides stderr so the data stays pure.
+
 See [Sandbox](../guides/SANDBOX.md) and
 [ADR 0011](../architecture/adr/0011-sandbox-grants-and-network-egress-boundary.md).
 

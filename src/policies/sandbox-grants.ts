@@ -33,6 +33,17 @@ import { randomBytes, randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { mainCheckoutRoot } from '../utils/checkout-root.js';
+import { ledgerHeadOf, pathCoversAnchorDir, readAnchor, verifyLedger, writeAnchor } from './sandbox-anchor.js';
+import type { Verification } from './sandbox-anchor.js';
+
+/** Audit-log retention: the trail is append-only history, but an unbounded
+ *  JSONL under the shared-write `.uap/` grows forever (debt item 3) — past
+ *  the trigger it is compacted to the newest AUDIT_MAX_LINES event lines
+ *  (plus the triggering event and one `audit-compaction` marker), so the
+ *  file lands at AUDIT_MAX_LINES + 2. The compaction is itself audited, so
+ *  a pruned trail is an EXPECTED state, never a silent one. */
+export const AUDIT_MAX_LINES = 10_000;
+export const AUDIT_PRUNE_TRIGGER = 12_000;
 
 /** One consented extra authority for one session. */
 export interface SandboxGrant {
@@ -131,7 +142,12 @@ export function validateGrantPath(p: string): string | null {
 }
 
 function sanitizeGrant(raw: Partial<SandboxGrant> & { [k: string]: unknown }): SandboxGrant | null {
-  const id = typeof raw.id === 'string' ? raw.id.trim().slice(0, 64) : '';
+  // `id` goes through the SAME clean() as every other string field: the row is
+  // rendered on operator terminals (the grants listing, the dashboard section,
+  // the revoke command line), and a planted id carrying ANSI/OSC bytes would
+  // fire exactly when the operator is drawn to inspect a tamper alarm
+  // (review M1, 2026-10-11). trim() alone was the one gap.
+  const id = clean(raw.id, 64);
   const sessionId = clean(raw.sessionId, 64);
   const reason = clean(raw.reason, 300);
   const grantedBy = clean(raw.grantedBy, 64);
@@ -235,17 +251,102 @@ function persistGrants(projectRoot: string, grants: SandboxGrant[]): boolean {
   }
 }
 
-/** Append one audit line. Append-only, best-effort, never throws. */
+/** Append one audit line. Append-only, best-effort, never throws. Every line
+ *  carries a monotonic `seq` (compaction resets the prefix but never reuses
+ *  numbers), and the file is compacted past AUDIT_PRUNE_TRIGGER with the
+ *  drop recorded in an `audit-compaction` marker. */
 function audit(projectRoot: string, event: Record<string, unknown>): void {
   try {
     const path = sandboxAuditPath(projectRoot);
     mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(event)}\n`, 'utf-8');
+    let prevSeq = 0;
+    let lines: string[] = [];
+    if (existsSync(path)) {
+      const text = readFileSync(path, 'utf-8');
+      if (text.length > 0) {
+        lines = text.split('\n').filter((l) => l.length > 0);
+        // Recover the previous seq by scanning BACKWARDS for the last
+        // parseable line: after a compaction the file holds 10k lines with
+        // seqs up in the 12k+ range, so the old `lines.length` fallback
+        // could REUSE a live seq number. A malformed tail degrades to
+        // (last good seq + 1), never to a collision.
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const last = JSON.parse(lines[i]) as { seq?: unknown };
+            if (typeof last.seq === 'number' && Number.isFinite(last.seq)) {
+              prevSeq = last.seq;
+              break;
+            }
+          } catch {
+            /* keep scanning */
+          }
+        }
+      }
+    }
+    const seq = prevSeq + 1;
+    if (lines.length + 1 > AUDIT_PRUNE_TRIGGER) {
+      const kept = lines.slice(-AUDIT_MAX_LINES);
+      kept.push(JSON.stringify({ ...event, seq }));
+      kept.push(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          action: 'audit-compaction',
+          dropped: lines.length + 1 - kept.length,
+          seq: seq + 1,
+        }),
+      );
+      const tmp = `${path}.${process.pid}-${randomBytes(3).toString('hex')}.tmp`;
+      writeFileSync(tmp, kept.map((l) => `${l}\n`).join(''), 'utf-8');
+      renameSync(tmp, path);
+      return;
+    }
+    appendFileSync(path, `${JSON.stringify({ ...event, seq })}\n`, 'utf-8');
   } catch (err) {
     console.warn(
       `[sandbox-grants] audit append failed (grant/revoke still applied): ${
         err instanceof Error ? err.message : String(err)
       }`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Trust anchor (ADR 0011 follow-up, shipped): see sandbox-anchor.ts.
+// ---------------------------------------------------------------------------
+
+/** Verify the SANITIZED on-disk ledger against the out-of-checkout anchor.
+ *  'unanchored' is the pre-bootstrap state, not a failure. When `grants` is
+ *  passed (an already-loaded sanitized snapshot), the SAME snapshot is
+ *  verified and then acted on — the torn-read fix (review m2): loading the
+ *  file twice left a window where the hash saw one state and the resolver
+ *  acted on another. */
+export function verifyLedgerIntegrity(projectRoot: string, grants?: SandboxGrant[]): Verification {
+  const onDisk = grants ?? loadGrants(projectRoot);
+  return verifyLedger(projectRoot, ledgerHeadOf(onDisk));
+}
+
+/** Advance the anchor to a CONFIRMED on-disk state (called only after the
+ *  lost-update guard proved the persist landed). A failed anchor write is
+ *  loud but never fatal: the ledger stays operative; verification is simply
+ *  not possible until the next recorded mutation succeeds. */
+function anchorMutation(projectRoot: string, confirmed: SandboxGrant[]): void {
+  const prior = readAnchor(projectRoot);
+  if (!writeAnchor(projectRoot, ledgerHeadOf(confirmed), (prior?.mutations ?? 0) + 1)) {
+    console.warn(
+      '[sandbox-grants] trust-anchor write failed — the ledger is active but NOT verifiable; ' +
+        'the next successful grant/renew/revoke will try to anchor it',
+    );
+    return;
+  }
+  // Verify-after-write (review interleave finding): a concurrent writer's
+  // anchor landing between ours and the ledger read leaves a persistent
+  // false mismatch on a healthy ledger. Confirm ours is what the disk now
+  // holds; if not, say so — never a silent divergence.
+  const after = verifyLedgerIntegrity(projectRoot);
+  if (after.state !== 'ok') {
+    console.warn(
+      `[sandbox-grants] the trust anchor moved to a concurrent writer's state after this mutation (${after.state}) — ` +
+        'if `uap sandbox grants` reports a mismatch you did not cause, re-run the last grant/revoke',
     );
   }
 }
@@ -265,6 +366,13 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
   for (const p of input.paths) {
     const v = validateGrantPath(p);
     if (!v) return { ok: false, error: `not grantable: '${p}' (must be an existing absolute path, and not / , /home, or $HOME itself)` };
+    // The one hole that must never open: a grant covering the trust-anchor
+    // dir lets the sandboxed side delete or corrupt the tamper evidence
+    // itself (review m1 — the anchor is ro-bound by default, but a hole
+    // over it makes it writable).
+    if (pathCoversAnchorDir(v)) {
+      return { ok: false, error: `not grantable: '${p}' covers the sandbox trust-anchor directory — a hole there could destroy the tamper evidence itself` };
+    }
     if (!paths.includes(v)) paths.push(v);
     if (paths.length > MAX_PATHS_PER_GRANT) return { ok: false, error: `more than ${MAX_PATHS_PER_GRANT} paths in one grant — split it` };
   }
@@ -297,7 +405,20 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
   };
 
   for (let attempt = 0; ; attempt++) {
-    const existing = loadGrants(projectRoot).filter((g) => g.expiresAt > now.toISOString());
+    // ONE load, ONE hash, one array to act on (the torn-read fix, review
+    // m2): verifying a separate read left a window where the hash saw one
+    // state and the mint acted on another.
+    const loaded = loadGrants(projectRoot);
+    const integrity = verifyLedgerIntegrity(projectRoot, loaded);
+    if (integrity.state === 'mismatch') {
+      // A tampered ledger must not mint legitimacy: refuse to RECORD new
+      // consent on top of a state that failed integrity verification.
+      return {
+        ok: false,
+        error: `ledger failed integrity verification — ${integrity.detail}; refusing to record new consent until it is resolved`,
+      };
+    }
+    const existing = loaded.filter((g) => g.expiresAt > now.toISOString());
     // Dedupe: an identical open grant (same session + same paths) is refreshed,
     // not duplicated — a second `grant` for the same hole renews its TTL.
     const twin = existing.find(
@@ -316,11 +437,13 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
       // rename prevents corruption, not lost updates — a concurrent writer
       // landing after ours drops our renewal while we report success.
       // Verify ours survived; retry once against the fresh state.
-      const after = loadGrants(projectRoot).find((g) => g.id === twin.id);
+      const confirmedAll = loadGrants(projectRoot);
+      const after = confirmedAll.find((g) => g.id === twin.id);
       if (!after || after.expiresAt !== twin.expiresAt) {
         if (attempt === 0) continue;
         return { ok: false, error: 'ledger changed under a concurrent writer — renewal not confirmed; retry the grant' };
       }
+      anchorMutation(projectRoot, confirmedAll);
       audit(projectRoot, { ts: grant.grantedAt, action: 'grant-renewed', grantId: twin.id, sessionId, paths, reason });
       return { ok: true, grant: twin };
     }
@@ -332,10 +455,12 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
     // grants can both read-modify-write and silently drop the loser's row
     // while its CLI reports success — verify the row survived before
     // claiming the grant active.
-    if (!loadGrants(projectRoot).some((g) => g.id === grant.id)) {
+    const confirmedAll = loadGrants(projectRoot);
+    if (!confirmedAll.some((g) => g.id === grant.id)) {
       if (attempt === 0) continue;
       return { ok: false, error: 'ledger changed under a concurrent writer — the grant is NOT confirmed; retry' };
     }
+    anchorMutation(projectRoot, confirmedAll);
     audit(projectRoot, { ts: grant.grantedAt, action: 'grant', grantId: grant.id, sessionId, paths, reason, ttlSecs: ttl });
     return { ok: true, grant };
   }
@@ -353,6 +478,11 @@ export function listAuthority(projectRoot: string, sessionId?: string): SandboxG
  *  success over a live grant would be a false consent record. */
 export function revokeAuthority(projectRoot: string, grantId: string): boolean {
   const id = clean(grantId, 64);
+  // A mismatched ledger may still LOSE authority (revoking is the safe
+  // direction) — but the revoke re-anchors the remaining rows as the new
+  // baseline, so a pre-existing mismatch is named loudly at the exact
+  // moment it stops being detectable.
+  const preIntegrity = verifyLedgerIntegrity(projectRoot);
   for (let attempt = 0; ; attempt++) {
     const all = loadGrants(projectRoot);
     const keep = all.filter((g) => g.id !== id);
@@ -361,11 +491,19 @@ export function revokeAuthority(projectRoot: string, grantId: string): boolean {
     // Lost-update guard (P4 security review): a concurrent writer landing
     // after our persist can resurrect the row; verify the removal actually
     // landed before reporting success, retrying once against fresh state.
-    if (loadGrants(projectRoot).some((g) => g.id === id)) {
+    const confirmedAll = loadGrants(projectRoot);
+    if (confirmedAll.some((g) => g.id === id)) {
       if (attempt === 0) continue;
       return false;
     }
+    anchorMutation(projectRoot, confirmedAll);
     audit(projectRoot, { ts: new Date().toISOString(), action: 'revoke', grantId: id });
+    if (preIntegrity.state === 'mismatch') {
+      console.warn(
+        `[sandbox-grants] NOTE: the ledger had failed integrity verification before this revoke — ${preIntegrity.detail}. ` +
+          'The remaining rows are now anchored as the new baseline; inspect them with `uap sandbox grants`.',
+      );
+    }
     return true;
   }
 }
@@ -376,7 +514,33 @@ export function revokeAuthority(projectRoot: string, grantId: string): boolean {
  * never has to reason about them.
  */
 export function resolveSessionGrants(projectRoot: string, sessionId: string): ResolvedGrants {
-  const active = listAuthority(projectRoot, sessionId);
+  // ONE load: the snapshot that gets verified is the SAME snapshot that
+  // resolves the holes (the torn-read fix, review m2).
+  const loaded = loadGrants(projectRoot);
+  // Fail-CLOSED on tamper evidence (ADR 0011): a ledger that fails anchor
+  // verification opens ZERO grant-derived holes. The sandbox's own kernel
+  // boundary is unaffected — only the extra holes close (the safe direction
+  // for authority, same rule as an unreadable ledger).
+  const integrity = verifyLedgerIntegrity(projectRoot, loaded);
+  if (integrity.state === 'mismatch') {
+    console.error(
+      `[sandbox-grants] INTEGRITY MISMATCH — ${integrity.detail}. ` +
+        'Opening NO grant-derived writable holes for this session; the sandbox boundary itself is unaffected. ' +
+        'Run `uap sandbox grants` to inspect the ledger.',
+    );
+    return { grants: [], paths: [] };
+  }
+  if (integrity.state === 'unanchored' && loaded.length > 0) {
+    // The quiet dangerous state (review m1): grants exist but the anchor is
+    // gone/never written, so tamper evidence is OFF. Never silent.
+    console.warn(
+      `[sandbox-grants] ${loaded.length} grant(s) on disk but NO trust anchor — tamper evidence is inactive; ` +
+        'the next successful grant/renew/revoke (re-)anchors the ledger',
+    );
+  }
+  const nowIso = new Date().toISOString();
+  const sid = clean(sessionId, 64);
+  const active = loaded.filter((g) => g.expiresAt > nowIso && (!sid || g.sessionId === sid));
   const paths: string[] = [];
   for (const g of active) for (const p of g.paths) if (!paths.includes(p)) paths.push(p);
   return { grants: active, paths };

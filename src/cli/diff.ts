@@ -74,10 +74,14 @@ export interface DiffFacts {
   gitError: string | null;
 }
 
-/** Run git, return stdout or null (never throw). */
+/** Run git, return stdout or null (never throw). `core.quotepath=false`
+ *  everywhere: git's default quotes non-ASCII paths as octal escapes
+ *  (`"\303\251clat"`), which would mangle every unicode filename in the
+ *  view AND break the porcelain↔numstat exact-match fold (numstat's path
+ *  would carry escapes porcelain stripped). Raw bytes on both sides. */
 function git(args: string[], cwd: string): string | null {
   try {
-    return execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...args], {
+    return execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'core.quotepath=false', ...args], {
       cwd,
       encoding: 'utf-8',
       timeout: GIT_TIMEOUT_MS,
@@ -99,7 +103,9 @@ export function parseNumstat(out: string): FileDelta[] {
       added: m[1] === '-' ? null : parseInt(m[1], 10),
       removed: m[2] === '-' ? null : parseInt(m[2], 10),
       // Renames arrive as `{old => new}` path shapes; keep the tail verbatim.
-      path: m[3],
+      // Outer quotes (git quotes paths with spaces/specials) are stripped so
+      // the porcelain fold's exact match sees the same spelling on both sides.
+      path: m[3].replace(/^"|"$/g, ''),
       status: '!',
     });
   }
@@ -268,8 +274,13 @@ export function renderDiffView(facts: DiffFacts, maxFiles = DEFAULT_MAX_FILES): 
     for (const f of sorted.slice(0, maxFiles)) {
       const glyph = STATUS_GLYPH[f.status];
       const tag = f.status === 'D' ? chalk.red(glyph) : f.status === 'A' ? chalk.cyan(glyph) : chalk.yellow(glyph);
+      // Column integrity (P5 polish): a path LONGER than the column used to
+      // push the +N/-N columns right per row. Cap to the column width (keep
+      // the TAIL — the informative half of a path) then pad, so every row
+      // lines up exactly.
+      const shown = f.path.length > 64 ? `…${f.path.slice(-63)}` : f.path.padEnd(64);
       lines.push(
-        `    ${tag} ${f.path.padEnd(64)} ${chalk.green(`+${fmtDelta(f.added)}`)} ${chalk.red(`-${fmtDelta(f.removed)}`)}`
+        `    ${tag} ${shown} ${chalk.green(`+${fmtDelta(f.added)}`)} ${chalk.red(`-${fmtDelta(f.removed)}`)}`
       );
     }
     if (sorted.length > maxFiles) {
