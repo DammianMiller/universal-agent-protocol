@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.30.0 (2026-10-11)
+
+- fix(bridge): P4 review findings — ledger load re-validation, pure planner, loud --net, relay hardening
+- feat(bridge): P4 security — per-session sandbox grants, --net off egress boundary, proxy unix socket
+
+
 ## v2.29.1 (2026-10-11)
 
 - docs: the evolution story — Miller-Tech/Pay2U origin, eras, and refreshed entry docs
