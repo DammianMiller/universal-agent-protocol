@@ -67,6 +67,8 @@ export interface OrchestratedMissionDeps {
     prompt: string;
     taskId: string;
     isolated: boolean;
+    /** C2 — per-leaf model dial; undefined = the mission-wide default. */
+    model?: string;
   }) => Promise<DeliveryResult>;
   /**
    * Workspace manager for parallel isolation, or null to run in-tree. The
@@ -198,7 +200,7 @@ export async function runOrchestratedMission(deps: OrchestratedMissionDeps): Pro
     const taskRecord = (await deps.openTask?.(`${task.title} — ${task.goal.slice(0, 120)}`)) ?? null;
     deps.beginTaskSpec?.(root, ctx.prompt);
     try {
-      const r = await deps.runLoop({ root, prompt: ctx.prompt, taskId: task.id, isolated });
+      const r = await deps.runLoop({ root, prompt: ctx.prompt, taskId: task.id, isolated, model: task.model });
       foldDeliveryResult(all, r);
       // S1 ETA: one sample per attempt, failures included (a realistic ETA
       // model must know how long the SLOW path takes, not just the fast one).
@@ -241,6 +243,10 @@ export async function runOrchestratedMission(deps: OrchestratedMissionDeps): Pro
               newTasks = parsed.map((t) => ({
                 id: t.id, title: t.title, goal: t.goal,
                 ...(t.deps ? { deps: t.deps } : {}),
+                // C2 — discovered tasks keep their dial (the feed goes through
+                // parsePhaseArray, which normalizes it) — dropping it here was
+                // an undocumented asymmetry vs planner/hand-authored phases.
+                ...(t.model ? { model: t.model } : {}),
               }));
               note(`  ↳ re-planning: task ${task.id} discovered ${newTasks.length} follow-up task(s)`);
             }

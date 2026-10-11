@@ -39,6 +39,15 @@ export interface DeliveryPhase {
    */
   contracts?: boolean;
   /**
+   * C2 — per-leaf model dial: the model/profile key THIS phase should run on,
+   * overriding the mission-wide choice for this one task. Absent = the
+   * mission default. Lets a plan put the hard design phase on a strong
+   * model and the mechanical fill phases on a cheap one instead of paying
+   * the strong model's rate for every leaf. Validated where models resolve
+   * (fail-closed to the mission default on an unknown key).
+   */
+  model?: string;
+  /**
    * True for a SCAFFOLD phase: it creates compiling module skeletons — full
    * public signatures with todo!()/NotImplementedError bodies — that later
    * FILL phases (declaring it in deps) implement WITHOUT changing signatures.
@@ -178,6 +187,21 @@ export function parsePhaseArray(text: string, cap: number = maxPhases()): Delive
   return parsePhaseArrayInner(text, cap).phases;
 }
 
+/**
+ * C2 — normalize a per-leaf model dial. Planner output is untrusted text:
+ * lowercase to match the preset table's key style (ids/deps are lowercased
+ * the same way), strip control characters (a 64-char budget still admits
+ * ANSI escapes and newlines — log injection into the operator's console),
+ * and bound the length. Exported so the run-state sanitizer applies the
+ * SAME rules on resume round-trips.
+ */
+export function normalizeModelDial(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  // eslint-disable-next-line no-control-regex -- stripping control characters IS the point
+  const clean = raw.replace(/[\x00-\x1f\x7f]/g, '').trim().toLowerCase().slice(0, 64);
+  return clean || undefined;
+}
+
 function parsePhaseArrayInner(text: string, cap: number): { phases: DeliveryPhase[]; emitted: number } {
   let parsed: unknown;
   for (const re of [/\[\s*\{[\s\S]*?\}\s*\]/, /\[\s*\{[\s\S]*\}\s*\]/]) {
@@ -208,6 +232,7 @@ function parsePhaseArrayInner(text: string, cap: number): { phases: DeliveryPhas
       : undefined;
     const contracts = (entry as { contracts?: unknown }).contracts === true;
     const scaffold = (entry as { scaffold?: unknown }).scaffold === true;
+    const model = normalizeModelDial((entry as { model?: unknown }).model);
     const rawCriteria = (entry as { criteria?: unknown }).criteria;
     const criteria = Array.isArray(rawCriteria)
       ? rawCriteria
@@ -222,6 +247,7 @@ function parsePhaseArrayInner(text: string, cap: number): { phases: DeliveryPhas
       ...(deps && deps.length > 0 ? { deps } : {}),
       ...(contracts ? { contracts: true } : {}),
       ...(scaffold ? { scaffold: true } : {}),
+      ...(model ? { model } : {}),
       ...(criteria && criteria.length > 0 ? { criteria } : {}),
     });
     if (phases.length >= cap) {
@@ -392,7 +418,11 @@ function buildDecomposePrompt(
     '',
     'Respond with ONLY a JSON array. Each phase may declare deps (ids of',
     'phases it builds on); phases without deps between them are independent:',
-    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>", "deps": ["<id>"], "contracts": false, "scaffold": false, "criteria": ["<verifiable acceptance criterion (optional, max 3)>"]}]',
+    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>", "deps": ["<id>"], "contracts": false, "scaffold": false, "criteria": ["<verifiable acceptance criterion (optional, max 3)>"]}',
+    'A phase may also carry "model": a model key the MISSION text itself',
+    'names for that phase — copy it verbatim, never invent one; absent means',
+    'the mission default. Dials only take effect when tasks run isolated',
+    '(deliver.parallelTasks > 1).',
   ].join('\n');
 }
 

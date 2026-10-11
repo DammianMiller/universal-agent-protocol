@@ -79,6 +79,24 @@ describe('run-state store', () => {
     expect(existsSync(join(deliverRunsDir(dir), state.runId, 'state.json'))).toBe(true);
   });
 
+  it("round-trips per-leaf model dials through the sanitizer (C2 — resume must not strip them)", () => {
+    const state = makeState({
+      phases: [
+        { id: 'design', title: 'Design', goal: 'shape it', model: 'qwen38-coder390' },
+        { id: 'fill', title: 'Fill', goal: 'implement', deps: ['design'], model: 'Junk-Before-Validate' },
+        { id: 'tests', title: 'Tests', goal: 'gate', deps: ['fill'], model: '   ' },
+      ],
+    });
+    expect(saveRunState(state)).toBe(true);
+    const loaded = loadRunState(dir, state.runId);
+    expect(loaded!.phases!.find((p) => p.id === 'design')!.model).toBe('qwen38-coder390');
+    // The sanitizer applies the parser's own normalization: lowercased,
+    // bounded — a resume is not a second, laxer parse of the plan.
+    expect(loaded!.phases!.find((p) => p.id === 'fill')!.model).toBe('junk-before-validate');
+    // Whitespace-only is dropped, not ''.
+    expect(loaded!.phases!.find((p) => p.id === 'tests')!.model).toBeUndefined();
+  });
+
   it("resolves 'latest' to the most recently updated non-delivered run", async () => {
     const a = makeState({ runId: 'run-a', status: 'interrupted' });
     saveRunState(a);

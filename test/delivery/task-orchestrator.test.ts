@@ -400,6 +400,144 @@ describe('orchestrate dependency-aware parallel dispatch', () => {
   });
 });
 
+describe('C1 — dependency-triggered dispatch (no wave barrier)', () => {
+  it('refills a finished task\'s slot while a slower sibling is still in flight', async () => {
+    const events: string[] = [];
+    let releaseSlow: (() => void) | undefined;
+    const slowGate = new Promise<void>((res) => {
+      releaseSlow = res;
+    });
+    // Graph order: slow + fast fill the two slots; queued must wait for one.
+    // slow only finishes once queued has STARTED — under wave-barrier
+    // scheduling that is a deadlock (the wave never drains, so queued never
+    // starts); under completion-triggered dispatch fast's slot refills into
+    // queued while slow is still in flight, the gate opens, and all complete.
+    // NOTE: a scheduling regression here manifests as a test TIMEOUT (the
+    // gate never opens), not a red assertion — if this test hangs, suspect
+    // the dispatch loop, not the test.
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('slow'), task('fast'), task('queued')],
+      concurrency: 2,
+      runTask: async (_c, t) => {
+        events.push(`start:${t.id}`);
+        if (t.id === 'slow') {
+          await slowGate;
+          events.push('slow-finished');
+        } else if (t.id === 'queued') {
+          releaseSlow!(); // the refill is the proof: queued runs mid-wave
+        }
+        return { taskId: t.id, success: true, summary: t.id, turns: 1 };
+      },
+    });
+    expect(r.success).toBe(true);
+    expect(r.completed.sort()).toEqual(['fast', 'queued', 'slow']);
+    expect(events.indexOf('start:queued')).toBeLessThan(events.indexOf('slow-finished'));
+  });
+
+  it('starts a dependent the moment its dependency settles, mid-flight of an unrelated slow task', async () => {
+    // Same deadlock-by-design shape as the slot-refill test above: under
+    // wave-barrier scheduling b waits for slow's wave to drain, the gate
+    // never opens, and the regression manifests as a TIMEOUT, not a red.
+    const events: string[] = [];
+    let releaseSlow: (() => void) | undefined;
+    const slowGate = new Promise<void>((res) => {
+      releaseSlow = res;
+    });
+    let depSeen: string[] | undefined;
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('slow'), task('a'), task('b', ['a'])],
+      concurrency: 2,
+      runTask: async (ctx, t) => {
+        events.push(`start:${t.id}`);
+        if (t.id === 'slow') {
+          await slowGate;
+          events.push('slow-finished');
+        } else if (t.id === 'b') {
+          depSeen = ctx.includedDeps;
+          releaseSlow!(); // b unblocked while slow still in flight
+        }
+        return { taskId: t.id, success: true, summary: t.id, turns: 1 };
+      },
+    });
+    expect(r.success).toBe(true);
+    expect(r.completed.sort()).toEqual(['a', 'b', 'slow']);
+    expect(events.indexOf('start:b')).toBeLessThan(events.indexOf('slow-finished'));
+    expect(depSeen).toEqual(['a']);
+  });
+
+  it('a fast failure settles mid-flight: the skip cascade fires and in-flight siblings complete', async () => {
+    const events: string[] = [];
+    let releaseSlow: (() => void) | undefined;
+    const slowGate = new Promise<void>((res) => {
+      releaseSlow = res;
+    });
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('slow'), task('failfast'), task('child', ['failfast']), task('grandchild', ['child'])],
+      concurrency: 2,
+      maxRepairsPerTask: 0,
+      runTask: async (_c, t) => {
+        events.push(`start:${t.id}`);
+        if (t.id === 'slow') {
+          await slowGate;
+        } else if (t.id === 'failfast') {
+          // slow must be able to finish, but only AFTER the fast failure is
+          // in flight — the settle of the failure runs the skip cascade
+          // while slow is still running, and the dead branch never dispatches.
+          releaseSlow!();
+          return { taskId: t.id, success: false, summary: 'boom', turns: 1 };
+        }
+        return { taskId: t.id, success: true, summary: t.id, turns: 1 };
+      },
+    });
+    // The dead branch never runs; slow completes; the mission reports failure.
+    expect(events.filter((e) => e.startsWith('start:'))).toEqual(['start:slow', 'start:failfast']);
+    expect(r.success).toBe(false);
+    expect(r.completed).toEqual(['slow']);
+    expect(r.failed.sort()).toEqual(['child', 'failfast', 'grandchild']);
+    const skipped = r.outcomes.find((o) => o.taskId === 'grandchild');
+    expect(skipped?.summary).toContain('unmet dependency');
+  });
+
+  it('a P5-discovered task dispatches exactly once while a slow sibling is still in flight', async () => {
+    const events: string[] = [];
+    let releaseSlow: (() => void) | undefined;
+    const slowGate = new Promise<void>((res) => {
+      releaseSlow = res;
+    });
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('slow'), task('root')],
+      concurrency: 2,
+      runTask: async (_c, t) => {
+        events.push(`start:${t.id}`);
+        if (t.id === 'slow') {
+          await slowGate;
+        } else if (t.id === 'child') {
+          releaseSlow!(); // the discovered task runs while slow is in flight
+        }
+        return {
+          taskId: t.id,
+          success: true,
+          summary: t.id,
+          turns: 1,
+          newTasks: t.id === 'root' ? [{ id: 'child', title: 'Child', goal: 'finish', deps: ['root'] }] : undefined,
+        };
+      },
+    });
+    // root settles mid-flight of slow; the discovered child fills the freed
+    // slot exactly once. A future refactor that merged the in-flight set
+    // into `pending` (P5's topo re-merge) would double-dispatch — this pins
+    // that it cannot. Correctness of the mid-flight P5 merge itself was
+    // verified by reading in review; this test now pins the observable.
+    expect(events.filter((e) => e === 'start:child').length).toBe(1);
+    expect(r.success).toBe(true);
+    expect(r.completed.sort()).toEqual(['child', 'root', 'slow']);
+  });
+});
+
 
 describe('orchestrate — task-boundary resume (initialDone + onProgress)', () => {
   it('initialDone tasks are skipped, dependents unblock AND read the seeded dep summaries', async () => {

@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import type { LoopCheckpoint } from './convergence-loop.js';
-import type { DeliveryPhase } from './decompose.js';
+import { normalizeModelDial, type DeliveryPhase } from './decompose.js';
 
 export type DeliverRunStatus = 'running' | 'delivered' | 'failed' | 'interrupted';
 
@@ -139,7 +139,7 @@ function readState(projectRoot: string, runId: string): DeliverRunState | null {
       const phases: DeliveryPhase[] = [];
       for (const ph of parsed.phases.slice(0, MAX_PHASES)) {
         if (typeof ph !== 'object' || ph === null) return null;
-        const { id, title, goal, deps, contracts, scaffold, criteria } = ph as {
+        const { id, title, goal, deps, contracts, scaffold, criteria, model } = ph as {
           id?: unknown;
           title?: unknown;
           goal?: unknown;
@@ -147,6 +147,7 @@ function readState(projectRoot: string, runId: string): DeliverRunState | null {
           contracts?: unknown;
           scaffold?: unknown;
           criteria?: unknown;
+          model?: unknown;
         };
         if (typeof id !== 'string' || typeof title !== 'string' || typeof goal !== 'string') return null;
         if (!PHASE_ID_RE.test(id)) return null;
@@ -162,6 +163,7 @@ function readState(projectRoot: string, runId: string): DeliverRunState | null {
               .map((c) => c.trim().slice(0, MAX_CRITERION_CHARS))
               .slice(0, MAX_CRITERIA)
           : undefined;
+        const cleanModel = normalizeModelDial(model);
         phases.push({
           id,
           title: title.slice(0, 120),
@@ -170,6 +172,11 @@ function readState(projectRoot: string, runId: string): DeliverRunState | null {
           ...(contracts === true ? { contracts: true } : {}),
           ...(scaffold === true ? { scaffold: true } : {}),
           ...(cleanCriteria && cleanCriteria.length > 0 ? { criteria: cleanCriteria } : {}),
+          // C2 — round-trip the per-leaf model dial through the SAME
+          // normalization the planner parse applies (this allowlist is the
+          // exact spot where a resume silently stripped deps/flags/criteria
+          // once before; the dial must not repeat that bug).
+          ...(cleanModel ? { model: cleanModel } : {}),
         });
       }
       parsed.phases = phases;
