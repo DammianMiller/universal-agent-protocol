@@ -110,9 +110,9 @@ Usage
     # set that on a box running a real Ollama, which owns 11434):
     PROXY_OLLAMA_PORT=11434 python anthropic_proxy.py
 
-    # Unix-socket surface for sandboxed sessions (bridge P4 egress boundary;
-    # unset = off). The socket is the ONLY network reach of a
-    # `uap sandbox --net=proxy` session:
+    # Unix-socket surface (bridge P4 model-path choke point; unset = off):
+    # a 0600 AF_UNIX listener served alongside TCP. TCP-only clients
+    # re-serve it with `uap proxy connect`:
     PROXY_SOCKET=/path/to/repo/.uap/proxy.sock python anthropic_proxy.py
 
     # Via npx (after npm install):
@@ -127,6 +127,7 @@ Dependencies
 """
 
 import asyncio
+import contextlib
 import contextvars
 from typing import Awaitable, Callable
 import copy
@@ -17577,14 +17578,15 @@ class _CompanionListener(uvicorn.Server):
 
 
 # ===========================================================================
-# Unix-socket surface — PROXY_SOCKET (bridge Phase 4: D1 egress boundary)
+# Unix-socket surface — PROXY_SOCKET (bridge Phase 4: D1 model-path choke point)
 # ===========================================================================
-# `uap sandbox --net=proxy` cuts a sandboxed session's network namespace
-# entirely (--unshare-net): no TCP, no DNS, no direct egress of any kind.
-# The ONE network reach left to the session is this AF_UNIX socket,
-# bind-mounted through the namespace wall — so every byte a sandboxed agent
-# sends to a model flows through this proxy's guardrails by construction,
-# and nothing else flows anywhere.
+# The proxy serves its model gateway on an AF_UNIX socket (0600, parent dir
+# 0700) IN ADDITION to its TCP port: a permission-gated transport — only the
+# owning user can dial it, unlike a loopback TCP port every local process
+# can reach. Clients that cannot speak AF_UNIX re-serve it on TCP with
+# `uap proxy connect`. (An earlier design intended this socket as the sole
+# network reach of a `--net=proxy` sandboxed network namespace; that mode
+# was cut — rootless Linux cannot express it. See ADR 0011.)
 PROXY_SOCKET = os.environ.get("PROXY_SOCKET", "").strip()
 # sun_path is 108 bytes on Linux including the trailing NUL; refuse longer
 # paths with a clear error instead of a truncated silent bind.
@@ -17640,6 +17642,7 @@ def _prepare_proxy_socket(path: str):
         except OSError as exc:
             logger.error("SOCKET: cannot unlink stale %s (%s) — surface off.", path, exc)
             return None
+    sock = None
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.bind(path)
@@ -17647,12 +17650,14 @@ def _prepare_proxy_socket(path: str):
         sock.listen(128)
     except OSError as exc:
         logger.error("SOCKET: bind %s failed (%s) — surface off.", path, exc)
-        try:
-            sock.close()
-        except Exception:
-            pass
+        if sock is not None:
+            # Close only a socket we actually created: socket.socket() itself
+            # can raise (EMFILE), and closing an unbound name would mask the
+            # real error with a NameError.
+            with contextlib.suppress(OSError):
+                sock.close()
         return None
-    logger.info("SOCKET: serving on unix socket %s (0600) — sandbox egress boundary.", path)
+    logger.info("SOCKET: serving on unix socket %s (0600) — model-path choke point.", path)
     return sock
 
 
@@ -17736,7 +17741,7 @@ async def _run_proxy_servers() -> None:
             )
             tasks.append(companion_task)
             tasks.append(_tie_companion())
-    # --- P4 unix-socket surface: the sandbox egress boundary (PROXY_SOCKET).
+    # --- P4 unix-socket surface: the model-path choke point (PROXY_SOCKET).
     # Same guard/tie pattern as the Ollama companion: a socket-surface failure
     # must only ever disable the socket, never the primary, and one SIGTERM
     # (or a primary death) must take the socket listener down with it.

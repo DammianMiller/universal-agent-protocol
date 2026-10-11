@@ -720,6 +720,12 @@ boundary `--dangerously-skip-permissions` cannot bypass.
 uap sandbox [--session <id>] [--net shared|off] -- <command> [args...]
 ```
 
+The `--` separator before the command is REQUIRED: without it, the sandbox's
+own flags (`--session`, `--net`, `--ttl`, `--reason`, `--json`) are parsed as
+sandbox options rather than passed through to the session command. The grant
+verbs are only intercepted when there is no `--` — `uap sandbox -- revoke …`
+runs a binary named `revoke`, not the ledger verb.
+
 Bridge P4 authorities on top of the floor:
 
 - `--net off` — the kernel egress boundary: own network namespace with nothing

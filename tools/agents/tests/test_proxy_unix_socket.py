@@ -1,9 +1,11 @@
-"""Tests for the PROXY_SOCKET unix-socket surface (bridge P4: D1 egress boundary).
+"""Tests for the PROXY_SOCKET unix-socket surface (bridge P4: D1 model-path
+choke point).
 
-The socket is the ONLY network reach of a `uap sandbox --net proxy` session,
-so its preparation is the boundary itself: correct bind, tight permissions
-(0600 socket in a 0700 parent), stale-corpse cleanup, and refusal to evict a
-live proxy's socket.
+The socket is a permission-gated transport for the model gateway — only the
+owning user can dial it (0600 socket in a 0700 parent) — serving alongside
+the TCP port. Its preparation is the boundary itself: correct bind, tight
+permissions, stale-corpse cleanup, and refusal to evict a live proxy's
+socket.
 """
 import contextlib
 import importlib.util
@@ -50,6 +52,35 @@ class ProxySocketPrepTest(unittest.TestCase):
             mode = stat.S_IMODE(os.stat(self.sock_path).st_mode)
             self.assertEqual(mode, 0o600, "the socket is the egress boundary; 0600 or nothing")
             self.assertTrue(proxy._socket_is_live(self.sock_path))
+        finally:
+            self._close_quietly(prepared)
+
+    def test_creates_a_missing_parent_dir_with_0700(self):
+        # A deep path whose leaf directory does not exist yet: the surface
+        # must create it PRIVATE (0700) — a world-readable parent would let
+        # any local user name-squat the socket path.
+        deep = os.path.join(self.tmp, "a", "b", "c", "proxy.sock")
+        prepared = proxy._prepare_proxy_socket(deep)
+        self.assertIsNotNone(prepared)
+        try:
+            leaf = os.path.dirname(deep)
+            mode = stat.S_IMODE(os.stat(leaf).st_mode)
+            self.assertEqual(mode & 0o777, 0o700, "parent dirs of the socket must be 0700")
+            self.assertTrue(proxy._socket_is_live(deep))
+        finally:
+            self._close_quietly(prepared)
+
+    def test_binds_when_the_parent_exists_with_loose_perms(self):
+        # The pre-existing-parent case must not regress: bind still works
+        # and the SOCKET itself stays 0600 (the parent is left as the
+        # operator made it — chmod-ing a dir the operator owns would be a
+        # surprising side effect).
+        os.chmod(os.path.dirname(self.sock_path), 0o755)
+        prepared = proxy._prepare_proxy_socket(self.sock_path)
+        self.assertIsNotNone(prepared)
+        try:
+            mode = stat.S_IMODE(os.stat(self.sock_path).st_mode)
+            self.assertEqual(mode, 0o600)
         finally:
             self._close_quietly(prepared)
 

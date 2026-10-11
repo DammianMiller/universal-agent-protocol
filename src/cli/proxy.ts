@@ -801,8 +801,10 @@ export async function proxyCommand(
     }
 
     case 'connect': {
-      // The in-sandbox TCP→unix relay (`uap sandbox --net=proxy` launches it
-      // inside the namespace; it is also runnable by hand for diagnostics).
+      // The standalone TCP->unix relay: re-serves the proxy's AF_UNIX socket
+      // (PROXY_SOCKET) on a local TCP port for clients that cannot speak
+      // AF_UNIX. Runnable by hand / from scripts — see ADR 0011 for why no
+      // sandbox mode auto-launches it (the '--net proxy' design was cut).
       const socket = String((options as { socket?: string }).socket || process.env.UAP_PROXY_SOCKET || '').trim();
       if (!socket) {
         console.error(

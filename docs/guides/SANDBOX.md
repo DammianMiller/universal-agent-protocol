@@ -85,9 +85,13 @@ uap sandbox --session my-session -- claude --dangerously-skip-permissions
 
 Rules worth knowing:
 
+- The `--` separator before the command is REQUIRED: without it the sandbox's own flags
+  (`--session`, `--net`, `--ttl`, `--reason`, `--json`) are parsed as sandbox options, not
+  passed through. The grant verbs are intercepted only when there is no `--` —
+  `uap sandbox -- revoke …` runs a binary named `revoke`, not the ledger verb.
 - A grant is refused without `--session`, `--reason`, or a grantable target (an existing
   absolute path; `/`, `/home`, and `$HOME` itself are refused — an over-broad grant IS a
-  sandbox escape).
+  sandbox escape, checked after symlink resolution).
 - Grants default to **8h** and hard-cap at **7d**; an identical open grant is renewed, not
   duplicated; expired grants are invisible to the sandbox.
 - The ledger lives at the MAIN checkout's `.uap/sandbox-grants.json` (one ledger per

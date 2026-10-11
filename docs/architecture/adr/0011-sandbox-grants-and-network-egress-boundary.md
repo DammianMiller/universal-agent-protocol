@@ -38,9 +38,12 @@ pins an explicit file):
   are refused — an over-broad grant IS a sandbox escape). Default TTL 8h,
   hard cap 7d: authority is bounded by construction. An identical open
   grant is RENEWED, not duplicated.
-- `uap sandbox -- <cmd> --session <id>` resolves the session's ACTIVE
+- `uap sandbox --session <id> -- <cmd>` resolves the session's ACTIVE
   grants and opens exactly those `--bind` holes; `uap sandbox grants` /
-  `revoke <id>` list and remove them.
+  `revoke <id>` list and remove them. (The `--` separator is REQUIRED
+  before the command: without it, the sandbox's own flags — `--session`,
+  `--net`, `--ttl`, `--reason`, `--json` — are parsed as sandbox options,
+  not passed through to the session command.)
 - Every run appends a line to `.uap/sandbox-audit.jsonl` — the consent
   record: which grants were used, which network mode engaged, and any
   legacy `UAP_SANDBOX_ALLOW` entries labeled `unrecordedAllow` (still
@@ -50,6 +53,12 @@ pins an explicit file):
   not become a kernel-writable hole), atomic writes with unique tmp
   names, malformed rows dropped, and an unreadable ledger treated as
   EMPTY — the safe direction for an authority store is least authority.
+  "Sanitize" for this ledger means more than text fields: the load path
+  RE-VALIDATES every path with the full grantable-path rule (absolute,
+  existing, symlink-resolved, and not `/`, `/home`, or `$HOME` — the P4
+  review caught that a string-prefix check alone would let a planted
+  well-formed row bind the whole root) and refuses expiries beyond the
+  hard TTL bound (a planted `expiresAt: "9999"` must never load).
   `UAP_SANDBOX_GRANTS_OFF=1` resolves zero grants; the sandbox's kernel
   boundary itself is never disabled by any of this.
 
@@ -120,3 +129,8 @@ actually holds.
   unrecorded (compatibility), but every use is audited and named;
   the audit JSONL is append-only and unpruned (bounded by run count, not
   trimmed — the operator ships it to their own tooling).
+- Follow-up (operator surface): the CLI is today the only grant consumer.
+  A dashboard grants view — active authority per session, one click to
+  revoke — is the natural next surface and a candidate for the P5
+  "Surfaces" phase; the per-checkout-root anchoring already guarantees it
+  would read the same ledger the sandbox does.

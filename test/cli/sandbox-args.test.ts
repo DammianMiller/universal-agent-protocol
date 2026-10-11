@@ -1,7 +1,7 @@
 /**
  * `uap sandbox` planSandbox (bridge P4) — the pure bwrap planner, so the
  * kernel boundary and the two new authorities (per-session grant holes,
- * --net proxy egress cut) are asserted WITHOUT bubblewrap: what the argv
+ * --net off egress cut) are asserted WITHOUT bubblewrap: what the argv
  * contains is what the kernel enforces.
  */
 
@@ -60,6 +60,9 @@ describe('the floor (unchanged P0 behavior)', () => {
     expect(sandboxCustomHeaders('X-Other: v')).toBe('X-Other: v\nX-Uap-Sandbox: 1');
     expect(sandboxCustomHeaders('X-Uap-Sandbox: 1')).toBe('X-Uap-Sandbox: 1');
     expect(sandboxCustomHeaders(undefined)).toBe('X-Uap-Sandbox: 1');
+    // The planner takes the pre-existing headers as an INPUT (pure planner):
+    const r = plan({ existingCustomHeaders: 'X-Other: v' });
+    expect(r.plan!.argv.join(' ')).toContain('X-Other: v\nX-Uap-Sandbox: 1');
   });
 
   it('refuses an over-broad workdir', () => {
@@ -104,7 +107,6 @@ describe('D1 — --net off egress boundary', () => {
     const p = r.plan!;
     const argv = p.argv.join(' ');
     expect(argv).toContain('--unshare-net');
-    expect(argv).not.toContain('--bind /tmp/p4');
     // The session command runs VERBATIM — no wrapper, no base-URL rewrite:
     // a harness that needs the model fails loudly (connection refused),
     // which is the boundary working, not a bug.
@@ -114,11 +116,17 @@ describe('D1 — --net off egress boundary', () => {
     expect(p.notes.some((n) => n.includes('net: OFF'))).toBe(true);
   });
 
-  it('defaults the net mode from UAP_SANDBOX_NET=off', () => {
-    process.env.UAP_SANDBOX_NET = 'off';
-    expect(plan().plan!.netMode).toBe('off');
-    expect(plan().plan!.argv).toContain('--unshare-net');
-    process.env.UAP_SANDBOX_NET = 'shared';
-    expect(plan().plan!.netMode).toBe('shared');
+  it('defaults the net mode from the caller-resolved env (pure planner: env comes in as an input)', () => {
+    // The CLI resolves $UAP_SANDBOX_NET and hands it to the planner as
+    // `envNet`; the planner itself never touches process.env, so tests pin
+    // the contract without env plumbing and the plan stays reproducible.
+    expect(plan({ envNet: 'off' }).plan!.netMode).toBe('off');
+    expect(plan({ envNet: 'off' }).plan!.argv).toContain('--unshare-net');
+    expect(plan({ envNet: 'shared' }).plan!.netMode).toBe('shared');
+    // An explicit flag beats the env; a garbage env value is IGNORED by the
+    // planner (the CLI layer fails loud on unknown --net before we get here).
+    expect(plan({ net: 'shared', envNet: 'off' }).plan!.netMode).toBe('shared');
+    expect(plan({ net: 'off', envNet: 'garbage' }).plan!.netMode).toBe('off');
+    expect(plan({ envNet: 'garbage' }).plan!.netMode).toBe('shared');
   });
 });

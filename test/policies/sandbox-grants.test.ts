@@ -1,13 +1,14 @@
 /**
  * Per-session sandbox grants (bridge P4: D2 consent ledger) — every extra
  * writable hole must be a recorded, bounded, revocable consent. Covers the
- * ledger contract (sanitize-at-load, least-authority failures, atomic
- * persist), the validation refusals, dedupe/renewal, expiry, revocation,
- * session scoping, the audit trail, and the net authority.
+ * ledger contract (sanitize-at-load + FULL re-validation of planted paths
+ * and expiries, least-authority failures, atomic persist), the validation
+ * refusals, dedupe/renewal, expiry, revocation, session scoping, and the
+ * audit trail.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -82,6 +83,15 @@ describe('grant validation — authority is refused, not guessed', () => {
       expect(r.grant.paths).toEqual([hole]);
     }
   });
+
+  it('floors the TTL at 1s (a fractional or zero TTL still yields a grant that expires)', () => {
+    const r = grantAuthority(dir, { ...INPUT, paths: [hole], ttlSecs: 0.5 });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const ttl = (Date.parse(r.grant.expiresAt) - Date.parse(r.grant.grantedAt)) / 1000;
+      expect(ttl).toBeGreaterThanOrEqual(1);
+    }
+  });
 });
 
 describe('dedupe + renewal', () => {
@@ -133,14 +143,18 @@ describe('session scoping + expiry + revocation', () => {
 });
 
 describe('the ledger is a trust boundary (P3 lessons applied)', () => {
+  // A planted row must survive only when the OPERATOR could have written it:
+  // every fixture expiry below is within the hard TTL bound.
+  const soon = () => new Date(Date.now() + 3600_000).toISOString();
+
   it('drops malformed and planted rows at load — least authority', () => {
     writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
-      { id: 'sbg-x', sessionId: 'sess-abc', paths: ['/etc'], net: 'none', reason: '', grantedBy: 'attacker', grantedAt: '2026-10-11T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z' }, // no reason
-      { id: 'sbg-y', sessionId: 'sess-abc', paths: [hole], net: 'none', reason: 'ok', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z', extra: true },
+      { id: 'sbg-x', sessionId: 'sess-abc', paths: ['/etc'], reason: '', grantedBy: 'attacker', grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon() }, // no reason
+      { id: 'sbg-y', sessionId: 'sess-abc', paths: [hole], reason: 'ok', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon(), extra: true },
       'not an object',
       null,
       { paths: [hole] }, // no id/session
-      { id: 'sbg-z', sessionId: 'sess-abc', paths: [], reason: 'empty paths', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z' }, // grants nothing
+      { id: 'sbg-z', sessionId: 'sess-abc', paths: [], reason: 'empty paths', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon() }, // grants nothing
     ]));
     const resolved = resolveSessionGrants(dir, 'sess-abc');
     expect(resolved.grants.length).toBe(1);
@@ -150,16 +164,72 @@ describe('the ledger is a trust boundary (P3 lessons applied)', () => {
     expect('net' in (resolved.grants[0] as object)).toBe(false);
   });
 
+  it('refuses a planted well-formed row whose path IS the root (the P4 BLOCKER pin)', () => {
+    // A well-formed row with paths:["/"] must not become a `--bind / /`
+    // hole: the load path re-validates with the FULL grantable-path rule,
+    // so the row is dropped whole (a half-row is a forged consent record).
+    writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
+      { id: 'sbg-evil', sessionId: 'sess-abc', paths: ['/'], reason: 'planted full authority', grantedBy: 'root', grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon() },
+      { id: 'sbg-home', sessionId: 'sess-abc', paths: [process.env.HOME || '/'], reason: 'planted home', grantedBy: 'root', grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon() },
+    ]));
+    expect(resolveSessionGrants(dir, 'sess-abc').grants).toEqual([]);
+    // Ingest refuses the same shape outright:
+    expect(grantAuthority(dir, { ...INPUT, paths: [hole, '/'] }).ok).toBe(false);
+  });
+
+  it('refuses a symlink to $HOME at ingest AND at load (the check is on the realpath)', () => {
+    const home = process.env.HOME || '';
+    const link = join(dir, 'innocuous-link');
+    symlinkSync(home, link);
+    // Ingest: the link resolves to $HOME → refused.
+    expect(grantAuthority(dir, { ...INPUT, paths: [link] }).ok).toBe(false);
+    // Load: a planted row pointing at the link is dropped whole.
+    writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
+      { id: 'sbg-link', sessionId: 'sess-abc', paths: [link], reason: 'via a harmless name', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon() },
+    ]));
+    expect(resolveSessionGrants(dir, 'sess-abc').grants).toEqual([]);
+  });
+
+  it('refuses a planted expiry beyond the hard TTL bound (a "forever grant")', () => {
+    writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
+      { id: 'sbg-y2099', sessionId: 'sess-abc', paths: [hole], reason: 'forever', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z' },
+      { id: 'sbg-badts', sessionId: 'sess-abc', paths: [hole], reason: 'not a timestamp', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: '9999' },
+      { id: 'sbg-ok', sessionId: 'sess-abc', paths: [hole], reason: 'bounded', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon() },
+    ]));
+    const resolved = resolveSessionGrants(dir, 'sess-abc');
+    expect(resolved.grants.map((g) => g.id)).toEqual(['sbg-ok']);
+  });
+
   it('sanitizes control characters at load (planted ANSI cannot reach terminals)', () => {
     writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
       {
-        id: 'sbg-esc', sessionId: 'sess-abc', paths: [hole], net: 'none',
+        id: 'sbg-esc', sessionId: 'sess-abc', paths: [hole],
         reason: 'x\x1b[31mred\x07beep', grantedBy: 't',
-        grantedAt: '2026-10-11T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z',
+        grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon(),
       },
     ]));
     const g = resolveSessionGrants(dir, 'sess-abc').grants[0];
+    // eslint-disable-next-line no-control-regex -- asserting their absence IS the point
     expect(g.reason).not.toMatch(/[\x1b\x07]/);
+  });
+
+  it('cleans control chars out of planted PATHS before re-validating them', () => {
+    // The path is cleaned FIRST, then the FULL grantable-path rule runs on
+    // the cleaned value: whatever survives must be an existing, grantable
+    // path with zero control characters left in it (control bytes must never
+    // reach bwrap's argv). `${hole}\x07` cleans+trims to the real hole —
+    // grantable, so the row survives ON THE CLEAN PATH; a control-char path
+    // that cleans to something nonexistent is dropped whole.
+    const laundered = `${hole}\x07`;
+    writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
+      { id: 'sbg-ctrl', sessionId: 'sess-abc', paths: [`${join(dir, 'nope')}\x07`], reason: 'cleans to nothing', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon() },
+      { id: 'sbg-clean', sessionId: 'sess-abc', paths: [laundered], reason: 'laundered path', grantedBy: 't', grantedAt: '2026-10-11T00:00:00Z', expiresAt: soon() },
+    ]));
+    const resolved = resolveSessionGrants(dir, 'sess-abc');
+    expect(resolved.grants.map((g) => g.id)).toEqual(['sbg-clean']);
+    expect(resolved.paths).toEqual([hole]);
+    // eslint-disable-next-line no-control-regex -- asserting their absence IS the point
+    expect(JSON.stringify(resolved.paths)).not.toMatch(/[\x00-\x1f\x7f]/);
   });
 
   it('treats an unreadable ledger as EMPTY (no holes), with a warning', () => {

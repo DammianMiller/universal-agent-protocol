@@ -1,16 +1,18 @@
 /**
- * `uap proxy connect` (bridge P4: D1) — the in-sandbox TCP→unix relay.
- * Bytes must cross unmodified in both directions; an upstream failure must
- * DESTROY the client connection (fail-closed: the agent sees refused, not a
- * hang); and a missing --socket must be an error.
+ * `uap proxy connect` (bridge P4: D1) — the standalone TCP→unix relay that
+ * re-serves the proxy's AF_UNIX socket for TCP-only clients. Bytes must
+ * cross unmodified in both directions; an upstream failure must DESTROY
+ * the client connection (fail-closed: the client sees refused, not a
+ * hang); a missing --socket must be an error; and a bind failure must land
+ * as a clean CLI error, never an unhandled rejection.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import net from 'net';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { startProxyRelay } from '../../src/cli/proxy-relay.js';
+import { startProxyRelay, proxyConnectCommand } from '../../src/cli/proxy-relay.js';
 
 let dir: string;
 const servers: net.Server[] = [];
@@ -90,7 +92,7 @@ describe('startProxyRelay', () => {
     await expect(startProxyRelay({ socket: '' })).rejects.toThrow(/--socket/);
   });
 
-  it('touches the ready-file once listening (the wrapper readiness handshake)', async () => {
+  it('touches the ready-file once listening, recording the REAL bound port', async () => {
     dir = mkdtempSync(join(tmpdir(), 'uap-relay-'));
     const sockPath = join(dir, 'proxy.sock');
     await mockProxySocket(sockPath);
@@ -98,6 +100,51 @@ describe('startProxyRelay', () => {
     const relay = await startProxyRelay({ socket: sockPath, listenPort: 0, quiet: true, readyFile });
     servers.push(relay);
     expect(existsSync(readyFile)).toBe(true);
-    expect(readFileSync(readyFile, 'utf-8')).toMatch(/^\d+\n$/);
+    // With an ephemeral --listen 0 the requested port is meaningless; the
+    // file must carry the port the relay ACTUALLY bound (the P4 review
+    // caught it recording the request instead — a wrapper would dial 0).
+    const boundPort = (relay.address() as net.AddressInfo).port;
+    expect(readFileSync(readyFile, 'utf-8')).toBe(`${boundPort}\n`);
+  });
+});
+
+describe('proxyConnectCommand (the CLI surface)', () => {
+  it('lands a bind failure as a clean error + exit 1, not an unhandled rejection', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-relay-'));
+    const sockPath = join(dir, 'proxy.sock');
+    await mockProxySocket(sockPath);
+    // Occupy a fixed port with a live server, then ask the relay for the
+    // same one: listen must fail, and the command must catch it.
+    const squatter = await new Promise<net.Server>((resolve) => {
+      const s = net.createServer(() => {});
+      s.listen(0, '127.0.0.1', () => resolve(s));
+      servers.push(s);
+    });
+    const takenPort = (squatter.address() as net.AddressInfo).port;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const prevCode = process.exitCode;
+    try {
+      await proxyConnectCommand({ socket: sockPath, listenPort: takenPort, quiet: true });
+      // A rejected listen promise escaping here would fail the test as an
+      // unhandled rejection; reaching this line means it was caught.
+      expect(process.exitCode).toBe(1);
+      expect(errSpy.mock.calls.flat().join(' ')).toContain('uap proxy connect:');
+    } finally {
+      process.exitCode = prevCode;
+      errSpy.mockRestore();
+    }
+  });
+
+  it('refuses a missing --socket the same way (clean error + exit 1)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const prevCode = process.exitCode;
+    try {
+      await proxyConnectCommand({ socket: '' });
+      expect(process.exitCode).toBe(1);
+      expect(errSpy.mock.calls.flat().join(' ')).toMatch(/--socket/);
+    } finally {
+      process.exitCode = prevCode;
+      errSpy.mockRestore();
+    }
   });
 });

@@ -28,10 +28,10 @@
  *   never crash a sandboxed run, they just yield no holes.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'fs';
 import { randomBytes, randomUUID } from 'crypto';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { mainCheckoutRoot } from '../utils/checkout-root.js';
 
 /** One consented extra authority for one session. */
@@ -73,20 +73,24 @@ export const MAX_PATHS_PER_GRANT = 8;
 
 /**
  * Ledger file: `<mainCheckoutRoot>/.uap/sandbox-grants.json` — ONE ledger
- * per checkout, not per cwd, for the same three-surfaces reason as the
- * attention queue (dashboard / hook / CLI all resolve the same file).
+ * per checkout, not per cwd, anchored at the main checkout root like the
+ * attention queue (ADR 0010): the CLI can be invoked from any worktree
+ * subdir, and a per-cwd ledger would give the same session different
+ * authority depending on where the operator happened to stand. Today the
+ * CLI is the only consumer; the anchoring also keeps a future dashboard
+ * grants view (a natural P5 surface) reading the same file.
  * `UAP_SANDBOX_GRANTS` pins an explicit file (tests, odd layouts).
  */
 export function sandboxGrantsPath(projectRoot: string): string {
   const override = process.env.UAP_SANDBOX_GRANTS;
-  if (typeof override === 'string' && override.trim() !== '') return override;
+  if (typeof override === 'string' && override.trim() !== '') return override.trim();
   return join(mainCheckoutRoot(projectRoot), '.uap', 'sandbox-grants.json');
 }
 
 /** Audit trail: append-only JSONL, one line per grant/revoke/sandbox-use. */
 export function sandboxAuditPath(projectRoot: string): string {
   const override = process.env.UAP_SANDBOX_AUDIT;
-  if (typeof override === 'string' && override.trim() !== '') return override;
+  if (typeof override === 'string' && override.trim() !== '') return override.trim();
   return join(mainCheckoutRoot(projectRoot), '.uap', 'sandbox-audit.jsonl');
 }
 
@@ -105,22 +109,25 @@ function clean(s: unknown, max: number): string {
 
 /**
  * A grantable path must be ABSOLUTE, must exist (you grant a real hole, not
- * a speculative one), and must not be an over-broad root (/, /home, $HOME
- * itself — the same refusal the sandbox applies to a too-broad workdir:
- * an over-broad grant IS a sandbox escape).
+ * a speculative one), and must not be an over-broad root — checked AFTER
+ * symlink resolution: `/tmp/link -> $HOME` passes a string-only refusal and
+ * bwrap's `--bind` follows the link, so the check that matters is against
+ * the REALPATH (`/`, `/home`, $HOME itself — the same refusal the sandbox
+ * applies to a too-broad workdir: an over-broad grant IS a sandbox escape).
+ * Returns the RESOLVED path (what the bind will actually target), or null.
  */
 export function validateGrantPath(p: string): string | null {
   if (!p.startsWith('/')) return null;
   const home = process.env.HOME || homedir();
-  if (p === '/' || p === '/home' || p === home) return null;
+  let resolved: string;
   try {
     if (!existsSync(p)) return null;
-    const st = statSync(p);
-    if (!st.isDirectory()) return p; // files are fine (tighter than dirs)
-    return p;
+    resolved = realpathSync(p);
   } catch {
     return null;
   }
+  if (resolved === '/' || resolved === '/home' || resolved === home) return null;
+  return resolved;
 }
 
 function sanitizeGrant(raw: Partial<SandboxGrant> & { [k: string]: unknown }): SandboxGrant | null {
@@ -138,10 +145,30 @@ function sanitizeGrant(raw: Partial<SandboxGrant> & { [k: string]: unknown }): S
   ) {
     return null;
   }
-  const paths = Array.isArray(raw.paths)
-    ? raw.paths.filter((p): p is string => typeof p === 'string' && p.startsWith('/')).map((p) => p.slice(0, 512))
-    : [];
+  const paths: string[] = [];
+  const rawPaths = Array.isArray(raw.paths) ? raw.paths : [];
+  for (const rp of rawPaths) {
+    if (typeof rp !== 'string') return null;
+    // The load path re-applies the FULL grantable-path validation, not just
+    // a string prefix: a planted well-formed row with `paths:["/"]` would
+    // otherwise become a real `--bind / /` hole (the string-only check was
+    // the P4 review BLOCKER — the bind follows the row, so the row must
+    // carry nothing the operator would have refused). A row with ANY
+    // ungrantable path is dropped whole: least authority, and a half-row
+    // is a forged consent record.
+    const p = validateGrantPath(clean(rp, 512));
+    if (!p) return null;
+    if (!paths.includes(p)) paths.push(p);
+  }
   if (paths.length === 0) return null; // a grant must grant something
+  // Timestamps must parse, and the expiry must respect the hard TTL bound —
+  // a planted `expiresAt: "9999"` never lapses under the lexicographic
+  // compare in listAuthority, which is exactly the "forever grant" this
+  // ledger exists to prevent. `grantedAt` is kept as written (history), but
+  // must be a parseable instant.
+  if (!Number.isFinite(Date.parse(raw.grantedAt))) return null;
+  const expiresMs = Date.parse(raw.expiresAt);
+  if (!Number.isFinite(expiresMs) || expiresMs > Date.now() + MAX_GRANT_TTL_SECS * 1000) return null;
   return {
     id,
     sessionId,
@@ -185,7 +212,11 @@ function loadGrants(projectRoot: string): SandboxGrant[] {
 function persistGrants(projectRoot: string, grants: SandboxGrant[]): boolean {
   try {
     const path = sandboxGrantsPath(projectRoot);
-    mkdirSync(join(projectRoot, '.uap'), { recursive: true });
+    // Create the TARGET's directory (not <cwd>/.uap): the ledger may live at
+    // the main checkout root while cwd is a worktree subdir, or at a
+    // UAP_SANDBOX_GRANTS override — mkdir-ing the wrong place fails the
+    // write it was supposed to enable.
+    mkdirSync(dirname(path), { recursive: true });
     // Unique tmp name: a fixed `.tmp` in shared-write .uap/ is an
     // interleave-truncate and symlink-clobber target (P3 review finding).
     const tmp = `${path}.${process.pid}-${randomBytes(3).toString('hex')}.tmp`;
@@ -208,7 +239,7 @@ function persistGrants(projectRoot: string, grants: SandboxGrant[]): boolean {
 function audit(projectRoot: string, event: Record<string, unknown>): void {
   try {
     const path = sandboxAuditPath(projectRoot);
-    mkdirSync(join(projectRoot, '.uap'), { recursive: true });
+    mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(event)}\n`, 'utf-8');
   } catch (err) {
     console.warn(
@@ -242,7 +273,10 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
   }
 
   const ttl = Math.min(
-    Number.isFinite(input.ttlSecs) && (input.ttlSecs as number) > 0 ? Math.floor(input.ttlSecs as number) : DEFAULT_GRANT_TTL_SECS,
+    Math.max(
+      1,
+      Number.isFinite(input.ttlSecs) && (input.ttlSecs as number) > 0 ? Math.floor(input.ttlSecs as number) : DEFAULT_GRANT_TTL_SECS,
+    ),
     MAX_GRANT_TTL_SECS,
   );
   const now = new Date();
@@ -266,7 +300,11 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
     twin.expiresAt = grant.expiresAt;
     twin.reason = grant.reason;
     twin.grantedAt = grant.grantedAt;
-    persistGrants(projectRoot, existing);
+    // A failed persist must not be reported as a renewal: the OLD expiry
+    // stays active (the safe direction), and the operator keeps the truth.
+    if (!persistGrants(projectRoot, existing)) {
+      return { ok: false, error: 'ledger persist failed — the renewal is NOT active (the previous expiry stands)' };
+    }
     audit(projectRoot, { ts: grant.grantedAt, action: 'grant-renewed', grantId: twin.id, sessionId, paths, reason });
     return { ok: true, grant: twin };
   }
@@ -285,13 +323,15 @@ export function listAuthority(projectRoot: string, sessionId?: string): SandboxG
   return loadGrants(projectRoot).filter((g) => g.expiresAt > nowIso && (!sid || g.sessionId === sid));
 }
 
-/** Revoke one grant by id. Returns true when it was found and removed. */
+/** Revoke one grant by id. Returns true only when it was found AND removed
+ *  from the ledger — a failed persist leaves the grant active, and reporting
+ *  success over a live grant would be a false consent record. */
 export function revokeAuthority(projectRoot: string, grantId: string): boolean {
   const id = clean(grantId, 64);
   const all = loadGrants(projectRoot);
   const keep = all.filter((g) => g.id !== id);
   if (keep.length === all.length) return false;
-  persistGrants(projectRoot, keep);
+  if (!persistGrants(projectRoot, keep)) return false;
   audit(projectRoot, { ts: new Date().toISOString(), action: 'revoke', grantId: id });
   return true;
 }

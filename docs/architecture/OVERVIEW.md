@@ -1,6 +1,6 @@
 # UAP Architecture Overview
 
-`v2.30.0` · 436 TypeScript modules across 34 `src/` subsystems · 521 vitest suites (~6,090 tests, + a ~1,400-test Python enforcer/proxy suite)
+`v2.30.0` · 436 TypeScript modules across 34 `src/` subsystems · 520 vitest suites (6,108 tests, + a ~1,400-test Python enforcer/proxy suite)
 
 > **Why it looks like this:** the architecture is the codified result of Miller-Tech
 > running agentic development on its own fintech app (Pay2U) and platform — every

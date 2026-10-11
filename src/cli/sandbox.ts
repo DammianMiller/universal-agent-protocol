@@ -41,6 +41,7 @@
  *   UAP_SANDBOX_ALLOW     extra writable paths, colon-separated (UNRECORDED)
  *   UAP_SANDBOX_NET       'off' to default the net mode (shared otherwise)
  *   UAP_SANDBOX_GRANTS    pins the grant ledger file (tests, odd layouts)
+ *   UAP_SANDBOX_AUDIT     pins the audit JSONL file (tests, odd layouts)
  *   UAP_SANDBOX_GRANTS_OFF=1  resolve zero grants (escape hatch; the sandbox itself stays)
  *   UAP_SANDBOX_OFF=1     bypass the sandbox entirely (run the command as-is)
  */
@@ -81,7 +82,8 @@ export interface SandboxPlanInput {
   command: string[];
   /** Session id (scopes the grant lookup; empty = no grants). */
   session?: string;
-  /** Net mode: 'shared' (default) or 'off' (the kernel egress boundary). */
+  /** Net mode: 'shared' (default) or 'off' (the kernel egress boundary).
+   *  Undefined = fall back to `envNet`. */
   net?: SandboxNetMode;
   /** Writable workdir. */
   workdir: string;
@@ -91,6 +93,12 @@ export interface SandboxPlanInput {
   legacyAllow: string[];
   /** Session-resolved grants (empty when the ledger is off/unreadable). */
   grants: ResolvedGrants;
+  /** $UAP_SANDBOX_NET — the env default for the net mode (planner stays
+   *  input-only: the CALLER resolves process.env, so the plan is a pure
+   *  function of its inputs and unit tests need no env plumbing). */
+  envNet?: string;
+  /** $ANTHROPIC_CUSTOM_HEADERS — appended to, never clobbered. */
+  existingCustomHeaders?: string;
 }
 
 export interface SandboxPlan {
@@ -104,7 +112,7 @@ export interface SandboxPlan {
   netMode: SandboxNetMode;
   /** Granted writable holes actually opened for this run. */
   grantedPaths: string[];
-  /** Human-readable lines for the launch banner (already colored upstream). */
+  /** Human-readable lines for the launch banner (colored at the print site). */
   notes: string[];
 }
 
@@ -112,7 +120,8 @@ function planError(msg: string): { error: string; plan?: undefined } {
   return { error: msg };
 }
 
-/** Compute the bwrap invocation. Pure: no spawn, no fs mutation. */
+/** Compute the bwrap invocation. Pure: a function of its inputs only — the
+ *  CALLER resolves process.env into `envNet`/`existingCustomHeaders`. */
 export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; error?: string } {
   const workdir = input.workdir;
   // Guard: never sandbox with an over-broad workdir — it would expose the tree.
@@ -122,7 +131,7 @@ export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; erro
   const netMode: SandboxNetMode =
     input.net === 'off' || input.net === 'shared'
       ? input.net
-      : process.env.UAP_SANDBOX_NET === 'off'
+      : input.envNet === 'off'
         ? 'off'
         : 'shared';
 
@@ -187,7 +196,7 @@ export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; erro
   // socket is unreachable here — offering browser_batch guarantees dead-end
   // loops). Claude Code forwards ANTHROPIC_CUSTOM_HEADERS verbatim to its
   // endpoint; append rather than clobber any pre-existing value.
-  const customHeaders = sandboxCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS);
+  const customHeaders = sandboxCustomHeaders(input.existingCustomHeaders);
   argv.push('--setenv', 'ANTHROPIC_CUSTOM_HEADERS', customHeaders);
   argv.push('--chdir', workdir, ...input.command);
 
@@ -227,6 +236,18 @@ export function sandboxCustomHeaders(existing: string | undefined): string {
 
 const GRANT_VERBS = new Set(['grant', 'grants', 'revoke']);
 
+/**
+ * Should `command[0]` be dispatched as a ledger verb? Only when the
+ * invocation did NOT use the `--` separator: `uap sandbox -- revoke …` means
+ * the operator wants to run a BINARY named `revoke`, and a positional
+ * intercept that cannot be escaped would shadow legitimate commands (P4
+ * review finding). Exposed for the CLI-surface tests.
+ */
+export function shouldDispatchGrantVerb(command: string[], argv: string[] = process.argv): boolean {
+  if (!command.length || !GRANT_VERBS.has(command[0])) return false;
+  return !argv.slice(2).includes('--');
+}
+
 function grantsDisabled(): boolean {
   const v = process.env.UAP_SANDBOX_GRANTS_OFF;
   return v === '1' || v === 'true' || v === 'yes';
@@ -253,7 +274,7 @@ async function grantVerb(args: string[], options: Record<string, unknown>): Prom
   if (verb === 'grant') {
     const paths = args.slice(1);
     const input: GrantInput = {
-      sessionId: String(options.session || process.env.UAP_SESSION_ID || ''),
+      sessionId: String(options.session || process.env.UAP_SESSION_ID || process.env.CLAUDE_SESSION_ID || ''),
       paths,
       reason: String(options.reason || ''),
       ttlSecs: options.ttl === undefined ? undefined : Number(options.ttl),
@@ -290,7 +311,12 @@ async function grantVerb(args: string[], options: Record<string, unknown>): Prom
   if (verb === 'revoke') {
     const id = args[1];
     if (!id) fail('usage: uap sandbox revoke <grantId>');
-    if (!revokeAuthority(projectRoot, id)) fail(`no grant '${id}' in the ledger`);
+    if (!revokeAuthority(projectRoot, id)) {
+      // Not found, or the ledger refused to persist the removal — either way
+      // the grant may still be ACTIVE, so the refusal must not sound like
+      // "nothing to do" (the persist failure already warned above).
+      fail(`could not revoke '${id}' — it is not in the ledger, or the ledger failed to persist the removal`);
+    }
     console.log(chalk.green(`✓ revoked ${id}`));
     return;
   }
@@ -302,7 +328,9 @@ async function grantVerb(args: string[], options: Record<string, unknown>): Prom
 // ---------------------------------------------------------------------------
 
 export async function sandboxCommand(command: string[], options: Record<string, unknown> = {}): Promise<void> {
-  // Strip a leading '--' separator if commander passed it through.
+  // Belt-and-braces: commander v12 strips the `--` separator itself (the
+  // marker never reaches command[]), but older parsers and hand-built
+  // invocations (tests) may pass it through — strip if it survived.
   if (command[0] === '--') command = command.slice(1);
 
   if (process.env.UAP_SANDBOX_OFF === '1') {
@@ -311,8 +339,9 @@ export async function sandboxCommand(command: string[], options: Record<string, 
     process.exit(r.status ?? (r.error ? 127 : 0));
   }
 
-  // Grant verbs are ledger operations, not sandbox runs.
-  if (GRANT_VERBS.has(command[0])) {
+  // Grant verbs are ledger operations, not sandbox runs — but only when the
+  // invocation did NOT use the `--` separator (see shouldDispatchGrantVerb).
+  if (shouldDispatchGrantVerb(command)) {
     await grantVerb(command, options);
     return;
   }
@@ -340,8 +369,14 @@ export async function sandboxCommand(command: string[], options: Record<string, 
   }
 
   const session = String(options.session || process.env.UAP_SESSION_ID || process.env.CLAUDE_SESSION_ID || '');
-  const netOpt: SandboxNetMode | undefined =
-    options.net === 'off' ? 'off' : options.net === 'shared' ? 'shared' : undefined;
+  const rawNet = options.net;
+  if (rawNet !== undefined && rawNet !== 'off' && rawNet !== 'shared') {
+    // Loud, not silent: an unknown --net value (e.g. the documented-then-cut
+    // 'proxy') silently downgrading to full network would be the exact hole
+    // the boundary exists to close.
+    fail(`unknown --net mode '${String(rawNet)}' (shared | off)`);
+  }
+  const netOpt: SandboxNetMode | undefined = rawNet === 'off' ? 'off' : rawNet === 'shared' ? 'shared' : undefined;
   const legacyAllow = (process.env.UAP_SANDBOX_ALLOW || '').split(':');
   const grants = resolveSessionGrantsSafe(process.cwd(), session);
 
@@ -353,17 +388,28 @@ export async function sandboxCommand(command: string[], options: Record<string, 
     home,
     legacyAllow,
     grants,
+    envNet: process.env.UAP_SANDBOX_NET,
+    existingCustomHeaders: process.env.ANTHROPIC_CUSTOM_HEADERS,
   });
   if (planned.error) fail(planned.error);
   const plan = planned.plan!;
 
-  // The consent record: who granted, what was opened, what ran unrecorded,
-  // and the net boundary actually engaged.
-  auditSandboxUse(process.cwd(), session, grants, legacyAllow.filter(Boolean), plan.netMode);
+  // The consent record: who granted, what was actually OPENED (not merely
+  // resolved — a granted path that no longer exists opens nothing and must
+  // not be recorded as authority exercised), what ran unrecorded, and the
+  // net boundary actually engaged.
+  const openedGrants = grants.grants.filter((g) => g.paths.some((p) => plan.grantedPaths.includes(p)));
+  auditSandboxUse(
+    process.cwd(),
+    session,
+    { grants: openedGrants, paths: plan.grantedPaths },
+    legacyAllow.filter(Boolean),
+    plan.netMode,
+  );
 
   console.error(chalk.dim(`uap sandbox: workdir ${workdir} (writable); everything else is EROFS`));
   for (const n of plan.notes) console.error(chalk.dim(`  ${n}`));
-  if (!session && grantsDisabled()) console.error(chalk.dim('  grants: ledger off (UAP_SANDBOX_GRANTS_OFF=1)'));
+  if (grantsDisabled()) console.error(chalk.dim('  grants: ledger off (UAP_SANDBOX_GRANTS_OFF=1)'));
   if (!session) {
     console.error(
       chalk.dim('  grants: none (no --session; grant one with: uap sandbox grant <path> --session <id> --reason "...")'),
