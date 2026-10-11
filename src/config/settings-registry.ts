@@ -239,6 +239,28 @@ export const SETTINGS: readonly SettingDef[] = [
     recommendation: 'Use inline for CI enforcement without changing the project config; never export globally — a hard gate in every shell surprises interactive agents.',
   },
 
+  // ── Attention queue (bridge P3: ask instead of stop) ─────────────────────
+  {
+    key: 'attention.graceSecs', kind: 'json', type: 'number', min: 0, default: 300, category: 'orchestration',
+    description: 'Grace window before the AFK auto-decider may adopt an attention item\'s recorded safe default (`uap attention sweep`, also swept at session start). Items without a safe default escalate instead.',
+    recommendation: '300s (five minutes) is long enough for a present operator to intercede and short enough that an unattended run never stalls on an ask. Raise for high-stakes decisions, 0 adopts immediately.',
+  },
+  {
+    key: 'UAP_ATTENTION_GRACE_SECS', kind: 'env', type: 'number', min: 0, default: 300, category: 'orchestration', target: 'shell',
+    description: 'Runtime override for the attention grace window; caps at 86,400 (24h).',
+    recommendation: 'Use inline for a one-off long mission; set the project config key instead for a standing value.',
+  },
+  {
+    key: 'UAP_ATTENTION_OFF', kind: 'env', type: 'boolean', default: false, category: 'orchestration', target: 'shell',
+    description: 'Kill switch for the attention rail: `1` disables enqueue, sweep, AND list end-to-end (the queue file stays; nothing new is asked, nothing is auto-decided, no hint prints).',
+    recommendation: 'Leave unset. Use inline when the queue is misbehaving; the rail is fail-open everywhere so a broken store never blocks work.',
+  },
+  {
+    key: 'UAP_ATTENTION_QUEUE', kind: 'env', type: 'string', default: '', category: 'orchestration', target: 'shell',
+    description: 'Pins the attention queue to an explicit FILE. Default: the MAIN checkout\'s `.uap/attention.json`, so the dashboard, the CLI, and session hooks in any worktree share ONE queue.',
+    recommendation: 'Tests and non-standard layouts only; unset means the default shared-per-checkout root.',
+  },
+
   // ── Model routing ─────────────────────────────────────────────────────────
   {
     key: 'multiModel.enabled', kind: 'json', type: 'boolean', default: false, category: 'routing',

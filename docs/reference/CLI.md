@@ -74,6 +74,7 @@ runs, keeping `--help` fast.
 | [`quality`](#quality) | Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types |
 | `plan` | Validate + record plan validation (validate-plan-on-change gate): `uap plan validate [file]` runs the deterministic readability scan + model review, then stamps |
 | `self` | Self-knowledge card: build the version-pinned digest of UAP's own command/feature surface (`uap self card`), and answer "how do I X" offline (`uap self query "<question>"`) |
+| `attention` | Operator attention queue: decisions waiting on you (`list`), answer them (`decide`), and the AFK auto-decider that adopts recorded safe defaults (`sweep`) |
 | `principles` | Engineering principles: show them, and answer the backward-compatibility stance (`status \| ask \| compat \| maturity \| show`) |
 | `fidelity` | Inspect or set the maximum-fidelity verification mode (raised gates + always-on visual/vision review) |
 | `interaction` | Interaction gate: derive probes from the requirements and play the artifact through them |
@@ -1137,6 +1138,37 @@ pointer block.
 uap self card                       # ensure the card is fresh and print the pointer block
 uap self card --refresh --json      # force a rebuild, machine-readable stats
 uap self query "how do I run a controlled benchmark"
+```
+
+---
+
+## `attention`
+
+The operator attention queue (bridge P3): the ask-instead-of-stop rail. When a
+decision is genuinely yours — a placement parked and waiting for a swap
+approval, a grant request, a blocking question — the agent records it here
+with its context and a SAFE DEFAULT, and keeps working. The session-start hook
+shows what is waiting (plus what was auto-decided while you were away); `sweep`
+is the AFK auto-decider: anything whose grace window elapsed without an answer
+adopts its recorded safe default (logged, never silent), and anything without
+one ESCALATES instead of silently expiring. The decider only records its own
+adoption — the underlying system keeps its own lifecycle. One queue per
+checkout: the MAIN checkout's `.uap/attention.json` (the dashboard, the CLI,
+and session hooks in any worktree share it; `UAP_ATTENTION_QUEUE` pins it
+elsewhere). Fail-open, atomic, re-sanitized on load; `UAP_ATTENTION_OFF=1`
+silences the rail end-to-end.
+
+| Subcommand | Key flags | Purpose |
+|------------|-----------|---------|
+| `list` | `--status <s>`, `--json` | What is waiting — OPEN items by default (pending + acknowledged + escalated); `--status` filters to one status (pending, acknowledged, decided, auto-decided, escalated; unknown values error) |
+| `ack <id>` | | Mark seen — the grace clock keeps running (seen ≠ answered) |
+| `decide <id> <decision>` | | Answer the ask (yours beats the decider) |
+| `sweep` | `--json` | Adopt recorded safe defaults for grace-elapsed items; escalate the rest |
+
+```bash
+uap attention list                        # what is waiting on you
+uap attention decide att-9f2a1b "apply option 2"
+uap attention sweep                        # AFK decider: adopt safe defaults, escalate the rest
 ```
 
 ---

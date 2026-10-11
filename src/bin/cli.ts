@@ -66,6 +66,7 @@ const lazy = {
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
   plan: () => import('../cli/plan.js').then((m) => m.planCommand),
   self: () => import('../cli/self.js').then((m) => m.selfCommand),
+  attention: () => import('../cli/attention.js').then((m) => m.attentionCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -1231,6 +1232,23 @@ program
       json: Boolean(options.json),
       refresh: Boolean(options.refresh),
       limit: options.limit !== undefined ? Number(options.limit) : undefined,
+    });
+  });
+
+// Attention queue — the ask-instead-of-stop rail (bridge P3)
+program
+  .command('attention')
+  .description('Operator attention queue: items needing your decision, with AFK safe-default adoption')
+  .argument('[action]', 'list | ack <id> | decide <id> <decision> | sweep (default: list)')
+  .argument('[id]', 'ack/decide: the item id')
+  .argument('[decision]', 'decide: your decision text')
+  .option('--status <s>', 'list: pending | acknowledged | decided | auto-decided | escalated (default: pending)')
+  .option('--json', 'Emit JSON')
+  .action(async (action, id, decision, options) => {
+    const cmd = await lazy.attention();
+    await cmd(action, id, decision, {
+      json: Boolean(options.json),
+      status: typeof options.status === 'string' ? options.status : undefined,
     });
   });
 

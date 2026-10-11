@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.29.0 (2026-10-11)
+
+- feat(bridge): P3 autonomy — attention queue + AFK auto-decider
+- chore(hooks): live session-start hooks pick up the attention-queue block (P3)
+- fix(lint): place the no-control-regex disable on the regex line in probe.ts
+
+
 ## v2.28.0 (2026-10-11)
 
 - feat(bridge): P2 scheduling — dependency-triggered dispatch + per-leaf model dials

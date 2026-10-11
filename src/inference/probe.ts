@@ -133,8 +133,8 @@ export function redactUrl(url: string): string {
  * (CWE-117 — the strata engine model, live state, and unit details all
  * cross a trust boundary; same doctrine as merge-gate's sanitize()). */
 export function sanitizeServerText(text: string): string {
-  // eslint-disable-next-line no-control-regex
   return String(text)
+    // eslint-disable-next-line no-control-regex
     .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
     // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
