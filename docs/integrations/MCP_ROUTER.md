@@ -1,6 +1,6 @@
 # MCP Router
 
-`v1.224.0` · `src/mcp-router/`
+`v2.29.0` · `src/mcp-router/`
 
 > **🏭 Where this fits:** Cross-cutting (keeps the belt from jamming) — every
 > station downstream stalls when your agent's context window is choked with

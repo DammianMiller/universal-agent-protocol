@@ -5,8 +5,8 @@ and `automation.md`. It maps each rule to the test that asserts it, the test fil
 level (unit / integration / manual). Where a rule has no verifying test, that is called
 out explicitly.
 
-Test inventory: **459 vitest (`test/**/*.test.ts`)** + **75 Python
-(`tools/agents/tests/test_*.py`)**. Both suites run on every PR via
+Test inventory: **518 vitest (`test/**/*.test.ts`)** + **84 Python
+(`tools/agents/tests/test_*.py`; 83 in the enforcer suite)**. Both suites run on every PR via
 `.github/workflows/deploy-verify.yml`: `Build & Test` (`npm run test:ci`) and
 `Policy Enforcers (Python)` (`npm run test:enforcers`). The Python suite is
 invoked as an explicit module list, not discovery — `python -m unittest`

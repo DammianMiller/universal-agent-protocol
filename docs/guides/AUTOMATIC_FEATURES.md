@@ -132,6 +132,13 @@ Install UAP (`npm i -g universal-agent-protocol`) and every feature below activa
 
 **Why it matters:** Fewer deploys, faster delivery, atomic rollouts.
 
+### Operator Attention Queue (v2.29)
+**What it does:** When a decision is genuinely the operator's (a placement parked with no auto path), the agent records an ASK — context plus the SAFE DEFAULT the asking surface vouches for — and keeps working. The AFK auto-decider adopts recorded safe defaults once the grace window lapses (logged, never silent) and escalates asks that have no safe default.
+
+**When it kicks in:** At session start (the hook sweeps and shows what is waiting, plus what was auto-decided while you were away), on a 60s timer inside the dashboard, and whenever a gated surface parks on a decision.
+
+**Why it matters:** The agent stops on any excuse — or worse, silently decides for you. Now an unattended run keeps moving on decisions that are safe to default, and every adoption is on the record (`uap attention list/decide`; `UAP_ATTENTION_OFF=1` silences the rail).
+
 ---
 
 ## Long-Task Autonomy (Hands-Free) ✨
@@ -270,6 +277,7 @@ long-running build is progressing — no guesswork.
 | Pattern RAG | ✅ | Every prompt | Battle-tested implementations |
 | Coordination | ✅ | Complex tasks | Parallel subagent execution |
 | Deploy batching | ✅ | Multiple changes | Atomic, efficient deploys |
+| Attention queue + AFK decider | ✅ | Operator decisions / session start / 60s dashboard timer | Asks instead of stalls; unattended adoptions logged |
 | HALO | ✅ | Substantial prompts | Automatic task decomposition |
 | Model presets | ✅ | Model selection | Optimal params per model |
 

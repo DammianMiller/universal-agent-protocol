@@ -1,6 +1,6 @@
 # Quickstart
 
-> **🏭 The big idea:** UAP is the discipline layer for your AI delivery line — memory so agents remember, isolation so they don't clobber your repo, real verification so "done" means it actually runs, and coordination so many agents don't collide. See the [delivery pipeline](../guides/DELIVERY_PIPELINE.md) for the full station-by-station tour.
+> **🏭 The big idea:** UAP is the discipline layer for your AI delivery line — memory so agents remember, isolation so they don't clobber your repo, real verification so "done" means it actually runs, and coordination so many agents don't collide. See the [delivery pipeline](../guides/DELIVERY_PIPELINE.md) for the full station-by-station tour, and [The Evolution of UAP](../guides/EVOLUTION.md) for where it came from: Miller-Tech enforcing real software-engineering discipline on agentic development of its fintech app Pay2U and the Miller-Tech platform.
 
 Let's get you from a clean checkout to your first delivered task in about five
 minutes. This assumes you've already installed the CLI — head to

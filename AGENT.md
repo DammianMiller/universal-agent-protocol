@@ -8,7 +8,7 @@ UAP development guidelines.
 
 ```bash
 # Testing
-npm test              # Run all tests (459 vitest test files)
+npm test              # Run all tests (518 vitest test files)
 npm run test:coverage # Coverage report
 
 # Linting & Type Checking

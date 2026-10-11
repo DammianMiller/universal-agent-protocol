@@ -5,20 +5,26 @@ harness (Claude Code, Factory, Cursor, OpenCode, oh-my-pi) and mediates its work
 memory injection, policy enforcement, verification gates, and tool-output compression —
 "a station at every point where the line usually breaks."
 
-**What UAP is (implementation):** a TypeScript/Node CLI (`uap`, `src/bin/cli.ts`, ~43
-top-level commands, 60 registrations including subcommands) plus a Python FastAPI model proxy, wired into harnesses via shell
+**What UAP is (implementation):** a TypeScript/Node CLI (`uap`, `src/bin/cli.ts`, 58
+top-level commands, ~210 registrations including subcommands) plus a Python FastAPI model proxy, wired into harnesses via shell
 hooks, four SQLite databases, an optional Docker Qdrant vector store, and a bubblewrap
-kernel sandbox. Version: **v1.224.0**.
+kernel sandbox. Version: **v2.29.0**.
+
+**Where it came from:** born as Miller-Tech's internal discipline layer for agentic
+development of its fintech app Pay2U and the Miller-Tech platform; every gate maps to a
+failure class observed there. Origin story and eras:
+[docs/guides/EVOLUTION.md](../docs/guides/EVOLUTION.md).
 
 ## Stack
 
 | Layer | Technology | Where |
 |---|---|---|
-| CLI + subsystems | TypeScript (Node ≥18), 367 modules in 26 `src/` subsystems | `src/` |
+| CLI + subsystems | TypeScript (Node ≥18), 434 modules in 34 `src/` subsystems | `src/` |
 | Model proxy | Python FastAPI/uvicorn, ~10.6k lines | `tools/agents/scripts/anthropic_proxy.py` |
 | Policy enforcers | Python scripts (exit 0=allow / 2=block) | `src/policies/enforcers/*.py` → materialized to `.policy-tools/` |
 | Harness integration | Shell hook scripts installed into per-platform `settings.local.json` | `templates/hooks/`, `src/cli/hooks.ts` |
 | Persistence | SQLite ×4 (tasks, coordination, policies, telemetry) + JSON/JSONL ledgers | see table below |
+| Operator attention queue | JSON store in the MAIN checkout's `.uap/attention.json` (one per checkout, worktree-shared; `UAP_ATTENTION_QUEUE` pins a file) — sanitized at ingest AND load, fail-open, atomic unique-tmp writes | `src/delivery/attention.ts` |
 | Vector memory | Qdrant (auto-started Docker `uap-qdrant`, :6333) or cloud; in-memory fallback | `src/memory/serverless-qdrant.ts` |
 | Sandbox | bubblewrap (`bwrap`) read-only root + writable holes | `src/cli/sandbox.ts` |
 | Browser | CloakBrowser (Playwright-compatible, stealth) — execution/visual gates only | `src/browser/web-browser.ts` |
@@ -90,6 +96,7 @@ local tool. Identity boundaries are process/trust-tier based (see `permissions.m
 | Telemetry / dashboard events | `agents/data/memory/telemetry.db` (busy_timeout 2s, best-effort) | SQLite WAL |
 | Deliver run state (resume) | `.uap/deliver-runs/<runId>/state.json` (sanitized on read) | JSON |
 | Completion ledger (definition of done) | `.uap/completion-ledger.json` | JSON |
+| **Operator attention queue (v2.29)** | MAIN checkout `.uap/attention.json` (worktree sessions resolve the main checkout via `src/utils/checkout-root.ts`; sanitized at ingest AND load; fail-open; bounded 250; `UAP_ATTENTION_OFF` kills the rail) | JSON |
 | HALO traces (on by default; local only) | `.uap/halo/traces.jsonl` (10 MB rotation) | JSONL |
 | Practice cards / mined weaknesses | `.uap/delivery-practices.json`, `.uap/halo/weaknesses.json` | JSON |
 | Vector memory | `agents/data/qdrant/` (Docker) or Qdrant Cloud | Qdrant |

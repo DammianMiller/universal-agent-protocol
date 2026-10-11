@@ -1,6 +1,11 @@
 # UAP Architecture Overview
 
-`v1.224.0` · 367 TypeScript modules across 26 `src/` subsystems · 459 vitest suites (+ a ~1,200-test Python enforcer/proxy suite)
+`v2.29.0` · 434 TypeScript modules across 34 `src/` subsystems · 518 vitest suites (~6,050 tests, + a ~1,200-test Python enforcer/proxy suite)
+
+> **Why it looks like this:** the architecture is the codified result of Miller-Tech
+> running agentic development on its own fintech app (Pay2U) and platform — every
+> station exists because a specific failure class happened there. The origin story
+> and eras: [The Evolution of UAP](../guides/EVOLUTION.md).
 
 > **Code-verified reference:** this narrative overview is the intent-level floor plan. For
 > the reverse-engineered, implementation-accurate map — including trust boundaries,
@@ -51,6 +56,14 @@ to the subsystem that guards it. Read this as the conveyor belt your work rides:
 | **6. Line coordination** — many hands | parallel agents collide, duplicate, deadlock | **coordination DB**, collaboration board + challenge, model-slot concurrency, deploy batching |
 | **7. Shipping** — merge & release | regressions, broken CI, skipped version bumps | worktree→PR flow, version/completion gates, CI feedback watcher, never-regress, git-safety |
 | **8. Feedback** — learn from it | same mistake every session | **memory promotion**, pattern RL, session analysis |
+
+The 2026-10 **bridge program** (eras in [EVOLUTION.md](../guides/EVOLUTION.md))
+tightened the stations against mtlynch.io's *Why Are Coding Agents So Dumb?*:
+plan **legibility** (a readability gate over plans + the version-pinned
+**self-knowledge card**, v2.27), **scheduling** (completion-triggered dispatch
+with per-leaf model dials, v2.28), and **autonomy** (the attention queue + AFK
+auto-decider: the agent asks instead of stopping, and an unattended decision
+adopts the recorded safe default, logged, never silent — v2.29).
 
 Cross-cutting through every station: **policy gates** are the executable rules
 posted at each station, the **MCP Router** keeps the context lean so the belt

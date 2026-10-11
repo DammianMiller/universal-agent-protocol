@@ -6,14 +6,22 @@
 
 [![npm](https://img.shields.io/npm/v/@miller-tech/uap?color=blue&label=npm)](https://www.npmjs.com/package/@miller-tech/uap)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
-[![Tests](https://img.shields.io/badge/tests-450%2B_suites-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-500%2B_suites-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
-`v2.16.6` · 367 TypeScript modules across 26 subsystems · 459 vitest suites (+ a ~1,200-test Python enforcer/proxy suite) · 9 agent harnesses
+`v2.29.0` · 434 TypeScript modules across 34 subsystems · 518 vitest suites (~6,050 tests, + a ~1,400-test Python enforcer/proxy suite) · 9 agent harnesses
 
-[Quickstart](#quickstart) · [Why UAP?](#why-uap) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
+[Quickstart](#quickstart) · [Why UAP?](#why-uap) · [Origin & evolution](#origin--evolution) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
 
 </div>
+
+---
+
+## Origin & evolution
+
+UAP is a **Miller-Tech** tool, born from real work: while building the fintech app **Pay2U** and the **Miller-Tech platform** with AI coding agents, the same failures kept recurring — "done" code that never ran, edits on `main`, forgotten decisions, prose architecture rules that blocked nothing, agents that stall on any question or silently decide for you. The fix that worked, every time, was the same: **turn the software-engineering practice into an executable check the agent cannot route around. Enforce, don't suggest.**
+
+That principle became UAP — a discipline layer installed *underneath* the agent harness, putting a verification station at every point where agentic development actually breaks. It has shipped continuously since March 2026 — 694 versioned releases — hardened under its own gates (worktree isolation, parallel review, evidence-bound shipping), which makes the tool the proof of its own thesis. The full story — the Pay2U origin, the four eras (the floor → the verification spine → autonomy machinery → the 2026-10 bridge program responding to *Why Are Coding Agents So Dumb?*), and the ADR decision record — lives in **[The Evolution of UAP](docs/guides/EVOLUTION.md)**.
 
 ---
 
@@ -32,6 +40,9 @@ Coding agents are capable but undisciplined line workers. They forget yesterday'
 | Two agents clobber each other | Worktree isolation + live file coordination | Conflict-free parallel work |
 | "Guidelines" get ignored | Policy gates as executable hooks, not prose | Violations are **blocked**, not politely suggested |
 | Same mistake, every session | Memory promotion + pattern learning | The floor gets better every run |
+| The agent stalls on any question — or silently decides for you | Attention queue + AFK auto-decider (v2.29) | Asks are recorded with a **safe default** and work continues; unattended adoption is logged, never silent |
+| Fast tasks idle behind slow siblings | Completion-triggered dispatch (v2.28) | A finished task's slot refills instantly; dependents start the moment their last dependency settles |
+| Plans the agent can't follow; it guesses its own tooling | Plan readability gate + self-knowledge card (v2.27) | Legible plans; the agent answers "how do I X" from its own version-pinned card |
 
 **→ Take the full station-by-station tour: [The UAP Delivery Pipeline](docs/guides/DELIVERY_PIPELINE.md).**
 
@@ -89,11 +100,11 @@ Hardened for shared floors (v1.224): rollback is scoped to the run's own write-s
 | **Isolation** | Editing `main`, clobbering files | [Worktrees](docs/guides/WORKTREE_WORKFLOW.md), live file coordination, delivery gate |
 | **Build** | Plausible-but-wrong code, stubs, empty output | [`uap deliver`](docs/guides/DELIVER.md), serving-layer recipes, [local-model guardrails](docs/guides/LOCAL_MODELS.md) |
 | **QC / verify** | "Done" on code that never ran | Completion gates, `uap verify`, acceptance judge, generator≠evaluator |
-| **Coordination** | Parallel agents colliding/deadlocking | [Coordination](docs/guides/COORDINATION.md), model-slot concurrency, [deploy batching](docs/guides/DEPLOY_BATCHING.md) |
+| **Coordination** | Parallel agents colliding/deadlocking | [Coordination](docs/guides/COORDINATION.md), model-slot concurrency, [deploy batching](docs/guides/DEPLOY_BATCHING.md), attention queue (asks instead of stalls) |
 | **Shipping** | Regressions, red CI, skipped version bumps | Worktree→PR flow, version gates, CI feedback watcher |
 | **Feedback** | The same mistake every session | Memory promotion, pattern learning, session analysis |
 
-Running the whole length of the floor: **policy gates** (32 executable enforcers that *block* non-compliant tool calls — worktree, test, schema-diff, expert-review, delivery-enforcement, quality-metrics, design-token, visual-verification…), the **quality-metrics gate** (deterministic complexity/coverage/mutation budgets with a ratchet baseline, so standards can only tighten), and the **MCP Router** (keeps the context window lean). Full catalog: **[docs/reference/FEATURES.md](docs/reference/FEATURES.md)**.
+Running the whole length of the floor: **policy gates** (34 executable enforcers that *block* non-compliant tool calls — worktree, test, schema-diff, expert-review, delivery-enforcement, quality-metrics, design-token, visual-verification…), the **quality-metrics gate** (deterministic complexity/coverage/mutation budgets with a ratchet baseline, so standards can only tighten), and the **MCP Router** (keeps the context window lean). Full catalog: **[docs/reference/FEATURES.md](docs/reference/FEATURES.md)** · origin & eras: **[docs/guides/EVOLUTION.md](docs/guides/EVOLUTION.md)**.
 
 ---
 
@@ -118,11 +129,11 @@ UAP installs hooks into your agent harness, then mediates every tool call throug
 └──┬─────────┬──────────┬──────────┬──────────┬───────────────┘
    ▼         ▼          ▼          ▼          ▼
  Memory   Policy    MCP Router   Delivery   Coordination
- 4 tiers  32 gates  compression  + verify   + deploy batch
+ 4 tiers  34 gates  compression  + verify   + deploy batch
 ```
 
-- **60+ CLI commands** across 26 source subsystems (367 TypeScript modules).
-- Deep dive: **[docs/architecture/OVERVIEW.md](docs/architecture/OVERVIEW.md)** · protocol spec: **[docs/architecture/PROTOCOL.md](docs/architecture/PROTOCOL.md)**.
+- **58 top-level CLI commands** (~210 registrations including subcommands) across 34 source subsystems (434 TypeScript modules).
+- Deep dive: **[docs/architecture/OVERVIEW.md](docs/architecture/OVERVIEW.md)** · protocol spec: **[docs/architecture/PROTOCOL.md](docs/architecture/PROTOCOL.md)** · origin story: **[docs/guides/EVOLUTION.md](docs/guides/EVOLUTION.md)**.
 
 ---
 
@@ -177,6 +188,7 @@ Install into all detected harnesses with `uap hooks install`; audit coverage wit
 | | |
 |---|---|
 | **[The Delivery Pipeline](docs/guides/DELIVERY_PIPELINE.md)** | The station-by-station tour — start here for the big picture |
+| **[The Evolution of UAP](docs/guides/EVOLUTION.md)** | Origin & eras — Miller-Tech, Pay2U, the hardening audits, the bridge program |
 | **[Getting Started](docs/getting-started/)** | Installation, quickstart, configuration |
 | **[Guides](docs/guides/)** | deliver, memory, MCP router, worktrees, policies, multi-model, local models |
 | **[Architecture](docs/architecture/)** | System overview + the UAP protocol |
@@ -193,8 +205,8 @@ Start at the **[documentation index](docs/INDEX.md)**.
 ```bash
 npm install
 npm run build           # TypeScript compile
-npm test                # vitest — 459 suites (~5,000 tests)
-npm run test:enforcers  # Python policy-enforcer suite (~1,200 tests)
+npm test                # vitest — 518 suites (~6,050 tests)
+npm run test:enforcers  # Python policy-enforcer suite (~1,400 tests)
 npm run bench           # benchmark suite
 ```
 
