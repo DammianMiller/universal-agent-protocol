@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.31.0 (2026-10-11)
+
+- fix(bridge): P5 review findings — honest unknowns, no materializing reads, one choke point for hostile strings
+- fix(bridge): P4 security-review findings — unforgeable consent, socket-surface gates, relay consent flag
+
+
 ## v2.30.0 (2026-10-11)
 
 - fix(bridge): P4 review findings — ledger load re-validation, pure planner, loud --net, relay hardening
