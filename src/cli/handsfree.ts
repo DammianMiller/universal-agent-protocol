@@ -34,6 +34,28 @@ import {
 } from '../delivery/completion-ledger.js';
 import { loadPersistenceConfig, resolveActiveModel } from '../delivery/handsfree-config.js';
 import { resolvePersistenceProfile } from '../delivery/persistence-profile.js';
+import { estimatePace, remainingWallMs, formatDurationMs } from '../delivery/eta-estimate.js';
+
+/**
+ * The status ETA line for `remaining` open ledger items, from the model's own
+ * measured pace — or null when there is no estimate (thin data must not guess).
+ * Exported for the tests; the optional dbPath is their seam (the status surface
+ * always reads the project store).
+ */
+export function handsfreeEtaLine(modelId: string, remaining: number, dbPath?: string): string | null {
+  if (!Number.isFinite(remaining) || remaining <= 0) return null;
+  // requireExisting: a status READ must not materialize an empty analytics
+  // store on a checkout that has no history yet.
+  const est = estimatePace({ modelId, dbPath, requireExisting: true });
+  const wall = remainingWallMs(est, remaining);
+  if (wall === null || !est) return null;
+  const thin = est.confidence === 'thin' ? chalk.yellow(' (thin data)') : '';
+  return (
+    `  eta: ${chalk.bold(`~${formatDurationMs(wall)}`)} for the remaining ${remaining} item(s) ` +
+    chalk.dim(`(EWMA ~${formatDurationMs(est.etaMs)}/task, n=${est.samples}/${est.observed})`) +
+    thin
+  );
+}
 
 interface AntiSpinState {
   blocks: number;
@@ -227,6 +249,11 @@ export async function handsfreeCommand(
           `  ledger: ${chalk.bold(`${p.done}/${p.total}`)} done (${p.pct}%), ` +
             `${p.failed} failed, ${p.pending} pending`
         );
+        // Measured-pace ETA for the remaining work (bridge P5: S1b): the
+        // operator's own history, scaled by this key's attempts-per-success.
+        // Shown ONLY when the estimate exists — thin data would guess.
+        const etaLine = handsfreeEtaLine(model, p.pending + p.failed);
+        if (etaLine) console.log(etaLine);
         if (!isComplete(ledger)) console.log(chalk.dim('  ' + formatRemaining(ledger, 6).replace(/\n/g, '\n  ')));
       } else {
         console.log(chalk.dim('  ledger: none (no multi-epic build in progress)'));

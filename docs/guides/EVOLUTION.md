@@ -131,9 +131,9 @@ is a hazard, so every auto action is consent-gated, logged, and reversible.
 
 mtlynch.io's *Why Are Coding Agents So Dumb?* read the state of the art and
 listed the gaps; Miller-Tech audited UAP against it and committed to a
-five-phase **bridge program** — four phases shipped (with the full review
+five-phase **bridge program** — all five phases shipped (with the full review
 protocol: deterministic prepass → 3 parallel reviewers → every finding fixed
-in-branch), P5 as the intended next step:
+in-branch):
 
 | Phase | Gap addressed | What shipped | Where |
 |---|---|---|---|
@@ -141,7 +141,7 @@ in-branch), P5 as the intended next step:
 | **P2 — Scheduling** (v2.28.0, PR #847) | Serial waves idling fast workers behind slow ones; one model per mission | **Completion-triggered dispatch** (a finished task's slot refills instantly; dependents start when their last dependency settles — no wave barrier), **per-leaf model dials** (a phase may pin its own model, fail-closed everywhere) | [ADR 0009](../architecture/adr/0009-completion-triggered-dispatch-and-per-leaf-model-dials.md) |
 | **P3 — Autonomy** (v2.29.0, PR #848) | Agents stop on any question, or silently decide for you | The **attention queue** (asks recorded with a safe default; `uap attention list/ack/decide/sweep`) and the **AFK auto-decider** (grace-elapsed asks adopt their recorded default — logged, never silent; no default ⇒ escalate). Deadlines pinned to the ask's real TTL; apply/dismiss close the ask by origin | [ADR 0010](../architecture/adr/0010-attention-queue-and-afk-auto-decider.md) |
 | **P4 — Sandboxing** (v2.30.0) | Agents with too much authority | **Per-session sandbox grants**: every extra writable hole in the bubblewrap sandbox is a recorded consent (session-scoped, TTL-bounded 8h→7d, reason-stated, revocable, audit-logged — the unrecorded `UAP_SANDBOX_ALLOW` env is still honored but named UNRECORDED in every audit line). **`--net off`**: the kernel egress boundary (own network namespace, nothing up — no TCP, no DNS, not even loopback). The proxy's optional `PROXY_SOCKET` (0600 AF_UNIX) is the permission-gated model choke point. The intended "only-proxy" netns was cut after empirical testing showed rootless Linux cannot express it — the full reasoning is the ADR's core content. | [ADR 0011](../architecture/adr/0011-sandbox-grants-and-network-egress-boundary.md) |
-| **P5 — Surfaces** (next) | The operator's own legibility | Local diff view; ETA surfaces + paired bench delta report | planned |
+| **P5 — Surfaces** (v2.31.0) | The operator's own legibility | **Measured pace**: the EWMA ETA over the project's own recorded attempts (`uap eta`, the handsfree status line, the dashboard's Measured Pace section, and the agent's own `eta:pace` reactor block) — thin data refuses to estimate, the spread and failure rate always travel with the number. **Local diff view** (`uap diff`): uncommitted deltas + untracked + unpushed vs base in one honest render, binary files are `±` not `0`. **Paired bench report reader** (`uap bench report`): the latest run's deltas with CI/verdict/discrimination always attached, `--compare` for run-to-run drift and verdict flips — an unusable run is NO MEASUREMENT. | [ADR 0012](../architecture/adr/0012-operator-legibility-surfaces.md) |
 
 The bridge program closed the loop on UAP's own behavior as an agent: each
 phase was developed *under UAP* — worktree isolation, completion gates,
@@ -152,9 +152,9 @@ proof of its own thesis.**
 
 ## What exists today (the honest inventory)
 
-As of v2.30.0: **436 TypeScript modules across 34 `src/` subsystems**, 58
-top-level CLI commands (~210 registrations including subcommands), **34
-executable policy enforcers**, **520 vitest suites (6,117 tests)** plus a
+As of v2.31.0: **442 TypeScript modules across 34 `src/` subsystems**, 60
+top-level CLI commands (~211 registrations including subcommands), **34
+executable policy enforcers**, **527 vitest suites (6,208 tests)** plus a
 ~1,400-test Python enforcer/proxy suite, and **9 supported harnesses**. The
 feature-by-feature catalog, mapped to pipeline stations, is
 [FEATURES.md](../reference/FEATURES.md); the "what applies automatically"
@@ -176,8 +176,8 @@ product.**
 The same rule that got UAP here: every new capability must answer *what does
 this stop the agent from getting wrong*, and every new authority must state
 *who consented*. P4 shipped exactly that for the sandbox: recorded grants and
-the honest boundary. P5 (diff view, ETA surfaces) makes the operator's own
-view as legible as the agent's. Beyond the bridge program, the direction is
-unchanged since the Pay2U days: more of the software-engineering discipline,
-executed instead
+the honest boundary. P5 closed the loop by making the operator's own view as
+legible as the agent's — measured pace, the local diff, and the bench deltas
+that held. Beyond the bridge program, the direction is unchanged since the
+Pay2U days: more of the software-engineering discipline, executed instead
 of suggested — and the honest benchmarks to prove which parts pay.

@@ -1,7 +1,7 @@
 # UAP CLI Reference
 
 > Complete command reference for the Universal Agent Protocol command-line interface (`uap`).
-> Version v2.30.0.
+> Version v2.31.0.
 
 > **🏭 Where this fits:** Every station — this is the control panel for the whole
 > line. **What it delivers:** one binary that drives each stage of your
@@ -43,6 +43,8 @@ runs, keeping `--help` fast.
 | [`deliver`](#deliver) | Convergence loop: iterate a model against gates until delivery |
 | [`harness`](#harness) | HALO harness optimization over execution traces |
 | [`bench`](#bench) | Controlled paired (UAP-on vs UAP-off) benchmark with CIs |
+| [`eta`](#eta) | Measured pace: the EWMA ETA from this project's own recorded attempts |
+| [`diff`](#diff) | Local diff view: uncommitted + untracked + unpushed at a glance |
 | [`self-harness`](#self-harness) | Self-improving harness: mine failures → propose → validate → commit |
 | [`tune`](#tune) | LLM self-tuning: raise a small model toward Opus by tuning UAP flags |
 | [`verify`](#verify) | Runtime verification gate: prove changed code actually runs |
@@ -84,6 +86,7 @@ runs, keeping `--help` fast.
 | `self-harness mine-prod` | Mine weaknesses from production traces (HALO + proxy log) and enqueue proposals for gated validation (never applies) |
 | `self-harness pending` | List queued proposals awaiting validation + gate (from mine-prod) |
 | `bench paired` | Run the paired A/B over a real-gate suite; reports accuracy + efficiency deltas with CIs |
+| `bench report` | Read the newest paired run (deltas with CI/verdict/discrimination); `--compare` for run-to-run drift |
 | `self-harness prune` | Ablation-prune: drop stale / no-longer-paying-off transfer + pending entries |
 | `self-harness run` | Autonomous loop: mine → propose → validate (real paired bench per Mod) → decide → (with `--apply`) commit + versioned snapshot |
 | `self-harness transfer` | List the cross-model transfer store (accepted/rejected Mods keyed by failure signature) |
@@ -491,13 +494,69 @@ with confidence intervals, a McNemar gate-value 2×2, and a cost–accuracy Pare
 | Subcommand | Key flags | Purpose |
 |------------|-----------|---------|
 | `paired` | `--suite`, `--adapter <mock\|opencode\|claude\|mini\|raw\|deliver>`, `--model`, `--epochs`, `--concurrency`, `--ablation`, `--lazy`, `--seed`, `--iterations`, `--rope-margin`, `--out`, `--json` | Run the UAP-on vs UAP-off A/B; writes `records.jsonl` + Markdown/JSON reports |
+| `report` | `--dir`, `--compare`, `--full`, `--json` | Read the newest paired report (or `--dir`); `--compare` shows run-to-run delta drift. Deltas always carry their CI, verdict, and discrimination status |
 
 ```bash
 uap bench paired --adapter opencode --model qwen36-a3b --epochs 5
 uap bench paired --ablation            # leave-one-out per UAP component
+uap bench report                       # what did the latest run measure
+uap bench report --compare              # did the delta hold since the last run
 ```
 
 See [Paired Harness](../benchmarks/PAIRED_HARNESS.md) for the methodology.
+
+---
+
+## `eta`
+
+Measured pace (bridge P5, S1b): the EWMA ETA for a (model, taskType,
+complexity) key, built **only** from this project's own recorded attempts
+(the S1a sample stream in the model-analytics store). Recent attempts weigh
+more (half-life in samples, default 10); the sample count, the spread, and
+the failure rate always travel with the number — a pace without provenance
+is exactly the confident guess this replaces. Fewer than 3 successful
+attempts is **not an estimate**: the command says so instead of guessing.
+3–5 samples is `thin` (shown with the caveat); 6+ is `solid`. `--all` lists
+every key with history and **names the keys that are still too thin**
+instead of silently omitting them.
+
+| Flag | Purpose |
+|------|---------|
+| `--model <id>` | Model id (default: the active/executor model) |
+| `--taskType <t>` / `--complexity <c>` | Sample key (default `orchestrated`/`medium`) |
+| `--all` | Every key with history: estimates + too-thin keys by name (capped at the 50 most-active keys, truncation named); `--json` with `--all` emits `{keys, estimates, truncated}` |
+| `--limit <n>` / `--half-life <n>` | Sample window (default 50) / EWMA half-life in samples (default 10) — garbage input is refused loudly, never folded |
+| `--db <path>` | Pin the analytics DB path (odd layouts; the default is the project store) |
+| `--json` | Machine-readable: `{key, estimate}` for one key, `{keys, estimates, truncated}` for `--all` |
+
+```bash
+uap eta                                # the active model's pace for orchestrated/medium
+uap eta --all                          # every key; too-thin keys named, not hidden
+```
+
+---
+
+## `diff`
+
+Local diff view (bridge P5, S3): what the agent changed around here, in one
+honest render — uncommitted rows (staged + unstaged vs HEAD) with per-file
++N/-N and git status glyphs, untracked paths, honest totals, and unpushed
+commits vs the base with ahead/behind and aggregate deltas. Binary files
+render `±` (unknown), never `0`. Safe-git only: execFileSync argument
+arrays, a 5s timeout, and the stateful caches (fsmonitor, untrackedCache)
+defeated. Outside a repository it prints an explicit `git:` error line —
+never a stack trace, never silence.
+
+| Flag | Purpose |
+|------|---------|
+| `--base <ref>` | Base ref for the unpushed view (default `master`) |
+| `--max <n>` | Per-section file cap (default 40) |
+| `--json` | The raw facts as JSON |
+
+```bash
+uap diff                               # the working-tree + unpushed picture
+uap diff --base origin/master          # against a different base
+```
 
 ---
 
