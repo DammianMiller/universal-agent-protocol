@@ -339,7 +339,7 @@ describe('bounded reads — a huge artifact is named, never slurped (P5 polish)'
     writeFileSync(join(dir, 'report.md'), 'x'.repeat(HUGE));
     const r = await run({ dir, full: true });
     expect(r.code).toBe(1);
-    expect(r.err).toContain('over the 4194304 read cap');
+    expect(r.err).toContain('over the 4 MiB read cap');
     expect(r.out).toContain('Paired bench report — paired-bigmd'); // the summary fallback
   });
 });

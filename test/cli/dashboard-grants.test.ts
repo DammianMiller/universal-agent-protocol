@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { sandboxGrantsLines } from '../../src/cli/dashboard.js';
+import { sandboxGrantsLines } from '../../src/cli/dashboard-grants.js';
 import { grantAuthority, sandboxGrantsPath } from '../../src/policies/sandbox-grants.js';
 
 let dir: string;

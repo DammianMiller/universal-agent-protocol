@@ -108,7 +108,8 @@ Rules worth knowing:
   `.uap/sandbox-audit.jsonl`: which grants were used, which network mode engaged, and any
   legacy `UAP_SANDBOX_ALLOW` entries labeled `unrecordedAllow` — still honored, now named.
   Audit lines carry a monotonic `seq` and the file is BOUNDED: past 12,000 lines it
-  compacts to the newest 10,000 with an `audit-compaction` marker recording the drop.
+  compacts to the 10,000 newest event lines — plus the triggering event and one
+  `audit-compaction` marker recording the drop, so the file lands at 10,002.
 - **Tamper evidence (the ADR 0011 trust anchor).** Every recorded grant/renew/revoke also
   writes a 0600 anchor OUTSIDE the checkout
   (`$XDG_STATE_HOME/uap/sandbox-anchors/<hash-of-root>.json`) recording the hash of the

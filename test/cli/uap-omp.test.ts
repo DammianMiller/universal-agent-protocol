@@ -111,6 +111,31 @@ describe('uap-omp memory — library SQL with bound parameters, never a shell', 
     expect(r.out).not.toContain('stored note:');
   });
 
+  it('a literal % in the search term is a LITERAL, not a wildcard (review n8)', () => {
+    ompMemoryDb();
+    // Seed a row whose content contains a literal % and one it must not match.
+    const db = new Database(join(home, '.uap', 'omp', 'memory', 'short_term.db'));
+    db.prepare('INSERT INTO memories (content, type, importance) VALUES (?, ?, ?)').run(
+      '100% literal',
+      'note',
+      5
+    );
+    db.close();
+    // '% literal' as a TERM matches only the literal-% row…
+    const r = run(['memory', 'query', '% literal']);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('100% literal');
+    expect(r.out).not.toContain('a plain note');
+    expect(r.out).not.toContain('stored note:');
+    // …and a bare '%' matches only the literal-% row (unescaped, it would
+    // match every row in the table).
+    const all = run(['memory', 'query', '%']);
+    expect(all.status).toBe(0);
+    expect(all.out).toContain('100% literal');
+    expect(all.out).not.toContain('a plain note');
+    expect(all.out).not.toContain('stored note:');
+  });
+
   it('says not-installed when the DB is missing', () => {
     const r = run(['memory', 'status']);
     expect(r.status).toBe(0);

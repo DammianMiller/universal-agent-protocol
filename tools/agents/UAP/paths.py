@@ -18,8 +18,10 @@ import sys
 
 def main_checkout_root(file_path: Path) -> Path:
     """Resolve the MAIN checkout root from any file inside the repo
-    (main checkout or linked worktree). Falls back to the file's own repo
-    root when git is unavailable."""
+    (main checkout or linked worktree). Falls back to walking UP from the
+    file to the nearest directory containing .git — the file's own
+    directory never holds the data layer, so that degraded root is the
+    honest last resort, announced on stderr either way."""
     suite_root = file_path.resolve()
     try:
         r = subprocess.run(
@@ -32,8 +34,17 @@ def main_checkout_root(file_path: Path) -> Path:
             if not gcd.is_absolute():
                 gcd = suite_root.parent / gcd
             return gcd.parent.resolve()
+        print(
+            "[paths] git reports no checkout here; walking up to the nearest .git",
+            file=sys.stderr,
+        )
     except Exception as exc:
-        # Loud, never silent: the fallback root is a degraded mode and the
-        # operator should see WHY the resolution degraded.
-        print(f"[paths] git root resolution failed ({exc}); using the file's own root", file=sys.stderr)
+        print(
+            f"[paths] git root resolution failed ({exc}); walking up to the nearest .git",
+            file=sys.stderr,
+        )
+    probe = suite_root.parent
+    for candidate in [probe, *probe.parents]:
+        if (candidate / ".git").exists():
+            return candidate
     return suite_root.parent

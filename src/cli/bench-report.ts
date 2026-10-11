@@ -102,7 +102,7 @@ export function loadReport(dir: string): LoadedReport | null {
     // and skipped, never a silent drop or a crash.
     if (st.size > MAX_REPORT_BYTES) {
       console.warn(
-        `[bench report] ${basename(dir)}/report.json is ${st.size} bytes (over the ${MAX_REPORT_BYTES} read cap) — skipped`
+        `[bench report] ${basename(dir)}/report.json is ${st.size} bytes (over the ${MAX_REPORT_BYTES / (1024 * 1024)} MiB read cap) — skipped`
       );
       return null;
     }
@@ -225,7 +225,7 @@ function printFullReport(loaded: LoadedReport): void {
     const st = statSync(mdPath);
     if (st.size > MAX_REPORT_BYTES) {
       console.error(
-        chalk.red(`report.md in ${basename(loaded.dir)}/ is ${st.size} bytes (over the ${MAX_REPORT_BYTES} read cap) — showing the summary instead.`)
+        chalk.red(`report.md in ${basename(loaded.dir)}/ is ${st.size} bytes (over the ${MAX_REPORT_BYTES / (1024 * 1024)} MiB read cap) — showing the summary instead.`)
       );
       console.log(renderReportSummary(loaded));
       process.exitCode = 1;

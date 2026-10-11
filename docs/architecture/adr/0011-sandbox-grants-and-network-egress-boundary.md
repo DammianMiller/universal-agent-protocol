@@ -163,8 +163,9 @@ actually holds.
 - Debt, accepted: the sandbox's `UAP_SANDBOX_ALLOW` continues to work
   unrecorded (compatibility), but every use is audited and named. The
   audit JSONL is now BOUNDED (debt item 3, shipped): every line carries a
-  monotonic `seq`, and past 12,000 lines it compacts to the newest 10,000
-  with an `audit-compaction` marker recording the drop — a pruned trail is
+  monotonic `seq`, and past 12,000 lines it compacts to the 10,000 newest
+  event lines — plus the triggering event and one `audit-compaction` marker
+  recording the drop, so the file lands at 10,002 — a pruned trail is
   an EXPECTED state, never a silent one.
 - Follow-up (operator surface) — **SHIPPED** as the dashboard's Sandbox
   Grants section (debt item 16): `uap dashboard` (session view) lists the
@@ -177,9 +178,14 @@ actually holds.
 - Follow-up (trust anchoring) — **SHIPPED** as the out-of-checkout
   tamper-evidence anchor (`src/policies/sandbox-anchor.ts`, debt item 2):
   every successful grant/renew/revoke writes a 0600 anchor at
-  `$XDG_STATE_HOME/uap/sandbox-anchors/<hash-of-root>.json`
+  `$XDG_STATE_HOME/uap/sandbox-anchors/<hash-of-main-checkout-root>.json`
   (`UAP_SANDBOX_ANCHOR_DIR` pins the dir for tests) recording the SHA-256
-  of the sanitized ledger as of that recorded operation. Verification
+  of the sanitized ledger as of that recorded operation. The key is the
+  MAIN checkout root (the same `git rev-parse --git-common-dir` root the
+  session-start hook and the python tools use), so a worktree session and
+  its main checkout share ONE anchor for the ONE ledger they share — a
+  worktree session is never silently unanchored, and a cross-cwd grant
+  never fabricates a mismatch. Verification
   (`uap sandbox grants` states it; the launch path enforces it) compares
   the on-disk ledger against the anchor: a mismatch means something with
   the CHECKOUT's write reach changed the ledger outside a recorded

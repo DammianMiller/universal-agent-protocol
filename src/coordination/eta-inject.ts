@@ -14,7 +14,7 @@
 import { resolveActiveModel } from '../delivery/handsfree-config.js';
 import { estimatePace, formatDurationMs } from '../delivery/eta-estimate.js';
 import { termSafeBounded } from '../utils/terminal-safe.js';
-import { join } from 'path';
+import { resolveAnalyticsDbPath } from '../models/analytics.js';
 
 /**
  * Return the measured-pace block for injection, or null when there is no
@@ -31,12 +31,13 @@ import { join } from 'path';
  * injection surface reads project state through that cwd; a process.cwd()
  * default here would read the wrong checkout whenever the reactor runs
  * from a nested directory, and made the per-prompt wiring untestable
- * without chdir).
+ * without chdir). `resolveAnalyticsDbPath(cwd)` keeps the on-disk location
+ * ONE rule shared with the recorder, not a copied literal.
  */
 export function maybeEtaInjection(cwd: string, dbPath?: string): string | null {
   try {
     const modelId = resolveActiveModel(cwd);
-    const store = dbPath ?? join(cwd, 'agents', 'data', 'memory', 'model_analytics.db');
+    const store = resolveAnalyticsDbPath(dbPath, cwd);
     const est = estimatePace({ modelId, dbPath: store, requireExisting: true });
     if (!est || est.confidence !== 'solid') return null;
     // The model id comes from env/config the repo can control; the block

@@ -11,7 +11,7 @@ import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ModelAnalytics } from '../../src/models/analytics.js';
-import { computeMeasuredPace } from '../../src/cli/dashboard.js';
+import { computeMeasuredPace } from '../../src/cli/dashboard-pace.js';
 
 let dir: string;
 let db: string;

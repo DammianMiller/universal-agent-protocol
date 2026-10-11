@@ -2607,15 +2607,18 @@ uapOmpCmd.addCommand(
               // user/LLM-controlled and must never reach a shell or be
               // spliced into SQL text (the old `execSync` call was a real
               // injection surface — `$()` inside its double quotes executed).
+              // LIKE wildcards in the TERM are escaped too: a literal `%`
+              // search is a literal-% search, not "dump the whole table".
               const { default: Database } = await import('better-sqlite3');
-              const limit = Number.isFinite(parseInt(options.limit, 10)) ? parseInt(options.limit, 10) : 5;
+              const parsedLimit = parseInt(options.limit, 10);
+              const limit = Number.isFinite(parsedLimit) ? parsedLimit : 5;
               const db = new Database(dbPath, { readonly: true, fileMustExist: true });
               try {
                 const rows = db
                   .prepare(
-                    "SELECT content, type, importance FROM memories WHERE content LIKE ? ORDER BY importance DESC LIMIT ?"
+                    "SELECT content, type, importance FROM memories WHERE content LIKE ? ESCAPE '\\' ORDER BY importance DESC LIMIT ?"
                   )
-                  .all(`%${search}%`, Math.max(1, limit)) as Array<{
+                  .all(`%${String(search).replace(/[\\%_]/g, (m) => `\\${m}`)}%`, Math.max(1, limit)) as Array<{
                   content: string;
                   type: string;
                   importance: number;

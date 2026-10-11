@@ -1,6 +1,5 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { termSafe } from '../utils/terminal-safe.js';
 import { existsSync, statSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -33,118 +32,10 @@ import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { getPolicyGate } from '../policies/policy-gate.js';
 import { ModelRouter } from '../models/router.js';
 import { ModelPresets, type MultiModelConfig } from '../models/types.js';
-import { getModelAnalytics, ModelAnalytics } from '../models/analytics.js';
+import { getModelAnalytics } from '../models/analytics.js';
 import { detectExecutionProfile } from '../models/execution-profiles.js';
-import { ewmaEstimate, formatDurationMs } from '../delivery/eta-estimate.js';
-import { listAuthority, verifyLedgerIntegrity } from '../policies/sandbox-grants.js';
-
-// ---------------------------------------------------------------------------
-// Sandbox Grants (debt item 16) — the ADR 0011-named operator surface.
-// ---------------------------------------------------------------------------
-
-/** Humanize the remaining TTL of a grant (ISO expiry) for one glance. */
-function humanRemaining(expiresAt: string): string {
-  const ms = Date.parse(expiresAt) - Date.now();
-  if (!Number.isFinite(ms)) return 'unknown';
-  if (ms <= 0) return 'expired';
-  const mins = Math.floor(ms / 60_000);
-  if (mins < 60) return `~${Math.max(1, mins)}m left`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 48) return `~${hours}h ${mins % 60}m left`;
-  return `~${Math.floor(hours / 24)}d left`;
-}
-
-/**
- * The dashboard's Sandbox Grants section as plain lines — active authority
- * per session, the trust-anchor verdict, and the revoke command per grant.
- * The ADR 0011-named surface ("a dashboard grants view... one click to
- * revoke" — the CLI's one click is the printed command). Pure w.r.t.
- * projectRoot + the env pins, so tests seed a ledger and call directly.
- * A line starting with ⚠ is a warning the caller colors red.
- */
-export function sandboxGrantsLines(projectRoot: string, maxGrants = 6): { lines: string[]; mismatch: boolean } {
-  const lines: string[] = [];
-  const integrity = verifyLedgerIntegrity(projectRoot);
-  const active = listAuthority(projectRoot);
-  lines.push('Sandbox Grants (active authority)');
-  if (active.length === 0) {
-    lines.push('  no active grants — the default is least authority');
-  } else {
-    for (const g of active.slice(0, maxGrants)) {
-      lines.push(
-        `  ${g.id}  session '${g.sessionId}'  ${humanRemaining(g.expiresAt)}  (granted by ${g.grantedBy})`
-      );
-      lines.push(`    reason: ${g.reason}`);
-      for (const p of g.paths.slice(0, 3)) lines.push(`      ${p}`);
-      if (g.paths.length > 3) lines.push(`      … and ${g.paths.length - 3} more path(s)`);
-      lines.push(`    revoke: uap sandbox revoke ${g.id}`);
-    }
-    if (active.length > maxGrants) lines.push(`  … and ${active.length - maxGrants} more grant(s)`);
-  }
-  if (integrity.state === 'ok') {
-    lines.push('  ledger verified against its trust anchor');
-  } else if (integrity.state === 'unanchored') {
-    lines.push(`  ${integrity.detail}`);
-  } else {
-    lines.push(`  ⚠ INTEGRITY MISMATCH — ${integrity.detail}.`);
-    lines.push('  ⚠ Rows above are listed but UNVERIFIED; a sandbox session opens ZERO grant-derived holes.');
-  }
-  return { lines, mismatch: integrity.state === 'mismatch' };
-}
-
-// ---------------------------------------------------------------------------
-// Measured Pace (bridge P5: S1b) — the compute/render split.
-// ---------------------------------------------------------------------------
-
-/** One row of the dashboard's Measured Pace table (plain display strings —
- *  the caller pads and colors). */
-export interface PaceRow {
-  modelId: string;
-  key: string;
-  perTask: string;
-  spread: string;
-  n: string;
-  successPct: string;
-}
-
-/**
- * Compute the Measured Pace rows + honest caveats: the agent's own EWMA
- * estimate per (model, taskType, complexity) key — the operator's legibility
- * surface for "how long does this model actually take here". Only keys with
- * a real estimate get a row; the honest caveats (thin keys, keys beyond the
- * cap) travel as counts.
- *
- * Extracted from the render so the shaping contract is testable WITHOUT the
- * cwd-pinned `getModelAnalytics()` singleton — tests construct their own
- * instance at a tmp path and pass it in. Pure with respect to the instance.
- */
-export async function computeMeasuredPace(
-  analytics: ModelAnalytics,
-  cap = 8,
-): Promise<{ rows: PaceRow[]; thin: number; more: number }> {
-  const allPaceKeys = analytics.distinctOutcomeKeys();
-  const paceKeys = allPaceKeys.slice(0, cap);
-  const rows: PaceRow[] = [];
-  for (const k of paceKeys) {
-    const est = ewmaEstimate(analytics.recentDurations(k.modelId, k.taskType, k.complexity));
-    if (!est) continue;
-    // Foreign strings (the id especially can arrive from env/config) are
-    // termSafe'd at the compute choke point; the caller only pads/colors.
-    rows.push({
-      modelId: termSafe(k.modelId),
-      key: termSafe(`${k.taskType}/${k.complexity}`),
-      perTask: `~${formatDurationMs(est.etaMs)}`,
-      spread: `${formatDurationMs(est.minMs)}–${formatDurationMs(est.maxMs)}`,
-      n: `${est.samples}/${est.observed}`,
-      successPct: (100 * est.successRate).toFixed(0) + '%',
-    });
-  }
-  return {
-    rows,
-    thin: paceKeys.length - rows.length,
-    more: Math.max(0, allPaceKeys.length - cap),
-  };
-}
+import { computeMeasuredPace } from './dashboard-pace.js';
+import { sandboxGrantsLines } from './dashboard-grants.js';
 
 type DashboardAction =
   | 'overview'
@@ -1606,6 +1497,16 @@ async function showSessionDashboard(options: DashboardOptions): Promise<void> {
       console.log(`  ${line}`);
     }
     console.log('');
+
+    // Sandbox grants (debt item 16, the ADR 0011-named surface): what extra
+    // writable holes are open, for which sessions, and whether the consent
+    // ledger verifies against its out-of-checkout trust anchor. Grants are
+    // SESSION authority, so this renders in the session view (the review
+    // caught an accidental placement in the models view). ⚠ lines are
+    // warnings — color them red.
+    const grantsSection = sandboxGrantsLines(process.cwd());
+    for (const l of grantsSection.lines) console.log(l.trimStart().startsWith('⚠') ? chalk.red(l) : l);
+    console.log('');
   } catch (error) {
     spinner.fail('Failed to load session dashboard');
     console.error(chalk.red(error instanceof Error ? error.message : String(error)));
@@ -1880,14 +1781,6 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
       }
       console.log('');
     }
-
-    // Sandbox grants (debt item 16, the ADR 0011-named surface): what extra
-    // writable holes are open, for which sessions, and whether the consent
-    // ledger verifies against its out-of-checkout trust anchor. ⚠ lines are
-    // warnings — color them red.
-    const grantsSection = sandboxGrantsLines(process.cwd());
-    for (const l of grantsSection.lines) console.log(l.startsWith('⚠') ? chalk.red(l) : l);
-    console.log('');
 
     // Execution profile for executor
     const executorModel = roles.executor || 'qwen35-a3b';

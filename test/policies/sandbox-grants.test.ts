@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -402,6 +403,78 @@ describe('trust anchor — tamper evidence (ADR 0011 follow-up, shipped)', () =>
     expect(String(warn.mock.calls[0][0])).toMatch(/trust-anchor write failed/);
     expect(verifyLedgerIntegrity(dir).state).toBe('unanchored');
     expect(listAuthority(dir).length).toBe(1);
+    warn.mockRestore();
+  });
+
+  it('keys the anchor by the MAIN checkout root, not the raw cwd (review round, all three reviewers)', () => {
+    // The repo mandates worktrees: a grant recorded from the main root must
+    // verify 'ok' from a .worktrees/NNN-* cwd of the same checkout — keying
+    // by the raw cwd string gave the shared ledger one anchor per cwd
+    // (worktree sessions silently UNANCHORED, cross-cwd false mismatches).
+    // A real git checkout, not a bare tmp dir: mainCheckoutRoot passes
+    // non-git roots through unchanged, which is exactly what must NOT
+    // happen for a worktree cwd of a real checkout.
+    execFileSync('git', ['init', '--quiet'], { cwd: dir });
+    const wt = join(dir, '.worktrees', '123-review');
+    mkdirSync(wt, { recursive: true });
+    const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g.ok) throw new Error(g.error);
+    expect(verifyLedgerIntegrity(dir).state).toBe('ok');
+    expect(verifyLedgerIntegrity(wt).state).toBe('ok'); // same checkout → same anchor
+    // And a tamper seen from the main root is seen from the worktree too.
+    writeFileSync(sandboxGrantsPath(dir), '[]');
+    expect(verifyLedgerIntegrity(wt).state).toBe('mismatch');
+  });
+
+  it('sanitizes control characters out of the grant id at load (review M1)', () => {
+    writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
+      {
+        id: 'sbg-evil\u001b]0;pwned-title\u0007', sessionId: 'sess-abc', paths: [hole], reason: 'ok',
+        grantedBy: 'attacker', grantedAt: new Date().toISOString(), expiresAt: soon(),
+      },
+    ]));
+    const rows = listAuthority(dir);
+    expect(rows).toHaveLength(1);
+    // eslint-disable-next-line no-control-regex -- asserting their absence IS the point
+    expect(rows[0].id).not.toMatch(/[\x00-\x1f\x7f]/);
+    // and the planted row is REMOVABLE by either spelling: the revoke input
+    // goes through the same clean(), so the raw hostile id and the cleaned
+    // id both hit the sanitized row.
+    expect(revokeAuthority(dir, 'sbg-evil\u001b]0;pwned-title\u0007')).toBe(true);
+    expect(listAuthority(dir)).toHaveLength(0);
+  });
+
+  it('refuses a grant that would cover the trust-anchor directory (review m1)', () => {
+    const anchorParent = join(dir, 'anchors');
+    mkdirSync(anchorParent, { recursive: true });
+    process.env.UAP_SANDBOX_ANCHOR_DIR = anchorParent;
+    try {
+      const r = grantAuthority(dir, { ...INPUT, paths: [anchorParent] });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/trust-anchor/);
+      // A grant that merely sits INSIDE the anchor dir (a deeper path) does
+      // not unlock the anchor file's directory — still grantable.
+      const deep = join(anchorParent, 'sub-project');
+      mkdirSync(deep, { recursive: true });
+      const ok = grantAuthority(dir, { ...INPUT, paths: [deep] });
+      expect(ok.ok).toBe(true);
+    } finally {
+      delete process.env.UAP_SANDBOX_ANCHOR_DIR;
+    }
+  });
+
+  it('warns loudly when grants exist but the anchor is missing (the quiet dangerous state)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    writeFileSync(sandboxGrantsPath(dir), JSON.stringify([
+      {
+        id: 'sbg-orphan', sessionId: 'sess-abc', paths: [hole], reason: 'seeded without anchor',
+        grantedBy: 't', grantedAt: new Date().toISOString(), expiresAt: soon(),
+      },
+    ]));
+    // Grants resolve (fail-open is the ledger's rule) but NOT silently.
+    expect(resolveSessionGrants(dir, 'sess-abc').paths).toEqual([hole]);
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls[0][0])).toMatch(/NO trust anchor/);
     warn.mockRestore();
   });
 });
