@@ -61,7 +61,8 @@
     "enabled": true,
     "directory": ".worktrees",
     "branchPrefix": "feature/",
-    "autoCleanup": true
+    "autoCleanup": true,
+    "enforce": true
   },
   "droids": [],
   "commands": [],
@@ -77,6 +78,18 @@
       "pipelineOnly": false,
       "benchmark": false
     }
+  },
+  "deliver": {
+    "orchestrate": "on",
+    "epics": "on"
+  },
+  "fidelity": {
+    "mode": "max"
+  },
+  "delivery": {
+    "enforcement": "escalate",
+    "localMode": "escalate",
+    "runtimeVerify": true
   },
   "coordination": {
     "database": true,
@@ -105,17 +118,16 @@
     "enabled": true,
     "models": [
       "fable-5",
-      "haiku-4.5",
-      "opus-4.8",
-      "local-auto"
+      "qwen38-27b",
+      "opus-4.8"
     ],
     "roles": {
       "planner": "fable-5",
-      "executor": "haiku-4.5",
+      "executor": "qwen38-27b",
       "reviewer": "opus-4.8",
-      "fallback": "local-auto"
+      "fallback": "qwen38-27b"
     },
-    "routingStrategy": "performance-first"
+    "routingStrategy": "balanced"
   },
   "hooks": {
     "sessionStart": true,
@@ -128,20 +140,14 @@
   },
   "recipes": {
     "enabled": true,
-    "recipe": "auto",
+    "recipe": "fusion",
     "confidenceThreshold": 0.5,
     "fusionN": 3,
     "allowSelfJudge": true
   },
-  "delivery": {
-    "enforcement": "block",
-    "localMode": "block",
-    "runtimeVerify": true
-  },
   "modelConcurrency": {
     "adaptive": true,
-    "endpoint": "http://localhost:8080/v1",
-    "slots": 1
+    "endpoint": "http://localhost:8080/v1"
   },
   "collaboration": {
     "mode": "always"
@@ -153,11 +159,12 @@
   "reactor": {
     "enabled": true
   },
-  "deliver": {
-    "orchestrate": "on",
-    "epics": "on"
+  "proxy": {
+    "autostart": true,
+    "dashboard": true
   },
-  "fidelity": {
-    "mode": "max"
+  "handsfree": {
+    "enabled": true,
+    "intensity": "aggressive"
   }
 }
