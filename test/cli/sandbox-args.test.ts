@@ -43,6 +43,10 @@ function plan(over: Partial<SandboxPlanInput> = {}) {
   });
 }
 
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 describe('the floor (unchanged P0 behavior)', () => {
   it('keeps the kernel boundary: ro root, writable holes, unshare-pid, sandbox marker', () => {
     const r = plan();
@@ -147,6 +151,103 @@ describe('D2 — per-session grants open holes the ledger consented to', () => {
     const argv2 = r2.plan!.argv.join(' ');
     expect(argv2).toContain(`--ro-bind /dev/null ${join(dir, '.uap', 'absent.json')}`);
     expect(argv2).toContain(`--ro-bind /dev/null ${join(dir, '.uap', 'gone.jsonl')}`);
+  });
+});
+
+describe('legacy UAP_SANDBOX_ALLOW — unrecorded, but not unchecked', () => {
+  it('binds what resolution says, not the env entry: a symlink entry binds its RESOLVED target', () => {
+    const real = join(dir, 'real-legacy-hole');
+    mkdirSync(real);
+    const link = join(dir, 'legacy-link');
+    symlinkSync(real, link);
+    const r = plan({ legacyAllow: [link] });
+    const argv = r.plan!.argv.join(' ');
+    expect(argv).toContain(`--bind ${real} ${real}`);
+    expect(argv).not.toContain(`--bind ${link} ${link}`);
+    expect(argv).not.toContain(`--bind ${link} ${real}`);
+  });
+
+  it('refuses entries whose plan-time resolution is over-broad ($HOME via symlink) and says so', () => {
+    // The exact hole the residual named: a legacy env entry pointing at the
+    // operator's home — directly or through a symlink — must open NOTHING,
+    // and the refusal must be operator-visible, not a silent skip.
+    const home = process.env.HOME || '';
+    const link = join(dir, 'innocuous-env-name');
+    symlinkSync(home, link);
+    // The sandbox home IS the real $HOME in production (same trick as the
+    // grants TOCTOU test above): pass it so the over-broad check compares
+    // against the production home, not this test's tmp home.
+    const r = plan({ legacyAllow: [home, link], home });
+    const argv = r.plan!.argv.join(' ');
+    expect(argv).not.toContain(`--bind ${home} ${home}`);
+    expect(r.plan!.notes.some((n) => n.includes('refused UAP_SANDBOX_ALLOW'))).toBe(true);
+    // The raw entries still appear in the UNRECORDED note — the consent
+    // surface stays honest about what the env asked for.
+    expect(r.plan!.notes.some((n) => n.includes('UNRECORDED allow'))).toBe(true);
+    // The plan states what actually bound vs what was refused — the audit
+    // record and the banner must agree (nothing refused is recorded as
+    // opened).
+    expect(r.plan!.legacyBound).toEqual([]);
+    expect(r.plan!.legacyRefused.length).toBe(2);
+  });
+
+  it('refuses an entry whose resolution covers the trust-anchor dir (the one hole that must never open)', () => {
+    // A writable hole over the anchor DIR would let the sandboxed side
+    // rewrite its own tamper evidence — minting refuses it, and plan time
+    // re-checks (an env entry bypasses minting entirely; a grant minted
+    // under a different anchor-dir pin could otherwise open it after a
+    // re-pin). Same semantics as minting: a deeper sub-dir does NOT cover
+    // the anchor file's own directory and stays grantable.
+    const anchorDir = join(dir, 'anchor-dir');
+    const deeper = join(anchorDir, 'deeper');
+    mkdirSync(deeper, { recursive: true });
+    process.env.UAP_SANDBOX_ANCHOR_DIR = anchorDir;
+    try {
+      const r = plan({ legacyAllow: [anchorDir, deeper] });
+      const argv = r.plan!.argv.join(' ');
+      expect(argv).not.toContain(`--bind ${anchorDir} ${anchorDir}`);
+      expect(r.plan!.legacyRefused).toEqual([expect.stringContaining(anchorDir)]);
+      // The deeper path does not unlock the anchor file's directory — bound.
+      expect(r.plan!.legacyBound).toEqual([deeper]);
+      expect(argv).toContain(`--bind ${deeper} ${deeper}`);
+      expect(r.plan!.notes.some((n) => n.includes('trust-anchor dir'))).toBe(true);
+      // The grants plan loop re-checks the same refusal.
+      const g = plan({ grants: { grants: [], paths: [deeper] } });
+      expect(g.plan!.grantedPaths).toEqual([deeper]);
+    } finally {
+      delete process.env.UAP_SANDBOX_ANCHOR_DIR;
+    }
+  });
+
+  it('termSafes the refusal note: a hostile entry name with OSC bytes cannot retitle the operator terminal', () => {
+    // A symlink whose NAME carries an OSC-52-style sequence, pointing at
+    // $HOME: the entry must be refused (over-broad), and the refusal note
+    // prints the entry — through termSafe, never raw.
+    const home = process.env.HOME || '';
+    const evilLink = join(dir, 'evil\u001b]0;pwned-title\u0007');
+    symlinkSync(home, evilLink);
+    const r = plan({ legacyAllow: [evilLink], home });
+    expect(r.plan!.legacyRefused.length).toBe(1); // refused, not bound
+    expect(r.plan!.legacyBound).toEqual([]);
+    for (const n of r.plan!.notes) {
+      // eslint-disable-next-line no-control-regex -- asserting their absence IS the point
+      expect(n).not.toMatch(/[\u001b\u0007]/);
+    }
+  });
+
+  it('keeps nonexistent and dangling entries inert, and never double-binds an existing hole', () => {
+    const real = join(dir, 'legacy-real');
+    mkdirSync(real);
+    const dangling = join(dir, 'dangling');
+    symlinkSync(join(dir, 'never-existed'), dangling);
+    const grants: ResolvedGrants = { grants: [], paths: [real] };
+    // Same path as a grant AND as a legacy entry AND /tmp: one bind total.
+    const r = plan({ grants, legacyAllow: [real, '/tmp', join(dir, 'missing'), dangling] });
+    const argv = r.plan!.argv.join(' ');
+    expect((argv.match(new RegExp(`--bind ${escapeRe(real)} ${escapeRe(real)}`, 'g')) || []).length).toBe(1);
+    expect((argv.match(/--bind \/tmp \/tmp/g) || []).length).toBe(1);
+    expect(argv).not.toContain('missing');
+    expect(argv).not.toContain('dangling');
   });
 });
 

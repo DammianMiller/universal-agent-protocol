@@ -27,6 +27,7 @@ The full dependency graph lives in `package.json`; these deserve explicit mentio
 because UAP embeds, vendors, or builds core workflows around them:
 
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp) / ik_llama.cpp** — the local inference backend the whole local-model path (deliver, recipes, slot budgeting) is built against.
+- **[bubblewrap](https://github.com/containers/bubblewrap)** (GNOME) — the unprivileged kernel sandbox (`uap sandbox`) behind the sandboxed delivery path: read-only root mounts, per-session writable holes, and the `--unshare-net` egress cut are all bwrap primitives.
 - **Qwen** (Alibaba) — the local models UAP's local-first delivery pipeline is tuned for and benchmarked with.
 - **[Qdrant](https://qdrant.tech/)** + **nomic-embed-text** — the semantic long-term memory store and its embeddings.
 - **[uPlot](https://github.com/leeoniya/uPlot)** (MIT) — vendored (with license) in `web/vendor/` for the dashboard's charts.

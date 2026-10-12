@@ -509,9 +509,9 @@ See [Paired Harness](../benchmarks/PAIRED_HARNESS.md) for the methodology.
 
 ## `eta`
 
-Measured pace (bridge P5, S1b): the EWMA ETA for a (model, taskType,
+Measured pace: the EWMA ETA for a (model, taskType,
 complexity) key, built **only** from this project's own recorded attempts
-(the S1a sample stream in the model-analytics store). Recent attempts weigh
+(the ETA sample stream in the model-analytics store). Recent attempts weigh
 more (half-life in samples, default 10); the sample count, the spread, and
 the failure rate always travel with the number — a pace without provenance
 is exactly the confident guess this replaces. Fewer than 3 successful
@@ -538,7 +538,7 @@ uap eta --all                          # every key; too-thin keys named, not hid
 
 ## `diff`
 
-Local diff view (bridge P5, S3): what the agent changed around here, in one
+Local diff view: what the agent changed around here, in one
 honest render — uncommitted rows (staged + unstaged vs HEAD) with per-file
 +N/-N and git status glyphs, untracked paths, honest totals, and unpushed
 commits vs the base with ahead/behind and aggregate deltas. Binary files
@@ -715,7 +715,7 @@ uap proxy dashboard off    # opt out of the ride-along dashboard
 uap proxy connect --socket ~/.uap/proxy.sock --port 4000 --allow-anyone
 ```
 
-`connect` (bridge P4) is the companion to the proxy's optional AF_UNIX surface
+`connect` is the companion to the proxy's optional AF_UNIX surface
 (`PROXY_SOCKET`, served 0600): a small relay that accepts on a local TCP port
 and pipes every byte to the socket, for clients that cannot speak AF_UNIX. It
 is fail-closed (an upstream failure destroys the client connection instead of
@@ -1248,7 +1248,7 @@ uap self query "how do I run a controlled benchmark"
 
 ## `attention`
 
-The operator attention queue (bridge P3): the ask-instead-of-stop rail. When a
+The operator attention queue: the ask-instead-of-stop rail. When a
 decision is genuinely yours — a placement parked and waiting for a swap
 approval, a grant request, a blocking question — the agent records it here
 with its context and a SAFE DEFAULT, and keeps working. The session-start hook

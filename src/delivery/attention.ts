@@ -1,5 +1,5 @@
 /**
- * The operator attention queue (bridge Phase 3: A2 queue + A1 AFK decider).
+ * The operator attention queue (the operator ask queue + AFK auto-decider).
  *
  * The delivery path never had an ask-the-operator rail: when a decision was
  * genuinely the operator's, the agent's only options were STOP (losing the

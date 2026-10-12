@@ -1,17 +1,16 @@
 # ADR 0012: Operator legibility surfaces — measured pace, local diff view, bench report reader
 
-- Status: Proposed
-- Date: 2026-10-11 (branch `feature/357-bridge-p5-surfaces`)
-- Spec: bridge-program Phase 5 (S3 local diff view, S1b ETA surfaces +
-  paired bench delta report) — "the operator's own legibility," the closing
-  phase of the five-phase program.
+- Status: Accepted
+- Date: 2026-10-11
+- Spec: the operator's own legibility (S3 local diff view, S1b ETA
+  surfaces + paired bench delta report).
 - Supersedes: none — these are read-only surfaces over telemetry that
-  already existed (the S1a ETA sample stream, git, the paired-bench
+  already existed (the ETA sample stream, git, the paired-bench
   reports); no schema or authority changes.
 
 ## Context
 
-The bridge program's first four phases made the *agent* legible — to
+The agent-facing surfaces made the *agent* legible — to
 itself (the self-knowledge card), to the plan, to the operator's consent
 (grants, attention). What never got a surface was the operator's own three
 questions, asked every day on a busy checkout:
@@ -21,9 +20,9 @@ questions, asked every day on a busy checkout:
    rows with per-file deltas, untracked files, and unpushed commits against
    a base — and assembling it by hand is exactly the kind of repetitive
    synthesis operators skip, then regret.
-2. **"How long does this model actually take on this project?"** P1 added
-   the S1a sample stream (`delivery/eta.ts` → `model_analytics.db`, keyed
-   model × taskType × complexity) but nothing ever *read* it — so the
+2. **"How long does this model actually take on this project?"** The ETA
+   sample stream (`delivery/eta.ts` → `model_analytics.db`, keyed
+   model × taskType × complexity) was recorded but nothing *read* it — so the
    operator (and the agent) kept guessing pace from vibes, which is the
    failure mode the whole program exists to end.
 3. **"Did the measured delta hold?"** `uap bench paired` writes a full

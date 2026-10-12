@@ -1,8 +1,8 @@
 # ADR 0010: Attention queue and the AFK auto-decider
 
-- Status: Proposed
-- Date: 2026-10-11 (branch `feature/354-bridge-p3-autonomy`)
-- Spec: bridge-program Phase 3 (A1 autonomy, A2 attention), responding to
+- Status: Accepted
+- Date: 2026-10-11
+- Spec: unattended autonomy (A1) and the operator attention queue (A2), responding to
   the "blocks on the operator / no safe way to proceed unattended" gap in
   mtlynch.io's *Why Are Coding Agents So Dumb?*
 - Supersedes: none — extends the placement park path (ADR 0006's pending

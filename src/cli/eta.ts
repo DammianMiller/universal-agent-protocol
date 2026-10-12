@@ -1,6 +1,5 @@
 /**
- * `uap eta` — the operator's window into the agent's own measured pace
- * (bridge P5: S1b "ETA surfaces").
+ * `uap eta` — the operator's window into the agent's own measured pace.
  *
  * Prints the EWMA estimate for one (model, taskType, complexity) key — or,
  * with `--all`, every key that has history. The estimate is built ONLY from

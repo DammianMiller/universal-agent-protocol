@@ -1250,7 +1250,7 @@ program
     });
   });
 
-// Attention queue — the ask-instead-of-stop rail (bridge P3)
+// Attention queue — the ask-instead-of-stop rail
 program
   .command('attention')
   .description('Operator attention queue: items needing your decision, with AFK safe-default adoption')

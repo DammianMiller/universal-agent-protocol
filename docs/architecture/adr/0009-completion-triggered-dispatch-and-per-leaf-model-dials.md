@@ -1,8 +1,8 @@
 # ADR 0009: Completion-triggered dispatch and per-leaf model dials
 
-- Status: Proposed
-- Date: 2026-10-11 (branch `feature/353-bridge-p2-scheduling`)
-- Spec: bridge-program Phase 2 (C1 scheduling, C2 routing), responding to the
+- Status: Accepted
+- Date: 2026-10-11
+- Spec: completion-triggered scheduling (C1) and routing dials (C2), responding to the
   "serial execution / no delegation" and "wrong worker on the wrong job"
   gaps in mtlynch.io's *Why Are Coding Agents So Dumb?*
 - Supersedes: none — replaces the wave-barrier scheduling note documented in

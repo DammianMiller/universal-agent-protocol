@@ -63,6 +63,8 @@ import {
   type GrantInput,
   type ResolvedGrants,
 } from '../policies/sandbox-grants.js';
+import { pathCoversAnchorDir } from '../policies/sandbox-anchor.js';
+import { termSafe } from '../utils/terminal-safe.js';
 
 function fail(msg: string, code = 2): never {
   console.error(`uap sandbox: ${msg}`);
@@ -123,6 +125,11 @@ export interface SandboxPlan {
   netMode: SandboxNetMode;
   /** Granted writable holes actually opened for this run. */
   grantedPaths: string[];
+  /** Legacy-env holes actually opened (resolved targets — what was bound). */
+  legacyBound: string[];
+  /** Legacy-env entries refused at plan time (raw spellings — over-broad
+   *  resolutions, or resolutions covering the trust-anchor dir). */
+  legacyRefused: string[];
   /** Human-readable lines for the launch banner (colored at the print site). */
   notes: string[];
 }
@@ -168,8 +175,27 @@ export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; erro
     if (existsSync(p)) args.push('--bind', p, p);
   }
   const grantedPaths: string[] = [];
+  // Seeded with the holes the floor already binds, so a legacy entry matching
+  // one skips its (harmless, bwrap-tolerated) duplicate bind. The grants loop
+  // above only WRITES the set (a grant of /tmp or the workdir legitimately
+  // re-binds them — bwrap tolerates the duplicate mount); only the legacy
+  // loop reads it.
+  const boundPaths = new Set<string>([workdir, '/tmp']);
+  // The breadth trio is checked against the RESOLVED value, and $HOME can
+  // itself be a symlink (/home/u -> /disk/users/u): compare against BOTH the
+  // caller's spelling and its resolution, or an entry pointing at the real
+  // home through the symlink would bind the whole home (security review).
+  const homeResolved = (() => {
+    try {
+      return realpathSync(input.home);
+    } catch {
+      return input.home;
+    }
+  })();
+  const tooBroad = (p: string): boolean =>
+    p === '/' || p === '/home' || p === input.home || p === homeResolved;
   for (const p of input.grants.paths) {
-    // TOCTOU (P4 security review): the row's path was realpath-validated at
+    // TOCTOU (security review): the row's path was realpath-validated at
     // LOAD; a concurrent writer could swap it for a symlink in the
     // load→exec window. Resolve AGAIN at plan time, re-check breadth on the
     // RESOLVED value, and bind what the resolution says — not the row's
@@ -181,16 +207,44 @@ export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; erro
     } catch {
       continue; // vanished between load and plan — open nothing
     }
-    if (resolved === '/' || resolved === '/home' || resolved === input.home) continue;
+    if (tooBroad(resolved)) continue;
+    // The anchor dir is "the one hole that must never open" (grant minting
+    // refuses it outright); plan time re-checks because a grant minted under
+    // a different anchor-dir pin could otherwise open it after a re-pin.
+    if (pathCoversAnchorDir(resolved)) continue;
     grantedPaths.push(resolved);
+    boundPaths.add(resolved);
     args.push('--bind', resolved, resolved);
   }
+  const refusedLegacy: string[] = [];
+  const legacyBound: string[] = [];
   for (const p of input.legacyAllow) {
-    if (p && existsSync(p)) args.push('--bind', p, p);
+    // The legacy env is UNRECORDED authority — that is the whole complaint
+    // — so it gets the SAME plan-time re-check recorded grants get:
+    // resolve at plan time, refuse over-broad resolutions, bind what the
+    // resolution says. An env var in a shell history is not consent, and
+    // unrecorded must not mean unchecked.
+    if (!p) continue;
+    let resolved: string;
+    try {
+      resolved = realpathSync(p);
+    } catch {
+      continue; // nonexistent entries stay inert, as before
+    }
+    if (tooBroad(resolved) || pathCoversAnchorDir(resolved)) {
+      // Raw env values are foreign strings reaching an operator terminal
+      // exactly when attention is on them — termSafe before interpolating.
+      refusedLegacy.push(`${termSafe(p)} → ${termSafe(resolved)}`);
+      continue;
+    }
+    if (boundPaths.has(resolved)) continue; // already a writable hole; no dup binds
+    boundPaths.add(resolved);
+    legacyBound.push(resolved);
+    args.push('--bind', resolved, resolved);
   }
   // The consent store must be TAMPER-PROOF from the untrusted side: ro-bind
   // the ledger and audit files over their host paths so a sandboxed agent
-  // can neither plant grant rows nor forge audit lines (P4 security review
+  // can neither plant grant rows nor forge audit lines (security review
   // — a planted well-formed `paths:["/etc"]` row opened the hole for real).
   // A bind-mounted file cannot be unlinked or replaced inside the namespace;
   // a MISSING file gets /dev/null bound at its path so planting one is
@@ -216,8 +270,17 @@ export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; erro
   if (input.grants.paths.length > 0 && grantedPaths.length !== input.grants.paths.length) {
     notes.push('(some granted paths were not opened: no longer present, or their plan-time resolution is over-broad)');
   }
+  if (refusedLegacy.length > 0) {
+    notes.push(
+      `refused UAP_SANDBOX_ALLOW entries: ${refusedLegacy.join(', ')} — /, /home, $HOME, and the trust-anchor dir are never writable holes`,
+    );
+  }
   if (input.legacyAllow.filter(Boolean).length > 0) {
-    notes.push(`UNRECORDED allow (legacy env, consider 'uap sandbox grant'): ${input.legacyAllow.join(':')}`);
+    // The raw env spelling is the operator's own consent surface — show it
+    // verbatim (termSafe'd: env values are foreign strings too).
+    notes.push(
+      `UNRECORDED allow (legacy env, consider 'uap sandbox grant'): ${input.legacyAllow.map((p) => termSafe(p)).join(':')}`,
+    );
   }
 
   const argv = [...args];
@@ -240,6 +303,8 @@ export function planSandbox(input: SandboxPlanInput): { plan?: SandboxPlan; erro
       setenv: { ...setenv, ANTHROPIC_CUSTOM_HEADERS: customHeaders },
       netMode,
       grantedPaths,
+      legacyBound,
+      legacyRefused: refusedLegacy,
       notes,
     },
   };
@@ -429,7 +494,7 @@ export async function sandboxCommand(command: string[], options: Record<string, 
     fail(`unknown --net mode '${String(rawNet)}' (shared | off)`);
   }
   const netOpt: SandboxNetMode | undefined = rawNet === 'off' ? 'off' : rawNet === 'shared' ? 'shared' : undefined;
-  // The env default is validated exactly like the flag (P4 security review):
+  // The env default is validated exactly like the flag (security review):
   // 'OFF', 'off ', '0ff' silently meaning FULL network is the exact hole
   // the boundary exists to close. Whitespace is trimmed (shell quirks),
   // anything else fails loud.
@@ -451,7 +516,7 @@ export async function sandboxCommand(command: string[], options: Record<string, 
     envNet,
     existingCustomHeaders: process.env.ANTHROPIC_CUSTOM_HEADERS,
     // Ro-bound into the namespace by the planner: the consent store must be
-    // untouchable from the sandboxed side (P4 security review finding 1).
+    // untouchable from the sandboxed side (security review finding 1).
     grantsLedgerPath: sandboxGrantsPath(process.cwd()),
     auditLogPath: sandboxAuditPath(process.cwd()),
   });
@@ -463,11 +528,16 @@ export async function sandboxCommand(command: string[], options: Record<string, 
   // not be recorded as authority exercised), what ran unrecorded, and the
   // net boundary actually engaged.
   const openedGrants = grants.grants.filter((g) => g.paths.some((p) => plan.grantedPaths.includes(p)));
+  // The legacy-env record must state what ACTUALLY opened vs what was
+  // refused at plan time — recording a refused entry under the run's allow
+  // would attribute authority the run never had (the banner and the
+  // durable record must agree).
   auditSandboxUse(
     process.cwd(),
     session,
     { grants: openedGrants, paths: plan.grantedPaths },
-    legacyAllow.filter(Boolean),
+    plan.legacyBound,
+    plan.legacyRefused,
     plan.netMode,
   );
 

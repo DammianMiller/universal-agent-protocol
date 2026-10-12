@@ -1,5 +1,5 @@
 /**
- * `uap attention` — the operator attention queue surface (bridge Phase 3).
+ * `uap attention` — the operator attention queue surface
  *
  *   uap attention list [--status <s>] [--json]   newest first; OPEN items by
  *                                                default (pending + acknowledged

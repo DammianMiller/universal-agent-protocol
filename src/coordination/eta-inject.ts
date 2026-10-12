@@ -1,5 +1,5 @@
 /**
- * Measured-pace reactor injection (bridge P5: S1b "ETA surfaces") — give the
+ * Measured-pace reactor injection — give the
  * agent its OWN measured history as calibrated context: "your tasks on this
  * model take ~X and succeed ~Y% of the time" is the one planning number a
  * local model never has and routinely guesses wildly.

@@ -3,7 +3,7 @@ import ora from 'ora';
 import { TaskService } from '../tasks/service.js';
 import { TaskCoordinator } from '../tasks/coordination.js';
 import { CoordinationService } from '../coordination/service.js';
-import { compactSessionSummary } from './dashboard.js';
+import { compactSessionSummary } from './dashboard-session.js';
 import type {
   TaskType,
   TaskStatus,
