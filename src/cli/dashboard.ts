@@ -36,8 +36,7 @@ import { getModelAnalytics } from '../models/analytics.js';
 import { detectExecutionProfile } from '../models/execution-profiles.js';
 import { computeMeasuredPace } from './dashboard-pace.js';
 import { showDashboard, showSessionDashboard } from './dashboard-session.js';
-
-export { compactSessionSummary } from './dashboard-session.js';
+import type { DashboardOptions } from './dashboard-types.js';
 
 type DashboardAction =
   | 'overview'
@@ -53,16 +52,6 @@ type DashboardAction =
   | 'serve'
   | 'export'
   | 'history';
-
-export interface DashboardOptions {
-  verbose?: boolean;
-  compact?: boolean;
-  taskId?: string;
-  port?: number;
-  host?: string;
-  /** Snapshot push/poll interval in seconds (`--refresh`). */
-  refresh?: string;
-}
 
 export async function dashboardCommand(
   action: DashboardAction,
@@ -1284,7 +1273,7 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
       console.log('');
     }
 
-    // Measured pace : the agent's own EWMA estimates per
+    // Measured pace: the agent's own EWMA estimates per
     // (model, taskType, complexity) key — the operator's legibility surface
     // for "how long does this model actually take here". Only keys with a
     // real estimate get a row; the honest caveat (spread, n, failure rate)

@@ -1,9 +1,9 @@
 /**
- * The sandbox-consent trust anchor (ADR 0011's named follow-up, shipped).
+ * The sandbox-consent trust anchor (ADR 0011's named operator-surface follow-up).
  *
  * The grant ledger and audit trail live under the MAIN checkout root —
  * writable by the operator side of every run. The kernel ro-bind closes the
- * *sandboxed* side (P4), and the load path re-validates shape, but neither
+ * *sandboxed* side, and the load path re-validates shape, but neither
  * can prove WHO wrote a row: a process with the checkout's write reach can
  * plant a well-formed grant and claim the operator consented.
  *
@@ -42,9 +42,12 @@ export interface AnchorState {
   mutations: number;
   /** High-water of audit seqs this anchor has WITNESSED: seq continuity then
    *  survives not just compaction but audit-file DELETION — a trail whose
-   *  numbering can restart from 0 is a forgeable trail (line N twice means
-   * one of them is planted). Additive optional v1 field: anchors written
-   * before it existed simply lack it, and pre-field anchors stay valid. */
+   *  numbering can restart from 0 is a forgeable trail. A duplicate seq is
+   *  evidence to investigate, not proof of planting on its own: concurrent
+   *  appends can mint the same next-seq before either lands (a documented
+   *  pre-existing race; serializing audit writes is open on purpose).
+   *  Additive optional v1 field: anchors written before it existed simply
+   *  lack it, and pre-field anchors stay valid. */
   seqHi?: number;
   updatedAt: string;
   updatedBy: string;
@@ -133,7 +136,7 @@ export function readAnchor(projectRoot: string): AnchorState | null {
       ledgerHead: raw.ledgerHead,
       mutations: typeof raw.mutations === 'number' ? raw.mutations : 0,
       seqHi:
-        typeof raw.seqHi === 'number' && Number.isFinite(raw.seqHi) && raw.seqHi >= 0
+        typeof raw.seqHi === 'number' && Number.isSafeInteger(raw.seqHi) && raw.seqHi >= 0
           ? raw.seqHi
           : undefined,
       updatedAt: typeof raw.updatedAt === 'string' ? termSafe(raw.updatedAt).slice(0, 64) : '',

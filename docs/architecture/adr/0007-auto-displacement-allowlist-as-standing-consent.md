@@ -1,7 +1,7 @@
 # ADR 0007: Auto-displacement allowlist as standing operator consent
 
 - Status: Accepted
-- Date: 2026-10-09 (branch `feature/345-model-placement`, phase 4)
+- Date: 2026-10-09
 - Spec: `docs/specs/operator-model-placement.md` §4.4.1, §6 (phase-4 note)
 - Supersedes: none — extends ADR 0006's core invariant ("never evict without
   explicit operator confirmation") to the request-driven case.

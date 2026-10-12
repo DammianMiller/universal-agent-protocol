@@ -281,12 +281,15 @@ describe('the ledger is a trust boundary (P3 lessons applied)', () => {
 });
 
 describe('audit trail — the "who consented" record', () => {
-  it('appends one JSONL line per grant, revoke, and sandbox-run', () => {
+  it('appends one JSONL line per grant, revoke, and sandbox-run — legacy bound vs refused recorded distinctly', () => {
     const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
     if (!g.ok) throw new Error(g.error);
     revokeAuthority(dir, g.grant.id);
     const used = resolveSessionGrants(dir, 'sess-abc');
-    auditSandboxUse(dir, 'sess-abc', used, ['/unrecorded/legacy'], 'off');
+    // The legacy-env record states what actually OPENED separately from
+    // what plan time REFUSED — a refused entry recorded under the run's
+    // allow would attribute authority the run never had.
+    auditSandboxUse(dir, 'sess-abc', used, ['/unrecorded/legacy'], ['/etc → /etc'], 'off');
     const lines = readFileSync(sandboxAuditPath(dir), 'utf-8').trim().split('\n');
     expect(lines.length).toBe(3);
     const parsed = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -295,6 +298,7 @@ describe('audit trail — the "who consented" record', () => {
     expect(parsed[2].action).toBe('sandbox-run');
     expect(parsed[2].netMode).toBe('off');
     expect(parsed[2].unrecordedAllow).toEqual(['/unrecorded/legacy']);
+    expect(parsed[2].unrecordedRefused).toEqual(['/etc → /etc']);
   });
 });
 
@@ -550,6 +554,14 @@ describe('audit trail — sequence stamping + bounded retention (debt item 3)', 
     expect(reread?.ledgerHead).toBe(old.ledgerHead);
     expect(reread?.seqHi).toBeUndefined();
     expect(verifyLedgerIntegrity(dir).state).toBe('ok');
+    // A planted seqHi must be a safe integer or it is ignored: 2^53 would
+    // freeze the seq column (2^53 + 1 === 2^53 — every line the same seq),
+    // and a fractional seqHi would mint fractional seqs.
+    const anchorObj = JSON.parse(readFileSync(anchorPath(dir), 'utf-8')) as Record<string, unknown>;
+    for (const hostile of [2.5, Number.MAX_SAFE_INTEGER + 1, -1]) {
+      writeFileSync(anchorPath(dir), JSON.stringify({ ...anchorObj, seqHi: hostile }, null, 2));
+      expect(readAnchor(dir)?.seqHi).toBeUndefined();
+    }
     // Numbering continues from the FILE's high-water (the anchor contributes 0).
     revokeAuthority(dir, g.grant.id);
     const seqs = readFileSync(sandboxAuditPath(dir), 'utf-8').trim().split('\n')

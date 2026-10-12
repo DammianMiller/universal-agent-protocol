@@ -172,7 +172,13 @@ actually holds.
   compaction AND audit-file deletion: the trust anchor carries the
   witnessed seq high-water (`seqHi`), and each line numbers from the max
   of the file's last seq and the anchor's — a trail whose numbering can
-  restart is a forgeable trail.
+  restart is a forgeable trail. Honest limits: concurrent audit appends
+  can mint the same next-seq before either lands (a duplicate seq is
+  evidence to investigate, not proof of planting on its own), and an
+  older binary's next recorded mutation drops the optional `seqHi` field
+  — it is recomputed from the file at the next current-binary mutation,
+  which only matters if the audit file is deleted inside that
+  mixed-version window.
 - The dashboard's session view lists the active authority per session —
   id, session, remaining TTL, reason, paths, and the revoke command per
   grant — plus the trust-anchor verdict (an INTEGRITY MISMATCH renders

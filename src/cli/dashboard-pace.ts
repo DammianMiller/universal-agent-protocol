@@ -1,5 +1,5 @@
 /**
- * The dashboard's Measured Pace rows  — the compute/render
+ * The dashboard's Measured Pace rows — the compute/render
  * split. Extracted from src/cli/dashboard.ts so the shaping contract (the
  * estimate gate, most-attempts-first ranking, the honest thin/beyond-cap
  * counts) is testable WITHOUT the cwd-pinned `getModelAnalytics()` singleton:

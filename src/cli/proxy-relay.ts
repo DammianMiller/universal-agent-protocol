@@ -1,6 +1,6 @@
 /**
  * `uap proxy connect` — a small TCP→unix relay for the proxy's AF_UNIX
- * surface .
+ * surface.
  *
  * The proxy can serve its model gateway on a permission-gated AF_UNIX socket
  * (`PROXY_SOCKET`, 0600 — see ADR 0011): tighter than a TCP port anyone on

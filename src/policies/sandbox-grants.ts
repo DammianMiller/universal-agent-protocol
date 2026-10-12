@@ -4,7 +4,7 @@
  * `uap sandbox` is all-or-nothing authority: the workdir + scratch are
  * writable, everything else is EROFS. That default is right, but real work
  * sometimes needs one more hole (a config dir, a build cache outside the
- * tree) — and the pre-P4 answer, `UAP_SANDBOX_ALLOW=path:path`, was
+ * tree) — and the legacy answer, `UAP_SANDBOX_ALLOW=path:path`, was
  * UNRECORDED authority: an env var nobody audited, invisible to the
  * operator, surviving in shell histories and hook templates forever.
  *
@@ -37,7 +37,7 @@ import { ledgerHeadOf, pathCoversAnchorDir, readAnchor, verifyLedger, writeAncho
 import type { Verification } from './sandbox-anchor.js';
 
 /** Audit-log retention: the trail is append-only history, but an unbounded
- *  JSONL under the shared-write `.uap/` grows forever  — past
+ *  JSONL under the shared-write `.uap/` grows forever — past
  *  the trigger it is compacted to the newest AUDIT_MAX_LINES event lines
  *  (plus the triggering event and one `audit-compaction` marker), so the
  *  file lands at AUDIT_MAX_LINES + 2. The compaction is itself audited, so
@@ -251,13 +251,6 @@ function persistGrants(projectRoot: string, grants: SandboxGrant[]): boolean {
   }
 }
 
-/** Append one audit line. Append-only, best-effort, never throws. Every line
- *  carries a monotonic `seq` — recovered as the max of the file's last
- *  parseable seq and the ANCHOR's witnessed high-water, so numbering
- *  survives compaction AND file deletion (a trail whose numbering can
- *  restart is a forgeable trail). The file is compacted past
- *  AUDIT_PRUNE_TRIGGER with the drop recorded in an `audit-compaction`
- *  marker. */
 /** The last parseable seq in an audit line list (0 when none parse): seqs
  *  are monotonic, so the last parseable line IS the high-water. A malformed
  *  tail degrades to the last good seq, never to a collision. */
@@ -288,6 +281,13 @@ function auditHighWater(projectRoot: string): number {
   }
 }
 
+/** Append one audit line. Append-only, best-effort, never throws. Every line
+ *  carries a monotonic `seq` — recovered as the max of the file's last
+ *  parseable seq and the ANCHOR's witnessed high-water, so numbering
+ *  survives compaction AND file deletion (a trail whose numbering can
+ *  restart is a forgeable trail). The file is compacted past
+ *  AUDIT_PRUNE_TRIGGER with the drop recorded in an `audit-compaction`
+ *  marker. */
 function audit(projectRoot: string, event: Record<string, unknown>): void {
   try {
     const path = sandboxAuditPath(projectRoot);
@@ -343,9 +343,9 @@ function audit(projectRoot: string, event: Record<string, unknown>): void {
 /** Verify the SANITIZED on-disk ledger against the out-of-checkout anchor.
  *  'unanchored' is the pre-bootstrap state, not a failure. When `grants` is
  *  passed (an already-loaded sanitized snapshot), the SAME snapshot is
- *  verified and then acted on — the torn-read fix: loading the
- *  file twice left a window where the hash saw one state and the resolver
- *  acted on another. */
+ *  verified and then acted on — the torn-read fix (a review finding):
+ *  loading the file twice left a window where the hash saw one state and
+ *  the resolver acted on another. */
 export function verifyLedgerIntegrity(projectRoot: string, grants?: SandboxGrant[]): Verification {
   const onDisk = grants ?? loadGrants(projectRoot);
   return verifyLedger(projectRoot, ledgerHeadOf(onDisk));
@@ -434,9 +434,9 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
   };
 
   for (let attempt = 0; ; attempt++) {
-    // ONE load, ONE hash, one array to act on (the torn-read fix, review
-    // m2): verifying a separate read left a window where the hash saw one
-    // state and the mint acted on another.
+    // ONE load, ONE hash, one array to act on (the torn-read fix — a
+    // review finding): verifying a separate read left a window where the
+    // hash saw one state and the mint acted on another.
     const loaded = loadGrants(projectRoot);
     const integrity = verifyLedgerIntegrity(projectRoot, loaded);
     if (integrity.state === 'mismatch') {
@@ -566,7 +566,7 @@ export function resolveSessionGrants(projectRoot: string, sessionId: string): Re
     return { grants: [], paths: [] };
   }
   if (integrity.state === 'unanchored' && loaded.length > 0) {
-    // The quiet dangerous state ): grants exist but the anchor is
+    // The quiet dangerous state (review finding): grants exist but the anchor is
     // gone/never written, so tamper evidence is OFF. Never silent.
     console.warn(
       `[sandbox-grants] ${loaded.length} grant(s) on disk but NO trust anchor — tamper evidence is inactive; ` +
@@ -584,12 +584,17 @@ export function resolveSessionGrants(projectRoot: string, sessionId: string): Re
 /** Record that a sandbox run USED its grants (the "who consented, when used" line).
  *  `netMode` is the network mode the run ACTUALLY engaged ('off' = the kernel
  *  egress boundary): the audit line is the consent record, so it must state
- *  the boundary that was really on. */
+ *  the boundary that was really on. The legacy-env record states what the
+ *  run actually OPENED (`legacyBound`, the resolved targets that were bound)
+ *  separately from what plan time REFUSED (`legacyRefused`) — recording a
+ *  refused entry as the run's allow would attribute authority the run never
+ *  had, and the durable record must agree with the launch banner. */
 export function auditSandboxUse(
   projectRoot: string,
   sessionId: string,
   used: ResolvedGrants,
-  legacyAllow: string[],
+  legacyBound: string[],
+  legacyRefused: string[],
   netMode: 'shared' | 'off',
 ): void {
   audit(projectRoot, {
@@ -603,6 +608,7 @@ export function auditSandboxUse(
     // the audit: unrecorded authority is exactly what this ledger replaced.
     // Control chars are cleaned here too — the audit line is operator-
     // terminal output as much as JSONL.
-    unrecordedAllow: legacyAllow.map((p) => clean(p, 512)),
+    unrecordedAllow: legacyBound.map((p) => clean(p, 512)),
+    unrecordedRefused: legacyRefused.map((p) => clean(p, 512)),
   });
 }

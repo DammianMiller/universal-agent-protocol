@@ -586,7 +586,7 @@ export const SETTINGS: readonly SettingDef[] = [
     recommendation: 'Set in CI or pinned environments where you manage the UAP version yourself.',
   },
 
-  // ── Sandbox & session authority  ────────────────────────────────
+  // ── Sandbox & session authority ────────────────────────────────
   {
     key: 'PROXY_SOCKET', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'proxyEnv',
     description: 'AF_UNIX socket the inference proxy serves IN ADDITION to its TCP port — a permission-gated (0600) model-path choke point for sandboxed and multi-user setups (unset = off).',

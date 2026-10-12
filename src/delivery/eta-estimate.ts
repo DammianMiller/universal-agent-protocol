@@ -1,6 +1,5 @@
 /**
- * S1b · ETA estimation — the EWMA estimator over the S1a sample stream
- * .
+ * ETA estimation — the EWMA estimator over the ETA sample stream.
  *
  * After Lynch's "the agent maintains an ETA for task completion" (mtlynch.io,
  * "Why Are Coding Agents So Dumb?"): estimates a human can trust are built

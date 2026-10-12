@@ -155,7 +155,7 @@ comparator (K3's published 88.3, harness caveat attached).
 
 ## Suggested order
 
-1. **O1** (free, days, no risk) → publishes the descriptive dataset and
+1. **O1** (free, hours of analysis, no risk) → publishes the descriptive dataset and
    targets O2's strata.
 2. **O2 hardest-tier replication** (free, targeted) → upgrades the ladder's
    strongest row from underpowered to powered, or retires it honestly.

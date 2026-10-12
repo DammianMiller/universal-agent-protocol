@@ -511,7 +511,7 @@ See [Paired Harness](../benchmarks/PAIRED_HARNESS.md) for the methodology.
 
 Measured pace: the EWMA ETA for a (model, taskType,
 complexity) key, built **only** from this project's own recorded attempts
-(the S1a sample stream in the model-analytics store). Recent attempts weigh
+(the ETA sample stream in the model-analytics store). Recent attempts weigh
 more (half-life in samples, default 10); the sample count, the spread, and
 the failure rate always travel with the number — a pace without provenance
 is exactly the confident guess this replaces. Fewer than 3 successful

@@ -32,7 +32,7 @@ import {
 } from './visualize.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { sandboxGrantsLines } from './dashboard-grants.js';
-import type { DashboardOptions } from './dashboard.js';
+import type { DashboardOptions } from './dashboard-types.js';
 
 export async function showSessionDashboard(options: DashboardOptions): Promise<void> {
   if (options.compact) {
