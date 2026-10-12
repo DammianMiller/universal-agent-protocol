@@ -1,3 +1,26 @@
+<!-- UAP-MEMORY-BRIDGE:START (managed by `uap memory bridge`) -->
+## Memory — managed by UAP (unified, cross-agent)
+
+Your persistent memory is the **UAP memory system** — ONE store shared by every
+coding agent on this project, NOT a per-agent memory file. Use it, not a local one:
+
+- **Recall FIRST** on non-trivial work: `uap memory query "<topic>"` (semantic long-term search).
+- **Store** durable facts/decisions/lessons: `uap memory store "<fact>"`.
+- **Status**: `uap memory status`.
+
+Recent UAP memories (auto-mirrored — do not hand-edit; refresh with `uap memory bridge`):
+  - (lesson, i7) [deliver] STOPPED (interrupted, resumable — not a gate failure) after 1 turn(s), best 67% of gates — model qwen35-a3b — task: history
+  - (lesson, i7) [deliver] STOPPED (interrupted, resumable — not a gate failure) after 5 turn(s), best 83% of gates — model qwen35-a3b — task: Harden the UAP
+  - (lesson, i7) [deliver] NOT delivered after 17 turn(s), best 83% of gates — model qwen35-a3b — task: Fix security gap in src/delivery/user-validation.ts: 
+  - (lesson, i7) [deliver] NOT delivered after 13 turn(s), best 33% of gates — model qwen35-a3b — task: Fix security gap in src/delivery/user-validation.ts: 
+  - (lesson, i7) [deliver] NOT delivered after 5 turn(s), best 0% of gates — model opus-4.8 — task: Make the UAP deliver autoroute + project lock single-flig
+  - (lesson, i7) [deliver] NOT delivered after 5 turn(s), best 0% of gates — model opus-4.8 — task: Make the UAP deliver autoroute + project lock single-flig
+  - (decision, i6) [orchestrator] task 'history-scaffold' (History Module Scaffold) built — interface: src/history/config.ts: function resolveHistoryConfig(ove
+  - (decision, i6) [deliver] delivered in 1 turn(s) — model qwen35-a3b — task: [mission:#1:131c4b30] Create the file docs/scratch/mission-smoke.md containing o
+
+Read and write here so every agent compounds the same knowledge instead of siloed recall.
+<!-- UAP-MEMORY-BRIDGE:END -->
+
 <!-- CLAUDE.md v2.4.0 - 34 Model Outcome Success Optimizations + Hooks Enforcement -->
 <!-- Optimizations #22-27: Template Compression, Structured Iteration, Inline Domain Knowledge, Early Impossibility Exit, Conditional Context, Remove Emphasis Theater -->
 <!-- Optimizations #28-34: Mandatory Verifier Loop, Decoder-First Gate, Context Stripping, Environment Check, Schema Diff, State Protection, Conditional Domain -->
