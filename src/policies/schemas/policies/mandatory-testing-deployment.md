@@ -35,8 +35,8 @@ This policy enforces that all code changes MUST complete testing, deployment ver
   antiPatterns: ["disable lint", "bypass type check", "low coverage", "security warning"]
 
 - title: "Documentation Requirement"
-  keywords: ["document", "readme", "api", "changelog", "migration"]
-  antiPatterns: ["no documentation", "missing changelog", "undocumented change"]
+  keywords: ["document", "readme", "api", "release notes", "migration"]
+  antiPatterns: ["no documentation", "missing release notes", "undocumented change"]
 ```
 
 ## Enforcement Behavior
@@ -71,7 +71,6 @@ This policy is enforced during the **review stage** when:
    - Version must be bumped via `npm run version:patch`, `version:minor`, or `version:major`
    - Manual edits to `package.json` version field are prohibited
    - Commit type determines bump level: fix->patch, feat->minor, breaking->major
-   - CHANGELOG.md is updated automatically by the version script
    - Git tag is created automatically
 
 4. **Deployment Verification**
@@ -89,7 +88,6 @@ This policy is enforced during the **review stage** when:
 6. **Documentation**
    - Code comments updated for public APIs
    - README.md updated if CLI/tools changed
-   - Changelog entry added (automated via version bump script)
    - Breaking changes documented
 
 ### Verification Checklist
@@ -103,7 +101,6 @@ Before marking work as DONE, verify:
 - [ ] Code linting passes (`npm run lint`)
 - [ ] Type checking passes (`tsc --noEmit`)
 - [ ] Version bumped via `npm run version:patch/minor/major`
-- [ ] CHANGELOG.md updated (automated via version script)
 - [ ] Git tag created (automated via version script)
 - [ ] Deployment to staging successful (if applicable)
 - [ ] Smoke tests passed in staging (if applicable)

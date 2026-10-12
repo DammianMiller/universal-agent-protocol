@@ -12,9 +12,8 @@ set -euo pipefail
 #   1. Validates working tree is clean
 #   2. Runs tests and build
 #   3. Bumps version in package.json
-#   4. Prepends dated entry to CHANGELOG.md
-#   5. Commits package.json + CHANGELOG.md
-#   6. Creates git tag vX.Y.Z
+#   4. Commits package.json + package-lock.json
+#   5. Creates git tag vX.Y.Z
 
 LEVEL="${1:-}"
 
@@ -63,67 +62,23 @@ npm test -- --run 2>&1 || {
 git checkout -- . 2>/dev/null || true
 find .factory/droids -maxdepth 1 -type f -name 'test-droid-*' -delete 2>/dev/null || true
 
-# 3. Bump version in package.json (no git tag yet — we do it after changelog)
+# 3. Bump version in package.json (no git tag yet — we do it after the commit)
 npm version "$LEVEL" --no-git-tag-version > /dev/null 2>&1
 
 NEW_VERSION=$(node -p "require('./package.json').version")
 echo ""
 echo "Version bump: $OLD_VERSION -> $NEW_VERSION ($LEVEL)"
 
-# 4. Prepend dated entry to CHANGELOG.md
-DATE=$(date +%Y-%m-%d)
-CHANGELOG_ENTRY="## v${NEW_VERSION} (${DATE})"
-
-# Get commit messages since last tag for the changelog body
-LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-if [[ -n "$LAST_TAG" ]]; then
-  COMMITS=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s" --no-merges 2>/dev/null || echo "")
-else
-  COMMITS=$(git log --pretty=format:"- %s" --no-merges -10 2>/dev/null || echo "")
-fi
-
-if [[ -z "$COMMITS" ]]; then
-  COMMITS="- Version bump"
-fi
-
-# Build the new changelog section
-CHANGELOG_SECTION="${CHANGELOG_ENTRY}
-
-${COMMITS}
-"
-
-# Prepend to CHANGELOG.md (after the # Changelog header)
-if [[ -f "CHANGELOG.md" ]]; then
-  # Insert after the first line (# Changelog header)
-  HEADER=$(head -1 CHANGELOG.md)
-  BODY=$(tail -n +2 CHANGELOG.md)
-  cat > CHANGELOG.md <<EOF
-${HEADER}
-
-${CHANGELOG_SECTION}
-${BODY}
-EOF
-else
-  cat > CHANGELOG.md <<EOF
-# Changelog
-
-${CHANGELOG_SECTION}
-EOF
-fi
-
-echo "Updated CHANGELOG.md with v${NEW_VERSION} entry"
-
-# 5. Stage and commit
-git add package.json package-lock.json CHANGELOG.md 2>/dev/null || git add package.json CHANGELOG.md
+# 4. Stage and commit
+git add package.json package-lock.json 2>/dev/null || git add package.json
 git commit -m "chore: bump version to ${NEW_VERSION}"
 
-# 6. Create git tag
+# 5. Create git tag
 git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
 
 echo ""
 echo "Done: v${NEW_VERSION}"
 echo "  - package.json updated"
-echo "  - CHANGELOG.md updated"
 echo "  - Committed: chore: bump version to ${NEW_VERSION}"
 echo "  - Tagged: v${NEW_VERSION}"
 echo ""

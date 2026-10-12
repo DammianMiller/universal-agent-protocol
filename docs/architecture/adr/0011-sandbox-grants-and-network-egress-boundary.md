@@ -19,7 +19,7 @@ host network by design (the agent must reach the proxy), so "too much
 authority" had two open faces: unrecorded write holes and unrestricted
 network egress.
 
-The bar (EVOLUTION.md): **every new authority must state who consented.**
+The bar: **every new authority must state who consented.**
 
 ## Decision
 

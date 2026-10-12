@@ -72,7 +72,7 @@ Engage when:
 - [ ] Full test suite green 3 consecutive runs
 - [ ] No tests in __flaky__ that are required for the release path
 - [ ] Smoke test against staging passes (if applicable)
-- [ ] Changelog reflects user-visible changes
+- [ ] Release notes (commits since last tag) reflect user-visible changes
 - [ ] No `--no-verify` / `--force` in recent commits
 - [ ] Open critical bugs reviewed; none blocking
 - [ ] Performance benchmarks within tolerance

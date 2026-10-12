@@ -180,7 +180,10 @@ describe('12: Workflow defaults fixed', () => {
   it('deploy-verify create-release has the dynamic release body (moved from the deleted deploy-publish.yml)', () => {
     const source = readFileSync('.github/workflows/deploy-verify.yml', 'utf-8');
     expect(source).not.toContain('Validation toggle enabled');
-    expect(source).toContain('CHANGELOG.md');
+    // Release notes link to the tag's commit history — the repo keeps no
+    // changelog file; the git log is the record.
+    expect(source).not.toContain('CHANGELOG.md');
+    expect(source).toContain('/commits/v');
     expect(source).toContain('Create GitHub Release');
   });
 });

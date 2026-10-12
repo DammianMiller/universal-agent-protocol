@@ -1,13 +1,13 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v2.31.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 442 TypeScript modules across 34 subsystems, 527 vitest suites (6,208 tests) plus a ~1,400-test Python enforcer/proxy suite, 60 top-level CLI commands (~211 registrations including subcommands), 34 executable policy enforcers, 9 supported agent harnesses.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap`) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 447 TypeScript modules across 34 subsystems, 530 vitest suites (~6,250 tests) plus a ~1,400-test Python enforcer/proxy suite, 60 top-level CLI commands (~211 registrations including subcommands), 34 executable policy enforcers, 9 supported agent harnesses.
 
 > **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
 > [`documentation/`](../documentation/architecture.md): architecture, flows, permissions
 > (incl. trust boundaries and enforcement gaps), variables/secrets, scheduled work, and
 > embedded automation. Start there for an honest map of what's enforced vs. documented.
 
-New here? Start with **[The Evolution of UAP](guides/EVOLUTION.md)** — why Miller-Tech built it (dogfooding agentic development on the fintech app Pay2U and the Miller-Tech platform), the eras it grew through, and the principle behind every gate: *enforce, don't suggest*. Then take the **[Delivery Pipeline tour](guides/DELIVERY_PIPELINE.md)** — it walks the whole factory floor, station by station, showing where agents normally break and what UAP puts in place to catch it. Then grab the [Quickstart](getting-started/QUICKSTART.md).
+New here? Start with the **[Delivery Pipeline tour](guides/DELIVERY_PIPELINE.md)** — it walks the whole factory floor, station by station, showing where agents normally break and what UAP puts in place to catch it, all under one principle: *enforce, don't suggest*. Then grab the [Quickstart](getting-started/QUICKSTART.md).
 
 ---
 
@@ -45,7 +45,6 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 
 | Doc | What it covers |
 |---|---|
-| [**The Evolution of UAP**](guides/EVOLUTION.md) | Origin & eras: the Miller-Tech / Pay2U dogfood, the 2026-07 hardening audits, the autonomy machinery, and the 2026-10 bridge program — *why* every gate exists ⭐ |
 | [**The Delivery Pipeline**](guides/DELIVERY_PIPELINE.md) | The station-by-station tour — the big-picture map of the whole floor ⭐ |
 | [**What UAP Does Automatically**](guides/AUTOMATIC_FEATURES.md) | Every feature in benefit / when-it-kicks-in terms — install once, it all self-applies ⭐ |
 | [What UAP Does Automatically (compact)](guides/AUTOMATIC.md) | A shorter, trigger-by-trigger telling of the same ground as AUTOMATIC_FEATURES |
@@ -138,11 +137,11 @@ the decision record.
 
 | Doc | What it covers |
 |---|---|
-| [Deliver hardening plan](plans/deliver-hardening-plan-2026-07-13.md) | The 14-defect audit (batches A–D) that became v1.224.0: scoped rollback, declared gates, polyglot execution, config routing, liveness, operator overrides |
+| [Deliver hardening plan](plans/deliver-hardening-plan-2026-07-13.md) | The 14-defect hardening plan (batches A–D): scoped rollback, declared gates, polyglot execution, config routing, liveness, operator overrides |
 | [Deliver hardening review response](plans/deliver-hardening-review-response-2026-07-13.md) | Parallel-review findings and their dispositions — the rationale behind the root-owned trust model |
 | [Harness engineering uplift](plans/harness-engineering-uplift-2026-07-31.md) | Three-paper analysis of harness variance and what UAP does about it |
 | [K3 UAP uplift validation](plans/k3-uap-uplift-validation.md) | Plan to measure UAP's paired uplift on Kimi K3 by re-running Terminal-Bench 2.1 with Factory Droid as the harness, UAP on vs off |
-| [Qwen3.8 UAP re-test plan](plans/qwen38-uap-retest-plan.md) | Plan to re-run the paired benchmark matrix on the current local Qwen3.8-27B stack with UAP v1.224.x, replicating the +20pp gate-loop finding and checking the hardened deliver pipeline |
+| [Qwen3.8 UAP re-test plan](plans/qwen38-uap-retest-plan.md) | Plan to re-run the paired benchmark matrix on the current local Qwen3.8-27B stack, replicating the +20pp gate-loop finding and checking the hardened deliver pipeline |
 | [Model-performance proof options](plans/model-performance-proof-options.md) | The benchmark/test menu for demonstrating UAP's benefits with honest numbers: four separately-provable claims, six options (free-first), discrimination status required on every delta |
 | [System-1 uplift plan](plans/system1-uplift-2026-09-18.md) | Approved uplift from the 2026-09-18 ten-source analysis (Jev/Foreman/Fluent/CEK et al): Wave 0 quick wins + Wave 1 System-1 decision layer, local-only classifier trained from UAP telemetry |
 

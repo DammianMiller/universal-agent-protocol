@@ -272,7 +272,7 @@ jobs:
           body: |
             ## @miller-tech/uap v${{ steps.get_version.outputs.VERSION }}
 
-            See [CHANGELOG.md](https://github.com/DammianMiller/universal-agent-protocol/blob/master/CHANGELOG.md) for details.
+            See the [commit history](https://github.com/DammianMiller/universal-agent-protocol/commits/v${{ steps.get_version.outputs.VERSION }}) for details.
 
           draft: false
           prerelease: false

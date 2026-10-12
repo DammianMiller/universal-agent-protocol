@@ -12,7 +12,7 @@ Claiming DONE, COMPLETE, or CLOSED is prohibited until ALL gates below pass. No 
 
 4. **Lint and type-check must pass.** Run `npm run lint` (if available) and `tsc --noEmit`. All linting and type errors must be resolved before completion.
 
-5. **Version must be bumped.** Run `npm run version:patch`, `version:minor`, or `version:major` based on the commit type. Manual edits to `package.json` version are prohibited. The script validates, bumps, updates CHANGELOG.md, commits, and tags automatically. See `policies/semver-versioning.md`.
+5. **Version must be bumped.** Run `npm run version:patch`, `version:minor`, or `version:major` based on the commit type. Manual edits to `package.json` version are prohibited. The script validates, bumps, commits, and tags automatically. See `policies/semver-versioning.md`.
 
 6. **Deployment verification is required for deployable changes.** If the change touches deployable artifacts (infrastructure, services, published packages), deployment to staging/preview must succeed and smoke tests must pass in the target environment. A rollback plan must exist for breaking changes.
 

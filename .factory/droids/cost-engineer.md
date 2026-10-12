@@ -130,4 +130,4 @@ For non-trivial new services, produce:
 ## Coordination
 - Pairs with `architect-reviewer` on cost vs. capability trade-offs
 - Pairs with `observability-engineer` on telemetry cost
-- Inputs to `release-manager` for change-cost notes in CHANGELOG
+- Inputs to `release-manager` for change-cost notes in release notes

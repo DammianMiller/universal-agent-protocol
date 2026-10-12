@@ -77,7 +77,7 @@ hook, which MUST:
    this in the agent's context.
 2. **Clean stale state.** Deregister dead agents and release abandoned work
    claims so coordination state stays accurate.
-3. **Surface waiting decisions (v2.29).** Sweep the operator attention queue —
+3. **Surface waiting decisions.** Sweep the operator attention queue —
    grace-elapsed asks adopt their recorded safe default (logged on the item,
    never silent); asks with no safe default escalate — then emit a bounded
    block of still-open asks (plus a while-you-were-away summary) into the

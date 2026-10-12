@@ -1,7 +1,5 @@
 # Contributing to UAP
 
-`v2.29.0`
-
 Thanks for contributing to the Universal Agent Protocol. This guide covers the
 development setup, the worktree workflow, the completion gates every change must
 pass, and the PR process. The gates here are not aspirational — many are
