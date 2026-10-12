@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.32.1 (2026-10-12)
+
+- fix(sandbox): parallel-review round — anchor-dir refusal, termSafe notes, honest audit record, comment hygiene
+- fix(policies)+docs: close the named residuals; distill docs to present-state; add the model-performance proof menu
+
+
 ## v2.32.0 (2026-10-11)
 
 - fix(policies): review round — anchor keyed by main checkout root, grant ids sanitized, one-snapshot verify
