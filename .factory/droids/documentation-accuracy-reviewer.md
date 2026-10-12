@@ -24,7 +24,7 @@ Engage when the diff:
 - Renames or removes a public symbol
 - Adds, removes, or changes a CLI command / flag
 - Modifies a public type or interface
-- Touches `README.md`, `CHANGELOG.md`, or `docs/**`
+- Touches `README.md` or `docs/**`
 - Changes any file with a documented example elsewhere
 
 ## Per-Diff Checks
@@ -39,7 +39,7 @@ If matched in docs → BLOCK until doc is updated.
 ### 2. CLI changes
 - Removed flag → grep `README.md`, `docs/reference/`, `docs/getting-started/`
 - New flag → must appear in `--help` AND in the CLI Reference doc
-- Renamed subcommand → check changelogs and any examples
+- Renamed subcommand → check the CLI Reference and any examples
 
 ### 3. Example correctness
 Extract fenced code blocks (` ``` `) from changed docs. For each:
@@ -52,9 +52,13 @@ Extract fenced code blocks (` ``` `) from changed docs. For each:
 - Anchor links (`#section`): does the heading exist?
 - Version references (`v1.X.Y`): match `package.json` version?
 
-### 5. CHANGELOG entry
-- `feat:` / `fix:` / `BREAKING CHANGE:` commit → must have a CHANGELOG line
-- Removed public API → must say "Removed" in changelog
+### 5. Version references
+- Living docs must carry NO version stamps — `package.json` and git tags are
+  the only version source; a stamped doc is a stale doc on every bump
+- Scale counts in doc headers (modules, suites, commands) → refresh to
+  actuals whenever the file is touched
+- Date-stamped analyses and benchmark records keep their original pins (they
+  are measurement labels, not drift)
 
 ## Output Shape
 ```markdown
@@ -67,9 +71,6 @@ Extract fenced code blocks (` ``` `) from changed docs. For each:
 
 ### 🟡 STALE
 1. `README.md:180` — example uses `uap setup -p all` flag `--web` which was removed in v1.20
-
-### 🟢 MISSING CHANGELOG
-1. PR adds `uap droids validate`; CHANGELOG.md does not mention it
 ```
 
 ## Anti-Patterns I Always Flag
@@ -86,4 +87,4 @@ Extract fenced code blocks (` ``` `) from changed docs. For each:
 
 ## Coordination
 - Pairs with `documentation-expert` (full authoring) and `code-quality-reviewer` (TSDoc presence)
-- Triggers `release-manager` if CHANGELOG entry missing on feat/fix commits
+- Triggers `release-manager` if release notes are missing on feat/fix commits

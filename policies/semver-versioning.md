@@ -2,6 +2,8 @@
 
 All version changes MUST follow Semantic Versioning 2.0.0 and be automated through `npm run version:patch`, `npm run version:minor`, or `npm run version:major`. Manual edits to the version field in `package.json` are prohibited.
 
+**This repository keeps no changelog file.** Git history and tags are the release record: every version bump commits `package.json` and creates a `vX.Y.Z` tag, and release notes are derived from the conventional commits between tags. Living docs carry no version stamps — `package.json` and the git tags are the only version source, so docs cannot drift stale. Do not reintroduce a `CHANGELOG.md` for this repository; the changelog-format knowledge in the droid library serves host projects, not UAP itself.
+
 ## Rules
 
 1. **Version bumps are derived from commit type.** The conventional commit prefix determines the bump level:
@@ -12,7 +14,7 @@ All version changes MUST follow Semantic Versioning 2.0.0 and be automated throu
 
 2. **Version bump happens AFTER the changes, never before.** The version bump commit must be the final commit in a changeset. Bumping the version before writing the code it describes is a policy violation.
 
-3. **Version bump is automated.** Use the provided npm scripts which handle package.json update, CHANGELOG entry, git tag, and commit in a single atomic operation:
+3. **Version bump is automated.** Use the provided npm scripts which handle package.json update, git tag, and commit in a single atomic operation:
 
    ```bash
    npm run version:patch   # fix, chore, refactor, etc.
@@ -20,13 +22,11 @@ All version changes MUST follow Semantic Versioning 2.0.0 and be automated throu
    npm run version:major   # breaking changes
    ```
 
-4. **CHANGELOG.md must be updated with every version bump.** The version bump script appends a dated entry. If the script cannot determine the changes automatically, the developer must add a summary before committing.
+4. **Git tags are mandatory.** Every version bump creates a `vX.Y.Z` git tag. Tags must not be created manually or moved after creation.
 
-5. **Git tags are mandatory.** Every version bump creates a `vX.Y.Z` git tag. Tags must not be created manually or moved after creation.
+5. **No manual package.json version edits.** Changing the `version` field directly in `package.json` bypasses validation and tagging. Always use the npm scripts.
 
-6. **No manual package.json version edits.** Changing the `version` field directly in `package.json` bypasses validation, changelog generation, and tagging. Always use the npm scripts.
-
-7. **Version must be bumped before push.** Every push to master/main that contains functional changes must include a version bump commit. Pushing code changes without a corresponding version bump is a violation.
+6. **Version must be bumped before push.** Every push to master/main that contains functional changes must include a version bump commit. Pushing code changes without a corresponding version bump is a violation.
 
 ## Automation
 
@@ -35,10 +35,9 @@ The `scripts/version-bump.sh` script performs:
 1. Validates the working tree is clean (no uncommitted changes)
 2. Runs `npm test` and `npm run build` to confirm the project is healthy
 3. Bumps the version in `package.json` using `npm version <level> --no-git-tag-version`
-4. Prepends a dated entry to `CHANGELOG.md`
-5. Stages `package.json` and `CHANGELOG.md`
-6. Creates a commit: `chore: bump version to X.Y.Z`
-7. Creates a git tag: `vX.Y.Z`
+4. Stages `package.json` and `package-lock.json`
+5. Creates a commit: `chore: bump version to X.Y.Z`
+6. Creates a git tag: `vX.Y.Z`
 
 ## Anti-Patterns
 
@@ -48,9 +47,7 @@ DO NOT:
 - Bump version before writing the code it describes
 - Push code changes without a version bump
 - Create version bump commits with unrelated code changes mixed in
-- Skip the CHANGELOG entry
 - Delete or move git tags after creation
-- Use inconsistent version numbers across package.json and CHANGELOG.md
 
 ## Enforcement Level
 

@@ -11,7 +11,7 @@
  * This ledger is the fix: every extra hole is a GRANT — bounded by a
  * session, a TTL, and a stated reason, recorded with who consented, and
  * audit-logged on use. "Every new authority must state who consented"
- * (EVOLUTION.md, the P4 bar).
+ * (ADR 0011, the P4 bar).
  *
  * Design rules (inherited from the attention-queue store, review-hardened):
  * - the ledger is shared-write state in `.uap/`, so every string is

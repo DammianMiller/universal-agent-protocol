@@ -8,12 +8,7 @@ memory injection, policy enforcement, verification gates, and tool-output compre
 **What UAP is (implementation):** a TypeScript/Node CLI (`uap`, `src/bin/cli.ts`, 58
 top-level commands, ~210 registrations including subcommands) plus a Python FastAPI model proxy, wired into harnesses via shell
 hooks, four SQLite databases, an optional Docker Qdrant vector store, and a bubblewrap
-kernel sandbox. Version: **v2.30.0**.
-
-**Where it came from:** born as Miller-Tech's internal discipline layer for agentic
-development of its fintech app Pay2U and the Miller-Tech platform; every gate maps to a
-failure class observed there. Origin story and eras:
-[docs/guides/EVOLUTION.md](../docs/guides/EVOLUTION.md).
+kernel sandbox.
 
 ## Stack
 

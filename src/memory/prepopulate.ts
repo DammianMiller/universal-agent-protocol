@@ -120,6 +120,8 @@ export async function parseDocumentation(cwd: string, verbose = false): Promise<
     'README.txt',
     'README',
     'CONTRIBUTING.md',
+    // Host projects may keep a changelog (UAP itself does not — git history
+    // and tags are the release record here); preload it where it exists.
     'CHANGELOG.md',
     'ARCHITECTURE.md',
     'DEVELOPMENT.md',

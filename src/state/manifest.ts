@@ -1,7 +1,7 @@
 /**
  * Implementation-State Manifest — a machine-generated snapshot of what this
  * project IS and where its implementation actually stands, derived from
- * ground truth (package.json, CHANGELOG, git branch, .factory registries)
+ * ground truth (package.json, git log, git branch, .factory registries)
  * rather than hand-maintained docs that drift.
  *
  * Written to `.uap/state-manifest.json`; the reactor injects a one-line
@@ -13,13 +13,16 @@
 import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { termSafeBounded } from '../utils/terminal-safe.js';
 
 export interface StateManifest {
   name: string;
   version: string;
   generatedAt: string;
   branch?: string;
-  /** Latest CHANGELOG headings, newest first — the real "what shipped lately". */
+  /** Latest commit subjects, newest first — the real "what shipped lately".
+   * UNTRUSTED input: commit subjects are contributor-authored text; they are
+   * stripped + single-lined at ingest and re-stripped at the digest boundary. */
   recentChanges: string[];
   /** Registry counts when the project has them (skills/droids/patterns). */
   counts?: Record<string, number>;
@@ -50,6 +53,30 @@ function gitBranch(projectRoot: string): string | undefined {
   }
 }
 
+/** Latest commit subjects, newest first — straight from the git log. Commit
+ * subjects are contributor-authored (untrusted) text: termSafeBounded strips
+ * terminal-control bytes, flattens to one line, and bounds the length, so a
+ * hostile subject cannot smuggle escapes or line structure into the digest. */
+function gitSubjects(projectRoot: string): string[] {
+  try {
+    const out = execFileSync('git', ['log', '--pretty=%s', '-n', String(RECENT_CHANGES), '--no-merges'], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      // Never inherit a poisoned GIT_DIR from a hook environment.
+      env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined },
+    });
+    return out
+      .split('\n')
+      .map((line) => termSafeBounded(line, 160))
+      .filter(Boolean);
+  } catch {
+    // not a git repo (or git unusable) — manifest still useful without it
+    return [];
+  }
+}
+
 function countEntries(dir: string): number | undefined {
   try {
     if (!existsSync(dir)) return undefined;
@@ -73,18 +100,7 @@ export function generateStateManifest(projectRoot: string): StateManifest | null
   const name = typeof pkg.name === 'string' ? pkg.name : 'unknown';
   const version = typeof pkg.version === 'string' ? pkg.version : '0.0.0';
 
-  const recentChanges: string[] = [];
-  try {
-    const changelog = readFileSync(join(projectRoot, 'CHANGELOG.md'), 'utf-8');
-    for (const line of changelog.split('\n')) {
-      if (line.startsWith('## ')) {
-        recentChanges.push(line.slice(3).trim().slice(0, 160));
-        if (recentChanges.length >= RECENT_CHANGES) break;
-      }
-    }
-  } catch {
-    // no changelog — manifest still useful
-  }
+  const recentChanges = gitSubjects(projectRoot);
 
   const counts: Record<string, number> = {};
   const skillCount = countEntries(join(projectRoot, '.factory', 'skills'));
@@ -150,7 +166,11 @@ export function manifestDigest(manifest: StateManifest): string {
     `${manifest.name} v${manifest.version}${manifest.branch ? ` (branch: ${manifest.branch})` : ''}`,
   ];
   if (manifest.recentChanges.length > 0) {
-    lines.push(`Recently shipped: ${manifest.recentChanges.slice(0, 3).join(' | ')}`.slice(0, 240));
+    // Choke-point defense: on the load path (readOrRefreshManifest) these
+    // entries can come from a planted .uap/state-manifest.json — re-strip
+    // before the digest reaches a session prompt.
+    const subjects = manifest.recentChanges.map((s) => termSafeBounded(s, 160));
+    lines.push(`Recently shipped: ${subjects.slice(0, 3).join(' | ')}`.slice(0, 240));
   }
   if (manifest.counts) {
     lines.push(

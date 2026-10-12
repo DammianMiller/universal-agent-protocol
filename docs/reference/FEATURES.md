@@ -1,8 +1,8 @@
 # Feature Catalog
 
-> Universal Agent Protocol (UAP) v2.30.0
+> Universal Agent Protocol (UAP)
 
-> **🏭 Where this fits:** Every station on the line — this catalog is the parts list for the whole factory. **What it delivers:** each feature below is mapped to the stage of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md) it protects, so you can see exactly where your agent's work stops being plausible-looking and starts being genuinely shippable. For *why* the catalog grew this way — the Miller-Tech / Pay2U origin, the hardening eras, and the 2026-10 bridge program — see [The Evolution of UAP](../guides/EVOLUTION.md).
+> **🏭 Where this fits:** Every station on the line — this catalog is the parts list for the whole factory. **What it delivers:** each feature below is mapped to the stage of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md) it protects, so you can see exactly where your agent's work stops being plausible-looking and starts being genuinely shippable.
 
 Think of getting software out of an agent as a line in a factory. Raw intent
 comes in one end; a working, shipped change comes out the other. Between those
