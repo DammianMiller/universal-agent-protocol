@@ -1,6 +1,6 @@
 /**
  * `uap proxy connect` — a small TCP→unix relay for the proxy's AF_UNIX
- * surface (bridge P4).
+ * surface .
  *
  * The proxy can serve its model gateway on a permission-gated AF_UNIX socket
  * (`PROXY_SOCKET`, 0600 — see ADR 0011): tighter than a TCP port anyone on
@@ -10,7 +10,7 @@
  * unmodified, to the socket — one hop, no parsing, no buffering policy of
  * its own: the proxy keeps every guardrail.
  *
- * THE GATE IT VOIDS, STATED PLAINLY (P4 security review): the 0600 socket
+ * THE GATE IT VOIDS, STATED PLAINLY (security review): the 0600 socket
  * exists precisely so that only the owning USER can reach the model path.
  * The relay re-serves it on loopback TCP, and on a multi-user box every
  * local user can dial a loopback port. So the relay refuses to run unless
@@ -107,7 +107,7 @@ export async function proxyConnectCommand(opts: RelayOptions): Promise<void> {
     // that only the owning user reaches the model path; a loopback TCP
     // re-serve is that gate, inverted, for anyone local. Refusing without
     // the explicit flag keeps "uap proxy connect" from quietly reintroducing
-    // the port ADR 0011 took away (P4 security review).
+    // the port ADR 0011 took away (security review).
     console.error(
       'uap proxy connect: refusing without --allow-anyone.\n' +
         'The relay re-serves the 0600 unix socket on a local TCP port — while it runs,\n' +

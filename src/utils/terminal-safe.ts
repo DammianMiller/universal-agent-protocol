@@ -1,5 +1,5 @@
 /**
- * Terminal-safe rendering (bridge P5 hardening) — strip the C0/C1 control
+ * Terminal-safe rendering  — strip the C0/C1 control
  * characters that could steer an operator's terminal from data we did not
  * author: JSON report fields, analytics-store model ids, commit subjects.
  *

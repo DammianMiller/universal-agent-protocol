@@ -249,7 +249,7 @@ export async function handsfreeCommand(
           `  ledger: ${chalk.bold(`${p.done}/${p.total}`)} done (${p.pct}%), ` +
             `${p.failed} failed, ${p.pending} pending`
         );
-        // Measured-pace ETA for the remaining work (bridge P5: S1b): the
+        // Measured-pace ETA for the remaining work : the
         // operator's own history, scaled by this key's attempts-per-success.
         // Shown ONLY when the estimate exists — thin data would guess.
         const etaLine = handsfreeEtaLine(model, p.pending + p.failed);

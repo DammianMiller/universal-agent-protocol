@@ -202,7 +202,7 @@ export function resolve(
       ? maybePersistenceInjection(ctx.cwd)
       : null;
 
-  // Measured pace (bridge P5: S1b): inject the agent's OWN EWMA pace for the
+  // Measured pace : inject the agent's OWN EWMA pace for the
   // active model — the one planning number a local model never has. Fires
   // only on SOLID estimates (>= 6 successful samples); thin data would inject
   // exactly the confident noise the block exists to replace. Deduped per

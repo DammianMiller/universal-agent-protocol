@@ -1,6 +1,6 @@
 # ADR 0006: Operator-directed model placement (registry + ledger + proxy gate)
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-08 (branch `feature/345-model-placement`)
 - Spec: `docs/specs/operator-model-placement.md`
 

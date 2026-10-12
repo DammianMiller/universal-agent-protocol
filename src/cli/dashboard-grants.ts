@@ -1,11 +1,11 @@
 /**
- * The dashboard's Sandbox Grants section (debt item 16 — the ADR 0011-named
- * operator surface: active authority per session, the trust-anchor verdict,
- * and the revoke command per grant).
+ * The dashboard's Sandbox Grants section (the ADR 0011-named operator
+ * surface: active authority per session, the trust-anchor verdict, and the
+ * revoke command per grant).
  *
- * Split from src/cli/dashboard.ts at review: the dashboard module is the
- * repo's worst LOC offender, and both of the P5/debt era additions followed
- * the export-for-test pattern — a separate module keeps the render file
+ * Split from src/cli/dashboard.ts: the dashboard module is the repo's worst
+ * LOC offender, and new sections follow the export-for-test pattern — a
+ * separate module keeps the render file
  * from growing with every surface and gives the tests a direct import.
  */
 

@@ -241,7 +241,7 @@ export const SETTINGS: readonly SettingDef[] = [
     recommendation: 'Use inline for CI enforcement without changing the project config; never export globally — a hard gate in every shell surprises interactive agents.',
   },
 
-  // ── Attention queue (bridge P3: ask instead of stop) ─────────────────────
+  // ── Attention queue (the ask-instead-of-stop rail) ─────────────────────
   {
     key: 'attention.graceSecs', kind: 'json', type: 'number', min: 0, default: 300, category: 'orchestration',
     description: 'Grace window before the AFK auto-decider may adopt an attention item\'s recorded safe default (`uap attention sweep`, also swept at session start). Items without a safe default escalate instead.',
@@ -586,7 +586,7 @@ export const SETTINGS: readonly SettingDef[] = [
     recommendation: 'Set in CI or pinned environments where you manage the UAP version yourself.',
   },
 
-  // ── Sandbox & session authority (bridge P4) ────────────────────────────────
+  // ── Sandbox & session authority  ────────────────────────────────
   {
     key: 'PROXY_SOCKET', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'proxyEnv',
     description: 'AF_UNIX socket the inference proxy serves IN ADDITION to its TCP port — a permission-gated (0600) model-path choke point for sandboxed and multi-user setups (unset = off).',
@@ -619,7 +619,7 @@ export const SETTINGS: readonly SettingDef[] = [
   },
   {
     key: 'UAP_SANDBOX_ALLOW', kind: 'env', type: 'string', default: '', category: 'sandbox', target: 'shell',
-    description: 'Extra writable paths, colon-separated — UNRECORDED authority (pre-P4 escape hatch). Still honored, but named unrecorded in the audit trail and banner.',
+    description: 'Extra writable paths, colon-separated — UNRECORDED authority, honored for compatibility. Every use is named in the audit trail and the launch banner, and entries get the same plan-time realpath re-check recorded grants get: an entry resolving to `/`, `/home`, or `$HOME` is refused loudly, and a symlink entry binds its resolved target, not the link.',
     recommendation: 'Prefer `uap sandbox grant <path> --session <id> --reason "..."` (recorded, TTL-bounded, revocable); use this only in throwaway scripts.',
   },
   {

@@ -1084,7 +1084,7 @@ Workdir `uap sandbox` makes writable (default: cwd). Refused when over-broad ($H
 | **Type** | string |
 | **Default** | `` |
 
-Extra writable paths, colon-separated — UNRECORDED authority (pre-P4 escape hatch). Still honored, but named unrecorded in the audit trail and banner.
+Extra writable paths, colon-separated — UNRECORDED authority, honored for compatibility. Every use is named in the audit trail and the launch banner, and entries get the same plan-time realpath re-check recorded grants get: an entry resolving to `/`, `/home`, or `$HOME` is refused loudly, and a symlink entry binds its resolved target, not the link.
 
 **Recommendation:** Prefer `uap sandbox grant <path> --session <id> --reason "..."` (recorded, TTL-bounded, revocable); use this only in throwaway scripts.
 

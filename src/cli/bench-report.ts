@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// `uap bench report` — the paired-report reader (bridge P5: the delta report
+// `uap bench report` — the paired-report reader (the delta report
 // as an operator surface). Reports accumulate under benchmark-results/paired-*/;
 // the operator's questions are "what did the latest run measure" and "did the
 // delta HOLD since the last run" — and per the reliability-ladder rule, a delta

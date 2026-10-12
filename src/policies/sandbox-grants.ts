@@ -1,5 +1,5 @@
 /**
- * Per-session sandbox grants (bridge Phase 4: D2 consent ledger).
+ * Per-session sandbox grants (the D2 consent ledger).
  *
  * `uap sandbox` is all-or-nothing authority: the workdir + scratch are
  * writable, everything else is EROFS. That default is right, but real work
@@ -13,7 +13,7 @@
  * audit-logged on use. "Every new authority must state who consented"
  * (EVOLUTION.md, the P4 bar).
  *
- * Design rules (inherited from the attention-queue store, P3 review-hardened):
+ * Design rules (inherited from the attention-queue store, review-hardened):
  * - the ledger is shared-write state in `.uap/`, so every string is
  *   sanitized at INGEST and the load path re-applies the same sanitizer —
  *   a planted row must not become a kernel-writable hole or reach
@@ -37,7 +37,7 @@ import { ledgerHeadOf, pathCoversAnchorDir, readAnchor, verifyLedger, writeAncho
 import type { Verification } from './sandbox-anchor.js';
 
 /** Audit-log retention: the trail is append-only history, but an unbounded
- *  JSONL under the shared-write `.uap/` grows forever (debt item 3) — past
+ *  JSONL under the shared-write `.uap/` grows forever  — past
  *  the trigger it is compacted to the newest AUDIT_MAX_LINES event lines
  *  (plus the triggering event and one `audit-compaction` marker), so the
  *  file lands at AUDIT_MAX_LINES + 2. The compaction is itself audited, so
@@ -167,9 +167,9 @@ function sanitizeGrant(raw: Partial<SandboxGrant> & { [k: string]: unknown }): S
     if (typeof rp !== 'string') return null;
     // The load path re-applies the FULL grantable-path validation, not just
     // a string prefix: a planted well-formed row with `paths:["/"]` would
-    // otherwise become a real `--bind / /` hole (the string-only check was
-    // the P4 review BLOCKER — the bind follows the row, so the row must
-    // carry nothing the operator would have refused). A row with ANY
+    // otherwise become a real `--bind / /` hole (the bind follows the row,
+    // so the row must carry nothing the operator would have refused — the
+    // review's blocker finding). A row with ANY
     // ungrantable path is dropped whole: least authority, and a half-row
     // is a forged consent record.
     const p = validateGrantPath(clean(rp, 512));
@@ -234,7 +234,7 @@ function persistGrants(projectRoot: string, grants: SandboxGrant[]): boolean {
     // write it was supposed to enable.
     mkdirSync(dirname(path), { recursive: true });
     // Unique tmp name: a fixed `.tmp` in shared-write .uap/ is an
-    // interleave-truncate and symlink-clobber target (P3 review finding).
+    // interleave-truncate and symlink-clobber target (review finding).
     const tmp = `${path}.${process.pid}-${randomBytes(3).toString('hex')}.tmp`;
     writeFileSync(tmp, JSON.stringify(grants, null, 2), 'utf-8');
     renameSync(tmp, path);
@@ -252,38 +252,64 @@ function persistGrants(projectRoot: string, grants: SandboxGrant[]): boolean {
 }
 
 /** Append one audit line. Append-only, best-effort, never throws. Every line
- *  carries a monotonic `seq` (compaction resets the prefix but never reuses
- *  numbers), and the file is compacted past AUDIT_PRUNE_TRIGGER with the
- *  drop recorded in an `audit-compaction` marker. */
+ *  carries a monotonic `seq` — recovered as the max of the file's last
+ *  parseable seq and the ANCHOR's witnessed high-water, so numbering
+ *  survives compaction AND file deletion (a trail whose numbering can
+ *  restart is a forgeable trail). The file is compacted past
+ *  AUDIT_PRUNE_TRIGGER with the drop recorded in an `audit-compaction`
+ *  marker. */
+/** The last parseable seq in an audit line list (0 when none parse): seqs
+ *  are monotonic, so the last parseable line IS the high-water. A malformed
+ *  tail degrades to the last good seq, never to a collision. */
+function scanHighWater(lines: string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const last = JSON.parse(lines[i]) as { seq?: unknown };
+      if (typeof last.seq === 'number' && Number.isFinite(last.seq)) return last.seq;
+    } catch {
+      /* keep scanning */
+    }
+  }
+  return 0;
+}
+
+/** The audit file's high-water seq (0 when the file is absent, empty, or
+ *  wholly malformed) — what anchorMutation witnesses after an operation's
+ *  line has landed. */
+function auditHighWater(projectRoot: string): number {
+  try {
+    const path = sandboxAuditPath(projectRoot);
+    if (!existsSync(path)) return 0;
+    const text = readFileSync(path, 'utf-8');
+    if (text.length === 0) return 0;
+    return scanHighWater(text.split('\n').filter((l) => l.length > 0));
+  } catch {
+    return 0;
+  }
+}
+
 function audit(projectRoot: string, event: Record<string, unknown>): void {
   try {
     const path = sandboxAuditPath(projectRoot);
     mkdirSync(dirname(path), { recursive: true });
-    let prevSeq = 0;
     let lines: string[] = [];
+    let fileHi = 0;
     if (existsSync(path)) {
       const text = readFileSync(path, 'utf-8');
       if (text.length > 0) {
         lines = text.split('\n').filter((l) => l.length > 0);
-        // Recover the previous seq by scanning BACKWARDS for the last
-        // parseable line: after a compaction the file holds 10k lines with
-        // seqs up in the 12k+ range, so the old `lines.length` fallback
-        // could REUSE a live seq number. A malformed tail degrades to
-        // (last good seq + 1), never to a collision.
-        for (let i = lines.length - 1; i >= 0; i--) {
-          try {
-            const last = JSON.parse(lines[i]) as { seq?: unknown };
-            if (typeof last.seq === 'number' && Number.isFinite(last.seq)) {
-              prevSeq = last.seq;
-              break;
-            }
-          } catch {
-            /* keep scanning */
-          }
-        }
+        // Scan BACKWARDS for the last parseable line: after a compaction the
+        // file holds 10k lines with seqs up in the 12k+ range, so the old
+        // `lines.length` fallback could REUSE a live seq number. A malformed
+        // tail degrades to (last good seq + 1), never to a collision.
+        fileHi = scanHighWater(lines);
       }
     }
-    const seq = prevSeq + 1;
+    // The anchor's seqHi covers what the FILE cannot: deletion. The anchor
+    // only witnesses seqs at recorded mutations, so a file grown past the
+    // anchor (e.g. by sandbox-run lines) still numbers correctly — max of
+    // both.
+    const seq = Math.max(fileHi, readAnchor(projectRoot)?.seqHi ?? 0) + 1;
     if (lines.length + 1 > AUDIT_PRUNE_TRIGGER) {
       const kept = lines.slice(-AUDIT_MAX_LINES);
       kept.push(JSON.stringify({ ...event, seq }));
@@ -317,7 +343,7 @@ function audit(projectRoot: string, event: Record<string, unknown>): void {
 /** Verify the SANITIZED on-disk ledger against the out-of-checkout anchor.
  *  'unanchored' is the pre-bootstrap state, not a failure. When `grants` is
  *  passed (an already-loaded sanitized snapshot), the SAME snapshot is
- *  verified and then acted on — the torn-read fix (review m2): loading the
+ *  verified and then acted on — the torn-read fix: loading the
  *  file twice left a window where the hash saw one state and the resolver
  *  acted on another. */
 export function verifyLedgerIntegrity(projectRoot: string, grants?: SandboxGrant[]): Verification {
@@ -326,12 +352,15 @@ export function verifyLedgerIntegrity(projectRoot: string, grants?: SandboxGrant
 }
 
 /** Advance the anchor to a CONFIRMED on-disk state (called only after the
- *  lost-update guard proved the persist landed). A failed anchor write is
- *  loud but never fatal: the ledger stays operative; verification is simply
- *  not possible until the next recorded mutation succeeds. */
+ *  lost-update guard proved the persist landed, and AFTER the operation's
+ *  audit line is written, so the seq high-water the anchor witnesses
+ *  includes it). A failed anchor write is loud but never fatal: the ledger
+ *  stays operative; verification is simply not possible until the next
+ *  recorded mutation succeeds. */
 function anchorMutation(projectRoot: string, confirmed: SandboxGrant[]): void {
   const prior = readAnchor(projectRoot);
-  if (!writeAnchor(projectRoot, ledgerHeadOf(confirmed), (prior?.mutations ?? 0) + 1)) {
+  const seqHi = Math.max(prior?.seqHi ?? 0, auditHighWater(projectRoot));
+  if (!writeAnchor(projectRoot, ledgerHeadOf(confirmed), (prior?.mutations ?? 0) + 1, seqHi)) {
     console.warn(
       '[sandbox-grants] trust-anchor write failed — the ledger is active but NOT verifiable; ' +
         'the next successful grant/renew/revoke will try to anchor it',
@@ -368,7 +397,7 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
     if (!v) return { ok: false, error: `not grantable: '${p}' (must be an existing absolute path, and not / , /home, or $HOME itself)` };
     // The one hole that must never open: a grant covering the trust-anchor
     // dir lets the sandboxed side delete or corrupt the tamper evidence
-    // itself (review m1 — the anchor is ro-bound by default, but a hole
+    // itself (the anchor is ro-bound by default, but a hole
     // over it makes it writable).
     if (pathCoversAnchorDir(v)) {
       return { ok: false, error: `not grantable: '${p}' covers the sandbox trust-anchor directory — a hole there could destroy the tamper evidence itself` };
@@ -381,9 +410,9 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
   }
 
   // TTL is FAIL-CLOSED on garbage: undefined → the 8h default, but a
-  // non-numeric or negative --ttl is REFUSED outright (the P4 security
-  // review caught the old expression silently treating bad input as "give
-  // 8h anyway" — the wrong direction for authority). 0 floors to 1s: a
+  // non-numeric or negative --ttl is REFUSED outright (the security
+  // review caught bad input silently meaning "give 8h anyway" — the wrong
+  // direction for authority). 0 floors to 1s: a
   // zero-second grant is a recorded consent that expires immediately.
   let ttl: number;
   if (input.ttlSecs === undefined) {
@@ -443,8 +472,12 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
         if (attempt === 0) continue;
         return { ok: false, error: 'ledger changed under a concurrent writer — renewal not confirmed; retry the grant' };
       }
-      anchorMutation(projectRoot, confirmedAll);
+      // Audit FIRST, then anchor: the anchor witnesses the audit high-water,
+      // and it must include this operation's line (audit-then-anchor is what
+      // makes seq survive audit-file deletion — the anchor's seqHi is the
+      // floor the next line numbers from).
       audit(projectRoot, { ts: grant.grantedAt, action: 'grant-renewed', grantId: twin.id, sessionId, paths, reason });
+      anchorMutation(projectRoot, confirmedAll);
       return { ok: true, grant: twin };
     }
     const all = [...existing, grant];
@@ -460,8 +493,9 @@ export function grantAuthority(projectRoot: string, input: GrantInput): { ok: tr
       if (attempt === 0) continue;
       return { ok: false, error: 'ledger changed under a concurrent writer — the grant is NOT confirmed; retry' };
     }
-    anchorMutation(projectRoot, confirmedAll);
+    // Audit FIRST, then anchor — same reason as the renewal path above.
     audit(projectRoot, { ts: grant.grantedAt, action: 'grant', grantId: grant.id, sessionId, paths, reason, ttlSecs: ttl });
+    anchorMutation(projectRoot, confirmedAll);
     return { ok: true, grant };
   }
 }
@@ -488,7 +522,7 @@ export function revokeAuthority(projectRoot: string, grantId: string): boolean {
     const keep = all.filter((g) => g.id !== id);
     if (keep.length === all.length) return false;
     if (!persistGrants(projectRoot, keep)) return false;
-    // Lost-update guard (P4 security review): a concurrent writer landing
+    // Lost-update guard (security review): a concurrent writer landing
     // after our persist can resurrect the row; verify the removal actually
     // landed before reporting success, retrying once against fresh state.
     const confirmedAll = loadGrants(projectRoot);
@@ -496,8 +530,9 @@ export function revokeAuthority(projectRoot: string, grantId: string): boolean {
       if (attempt === 0) continue;
       return false;
     }
-    anchorMutation(projectRoot, confirmedAll);
+    // Audit FIRST, then anchor — same reason as the grant/renew paths.
     audit(projectRoot, { ts: new Date().toISOString(), action: 'revoke', grantId: id });
+    anchorMutation(projectRoot, confirmedAll);
     if (preIntegrity.state === 'mismatch') {
       console.warn(
         `[sandbox-grants] NOTE: the ledger had failed integrity verification before this revoke — ${preIntegrity.detail}. ` +
@@ -515,7 +550,7 @@ export function revokeAuthority(projectRoot: string, grantId: string): boolean {
  */
 export function resolveSessionGrants(projectRoot: string, sessionId: string): ResolvedGrants {
   // ONE load: the snapshot that gets verified is the SAME snapshot that
-  // resolves the holes (the torn-read fix, review m2).
+  // resolves the holes (the torn-read fix).
   const loaded = loadGrants(projectRoot);
   // Fail-CLOSED on tamper evidence (ADR 0011): a ledger that fails anchor
   // verification opens ZERO grant-derived holes. The sandbox's own kernel
@@ -531,7 +566,7 @@ export function resolveSessionGrants(projectRoot: string, sessionId: string): Re
     return { grants: [], paths: [] };
   }
   if (integrity.state === 'unanchored' && loaded.length > 0) {
-    // The quiet dangerous state (review m1): grants exist but the anchor is
+    // The quiet dangerous state ): grants exist but the anchor is
     // gone/never written, so tamper evidence is OFF. Never silent.
     console.warn(
       `[sandbox-grants] ${loaded.length} grant(s) on disk but NO trust anchor — tamper evidence is inactive; ` +

@@ -517,4 +517,43 @@ describe('audit trail — sequence stamping + bounded retention (debt item 3)', 
     const lastSeq = (JSON.parse(after[after.length - 1]) as { seq: number }).seq;
     expect(lastSeq).toBe(seed.length + 3);
   });
+
+  it('the anchor witnesses the seq high-water: numbering survives audit-file DELETION', () => {
+    // The residual the reviewers named: the backward file scan covered
+    // compaction, but a DELETED audit file would restart numbering at 1 —
+    // seq N recorded twice means one of the lines is planted. The anchor's
+    // seqHi is the floor the next line numbers from.
+    const g1 = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g1.ok) throw new Error(g1.error);
+    revokeAuthority(dir, g1.grant.id); // seqs 1..2; the anchor witnessed the high-water
+    const before = readAnchor(dir);
+    expect(before?.seqHi).toBe(2);
+    rmSync(sandboxAuditPath(dir));
+    const g2 = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g2.ok) throw new Error(g2.error);
+    const lines = readFileSync(sandboxAuditPath(dir), 'utf-8').trim().split('\n');
+    const seqs = lines.map((l) => (JSON.parse(l) as { seq: number }).seq);
+    expect(seqs[0]).toBe(3); // NOT 1 — the deleted file's numbering is not reused
+    expect(readAnchor(dir)?.seqHi).toBeGreaterThanOrEqual(3);
+  });
+
+  it('a pre-field anchor (no seqHi) stays valid and numbering falls back to the file', () => {
+    const g = grantAuthority(dir, { ...INPUT, paths: [hole] })!;
+    if (!g.ok) throw new Error(g.error);
+    // Rewrite the anchor by hand in the OLD v1 shape (before seqHi existed)
+    // — additive fields must not strand existing anchors.
+    const old = readAnchor(dir)!;
+    const { seqHi: _omit, ...legacyShape } = old;
+    void _omit;
+    writeFileSync(anchorPath(dir), JSON.stringify({ ...legacyShape }, null, 2));
+    const reread = readAnchor(dir);
+    expect(reread?.ledgerHead).toBe(old.ledgerHead);
+    expect(reread?.seqHi).toBeUndefined();
+    expect(verifyLedgerIntegrity(dir).state).toBe('ok');
+    // Numbering continues from the FILE's high-water (the anchor contributes 0).
+    revokeAuthority(dir, g.grant.id);
+    const seqs = readFileSync(sandboxAuditPath(dir), 'utf-8').trim().split('\n')
+      .map((l) => (JSON.parse(l) as { seq: number }).seq);
+    expect(seqs).toEqual([1, 2]);
+  });
 });

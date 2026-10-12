@@ -1,16 +1,16 @@
 # ADR 0011: Per-session sandbox grants and the network egress boundary
 
-- Status: Proposed
-- Date: 2026-10-11 (branch `feature/356-bridge-p4-security`)
-- Spec: bridge-program Phase 4 (D2 session authority, D1 network egress
-  boundary), responding to the "agents with too much authority" gap in
-  mtlynch.io's *Why Are Coding Agents So Dumb?*
-- Supersedes: none — extends the P0 bubblewrap sandbox (`uap sandbox`) and
+- Status: Accepted
+- Date: 2026-10-11
+- Spec: session authority (D2) + network egress boundary (D1), responding to
+  the "agents with too much authority" gap in mtlynch.io's *Why Are Coding
+  Agents So Dumb?*
+- Supersedes: none — extends the bubblewrap sandbox (`uap sandbox`) and
   the inference proxy; no existing schema changes.
 
 ## Context
 
-`uap sandbox` (the P0 floor) is all-or-nothing authority: the workdir and
+`uap sandbox` (the base floor) is all-or-nothing authority: the workdir and
 scratch are writable, everything else is EROFS, and the only escape hatch
 was `UAP_SANDBOX_ALLOW=path:path` — an **unrecorded** env var: no session
 scope, no expiry, no reason, invisible to the operator, surviving forever
@@ -89,7 +89,7 @@ pins an explicit file):
 
 ### D1 — the network egress boundary
 
-**Shipped: `--net off`** — `uap sandbox --net off` adds `--unshare-net`
+**`--net off`** — `uap sandbox --net off` adds `--unshare-net`
 with nothing brought up: no TCP, no DNS, not even loopback, at the kernel.
 Any `connect()` fails. This is the complete boundary, intended for
 untrusted code, evals, and data-only work; a harness that needs the model
@@ -97,7 +97,7 @@ fails loudly with connection refused, which is the boundary working. The
 net mode defaults from `UAP_SANDBOX_NET=off`; every run's actual mode is
 audit-logged (`netMode: shared|off`).
 
-**Also shipped: the proxy's unix-socket surface** — `PROXY_SOCKET=<path>`
+**The proxy's unix-socket surface** — `PROXY_SOCKET=<path>`
 makes `anthropic_proxy.py` serve the SAME app on an AF_UNIX socket
 (0600, parent dir 0700) alongside its TCP port: a permission-gated model
 choke point for shared boxes. Stale-socket policy (hardened by the
@@ -146,11 +146,15 @@ actually holds.
 
 ## Consequences
 
-- Write authority beyond the workdir now requires a recorded, bounded,
-  revocable consent — and the pre-P4 unrecorded escape hatch is still
-  honored but is named in every audit line and banner.
+- Write authority beyond the workdir requires a recorded, bounded,
+  revocable consent. The legacy `UAP_SANDBOX_ALLOW` env still works for
+  compatibility — every use is audited and named as unrecorded — and its
+  entries get the same plan-time realpath re-check recorded grants get:
+  a symlink entry binds its resolved target, and an entry whose resolution
+  is `/`, `/home`, or `$HOME` is refused with an operator-visible note,
+  never bound.
 - `--net off` gives untrusted-code runs a complete, kernel-enforced
-  egress boundary today.
+  egress boundary.
 - Model-path gating becomes a socket permission problem (0600/0700) for
   multi-user or sandboxed-adjacent setups, rather than a TCP port anyone
   on the box can dial.
@@ -160,24 +164,23 @@ actually holds.
   join the sandbox netns; (c) rootful sandboxing (a future
   `--net proxy,via:root` could revisit). None are rootless today, so none
   are claimed.
-- Debt, accepted: the sandbox's `UAP_SANDBOX_ALLOW` continues to work
-  unrecorded (compatibility), but every use is audited and named. The
-  audit JSONL is now BOUNDED (debt item 3, shipped): every line carries a
-  monotonic `seq`, and past 12,000 lines it compacts to the 10,000 newest
-  event lines — plus the triggering event and one `audit-compaction` marker
-  recording the drop, so the file lands at 10,002 — a pruned trail is
-  an EXPECTED state, never a silent one.
-- Follow-up (operator surface) — **SHIPPED** as the dashboard's Sandbox
-  Grants section (debt item 16): `uap dashboard` (session view) lists the
-  active authority per session — id, session, remaining TTL, reason,
-  paths, and the revoke command per grant — plus the trust-anchor verdict
-  from the tamper-evidence work above (an INTEGRITY MISMATCH renders red,
-  rows listed-but-unverified, same contract as the CLI listing). The
-  per-checkout-root anchoring guarantees it reads the same ledger the
+- The audit JSONL is bounded: every line carries a monotonic `seq`, and
+  past 12,000 lines it compacts to the 10,000 newest event lines — plus
+  the triggering event and one `audit-compaction` marker recording the
+  drop, so the file lands at 10,002 — a pruned trail is an EXPECTED
+  state, never a silent one. Seq numbering is continuous across
+  compaction AND audit-file deletion: the trust anchor carries the
+  witnessed seq high-water (`seqHi`), and each line numbers from the max
+  of the file's last seq and the anchor's — a trail whose numbering can
+  restart is a forgeable trail.
+- The dashboard's session view lists the active authority per session —
+  id, session, remaining TTL, reason, paths, and the revoke command per
+  grant — plus the trust-anchor verdict (an INTEGRITY MISMATCH renders
+  red, rows listed-but-unverified, same contract as the CLI listing).
+  The per-checkout-root anchoring guarantees it reads the same ledger the
   sandbox does.
-- Follow-up (trust anchoring) — **SHIPPED** as the out-of-checkout
-  tamper-evidence anchor (`src/policies/sandbox-anchor.ts`, debt item 2):
-  every successful grant/renew/revoke writes a 0600 anchor at
+- Tamper evidence (out-of-checkout anchor): every successful
+  grant/renew/revoke writes a 0600 anchor at
   `$XDG_STATE_HOME/uap/sandbox-anchors/<hash-of-main-checkout-root>.json`
   (`UAP_SANDBOX_ANCHOR_DIR` pins the dir for tests) recording the SHA-256
   of the sanitized ledger as of that recorded operation. The key is the
@@ -185,25 +188,26 @@ actually holds.
   session-start hook and the python tools use), so a worktree session and
   its main checkout share ONE anchor for the ONE ledger they share — a
   worktree session is never silently unanchored, and a cross-cwd grant
-  never fabricates a mismatch. Verification
-  (`uap sandbox grants` states it; the launch path enforces it) compares
-  the on-disk ledger against the anchor: a mismatch means something with
-  the CHECKOUT's write reach changed the ledger outside a recorded
-  consent operation — new grants are refused, and the session resolves
-  ZERO grant-derived holes (fail-closed; the kernel boundary is
-  unaffected). A `revoke` on a mismatched ledger still removes authority
-  (the safe direction) but re-anchors the remaining rows as the new
-  baseline and names that at the moment it stops being detectable.
+  never fabricates a mismatch. A granted path covering the anchor dir is
+  refused (a hole over the anchor would let the sandboxed side de-anchor
+  itself silently). Verification (`uap sandbox grants` states it; the
+  launch path enforces it) compares the on-disk ledger against the
+  anchor: a mismatch means something with the CHECKOUT's write reach
+  changed the ledger outside a recorded consent operation — new grants
+  are refused, and the session resolves ZERO grant-derived holes
+  (fail-closed; the kernel boundary is unaffected). A `revoke` on a
+  mismatched ledger still removes authority (the safe direction) but
+  re-anchors the remaining rows as the new baseline and names that at
+  the moment it stops being detectable.
   What this remains honest about: it is tamper-EVIDENCE, not origin
   proof. The anchor lives in the user's state dir, so a same-user process
   OUTSIDE the checkout can still write it; a plant that predates the
   first anchor is baselined into it (bootstrap cannot verify history);
   and true origin proof (a different uid, a signed ledger, a hardware
-  key) stays open on purpose — the P4 threat model closed the agent-side
-  vectors, and the anchor now closes the checkout-write-reach side of the
+  key) stays open on purpose — the threat model closes the agent-side
+  vectors, and the anchor closes the checkout-write-reach side of the
   operator residual.
 - Residual, accepted: the microsecond TOCTOU between the planner's
   `realpath` and bwrap's own bind (a concurrent process with write on a
   granted path's parent could still race it), and the anchor's same-user
-  limit named above. The audit JSONL is no longer unpruned — it is
-  seq-stamped and compacted with a recorded marker.
+  limit named above.

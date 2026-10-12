@@ -40,6 +40,12 @@ export interface AnchorState {
   ledgerHead: string;
   /** Monotonic count of recorded ledger mutations (context for the operator). */
   mutations: number;
+  /** High-water of audit seqs this anchor has WITNESSED: seq continuity then
+   *  survives not just compaction but audit-file DELETION — a trail whose
+   *  numbering can restart from 0 is a forgeable trail (line N twice means
+   * one of them is planted). Additive optional v1 field: anchors written
+   * before it existed simply lack it, and pre-field anchors stay valid. */
+  seqHi?: number;
   updatedAt: string;
   updatedBy: string;
 }
@@ -126,6 +132,10 @@ export function readAnchor(projectRoot: string): AnchorState | null {
       v: ANCHOR_VERSION,
       ledgerHead: raw.ledgerHead,
       mutations: typeof raw.mutations === 'number' ? raw.mutations : 0,
+      seqHi:
+        typeof raw.seqHi === 'number' && Number.isFinite(raw.seqHi) && raw.seqHi >= 0
+          ? raw.seqHi
+          : undefined,
       updatedAt: typeof raw.updatedAt === 'string' ? termSafe(raw.updatedAt).slice(0, 64) : '',
       updatedBy: typeof raw.updatedBy === 'string' ? termSafe(raw.updatedBy).slice(0, 64) : '',
     };
@@ -137,8 +147,10 @@ export function readAnchor(projectRoot: string): AnchorState | null {
 /** Write the anchor atomically with tight permissions (0600, 0700 dirs).
  *  Best-effort: a failure is reported by return value, never a throw — the
  *  ledger itself stays the operative record; without an anchor there is
- *  simply nothing to verify against yet. */
-export function writeAnchor(projectRoot: string, ledgerHead: string, mutations: number): boolean {
+ *  simply nothing to verify against yet. `seqHi` is the audit high-water the
+ *  caller witnessed AFTER the operation's audit line landed (the recorded
+ *  mutations run audit-then-anchor for exactly this reason). */
+export function writeAnchor(projectRoot: string, ledgerHead: string, mutations: number, seqHi: number): boolean {
   try {
     const dir = anchorDir();
     if (!existsSync(dir)) {
@@ -153,6 +165,7 @@ export function writeAnchor(projectRoot: string, ledgerHead: string, mutations: 
       v: ANCHOR_VERSION,
       ledgerHead,
       mutations,
+      seqHi,
       updatedAt: new Date().toISOString(),
       updatedBy: process.env.USER || process.env.LOGNAME || 'unknown',
     };

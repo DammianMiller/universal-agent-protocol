@@ -137,7 +137,9 @@ describe('Dashboard Display Fixes', () => {
 
   describe('compactSessionSummary width calculation', () => {
     it('uses plain text length for header padding', () => {
-      const source = readFileSync('src/cli/dashboard.ts', 'utf-8');
+      // compactSessionSummary lives in dashboard-session.ts (the session
+      // operator surface split from dashboard.ts).
+      const source = readFileSync('src/cli/dashboard-session.ts', 'utf-8');
       // Should calculate header text width from plain string, not ANSI-colored string
       expect(source).toContain('const headerText =');
       expect(source).toContain('const headerPad = Math.max(0, W - headerText.length)');

@@ -150,6 +150,58 @@ describe('D2 — per-session grants open holes the ledger consented to', () => {
   });
 });
 
+describe('legacy UAP_SANDBOX_ALLOW — unrecorded, but not unchecked', () => {
+  it('binds what resolution says, not the env entry: a symlink entry binds its RESOLVED target', () => {
+    const real = join(dir, 'real-legacy-hole');
+    mkdirSync(real);
+    const link = join(dir, 'legacy-link');
+    symlinkSync(real, link);
+    const r = plan({ legacyAllow: [link] });
+    const argv = r.plan!.argv.join(' ');
+    expect(argv).toContain(`--bind ${real} ${real}`);
+    expect(argv).not.toContain(`--bind ${link} ${link}`);
+    expect(argv).not.toContain(`--bind ${link} ${real}`);
+  });
+
+  it('refuses entries whose plan-time resolution is over-broad ($HOME via symlink) and says so', () => {
+    // The exact hole the residual named: a legacy env entry pointing at the
+    // operator's home — directly or through a symlink — must open NOTHING,
+    // and the refusal must be operator-visible, not a silent skip.
+    const home = process.env.HOME || '';
+    const link = join(dir, 'innocuous-env-name');
+    symlinkSync(home, link);
+    // The sandbox home IS the real $HOME in production (same trick as the
+    // grants TOCTOU test above): pass it so the over-broad check compares
+    // against the production home, not this test's tmp home.
+    const r = plan({ legacyAllow: [home, link], home });
+    const argv = r.plan!.argv.join(' ');
+    expect(argv).not.toContain(`--bind ${home} ${home}`);
+    expect(r.plan!.notes.some((n) => n.includes('refused over-broad UAP_SANDBOX_ALLOW'))).toBe(true);
+    // The raw entries still appear in the UNRECORDED note — the consent
+    // surface stays honest about what the env asked for.
+    expect(r.plan!.notes.some((n) => n.includes('UNRECORDED allow'))).toBe(true);
+  });
+
+  it('keeps nonexistent and dangling entries inert, and never double-binds an existing hole', () => {
+    const real = join(dir, 'legacy-real');
+    mkdirSync(real);
+    const dangling = join(dir, 'dangling');
+    symlinkSync(join(dir, 'never-existed'), dangling);
+    const grants: ResolvedGrants = { grants: [], paths: [real] };
+    // Same path as a grant AND as a legacy entry AND /tmp: one bind total.
+    const r = plan({ grants, legacyAllow: [real, '/tmp', join(dir, 'missing'), dangling] });
+    const argv = r.plan!.argv.join(' ');
+    expect((argv.match(new RegExp(`--bind ${escapeRe(real)} ${escapeRe(real)}`, 'g')) || []).length).toBe(1);
+    expect((argv.match(/--bind \/tmp \/tmp/g) || []).length).toBe(1);
+    expect(argv).not.toContain('missing');
+    expect(argv).not.toContain('dangling');
+  });
+});
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 describe('D1 — --net off egress boundary', () => {
   it('cuts the netns with NOTHING brought up: --unshare-net, no relay, command verbatim', () => {
     const r = plan({ net: 'off', command: ['claude', '--flag'] });

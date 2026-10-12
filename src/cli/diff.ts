@@ -1,5 +1,5 @@
 /**
- * `uap diff` — the local diff view (bridge P5: S3).
+ * `uap diff` — the local diff view .
  *
  * The operator's one-command answer to "what has the agent changed around
  * here?": uncommitted AND unpushed work, summarized legibly — per-file line

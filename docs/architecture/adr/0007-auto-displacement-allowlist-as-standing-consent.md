@@ -1,6 +1,6 @@
 # ADR 0007: Auto-displacement allowlist as standing operator consent
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-09 (branch `feature/345-model-placement`, phase 4)
 - Spec: `docs/specs/operator-model-placement.md` §4.4.1, §6 (phase-4 note)
 - Supersedes: none — extends ADR 0006's core invariant ("never evict without
@@ -8,7 +8,7 @@
 
 ## Context
 
-Phase 4 makes placement request-driven: a gated request that parks because its
+Placement is request-driven: a gated request that parks because its
 model is not resident can load itself, so the operator stops running
 `uap models apply` by hand (the motivating case: running `ugc-factory`
 end-to-end without manual model switching). The spec's phase table originally
