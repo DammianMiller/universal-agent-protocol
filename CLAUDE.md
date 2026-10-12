@@ -21,24 +21,116 @@ Recent UAP memories (auto-mirrored — do not hand-edit; refresh with `uap memor
 Read and write here so every agent compounds the same knowledge instead of siloed recall.
 <!-- UAP-MEMORY-BRIDGE:END -->
 
-<!-- CLAUDE.md v2.3.0 - 34 Model Outcome Success Optimizations + Hooks Enforcement -->
+<!-- CLAUDE.md v2.4.0 - 34 Model Outcome Success Optimizations + Hooks Enforcement -->
 <!-- Optimizations #22-27: Template Compression, Structured Iteration, Inline Domain Knowledge, Early Impossibility Exit, Conditional Context, Remove Emphasis Theater -->
 <!-- Optimizations #28-34: Mandatory Verifier Loop, Decoder-First Gate, Context Stripping, Environment Check, Schema Diff, State Protection, Conditional Domain -->
 
 <!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,HOOK_INCLUDES,PATTERN_ROUTER,VALIDATE_PLAN -->
-<!-- TEMPLATE_VERSION: 2.3.0 -->
-<!-- LAST_VALIDATED: 2026-03-09 -->
-
-@hooks-session-start.md
-@PreCompact.md
+<!-- TEMPLATE_VERSION: 2.4.2 -->
+<!-- LAST_VALIDATED: 2026-09-19 -->
 
 <!-- Custom Sections (preserved from existing file) -->
+
+## SESSION START
+
+Before making implementation changes, run `bash .codex/hooks/session-start.sh`
+to print the session banner and load short-term memory. Then run
+`uap task ready` to surface available work and verify the coordination DB is
+healthy. Read-only investigation (questions, diagnostics) does not require
+either command.
+
+```bash
+bash .codex/hooks/session-start.sh   # banner + memory hydration
+uap task ready                        # task readiness check
+```
+
+The session-start hook is self-healing — it auto-creates missing
+coordination DBs and fails open so it never blocks the agent. Treat its
+output as advisory context, not a gate.
+
+Service health for UAP-managed daemons is checked separately with
+`uap doctor`, which probes each service against its declared budget in
+`config/capacity-policy.json` (see
+[docs/guides/CAPACITY_POLICY.md](docs/guides/CAPACITY_POLICY.md)).
+
+`uap doctor` answers "is it up and inside budget". Whether the local model is
+still doing useful WORK is a different question — throughput can decay ~8x
+over a long-lived process while every liveness check stays GREEN. Use
+`uap inference health` for that (see
+[docs/guides/INFERENCE_HEALTH.md](docs/guides/INFERENCE_HEALTH.md)); it also
+replays a past window with `--since`/`--until`.
+
+## DECISION LOOP
+
+When working on a task, follow the loop:
+
+1. **READ** short-term memory for recent context (`uap memory query`)
+2. **QUERY** long-term memory for related learnings (semantic search)
+3. **MATCH** specialized skills via `@Skill:name.md` references — invoke
+   them through the Skill tool before writing code when a domain-specific
+   workflow applies (`/critique`, `/audit`, `/harden`, `/normalize`, etc.)
+4. **THINK** about what to do next; classify task complexity. Technique
+   selection follows the measured reliability ladder
+   ([docs/performance/reliability-ladder.md](docs/performance/reliability-ladder.md),
+   regenerate with `npm run bench:ladder`):
+
+   | Task shape | Technique |
+   | --- | --- |
+   | Small, well-specified, 1–2 files | Direct |
+   | Multi-file, gate-covered, moderate risk | Direct + verify loop |
+   | Hardest tier, novel/ambiguous | Full loop + escalation |
+   | Production-critical, human available | SDD + human review |
+
+   Escalate with measured difficulty, not anxiety; a technique's token cost
+   is part of the technique. The quantitative backing (each row's token cost
+   and discrimination status) lives in the ladder doc — never cite a success
+   delta without its status; current measured rows are underpowered, so treat
+   their quality deltas as directional.
+5. **ACT** — execute via the appropriate tool (Edit/Write/Bash)
+6. **RECORD** observations to short-term memory
+7. **PROMOTE** significant learnings to long-term memory
+
+The mermaid version of this loop lives in [AGENT.md](AGENT.md#decision-loop).
 
 ## COMPLETION GATES - MANDATORY
 
 Completion gates are MANDATORY and must be verified minimum 3 times before claiming done.
 
----
+## WORKTREE WORKFLOW — MANDATORY
+
+All file edits must happen inside a worktree under `.worktrees/NNN-<slug>/`.
+Never edit files in the project root directory. The workflow is:
+
+1. `uap worktree ensure --strict` — verify you're already inside a worktree
+2. If not: `uap worktree create <slug>` — auto-numbered branch + worktree
+3. Stage and commit only inside that worktree
+4. Open PRs from the worktree branch against `master`
+5. Version bumps must be done on the feature branch, not master
+
+See the WORKTREE GATE section below for the per-edit enforcement details.
+
+## PARALLEL REVIEW PROTOCOL
+
+For non-trivial changes, run review angles concurrently before claiming done:
+
+Step 0: run the deterministic pre-pass — `uap review prepass`
+([docs/reference/review-prepass.md](docs/reference/review-prepass.md)) — and
+embed its line-anchored findings in each reviewer's prompt.
+
+- `code-reviewer` — correctness, tests, migration risk
+- `security-auditor` — input validation, secrets, OWASP top 10
+- `architect-reviewer` — pattern fit, blast radius, maintainability
+
+Invoke them as separate Agent calls in a single message so they run in
+parallel; consolidate findings before commit. Skip this only when the change
+is genuinely small (renames, doc tweaks, single-line fixes); document the
+skip in the PR description.
+
+When the quality-metrics gate is active (`.uap/quality-metrics.json`), the
+review artifact (`.uap/reviews/<branch-slug>.json`) must embed a `quality`
+block from `uap quality check --json`; a `quality.pass: false` vetoes the
+ship action. Reviewers adjudicate the machine numbers (gaming, waivers,
+trend) — they cannot outvote them.
 
 ## QUALITY METRICS GATE
 
@@ -62,8 +154,6 @@ baseline is a deliberate act — do it only with reviewer sign-off. External
 tools are optional: missing ones skip their metric with a warning; the
 built-in scanner (LOC, complexity, any-types) always runs. Escape hatch:
 `UAP_QUALITY_GATE_OFF=1`.
-
----
 
 ---
 
@@ -156,8 +246,6 @@ No exceptions for "small changes", "just docs", or "version bumps".
 
 ---
 
----
-
 ## PRE-EDIT BUILD GATE [REQUIRED — .ts files only]
 
 Before editing any `.ts` file, run `npm run build` to confirm the project compiles.
@@ -167,8 +255,6 @@ If the build fails, fix the error before making any further edits.
 - Prefer atomic file writes over multiple incremental edits for complex changes
 - Always read the target region + surrounding context before editing to ensure unique anchors
 - Never leave the project in a broken build state between edits
-
----
 
 ---
 
@@ -281,14 +367,10 @@ Run verification at least: before changes, after changes, and after all fixes.
 
 ---
 
----
-
 ## PATTERN ROUTER
 
 The pattern router automatically matches tasks to execution patterns from `.factory/patterns/index.json`.
 Critical patterns P12 (Output Existence) and P35 (Decoder-First) are always enforced.
-
----
 
 ---
 
@@ -399,13 +481,9 @@ Before any code change can proceed, these gates must pass in order:
 
 ---
 
----
-
 ## PLAN VALIDATION [REQUIRED — non-trivial tasks]
 
 After generating any implementation plan, prompt for user validation before proceeding.
-
----
 
 ---
 
@@ -527,16 +605,12 @@ npm run version:major   # breaking changes (feat! or BREAKING CHANGE)
 
 ---
 
----
-
 ## SESSION ANALYSIS [REQUIRED]
 
 Before ending a session, document:
 - Completed tasks
 - Incomplete/stopped work with reasons
 - Pattern observations (sudden stops, blockers)
-
----
 
 ---
 
