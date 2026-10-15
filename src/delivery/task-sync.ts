@@ -15,6 +15,8 @@
 import { existsSync } from 'fs';
 import { join } from 'path';
 import type { DeliveryResult } from './convergence-loop.js';
+import { sanitizeCiLog } from './ci-watcher.js';
+import { stripControlChars } from '../utils/terminal-safe.js';
 
 export interface DeliveryTaskHandle {
   id: string;
@@ -143,6 +145,55 @@ function memoryDbPath(projectRoot: string): string {
 }
 
 /**
+ * Verdict line for a [deliver] outcome memory. Bare and byte-stable for
+ * delivered / already-delivered / stopped, so downstream consumers (memory
+ * bridge mirrors, resume banners) keep seeing the exact pre-uplift head.
+ */
+export function deliveryOutcomeVerdict(result: DeliveryResult): string {
+  const bestPct = `${Math.round(result.bestScore * 100)}%`;
+  if (result.success) {
+    return result.alreadyDelivered
+      ? 'already delivered (baseline green)'
+      : `delivered in ${result.turns} turn(s)`;
+  }
+  if (result.stopped) {
+    return `STOPPED (interrupted, resumable — not a gate failure) after ${result.turns} turn(s), best ${bestPct} of gates`;
+  }
+  return `NOT delivered after ${result.turns} turn(s), best ${bestPct} of gates`;
+}
+
+/**
+ * Root-cause segment for a NOT-delivered lesson, '' otherwise. The failure
+ * lesson must steer the next attempt: "NOT delivered after 17 turns, best
+ * 83%" alone steers nothing. A provable stall wins; otherwise the final gate
+ * feedback names the failing gates. The text is untrusted gate/executor
+ * output — token shapes are masked and control bytes stripped (it lands in
+ * memory the bridge mirrors into committed CLAUDE.md). Deliberately a
+ * separate segment APPENDED AFTER the task text in deliveryOutcomeContent:
+ * the bridge mirror truncates at 140 chars, and verdict+model+task must stay
+ * inside that window or every mirrored failure lesson loses its identity.
+ */
+export function deliveryRootCauseLine(result: DeliveryResult): string {
+  if (result.success || result.stopped) return '';
+  // Whitespace-normalize BEFORE stripping: stripControlChars deletes control
+  // bytes outright, so a raw newline first would glue adjacent words together.
+  const clean = sanitizeCiLog(
+    stripControlChars((result.stallReason || result.finalFeedback || '').replace(/\s+/g, ' ')),
+  ).trim();
+  return clean ? ` — root cause: ${clean.slice(0, 240)}` : '';
+}
+
+/** Full [deliver] outcome-memory line. Kept pure so the composition (and the
+ * mirror-visible head) is unit-testable without a memory DB. */
+export function deliveryOutcomeContent(
+  instruction: string,
+  result: DeliveryResult,
+  modelId: string
+): string {
+  return `[deliver] ${deliveryOutcomeVerdict(result)} — model ${modelId} — task: ${instruction.slice(0, 300)}${deliveryRootCauseLine(result)}`;
+}
+
+/**
  * Record a structured outcome memory (`decision` on success, `lesson` on
  * failure) so future sessions see what was actually built and how it went —
  * not just session-end heartbeats. Only writes when the project already has
@@ -159,14 +210,7 @@ export async function recordDeliveryOutcome(
     const { SQLiteShortTermMemory } = await import('../memory/short-term/sqlite.js');
     const memory = new SQLiteShortTermMemory({ dbPath: memoryDbPath(projectRoot) });
     const type = result.success ? 'decision' : 'lesson';
-    const verdict = result.success
-      ? result.alreadyDelivered
-        ? 'already delivered (baseline green)'
-        : `delivered in ${result.turns} turn(s)`
-      : result.stopped
-        ? `STOPPED (interrupted, resumable — not a gate failure) after ${result.turns} turn(s), best ${Math.round(result.bestScore * 100)}% of gates`
-        : `NOT delivered after ${result.turns} turn(s), best ${Math.round(result.bestScore * 100)}% of gates`;
-    const content = `[deliver] ${verdict} — model ${modelId} — task: ${instruction.slice(0, 300)}`;
+    const content = deliveryOutcomeContent(instruction, result, modelId);
     await memory.store(type, content, result.success ? 6 : 7);
     await memory.close?.();
   } catch {

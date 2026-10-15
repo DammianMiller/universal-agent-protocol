@@ -68,10 +68,16 @@ class InjectionTests(unittest.TestCase):
             self.m.note_tool_result_error("SyntaxError: already declared\n at x:1")
         body = {"messages": [{"role": "user", "content": "go"}], "tool_choice": "required"}
         proxy._maybe_inject_error_loop_break(body, self.m)
-        sysmsg = body["messages"][0]
-        self.assertEqual(sysmsg["role"], "system")
-        self.assertIn("SAME failure", sysmsg["content"])
-        self.assertIn("re-read", sysmsg["content"].lower())
+        # Tail user-role turn (the salient placement LOCKSTEP forced; the
+        # 2026-09-24 opencode+qwen log shows system-top directives ignored 3x
+        # en route to every hard stop), not a system-top append.
+        tail = body["messages"][-1]
+        self.assertEqual(tail["role"], "user")
+        self.assertIn("SAME failure", tail["content"])
+        self.assertIn("re-read", tail["content"].lower())
+        # the original messages are untouched -- no system-0 mangling
+        self.assertEqual(body["messages"][0]["role"], "user")
+        self.assertEqual(body["messages"][0]["content"], "go")
         # advisory: does NOT release tool_choice
         self.assertEqual(body["tool_choice"], "required")
         self.assertEqual(self.m.error_loop_fires, 1)
