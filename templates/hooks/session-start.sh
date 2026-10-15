@@ -240,6 +240,17 @@ if [ -n "$recent" ]; then
   output+="$recent"$'\n\n'
 fi
 
+# Loop hazards: surface RECURRING identical-call failure classes from the
+# proxy lockstep ledger so a fresh session does not re-enter a loop another
+# session already burned turns on (`uap loops --steer` groups by error class;
+# silent when no class repeats). Fail-open and time-boxed like the rest.
+if command -v uap >/dev/null 2>&1; then
+  _uap_loops="$( ( cd "$PROJECT_DIR" 2>/dev/null && timeout 10 uap loops --steer 2>/dev/null ) || true )"
+  if [ -n "$_uap_loops" ]; then
+    output+=$'\n'"$_uap_loops"$'\n'
+  fi
+fi
+
 # Open loops
 open_loops=$(sqlite3 "$DB_PATH" "
   SELECT content FROM session_memories

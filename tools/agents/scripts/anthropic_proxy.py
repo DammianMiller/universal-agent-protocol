@@ -8257,6 +8257,48 @@ def _record_loop_incident(monitor: "SessionMonitor", outcome: str, detail: str) 
         logger.warning("loop-incident ledger append failed (non-fatal): %s", exc)
 
 
+# Class-specific remediation for the deterministic error classes that actually
+# recur in the loop-incident ledger. The generic pivot asks the model to
+# invent alternatives; for these classes the fix is KNOWN, and a weak local
+# model follows a concrete instruction far better than an open-ended one
+# (ledger 2026-10-07: a session ignored the generic pivot twice and hit the
+# hard stop on a skill name that simply does not exist). Keep this table small
+# and data-driven from `uap loops`; it matches on the error signature the
+# trackers already recorded, so arguments stay out of it.
+LOCKSTEP_CLASS_FIXES = (
+    (
+        re.compile(r'skill "[^"]+" not found', re.I),
+        "That skill does not exist -- the name is wrong. Never issue this call "
+        "again. If a skill is genuinely needed, choose ONLY from the "
+        "available-skills list quoted in the error; otherwise complete the "
+        "task without it.",
+    ),
+    (
+        re.compile(r"status must be pending, in_progress, or completed", re.I),
+        "The payload has an invalid status. The only valid statuses are "
+        "pending, in_progress, completed -- fix the item the error names and "
+        "resend the corrected payload.",
+    ),
+    (
+        re.compile(r"\[tool execution was interrupted\]", re.I),
+        "The call was interrupted before it ran (client-side cancel), not a "
+        "real tool failure. Do not resend the identical call: decide whether "
+        "the step is still needed, then re-issue it or move on.",
+    ),
+)
+
+
+def _lockstep_class_fix(signature):
+    """Return the known remediation for an error class, or ''. Pattern-matched
+    rather than exact-matched: signatures carry varying names and paths; the
+    CLASS is what repeats across sessions."""
+    text = signature or ""
+    for pattern, fix in LOCKSTEP_CLASS_FIXES:
+        if pattern.search(text):
+            return fix
+    return ""
+
+
 def _maybe_lockstep_escalate(openai_body: dict, monitor: "SessionMonitor") -> None:
     """Decisive escalation for the identical-call-identical-failure loop.
 
@@ -8374,16 +8416,34 @@ def _maybe_lockstep_escalate(openai_body: dict, monitor: "SessionMonitor") -> No
             "incident for `uap loops`. Choose one of the alternatives you "
             "listed, or stop and report the blocker."
         )
+    # A known fix for this error class beats an open-ended pivot: append it to
+    # both tiers, so the final warning repeats the actionable line too.
+    class_fix = _lockstep_class_fix(monitor.last_error_signature)
+    if class_fix:
+        directive += "\nKNOWN FIX for this error class: " + class_fix
     monitor.lockstep_fires += 1
     monitor.lockstep_last_fire_streak = streak
     _record_loop_incident(monitor, outcome, f"{tool} x{streak}")
+    # Inject at the END of the transcript, not the system-prompt top: the
+    # 2026-10-07 ledger shows both directives ignored en route to a hard stop
+    # because a system-top directive sits far from the generation focus. A
+    # user-role turn near the tail is the salient position (the same placement
+    # the cycle-break hint uses) and is request-scoped: it never persists into
+    # the client transcript, so it cannot trip the fresh-user-turn re-arm on a
+    # later request. One exception: a trailing ASSISTANT message is a client
+    # prefill (a continuation contract the ~9858 workaround keys on), so the
+    # directive goes in FRONT of it -- burying the prefill would 400 on
+    # thinking-enabled backends, and a retry would then hit the
+    # duplicate-observation guard and silently drop the pivot while its ledger
+    # record had already been written.
     msgs = openai_body.get("messages")
     if not isinstance(msgs, list):
         msgs = []
-    if msgs and msgs[0].get("role") == "system":
-        msgs[0]["content"] = (msgs[0].get("content") or "") + directive
+    directive_msg = {"role": "user", "content": directive.strip()}
+    if msgs and msgs[-1].get("role") == "assistant":
+        msgs.insert(len(msgs) - 1, directive_msg)
     else:
-        msgs.insert(0, {"role": "system", "content": directive.strip()})
+        msgs.append(directive_msg)
     openai_body["messages"] = msgs
     logger.warning(
         "LOCKSTEP: %s injected (%s x%d, sig=%r, fires=%d)",

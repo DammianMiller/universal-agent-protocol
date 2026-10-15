@@ -118,15 +118,99 @@ class LadderTests(LockstepKnobGuard):
         _drive_lockstep(m, proxy.PROXY_LOCKSTEP_PIVOT_AT)
         body = self._body()
         proxy._maybe_lockstep_escalate(body, m)
-        sysmsg = body["messages"][0]
-        self.assertEqual(sysmsg["role"], "system")
-        self.assertIn("LOOP-ESCALATE", sysmsg["content"])
-        self.assertIn("different approaches", sysmsg["content"])
+        # Salient placement: the directive rides the transcript TAIL as a
+        # user-role turn, not the system-prompt top (2026-10-07 ledger: both
+        # system-top directives were ignored en route to a hard stop).
+        tail = body["messages"][-1]
+        self.assertEqual(tail["role"], "user")
+        self.assertIn("LOOP-ESCALATE", tail["content"])
+        self.assertIn("different approaches", tail["content"])
+        # unknown error class stays generic: no invented fix line
+        self.assertNotIn("KNOWN FIX", tail["content"])
         self.assertEqual(m.lockstep_fires, 1)
         # advisory: tool_choice untouched
         self.assertEqual(body["tool_choice"], "auto")
         recs = self._records()
         self.assertEqual([r["outcome"] for r in recs], ["pivot"])
+
+    def _drive_signature(self, monitor, signature, n):
+        """Drive the trackers with a specific error signature, the way a real
+        loop with that error feeds them every turn. result_error=True mirrors
+        the is_error flag: without it, keyword-free text (e.g. the client
+        cancel marker) never extracts a signature at all."""
+        for i in range(n):
+            monitor.note_tool_result_error(signature, result_error=True)
+            monitor.note_doubling_signal(
+                FP, signature, msg_count=100 + i, result_error=True
+            )
+
+    def test_pivot_carries_known_fix_for_missing_skill(self):
+        m = proxy.SessionMonitor()
+        sig = 'skill "uap-router__react" not found. available skills: adapt, animate'
+        self._drive_signature(m, sig, proxy.PROXY_LOCKSTEP_PIVOT_AT)
+        body = self._body()
+        proxy._maybe_lockstep_escalate(body, m)
+        tail = body["messages"][-1]
+        self.assertIn("KNOWN FIX", tail["content"])
+        self.assertIn("does not exist", tail["content"])
+        self.assertIn("available-skills list", tail["content"])
+
+    def test_pivot_carries_known_fix_for_invalid_status(self):
+        m = proxy.SessionMonitor()
+        sig = "error: todo item #: status must be pending, in_progress, or completed"
+        self._drive_signature(m, sig, proxy.PROXY_LOCKSTEP_PIVOT_AT)
+        body = self._body()
+        proxy._maybe_lockstep_escalate(body, m)
+        tail = body["messages"][-1]
+        self.assertIn("KNOWN FIX", tail["content"])
+        self.assertIn("pending, in_progress, completed", tail["content"])
+
+    def test_pivot_carries_known_fix_for_interrupted_call(self):
+        m = proxy.SessionMonitor()
+        sig = "[tool execution was interrupted]"
+        self._drive_signature(m, sig, proxy.PROXY_LOCKSTEP_PIVOT_AT)
+        body = self._body()
+        proxy._maybe_lockstep_escalate(body, m)
+        tail = body["messages"][-1]
+        self.assertIn("KNOWN FIX", tail["content"])
+        self.assertIn("interrupted before it ran", tail["content"])
+
+    def test_final_warning_repeats_known_fix(self):
+        m = proxy.SessionMonitor()
+        sig = 'skill "uap-router__react" not found. available skills: adapt'
+        self._drive_signature(m, sig, proxy.PROXY_LOCKSTEP_PIVOT_AT)
+        proxy._maybe_lockstep_escalate(self._body(), m)
+        self._drive_signature(m, sig, 1)
+        body = self._body()
+        proxy._maybe_lockstep_escalate(body, m)
+        tail = body["messages"][-1]
+        self.assertIn("FINAL WARNING", tail["content"])
+        self.assertIn("KNOWN FIX", tail["content"])
+
+    def test_pivot_keeps_trailing_assistant_prefill_last(self):
+        # A trailing assistant message is a client prefill (a continuation
+        # contract the prefill workaround keys on): the directive must go in
+        # FRONT of it, never after -- burying the prefill would 400 on
+        # thinking-enabled backends and the retry would then silently drop the
+        # pivot behind the duplicate-observation guard.
+        m = proxy.SessionMonitor()
+        _drive_lockstep(m, proxy.PROXY_LOCKSTEP_PIVOT_AT)
+        body = {
+            "messages": [
+                {"role": "user", "content": "fix it"},
+                {"role": "assistant", "content": "the fix is "},
+            ],
+            "tool_choice": "auto",
+        }
+        proxy._maybe_lockstep_escalate(body, m)
+        prefill = body["messages"][-1]
+        directive = body["messages"][-2]
+        self.assertEqual(prefill["role"], "assistant")
+        self.assertEqual(prefill["content"], "the fix is ")  # untouched
+        self.assertEqual(directive["role"], "user")
+        self.assertIn("LOOP-ESCALATE", directive["content"])
+        self.assertEqual(m.lockstep_fires, 1)
+        self.assertEqual([r["outcome"] for r in self._records()], ["pivot"])
 
     def test_final_warning_on_second_fire(self):
         m = proxy.SessionMonitor()
@@ -135,7 +219,7 @@ class LadderTests(LockstepKnobGuard):
         _drive_lockstep(m, 1)
         body = self._body()
         proxy._maybe_lockstep_escalate(body, m)
-        self.assertIn("FINAL WARNING", body["messages"][0]["content"])
+        self.assertIn("FINAL WARNING", body["messages"][-1]["content"])
         self.assertEqual(m.lockstep_fires, 2)
         self.assertEqual(
             [r["outcome"] for r in self._records()], ["pivot", "final_warning"]
@@ -231,8 +315,8 @@ class LadderTests(LockstepKnobGuard):
             m.note_doubling_signal(fp_b, "Error: EACCES", msg_count=1000 + i, result_error=True)
         body = self._body()
         proxy._maybe_lockstep_escalate(body, m)
-        self.assertIn("LOOP-ESCALATE", body["messages"][0]["content"])
-        self.assertNotIn("FINAL WARNING", body["messages"][0]["content"])
+        self.assertIn("LOOP-ESCALATE", body["messages"][-1]["content"])
+        self.assertNotIn("FINAL WARNING", body["messages"][-1]["content"])
         self.assertEqual(m.lockstep_fires, 1)
         self.assertEqual(
             [r["outcome"] for r in self._records()],
