@@ -56,7 +56,7 @@
           "note": "Swift 1.5 (UkisAI reasoning-efficient Flash-Next post-train) GSQ-RCO IQ3_S on the strata engine; A/B trial vs strata-iq3_s since 2026-10-17 with identical tuning (spec 8/0.70, vram-reserve 3072, int8 KV resident 32768, 131k). Weights: ukisai Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, sha256-verified, PLE table in shard 1 (setup-detected); pack strata-data/packs/swift-iq3_s; config strata-swift-iq3_s.json behind uap-strata-server.service (revert: point the unit --config back at strata-iq3_s.json, daemon-reload, restart). Run `uap models measure` to record this machine's footprint before it can load (fail-closed). Trial evidence: /home/cogtek/dev/strata/bench/results/2026-10-17-swift-iq3s-trial/."
         }
       },
-      "advertises": ["qwen3.8-flash-next-iq3_s", "gpt-5.1-codex"]
+      "advertises": ["qwen3.8-flash-next-iq3_s", "swift-1.5-iq3_s", "gpt-5.1-codex"]
     },
     "qwen3.8-27b": {
       "display": "Qwen3.8 27B",
