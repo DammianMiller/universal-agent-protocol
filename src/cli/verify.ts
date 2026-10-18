@@ -602,7 +602,15 @@ async function buildAcceptanceExecutor(modelPreset?: string, endpoint?: string):
  *   1. Explicit acceptance-criteria files (.uap/acceptance.md, REQUIREMENTS.md…)
  *   2. The completion ledger / TodoWrite plan — the agent's own declared plan of
  *      record for THIS session, so "did you actually finish what you set out to
- *      do?" is judged even in an interactive run with no deliver mission.
+ *      do?" is judged even in an interactive run with no deliver mission. Only
+ *      the ledger's REMAINING items are judged: an item marked done is the
+ *      agent's completion claim, already settled by `uap handsfree stop-check`
+ *      (which allows the stop the moment every item is done) — re-judging it
+ *      here re-asks stop-check's settled question with a judge whose evidence
+ *      walk cannot see worktree/PR delivery (gatherEvidence skips .worktrees),
+ *      so a 100%-done ledger blocked every session-end forever (pay2u
+ *      2026-10-18: the Oct-02 bootstrap ledger, 7/7 done, was re-judged at
+ *      every stop for two weeks).
  * Returns spec text, or null when nothing usable is found (→ acceptance skipped).
  */
 export function resolveAcceptanceSpecAuto(dir: string): string | null {
@@ -624,13 +632,17 @@ export function resolveAcceptanceSpecAuto(dir: string): string | null {
     const t = read(rel);
     if (t) return t;
   }
-  // The completion ledger is the agent's declared plan of record.
+  // The completion ledger is the agent's declared plan of record — its
+  // REMAINING half. Same remaining-definition as completion-ledger.ts
+  // remainingItems(): judged unless status is exactly 'done'. Items with no
+  // status field (TodoWrite mirrors, bare arrays) stay judged.
   const raw = read('.uap/completion-ledger.json') ?? read('.uap/completion_ledger.json');
   if (raw) {
     try {
       const j = JSON.parse(raw);
       const items: unknown[] = Array.isArray(j) ? j : (j.items ?? j.todos ?? j.entries ?? []);
       const lines = items
+        .filter((i) => typeof i === 'string' || String((i as Record<string, unknown>)?.status ?? 'pending') !== 'done')
         .map((i) => (typeof i === 'string' ? i : String((i as Record<string, unknown>)?.text ?? (i as Record<string, unknown>)?.content ?? (i as Record<string, unknown>)?.title ?? (i as Record<string, unknown>)?.task ?? '')))
         .map((s) => s.trim())
         .filter(Boolean);

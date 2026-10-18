@@ -379,3 +379,40 @@ describe('criterion-aware evidence slices (run Y missile blindness, 2026-07-19)'
     }
   });
 });
+
+describe('gatherEvidence — linked worktree resolution', () => {
+  it('resolves spec-referenced paths that live only in a linked git worktree, labeled worktree:<name>/', () => {
+    const main = mkdtempSync(join(tmpdir(), 'acc-wt-main-'));
+    const wt = mkdtempSync(join(tmpdir(), 'acc-wt-linked-'));
+    try {
+      execSync('git init -q', { cwd: main });
+      execSync('git config user.email t@t', { cwd: main });
+      execSync('git config user.name t', { cwd: main });
+      writeFileSync(join(main, 'seed.txt'), 'seed\n');
+      execSync('git add seed.txt', { cwd: main });
+      execSync('git commit -qm seed', { cwd: main });
+      execSync(`git worktree add -q "${wt}" -b delivery`, { cwd: main });
+      mkdirSync(join(wt, 'web', 'dash'), { recursive: true });
+      writeFileSync(join(wt, 'web', 'dash', 'panel.js'), 'export const panel = () => 42;\n');
+      const ev = gatherEvidence(main, 40, 60_000, 'The web/dash/panel.js must render the panel.');
+      expect(ev).toContain('worktree:');
+      expect(ev).toContain('panel.js');
+      expect(ev).toContain('panel = () => 42');
+    } finally {
+      try { execSync(`git worktree remove --force "${wt}"`, { cwd: main, stdio: 'ignore' }); } catch { /* best-effort */ }
+      rmSync(wt, { recursive: true, force: true });
+      rmSync(main, { recursive: true, force: true });
+    }
+  });
+
+  it('adds no worktree evidence when none are linked (not a git repo → no extra resolution)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acc-nowt-'));
+    try {
+      const ev = gatherEvidence(dir, 40, 60_000, 'The web/dash/panel.js must render the panel.');
+      expect(ev).not.toContain('worktree:');
+      expect(ev).not.toContain('panel.js');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

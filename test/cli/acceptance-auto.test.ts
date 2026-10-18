@@ -72,4 +72,41 @@ describe('resolveAcceptanceSpecAuto', () => {
     writeFileSync(join(p, '.uap', 'completion-ledger.json'), '{ not json');
     expect(resolveAcceptanceSpecAuto(p)).toBeNull();
   });
+
+  it('excludes items the ledger marks done — only REMAINING work is judged', () => {
+    p = tmpProject();
+    writeFileSync(
+      join(p, '.uap', 'completion-ledger.json'),
+      JSON.stringify({ items: [
+        { text: 'Shipped on a worktree branch', status: 'done' },
+        { text: 'Close the follow-up', status: 'pending' },
+        { text: 'Retry the failed step', status: 'failed' },
+      ] })
+    );
+    const spec = resolveAcceptanceSpecAuto(p)!;
+    expect(spec).toContain('Close the follow-up');
+    expect(spec).toContain('Retry the failed step');
+    expect(spec).not.toContain('Shipped on a worktree branch');
+  });
+
+  it('a fully-done ledger yields NO spec (fail-open — stop-check already allows the stop)', () => {
+    p = tmpProject();
+    writeFileSync(
+      join(p, '.uap', 'completion-ledger.json'),
+      JSON.stringify({ items: [
+        { title: 'A', status: 'done' },
+        { title: 'B', status: 'done' },
+      ] })
+    );
+    expect(resolveAcceptanceSpecAuto(p)).toBeNull();
+  });
+
+  it('ledger items with no status field stay judged (TodoWrite mirrors, bare arrays)', () => {
+    p = tmpProject();
+    writeFileSync(
+      join(p, '.uap', 'completion-ledger.json'),
+      JSON.stringify({ items: [{ text: 'No status field' }] })
+    );
+    expect(resolveAcceptanceSpecAuto(p)).toContain('No status field');
+  });
 });
