@@ -52,16 +52,12 @@ async function liveGeometry(): Promise<{ pool: number; rails: number; alias: str
 // every it() had already registered as runnable.
 const live = await liveGeometry();
 
-// Trial-awareness (2026-10-17): :8080 may deliberately serve a DIFFERENT
-// model -- the strata A/B trials swap the advertised alias (live now:
-// swift-1.5-iq3_s) while the qwen profile stays the qwen profile. Every
-// live-chain assertion below reads that socket's geometry and alias, so a
-// non-qwen advertisement makes the whole chain uncheckable from outside
-// this repo's control -- the same class as an unreachable backend, which
-// already skips. Both states degrade to the profile-INTERNAL tests; the
-// live chain auto-resumes the moment the qwen backend returns.
-const geom =
-  live !== null && live.alias.toLowerCase().includes('qwen') ? live : null;
+// 2026-10-18 (363): the profile now TRACKS the alias the backend
+// advertises (swift-1.5-iq3_s for the A/B trial), so the live chain stays
+// ENFORCED while the trial runs -- a profile that drifts away from the
+// serving backend must fail these assertions, not skip them. An
+// unreachable backend still skips (the probe itself returns null).
+const geom = live;
 
 describe('qwen38 profile — strata geometry invariants', () => {
   const profile = readJson('config/model-profiles/qwen38.json');
