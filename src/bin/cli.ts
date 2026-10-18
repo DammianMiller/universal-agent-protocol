@@ -615,6 +615,7 @@ program
   .argument('[id]', 'list index or fingerprint prefix — show one incident with its escalation handoff')
   .option('--limit <n>', 'how many recent incidents to list', '10')
   .option('--json', 'Emit machine-readable JSON')
+  .option('--steer', 'Emit the recurring-hazard digest for session context (silent when no class repeats)')
   .option('--file <path>', 'Ledger path (default: $UAP_LOOP_INCIDENTS or ~/.config/uap/loop-incidents.jsonl)')
   .action(async (id, options) => {
     const cmd = await lazy.loops();

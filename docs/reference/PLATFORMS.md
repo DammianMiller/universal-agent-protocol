@@ -54,6 +54,19 @@ DB-driven policy gate, and (where supported) the hierarchical MCP router.
 > blocks are enforced; Hermes prompts once to approve each hook command
 > (`~/.hermes/shell-hooks-allowlist.json`) unless `hooks_auto_accept: true`.
 
+> **OpenCode seam notes.** OpenCode never runs the shared `.sh` lifecycle
+> scripts — the plugin (`uap-session-hooks.ts`) IS the seam, so two steering
+> surfaces live there: the `session.created` handler injects the
+> `uap loops --steer` digest (recurring loop classes across sessions) beside
+> the memory context, and `session.idle` runs the runtime gate then applies a
+> **bounded auto-continue** when the gate fails — opencode cannot hard-block a
+> stop, so a premature stop with a failing gate is resumed through
+> `client.session.prompt` instead of left wedged. Bounds: never after a proxy
+> hard stop (ERROR-LOOP / LOOP-ESCALATE deliberately ended the session), never
+> past `UAP_AUTO_CONTINUE_MAX` (default 2), never twice for the identical
+> failure. `UAP_AUTO_CONTINUE=0` disables; a stop with green gates is left
+> alone (usually a human interrupt).
+
 ## Lifecycle hooks installed
 
 The shared hook scripts (copied from `templates/hooks/`) are wired into each
