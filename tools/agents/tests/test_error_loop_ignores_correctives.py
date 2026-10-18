@@ -46,7 +46,14 @@ def _load_signature():
     _error_signature, rather than cherry-picking names. The previous version
     exec'd a hardcoded list of regexes, so adding a helper to the proxy left the
     test raising NameError against its own source -- the loader had to be edited
-    in lockstep with any new dependency."""
+    in lockstep with any new dependency.
+
+    Placement contract (review condition 2026-10-18): every constant and
+    helper _error_signature/_error_signature_for_result touches must live
+    INSIDE this slice -- between _ERROR_LINE_RE and the first "# ---" section
+    marker after them. A helper that drifts below the marker raises NameError
+    here on the next run; the fix is to move it back into the region, never
+    to cherry-pick names into ns."""
     src = PROXY.read_text()
     ns = {"re": re}
     start = src.index("_ERROR_LINE_RE = re.compile(")
@@ -241,7 +248,11 @@ class TestTheFlagIsActuallyWiredThrough(unittest.TestCase):
     def test_the_request_handler_passes_the_is_error_flag(self):
         src = PROXY.read_text()
         assert "_latest_err" in src, "the handler no longer computes the is_error flag"
-        assert re.search(r"note_tool_result_error\(\s*_latest_tr\s*,\s*_latest_err\s*\)", src), (
+        assert re.search(
+            r"note_tool_result_error\(\s*_latest_tr\s*,\s*_latest_err\s*,\s*"
+            r"tool_names=_latest_tr_tools\s*\)",
+            src,
+        ), (
             "note_tool_result_error is called without the is_error flag — reading a file that "
             "contains the word 'Exception' will manufacture a failure streak again"
         )

@@ -30,6 +30,9 @@ proxy = _load_proxy_module()
 FAIL = "Error: rate limit exceeded for url"
 FAIL_OTHER = "TypeError: cannot read properties of undefined"
 OK = "all files written successfully"
+# Content-free wrapper: names no failure, so no signature can anchor on it --
+# the unnameable identical-call shape _declares_failure_shape now owns here.
+WRAPPER_ONLY = "error: command failed (exit code: 1)"
 
 
 class TestDoublingStreakAccounting(unittest.TestCase):
@@ -116,6 +119,39 @@ class TestDoublingStreakAccounting(unittest.TestCase):
         mon.note_doubling_signal("Bash:abcd1234", body)
         self.assertEqual(mon.doubling_streak, 2)
 
+    def test_unnameable_content_free_failure_still_counts(self):
+        # Architect review 2026-10-18: an identical call failing with ONLY a
+        # content-free wrapper forms NO signature, so before
+        # _declares_failure_shape no guard owned this shape at all.
+        mon = proxy.SessionMonitor()
+        mon.note_doubling_signal("Bash:abcd1234", WRAPPER_ONLY)
+        mon.note_doubling_signal("Bash:abcd1234", WRAPPER_ONLY)
+        self.assertEqual(mon.doubling_streak, 2)
+
+    def test_bare_traceback_header_failure_still_counts(self):
+        mon = proxy.SessionMonitor()
+        mon.note_doubling_signal(
+            "Bash:abcd1234", "Traceback (most recent call last):"
+        )
+        mon.note_doubling_signal(
+            "Bash:abcd1234", "Traceback (most recent call last):"
+        )
+        self.assertEqual(mon.doubling_streak, 2)
+
+    def test_pure_output_with_no_failure_declaration_does_not_count(self):
+        # The declaration shapes are failure-specific: bare output text is
+        # not one, so a healthy identical call still resets the streak.
+        mon = proxy.SessionMonitor()
+        mon.note_doubling_signal("Bash:abcd1234", FAIL)
+        mon.note_doubling_signal("Bash:abcd1234", "Compiling main.c")
+        self.assertEqual(mon.doubling_streak, 0)
+
+    def test_zero_exit_code_is_success_not_failure(self):
+        mon = proxy.SessionMonitor()
+        mon.note_doubling_signal("Bash:abcd1234", "exit code 0")
+        mon.note_doubling_signal("Bash:abcd1234", "exit code 0")
+        self.assertEqual(mon.doubling_streak, 0)
+
     def test_reset_doubling_clears_state(self):
         mon = proxy.SessionMonitor()
         mon.note_doubling_signal("Bash:abcd1234", FAIL)
@@ -145,7 +181,16 @@ class TestDoublingInjection(unittest.TestCase):
         body = _body()
         proxy._maybe_inject_doubling_break(body, mon)
         self.assertEqual(mon.doubling_break_fires, 1)
-        self.assertIn("PIVOT", body["messages"][0]["content"])
+        # Tail placement (the salience position LOCKSTEP/ERROR-LOOP forced):
+        # the directive rides the transcript tail as a user-role turn, never a
+        # system-top append -- the 2026-10-07 ledger shows system-top
+        # directives ignored twice en route to a hard stop.
+        tail = body["messages"][-1]
+        self.assertEqual(tail["role"], "user")
+        self.assertIn("PIVOT", tail["content"])
+        # the system prompt is untouched -- no system-0 mangling
+        self.assertEqual(body["messages"][0]["role"], "system")
+        self.assertEqual(body["messages"][0]["content"], "base")
         # Advisory: never touches tool_choice (unlike deferral-break).
         self.assertEqual(body["tool_choice"], "auto")
 
@@ -181,12 +226,26 @@ class TestDoublingInjection(unittest.TestCase):
         proxy._maybe_inject_doubling_break(body, mon)
         self.assertEqual(mon.doubling_break_fires, 0)
 
-    def test_inserts_system_message_when_absent(self):
+    def test_appends_tail_directive_and_keeps_trailing_prefill_last(self):
+        # No system message exists to append to, and a trailing assistant
+        # message is a client prefill (a continuation contract): the directive
+        # goes in front of it, never after -- same contract as LOCKSTEP.
         mon = _saturated_monitor()
-        body = {"tools": [], "messages": [{"role": "user", "content": "hi"}]}
+        body = {
+            "tools": [],
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "the plan is "},
+            ],
+        }
         proxy._maybe_inject_doubling_break(body, mon)
-        self.assertEqual(body["messages"][0]["role"], "system")
-        self.assertIn("PIVOT", body["messages"][0]["content"])
+        prefill = body["messages"][-1]
+        directive = body["messages"][-2]
+        self.assertEqual(prefill["role"], "assistant")
+        self.assertEqual(prefill["content"], "the plan is ")  # untouched
+        self.assertEqual(directive["role"], "user")
+        self.assertIn("PIVOT", directive["content"])
+        self.assertEqual(body["messages"][0]["content"], "hi")
 
 
 class TestRecordingWiring(unittest.TestCase):

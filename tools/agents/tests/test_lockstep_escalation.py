@@ -549,8 +549,11 @@ class IncidentRecordTests(LockstepKnobGuard):
         self.assertTrue(rec["fingerprint"])
         self.assertNotIn(FP, json.dumps(rec))  # raw args never persisted
         self.assertNotIn("ssh host", json.dumps(rec))
-        # the persisted signature is the normalized one (literals stripped)
-        self.assertIn("traceback", rec["error_signature"])
+        # the persisted signature is the normalized DECISIVE line (literals
+        # stripped). The content-free traceback header no longer anchors a
+        # streak -- ledger 2026-09-25 -- so the ledger record names the real
+        # error the session was hard-stopped over.
+        self.assertEqual(rec["error_signature"], "keyerror: 'x'")
 
     def test_ledger_disabled_by_empty_path(self):
         proxy.UAP_LOOP_INCIDENTS = ""
