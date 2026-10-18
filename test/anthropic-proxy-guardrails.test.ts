@@ -102,3 +102,48 @@ describe('unexpected-end-turn guardrail retry', () => {
     expect(fnBody).not.toContain('_set_thinking(openai_body, False)');
   });
 });
+
+describe('loop-steer signature quality (ledger 2026-09-25..10-18)', () => {
+  it('anchors tracebacks on the decisive line and rejects content-free signatures', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    expect(contents).toContain('_CONTENT_FREE_SIGNATURES');
+    expect(contents).toContain('_TRACEBACK_DECISIVE_RE');
+    expect(contents).toContain('_traceback_decisive_line');
+    expect(contents).toContain('_first_meaningful_signature');
+  });
+
+  it('excludes error tokens glued into larger names (openobserve-error-scan incident)', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    expect(contents).toContain('_EMBEDDED_ERROR_TOKEN_RE');
+  });
+
+  it('adds known fixes for the uncovered ledger classes', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    expect(contents).toContain('fe_sendauth');
+    expect(contents).toContain('gen_random_bytes');
+    expect(contents).toContain('page not found');
+  });
+
+  it('routes read-only payloads without is_error away from the failure streak', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    expect(contents).toContain('tool_names=_latest_tr_tools');
+  });
+
+  it('injects the doubling pivot at the tail, not system-top', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    const fn = contents.slice(
+      contents.indexOf('def _maybe_inject_doubling_break'),
+      contents.indexOf('def _maybe_inject_deferral_break')
+    );
+    expect(fn).toContain('_inject_tail_directive(openai_body, directive)');
+    expect(fn).not.toContain('msgs.insert(0');
+  });
+
+  it('redacts secret-shaped material from signatures and owns unnameable identical failures', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    expect(contents).toContain('_SECRET_KV_RE');
+    expect(contents).toContain('_HIGH_ENTROPY_RE');
+    expect(contents).toContain('_declares_failure_shape(text)');
+    expect(contents).toContain('_first_meaningful_signature(text)');
+  });
+});

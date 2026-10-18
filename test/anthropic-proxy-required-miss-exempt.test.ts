@@ -262,7 +262,7 @@ class Monitor:
     def __init__(self):
         self.no_tool_turns = 0
         self.last_tool_result_snippet = ""
-    def note_tool_result_error(self, tr, err):
+    def note_tool_result_error(self, tr, err=None, tool_names=None):
         pass
     def note_no_tool_turn(self):
         self.no_tool_turns += 1
