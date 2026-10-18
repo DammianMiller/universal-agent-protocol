@@ -12,7 +12,10 @@ path to the nearest path the model already used correctly earlier in the
 conversation — filesystem-free, and the proxy is in the request path.
 
 Pure functions; gated by PROXY_TOOLCALL_PATH_NORMALIZE in the proxy. Mirrors the
-TS reference at src/self-harness/middleware/path-normalizer.ts.
+TS reference at src/self-harness/middleware/path-normalizer.ts (the filename-snap
+normalize only). Containment -- contain_tool_uses / contain_to_workdir,
+including the container-exec exemption -- is proxy-side Python ONLY, with no
+TS counterpart; a TS parity sync must not treat containment as mirrored.
 See docs/design/SELF_HARNESS.md §4 (P2).
 """
 
@@ -24,6 +27,39 @@ _PATH_ARG_KEYS = ("file_path", "path", "filePath", "notebook_path")
 
 # Absolute paths a tool call might target. Used to scan/rewrite Bash commands.
 _ABS_PATH_RE = re.compile(r"/(?:home|root|Users|tmp|var|opt|srv|mnt)/[A-Za-z0-9._\-/]+")
+
+# Container-exec contexts: docker exec (incl. 'docker compose exec' -- the
+# docker word already prefixes it), podman exec, nerdctl exec, kubectl exec.
+# Paths at-or-after this boundary belong to ANOTHER filesystem -- the
+# container's, not the host's -- so the host-workdir heuristic cannot reason
+# about them. Containing them manufactures a guaranteed failure: observed
+# 2026-10-18, an 11-hour loop where every
+# "docker exec p37koral bash -lc 'cat /tmp/e2e/...log'" had its container
+# path snapped onto the host workdir (/tmp/p37/e2e/...), which cannot exist
+# inside the container, so the command failed no matter what the model
+# varied. The exemption is fail-safe: an un-rewritten path that IS garbled
+# errors loudly inside the container, and the loop guards steer on it.
+#
+# Scope decisions, pinned by tests in test_path_containment.py -- do not
+# "tighten" without re-reading the incident:
+#   * the boundary is the END of the exec word (engine flags before the
+#     subcommand, e.g. kubectl --kubeconfig=/host.conf, are host-side);
+#   * the exemption extends to the END OF THE COMMAND, never the next
+#     separator -- quoted exec payloads (bash -lc 'cat /a; cat /b') carry
+#     separators a regex cannot scope, so per-segment scoping would
+#     reintroduce the incident class;
+#   * {0,1000} bounds the lazy scan (a capped-out match simply fails and
+#     paths stay contained -- fail-safe);
+#   * known residual shapes, accepted as fail-loud for now: env-assignment
+#     BEFORE the boundary (LOG=/x docker exec ...), backslash
+#     line-continuation between engine word and exec, docker cp / docker
+#     run dest-side paths, multi-line spellings. Broaden only on incident
+#     evidence (candidates: nsenter/chroot/unshare/lxc, docker cp / kubectl
+#     cp dest side).
+_CONTAINER_EXEC_RE = re.compile(
+    r"\b(?:docker|podman|nerdctl|kubectl)\b[^\n;&|]{0,1000}?\bexec\b",
+    re.IGNORECASE,
+)
 
 
 def _squash(s: str) -> str:
@@ -276,7 +312,16 @@ def contain_tool_uses(tool_uses, workdir: str):
                     corrections.append((tu_id, key, v, nv, reason))
         cmd = inp.get("command")
         if isinstance(cmd, str) and "/" in cmd:
+            exec_m = _CONTAINER_EXEC_RE.search(cmd)
+            # Boundary = END of the exec word: engine flags BEFORE the
+            # subcommand are host-side and stay contained; everything from
+            # the subcommand on is container-side (see _CONTAINER_EXEC_RE).
+            exec_at = exec_m.end() if exec_m else None
             def _sub(m):
+                # At-or-after a container-exec boundary the token is a
+                # container-FS path: exempt (see _CONTAINER_EXEC_RE).
+                if exec_at is not None and m.start() >= exec_at:
+                    return m.group(0)
                 nv, changed, _ = contain_to_workdir(m.group(0), workdir)
                 return nv if changed else m.group(0)
             new_cmd = _ABS_PATH_RE.sub(_sub, cmd)

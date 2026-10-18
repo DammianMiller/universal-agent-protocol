@@ -144,6 +144,100 @@ class TestContainToolUses(unittest.TestCase):
         tus = [_tu("t1", file_path="/home/cogtec/dev/octus_invaders/a.js")]
         self.assertEqual(N.contain_tool_uses(tus, ""), [])
 
+    def _wd(self, *parts):
+        # Journal geometry: the 2026-10-18 incident workdir .../p37/e2e made
+        # the 'e2e' basename ANCHOR the container path /tmp/e2e/..., which is
+        # what let containment misclassify it as a garbled host path. Tests
+        # must reproduce that anchor or they do not discriminate.
+        wd = os.path.join(self._tmp.name, *parts)
+        os.makedirs(wd, exist_ok=True)
+        return wd
+
+    def test_docker_exec_container_paths_left_alone(self):
+        # Regression 2026-10-18, journal geometry exactly: the session
+        # workdir .../p37/e2e anchored the container path /tmp/e2e/... and
+        # pre-fix code snapped it onto the workdir -- an 11-hour
+        # deterministic-failure loop. The fix passes the command verbatim.
+        wd = self._wd("p37", "e2e")
+        cmd = ("docker exec p37koral bash -lc "
+               "'cat /tmp/e2e/koral-p59probe_proda4.log'")
+        tus = [{"type": "tool_use", "id": "t1", "name": "Bash",
+                "input": {"command": cmd}}]
+        self.assertEqual(N.contain_tool_uses(tus, wd), [])
+        self.assertEqual(tus[0]["input"]["command"], cmd)
+
+    def test_container_exec_variants_left_alone(self):
+        # Every variant uses the anchoring geometry so each discriminates:
+        # pre-fix, each gets snapped (1 correction); post-fix, all pass
+        # verbatim. DOCKER pins the case-insensitive match.
+        wd = self._wd("p37", "e2e")
+        for cmd in (
+            "kubectl -n prod exec koral-0 -- cat /tmp/e2e/app.log",
+            "docker compose exec koral cat /tmp/e2e/config.yaml",
+            "docker-compose exec koral cat /tmp/e2e/config.yaml",
+            "sudo podman exec ctr1 ls /tmp/e2e/data",
+            "DOCKER exec ctr1 cat /tmp/e2e/UP.LOG",
+        ):
+            tus = [{"type": "tool_use", "id": "t1", "name": "Bash",
+                    "input": {"command": cmd}}]
+            self.assertEqual(N.contain_tool_uses(tus, wd), [], msg=cmd)
+            self.assertEqual(tus[0]["input"]["command"], cmd)
+
+    def test_host_path_before_docker_exec_still_contained(self):
+        # Boundary is the END of the exec word: the garbled HOST path
+        # before the subcommand still snaps; the container path after it
+        # passes verbatim. Full-command equality so any drift fails.
+        wd = self._wd("e2e")
+        cmd = ("mkdir -p /home/cogtk/dev/e2e/css && "
+               "docker exec koral cat /tmp/e2e/x.log")
+        tus = [{"type": "tool_use", "id": "t1", "name": "Bash",
+                "input": {"command": cmd}}]
+        corr = N.contain_tool_uses(tus, wd)
+        self.assertEqual(tus[0]["input"]["command"],
+                         f"mkdir -p {wd}/css && docker exec koral cat /tmp/e2e/x.log")
+        self.assertEqual(len(corr), 1)
+
+    def test_engine_flag_path_before_exec_still_contained(self):
+        # Pins the END-of-exec-word boundary: a host-side engine flag
+        # (kubectl --kubeconfig=...) sits before the subcommand and stays
+        # contained; the container payload after it is exempt.
+        wd = self._wd("e2e")
+        cmd = ("kubectl --kubeconfig=/home/cogtk/dev/e2e/kc.conf exec koral-0 "
+               "-- cat /tmp/e2e/x.log")
+        tus = [{"type": "tool_use", "id": "t1", "name": "Bash",
+                "input": {"command": cmd}}]
+        corr = N.contain_tool_uses(tus, wd)
+        self.assertEqual(tus[0]["input"]["command"],
+                         f"kubectl --kubeconfig={wd}/kc.conf exec koral-0 "
+                         "-- cat /tmp/e2e/x.log")
+        self.assertEqual(len(corr), 1)
+
+    def test_exec_exempt_scope_is_sticky_to_end_of_command(self):
+        # Pinned semantics (architect + security reviews): once a
+        # container-exec boundary is found, the exemption covers the whole
+        # remainder, INCLUDING later host-side segments after &&. Narrowing
+        # to the next separator would need quote-awareness a regex cannot
+        # provide (bash -lc 'cat /a; cat /b') and would reintroduce the
+        # incident class. Fail-safe: an exempted garble errors loudly.
+        wd = self._wd("e2e")
+        cmd = ("docker exec koral cat /tmp/e2e/x.log "
+               "&& cat /home/cogtk/dev/e2e/creds.txt")
+        tus = [{"type": "tool_use", "id": "t1", "name": "Bash",
+                "input": {"command": cmd}}]
+        self.assertEqual(N.contain_tool_uses(tus, wd), [])
+        self.assertEqual(tus[0]["input"]["command"], cmd)
+
+    def test_exec_decoy_still_triggers_exemption(self):
+        # A quoted "docker exec" decoy triggers the exemption too -- accepted
+        # fail-safe semantics: the worst case is an un-healed garble failing
+        # loudly (pre-normalizer behavior), never a wrong-write.
+        wd = self._wd("e2e")
+        cmd = 'echo "docker exec" && cat /tmp/e2e/creds.txt'
+        tus = [{"type": "tool_use", "id": "t1", "name": "Bash",
+                "input": {"command": cmd}}]
+        self.assertEqual(N.contain_tool_uses(tus, wd), [])
+        self.assertEqual(tus[0]["input"]["command"], cmd)
+
 
 if __name__ == "__main__":
     unittest.main()
