@@ -44,6 +44,20 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefer-offline
 
+      # The vitest suite spawns python3 harnesses (the placement gate, the
+      # end-turn classifier) whose sliced proxy code imports fastapi/httpx
+      # at import time — the same set deploy-verify.yml installs. The
+      # ubuntu-latest image flipped to Ubuntu 26 on 2026-10-19 and stopped
+      # preinstalling them, so `npm test` fails 13 placement-gate tests with
+      # ModuleNotFoundError: fastapi.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install python harness deps
+        run: pip install fastapi uvicorn httpx openai
+
       - name: Set version
         run: |
           CURRENT_VERSION=$(node -p "require('./package.json').version")
