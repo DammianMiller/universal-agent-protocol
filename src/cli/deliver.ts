@@ -648,7 +648,7 @@ function resolveModel(presetId: string, endpointOverride?: string): ModelConfig 
   const preset = Object.hasOwn(ModelPresets, presetId) ? ModelPresets[presetId] : undefined;
   if (!preset) {
     const available = Object.keys(ModelPresets).join(', ');
-    fail(`Unknown model preset '${presetId}'. Available: ${available}`);
+    fail(`Unknown model preset '${presetId}'. Available: ${available}. For the local inference stack use preset 'local-auto' (resolves the served model from the endpoint at call time); --endpoint <url> repoints any preset.`);
   }
   return endpointOverride ? { ...preset, endpoint: endpointOverride } : preset;
 }
