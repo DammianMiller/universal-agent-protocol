@@ -106,9 +106,17 @@ export const ModelPresets: Record<string, ModelConfig> = {
   },
   'qwen35-a3b': {
     id: 'qwen35-a3b',
-    name: 'Qwen 3.5 35B A3B (llama.cpp)',
+    name: 'Local Qwen 3.5 A3B (legacy label, proxy-routed)',
     provider: 'custom',
     apiModel: 'qwen35-a3b-iq4xs',
+    // SUPERSEDED 2026-10-04: the llama.cpp rails this entry was written
+    // against are gone; the local backend is now the strata serve layer
+    // behind the same proxy (see 'qwen38-27b'). The entry stays because it
+    // is the DEFAULT deliver/verify preset id, and the apiModel spelling
+    // above is inert: the proxy routes on its own rules and accepts any id,
+    // so the stale pin still reaches whatever backend is served — the same
+    // property 'qwen38-27b' documents deliberately. For an entry that also
+    // ADVERTISES no name, use 'local-auto'.
     // Route through the anthropic-proxy (:4000), NOT llama :8080 directly. The
     // proxy strips Qwen's <think> blocks and applies the tool/finalize guardrails.
     // Hitting :8080 raw under `--reasoning auto` let reasoning leak into
@@ -191,9 +199,13 @@ export const ModelPresets: Record<string, ModelConfig> = {
   },
   'qwen36-a3b': {
     id: 'qwen36-a3b',
-    name: 'Qwen 3.6 35B A3B (llama.cpp, local)',
+    name: 'Local Qwen 3.6 A3B (legacy label, proxy-routed)',
     provider: 'custom',
     apiModel: 'qwen36-35b-a3b-iq4xs',
+    // SUPERSEDED 2026-10-04, same as 'qwen35-a3b': the llama.cpp engine this
+    // entry described is gone; the proxy route below is what still works and
+    // the apiModel spelling is inert for the same reason. Prefer 'local-auto'
+    // or 'qwen38-27b' for current local work.
     // Route through the anthropic-proxy (:4000) for <think>-stripping + tool/finalize
     // guardrails (same rationale as qwen35-a3b), not llama :8080 raw.
     endpoint: 'http://127.0.0.1:4000/v1',
