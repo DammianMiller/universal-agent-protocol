@@ -17,7 +17,7 @@ describe('UAP Model Router Configuration', () => {
 
     expect(executorModel).toBeDefined();
     expect(executorModel?.id).toBe('qwen35-a3b');
-    expect(executorModel?.name).toBe('Qwen 3.5 35B A3B (llama.cpp)');
+    expect(executorModel?.name).toBe('Local Qwen 3.5 A3B (legacy label, proxy-routed)');
   });
 
   it('should use qwen35-a3b as the default fallback', () => {
