@@ -67,10 +67,10 @@ Mandatory driver behaviors (each from an observed Phase-0 failure):
    `solution.py` at cap regardless of session state** — the model does not
    self-terminate after finishing (run 2 kept generating past the kill with
    the task done).
-3. **Snapshot the live served-model alias** (`http://127.0.0.1:8080/props`)
-   + LiteLLM health into every record — profiles drift from the live
-   backend (repo test `model-profiles-qwen38-rails` currently fails on
-   master for exactly this reason).
+3. **Snapshot the live served-model alias** (`http://127.0.0.1:8080/health`
+   and `/v1/models`) + proxy health into every record — profiles drift
+   from the live backend (repo test `model-profiles-qwen38-rails` currently
+   fails on master for exactly this reason).
 4. **Checkpoint JSONL**, resumable (GVS5H's own pattern); record pass/fail,
    tokens, turns, wall time, stop reason, final solution hash.
 5. Concurrency 2 (GPU slots); smoke subset = first 10 ids in
@@ -109,9 +109,38 @@ Stop / pilot 50×3 / full 100×5 — presented with smoke data. Arm 1
 - The correct Droid model ref is `custom:Qwen3.8-IQ3_S-(UAP-local)-0`
   (derived from the BYOK display name).
 
-## Engine and model-file options (analyzed 2026-10-26, decision open)
+## Engine and model-file options — DECIDED & LIVE (2026-10-26)
 
-Two independent choices for Phase 1. Neither changes Phase 0 results.
+Both choices adopted per operator go ("do 1,2"); Phase 1 runs on them:
+
+- **Model file: pristine ISTA-DASLab GSQ-RCO IQ3_S** (the tqLLM-benchmarked
+  file; ISTA-measured −0.57pp LCB v6 vs BF16). Served via
+  `uap-tqllm-server.service` from `/home/cogtek/models/tqllm/flashnext`
+  (shards hardlinked from `strata-data/models/IQ3_S`, zero extra disk).
+- **Engine: tqLLM 1.2.3** (Docker `ghcr.io/turbo-tan/tqllm:1.2.3`, engine
+  commit 9005f4e), container 8086 → host **:8080**, so the UAP proxy
+  (`LLAMA_CPP_BASE` unchanged) and every agent route work unmodified.
+  Flags: `--context 131072 --np 2` (2 × 65536 slots) `--reasoning on
+  --max-tokens 16384 --name qwen3.8-flash-next-iq3_s`.
+- Switch/revert: `~/.config/uap/model-switch.sh tqllm | strata` (the tqllm
+  case was added; all other cases now disable uap-tqllm-server).
+- **Fleet impact**: all `:4000` agent traffic now runs pristine IQ3_S on
+  tqLLM, not the DavidAU abliterated strata arm. Revert is one command.
+- **Wiring sanity #3 (tqLLM chain, 2026-10-26)**: Droid → :4000 → tqserve,
+  restricted tools, exit 0, `subtype: success`, exact PHASE0-OK, 10 turns in
+  327 s, **clean self-termination** — vs sanity #1 (strata, ERROR-LOOP kill
+  at 380 s) and #2 (strata, driver kill at 20 min with task done at 19).
+  The engine's repeat-limit + reasoning handling plus `--only-tools`
+  resolved the stop-discipline failure mode.
+- Direct + proxy completions verified (thinking on, clean stops);
+  `/v1/models` reports exactly the name the Droid BYOK route sends.
+
+Context for the record (tqLLM's same-file/same-GPU head-to-head vs strata
+0.2.2): decode 76.4 vs 72.2 @32K, 85.1 vs 63.6 @64K, 77.1 vs 47.2 @128K
+tok/s, short-chat TTFT 0.32–0.41 s vs 1.07–1.29 s, up to 8 same-text slots
+vs strata's 1. The earlier abliterated-vs-Swift strata A/B (2026-10-23,
+throughput, abliterated won +7–8% decode) is superseded for this arm by the
+pristine choice: abliteration was the unmeasured quality confound.
 
 **Engine: strata 0.2.2 (current) vs tqLLM 1.2.3** (tqllm.com, Apache-2.0,
 Docker, OpenAI-compatible API on :8086, exact speculative decoding). tqLLM's
