@@ -697,6 +697,24 @@ _FAILURE_DECLARATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The harness's own zero-exit envelope: the tool CALL succeeded, whatever the
+# output QUOTES. Droid/BYOK appends "[Process exited with code N]" to every
+# Execute result; other harnesses print their own form. Decisive in the
+# flag-ABSENT path only (a client that declares is_error True still wins):
+# 2026-10-26, cognition-engine fdc94474 -- two ERROR-LOOP hard stops were
+# served on SIX successful state-checks whose `git diff` output quoted the
+# session's own in-flight `eprintln!("pg-server: metrics: failed to bind
+# ...")` line; the keyword sniff turned each clean diff into the same
+# "failure" signature and the streak escalated to a 400.
+_ZERO_EXIT_ENVELOPE_RE = re.compile(
+    r"\[process exited with code 0\]"  # Droid / BYOK Execute result footer
+    r"|\bexited with code 0\b"         # generic harness prose
+    r"|\bexit (?:code|status)\s*[:=]?\s*0\b"  # 'exit code 0' / 'exit status: 0'
+    r"|\bexit_code=0\b"                # python subprocess env style
+    r"|\bEXIT=0\b",                   # shell-echoed status
+    re.IGNORECASE,
+)
+
 
 def _is_successful_result(text: str) -> bool:
     """True when the payload structurally declares success.
@@ -867,9 +885,24 @@ def _error_signature_for_result(text: str, result_error: bool | None = None) -> 
                         (_first_meaningful_signature), so an unfamiliar error
                         shape still forms a streak; a wrapper-only payload
                         stays unnameable -- DOUBLING-DOWN owns that shape.
-      absent         -> fall back to the keyword heuristics as before.
+      absent         -> keyword heuristics as before, EXCEPT a payload that
+                        carries the harness's zero-exit envelope
+                        (_ZERO_EXIT_ENVELOPE_RE): the call succeeded, so
+                        failure-shaped words it merely QUOTES (a git diff of
+                        in-flight edits, a grep over source) cannot anchor a
+                        streak. 2026-10-26: two ERROR-LOOP hard stops on six
+                        clean state-checks whose git-diff output quoted the
+                        session's own `eprintln!("...failed to bind...")`
+                        source line; a declared True flag still wins over
+                        the envelope.
     """
     if result_error is False:
+        return ""
+    if result_error is None and _ZERO_EXIT_ENVELOPE_RE.search(text or ""):
+        # Flag-ABSENT and the harness's own footer says the call exited 0:
+        # the result is clean whatever the bytes quote. Only the heuristic
+        # path is narrowed -- is_error True/False keep their declared
+        # precedence above.
         return ""
     sig = _error_signature(text)
     if sig or result_error is not True:
