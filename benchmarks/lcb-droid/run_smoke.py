@@ -7,7 +7,7 @@ chain (Droid -> anthropic-proxy :4000 -> strata :8080):
     droid exec --skip-permissions-unsafe \
         --model "custom:Qwen3.8-IQ3_S-(UAP-local)-0" \
         --only-tools Read,Glob,Grep,LS,Create,Edit,Execute \
-        --output-format json --max-turns 60 --cwd <workdir> "$(task.txt)"
+        --output-format json --cwd <workdir> --file task.txt
 
 Per problem:
   - pre-flight chain snapshot (:8080/health, :8080/v1/models, :4000/v1/models,
@@ -47,7 +47,6 @@ RECORDS = ART / "records.jsonl"
 MODEL = "custom:Qwen3.8-IQ3_S-(UAP-local)-0"
 ONLY_TOOLS = "Read,Glob,Grep,LS,Create,Edit,Execute"
 WALL_CAP_S = 3600
-MAX_TURNS = 60
 
 STRATA_HEALTH = "http://127.0.0.1:8080/health"
 STRATA_MODELS = "http://127.0.0.1:8080/v1/models"
@@ -135,13 +134,42 @@ def public_gate(wid: Path):
 
 
 def parse_droid_log(path: Path):
-    """Robust, best-effort stats from the droid JSONL stream."""
+    """Stats from the droid output log.
+
+    --output-format json emits ONE result document at run end:
+    {"type":"result","subtype":..., "num_turns":..., "result":..., "usage":...}.
+    Fall back to line-based parsing for stream-json logs.
+    """
+    text = path.read_text(errors="replace").strip()
+    if text:
+        try:
+            doc = json.loads(text)
+        except json.JSONDecodeError:
+            doc = None
+        if isinstance(doc, dict) and doc.get("type") == "result":
+            usage = doc.get("usage") or {}
+            return {
+                "format": "result-doc",
+                "subtype": doc.get("subtype"),
+                "is_error": doc.get("is_error"),
+                "num_turns": doc.get("num_turns"),
+                "session_id": doc.get("session_id"),
+                "result_tail": (doc.get("result") or "")[-500:],
+                "usage": {
+                    k: usage.get(k)
+                    for k in (
+                        "input_tokens", "output_tokens",
+                        "cache_read_input_tokens",
+                        "cache_creation_input_tokens",
+                    )
+                },
+            }
+
     types = Counter()
     parsed = 0
     assistant_msgs = 0
     last_text = ""
-    hit_cap_marker = False
-    for line in path.read_text(errors="replace").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -152,26 +180,21 @@ def parse_droid_log(path: Path):
         parsed += 1
         t = ev.get("type") or ev.get("event") or "?"
         types[t] += 1
-        blob = json.dumps(ev)
-        if "assistant" in str(t):
+        if "assistant" in str(t) or "message" in str(t):
             assistant_msgs += 1
-            msg = ev.get("message") or {}
-            content = msg.get("content") if isinstance(msg, dict) else None
+            content = ev.get("message", {}).get("content")
             if isinstance(content, list):
                 for c in content:
                     if isinstance(c, dict) and c.get("type") == "text":
                         last_text = c.get("text", last_text)
             elif isinstance(content, str) and content:
                 last_text = content
-        for marker in ("max_turns", "turn limit", "MAX_TURNS"):
-            if marker in blob:
-                hit_cap_marker = True
     return {
+        "format": "line-events",
         "events_parsed": parsed,
         "event_types": dict(types),
         "assistant_msgs": assistant_msgs,
         "last_text_tail": last_text[-500:],
-        "cap_marker": hit_cap_marker,
     }
 
 
@@ -207,21 +230,29 @@ def run_problem(man, dry=False):
         return False
 
     fresh_workdir(wid)
-    task = (wid / "task.txt").read_text()
+    task_path = wid / "task.txt"
     cmd = [
         "droid", "exec", "--skip-permissions-unsafe",
         "--model", MODEL,
         "--only-tools", ONLY_TOOLS,
         "--output-format", "json",
-        "--max-turns", str(MAX_TURNS),
         "--cwd", str(wid),
-        task,
+        "--file", str(task_path),
     ]
     if dry:
-        print(f"[{qid}] DRY-RUN cmd ok; chain: "
+        # validate the actual droid flag surface (no model call), then the chain
+        p = subprocess.run(
+            ["droid", "exec", "--list-tools", "--model", MODEL,
+             "--only-tools", ONLY_TOOLS],
+            capture_output=True, text=True, timeout=120,
+        )
+        flag_ok = p.returncode == 0 and "error:" not in (p.stderr or "")
+        print(f"[{qid}] DRY-RUN flags={'OK' if flag_ok else 'BAD'}; "
               f"strata={snap['strata_models'].get('data', [{}])[0].get('id', '?') if isinstance(snap['strata_models'], dict) and not snap['strata_models'].get('_error') else 'ERR'} "
               f"units={snap['units']}", flush=True)
-        return True
+        if not flag_ok:
+            print(f"[{qid}] droid stderr: {p.stderr[:300]}", flush=True)
+        return flag_ok
 
     t0 = time.time()
     print(f"[{qid}] launching droid exec (cap {WALL_CAP_S}s)...", flush=True)
@@ -243,12 +274,29 @@ def run_problem(man, dry=False):
     solution = collect_solution(wid)
     gate = public_gate(wid)
 
+    # A droid that dies non-zero in seconds without producing a result
+    # document is an invocation failure (bad flag, auth, chain), not an
+    # attempt. Record it as non-final and abort the driver so one bad
+    # invocation can't burn through the whole problem set.
+    if rc != 0 and wall < 10 and stats.get("format") != "result-doc":
+        rec = {
+            "question_id": qid,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "final": False,
+            "error": "invocation-failed",
+            "droid_exit": rc,
+            "wall_s": wall,
+            "stderr_tail": (log_err.read_text(errors="replace") or "")[-300:],
+        }
+        append_record(rec)
+        print(f"[{qid}] INVOCATION FAILED (exit {rc}, {wall}s): "
+              f"{rec['stderr_tail'][:200]}", flush=True)
+        return False
+
     if timed_out:
         stop_reason = "wall-cap"
     elif solution is None:
         stop_reason = "no-solution"
-    elif stats["cap_marker"]:
-        stop_reason = "turn-cap"
     else:
         stop_reason = "done"
 
@@ -271,7 +319,7 @@ def run_problem(man, dry=False):
         f"[{qid}] stop={stop_reason} wall={wall}s exit={rc} "
         f"solution={'yes' if solution else 'NO'} "
         f"public_gate={'PASS' if gate.get('passed') else gate.get('why') or 'FAIL'} "
-        f"assistant_msgs={stats['assistant_msgs']}",
+        f"turns={stats.get('num_turns', stats.get('events_parsed'))}",
         flush=True,
     )
     return True

@@ -139,8 +139,11 @@ python3 run_smoke.py [--only <qid>] [--dry-run]
 ```
 
 Driver invariants: restricted tools (`Read,Glob,Grep,LS,Create,Edit,Execute`),
-`--max-turns 60` safety net, per-attempt chain snapshot (`:8080/health`,
-`:8080/v1/models`, `:4000/v1/models`, systemd unit states) recorded in
-`records.jsonl`, and a fresh workdir per attempt (leftover `solution.py`
-from an interrupted attempt is wiped).
+the prompt passed via `--file task.txt` (never argv), per-attempt chain snapshot
+(`:8080/health`, `:8080/v1/models`, `:4000/v1/models`, systemd unit states)
+recorded in `records.jsonl`, a fresh workdir per attempt (leftover
+`solution.py` from an interrupted attempt is wiped), and an
+invocation-failure abort (a droid that dies non-zero in seconds with zero
+assistant events is recorded non-final and stops the driver instead of
+burning the problem set).
 
