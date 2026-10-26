@@ -109,6 +109,47 @@ Stop / pilot 50×3 / full 100×5 — presented with smoke data. Arm 1
 - The correct Droid model ref is `custom:Qwen3.8-IQ3_S-(UAP-local)-0`
   (derived from the BYOK display name).
 
+## Engine and model-file options (analyzed 2026-10-26, decision open)
+
+Two independent choices for Phase 1. Neither changes Phase 0 results.
+
+**Engine: strata 0.2.2 (current) vs tqLLM 1.2.3** (tqllm.com, Apache-2.0,
+Docker, OpenAI-compatible API on :8086, exact speculative decoding). tqLLM's
+published head-to-head is against our exact stack — same RTX 3090, same
+ISTA IQ3_S file, Strata 0.2.2:
+
+| Regime | tqLLM | Strata (ours) |
+|---|---|---|
+| decode @32K ctx | 76.4 tok/s | 72.2 |
+| decode @64K ctx | 85.1 | 63.6 |
+| decode @128K ctx | 77.1 | 47.2 |
+| short-chat TTFT | 0.32–0.41 s | 1.07–1.29 s |
+| parallel slots (`--np`) | up to 8, same text | 1 (live `/props`) |
+
+Pros: 1.3–1.6x decode at benchmark-typical long context, 3x TTFT on short
+turns, `--prompt-cache` (agentic multi-turn), `--np` enables the planned
+concurrency 2, `--reasoning-budget` + answer reserve + `--repeat-limit`
+directly mitigate the observed no-self-stop failure mode. Cons: new moving
+part (Docker unit + LiteLLM entry), self-reported flash-next bench (reason
+off; our workload is reasoning on), flash-next drafter `mtp-blk48-iq4.gguf`
+may need downloading, RAM 121 GB shared with the current 98 GB in use.
+
+**Model file: current abliterated IQ3_S vs pristine ISTA IQ3_S vs Swift
+IQ3_S.** All three exist locally (`strata-data/models/{,abliterated-,swift-}IQ3_S`).
+ISTA-DASLab publishes LCB v6 numbers for the pristine quants (vs BF16 base
+87.43): IQ3_S **86.86** (−0.57pp), IQ3_XXS 86.29, Q2_0 81.14. The quant
+itself is near-lossless on code; the **abliteration** delta is unmeasured
+anywhere (no published eval) and is the bigger unknown confound.
+
+Recommendation for benchmark hygiene: run arm 2 on the **pristine IQ3_S**
+pack (exists locally as `packs/iq3_s`) so the only mechanism delta vs the
+published anchors is UAP-in-Droid, with quant loss pinned at −0.57pp. Keep
+the current abliterated pack only if continuity with the earlier K3/TB
+trials matters more than a clean label. Engine swap (tqLLM) is orthogonal
+and worth it mainly for the long-context decode and `--np 2` concurrency;
+expected pass@1 impact of the engine itself is ~0 (both decode greedily
+exactly).
+
 ## Resume recipe
 
 ```sh
