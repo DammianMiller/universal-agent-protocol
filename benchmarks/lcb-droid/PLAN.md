@@ -189,3 +189,43 @@ source $ART/venv-lcb/bin/activate   # scoring venv
 # next: build the Phase-1 runner per the design above, then run 10×1 arm 2
 uap memory query "LCB-Droid GVS5H"  # session memory trail
 ```
+
+## Operator supersession — 2026-10-27 (benchmark PAUSED)
+
+**SUPERSEDES the "DECIDED & LIVE" engine section above.** Per operator
+instruction the fleet switched back to the **DavidAU abliterated** pack
+(strata, `uap-strata-server`, served name `abliterated-iq3_s`) and the
+benchmark run is **paused** — do not resume without an explicit go.
+
+Quick same-pack head-to-head (direct :8080, 2 reps, measured 2026-10-27):
+
+| metric | strata-abliterated | tqLLM-abliterated |
+|---|---|---|
+| decode short | **93–97 tok/s** | 54–60 tok/s |
+| decode @16K ctx | **120–135 tok/s** | 57–61 tok/s |
+| TTFT short | **0.06–0.6 s** | 0.8–0.9 s |
+| TTFT @16K repeat | **0.07 s** (prompt cache) | 8.2 s |
+
+Reverses the pristine-pack result; hypothesis: `flashnext.tqfn`
+layer_slots/expert-cache layout matches the pristine shard split
+(52+27 GB), not the abliterated one (55.1+28.8 GB). `--prompt-cache` is
+not enabled in the tqllm unit. Unit inventory now:
+`uap-tqllm-server` (pristine, idle), `uap-tqllm-abliterated-server`
+(new, idle; bundle `/home/cogtek/models/tqllm/flashnext-abliterated`,
+hardlinked shards; served alias unchanged), `uap-strata-server`
+(**live**). Mutual Conflicts wired via drop-ins both directions.
+
+Resume-time consequences (also in UAP memory, importance 9):
+
+1. **Caveat box must lead with the unmeasured abliteration delta** —
+   a stronger confound than the quant's −0.57pp (pristine numbers stay
+   available via `model-switch.sh tqllm` for an A/B if ever wanted).
+2. **Driver concurrency 2 → 1** (strata is single-slot).
+3. Stop-discipline relies fully on the driver wall-cap + collect-at-cap
+   (strata lacks tqserve's repeat-limit; sanity #1/#2 stop failures were
+   strata-era, #3's clean self-stop was tqLLM).
+4. Prerequisite unchanged: restart `uap-anthropic-proxy.service`
+   (ERROR-LOOP zero-exit fix, merged master `2c3868be`, published
+   @miller-tech/uap 2.36.4) before the smoke so guard false positives
+   cannot eat an attempt.
+
