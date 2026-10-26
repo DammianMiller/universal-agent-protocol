@@ -102,3 +102,45 @@ git -C <checkout> rev-parse HEAD   # 707e21296bfa032250f10bdde4afaff7ec998f71
 python3 extract_anchors.py <checkout> --out anchors.json
 <venv>/bin/python scorer_sanity.py --problem-id arc196_b --gvs5h-checkout <checkout>
 ```
+
+## Phase 1: render + drive the smoke-10 (arm 2)
+
+Smoke-10 = first 10 ids of `vendor/GVS5H/escalation/lcb100_hardest_v6.json`
+(all difficulty=hard; 7 stdin-style, 3 LeetCode `class Solution` style).
+Rendered workdirs live in the gitignored artifact dir
+(`benchmark-results/lcb-droid-smoke-20261025-175708/problems/<id>/`):
+
+- `problem.md` — GVS5H's `build_code_prompt` text verbatim (the exact text
+  their workers saw);
+- `public_tests/` — `tests.json` + visible `test_NN.in/.out`;
+- `run_gate.sh` + `gate.py` — completion gate, public tests only (stdin:
+  subprocess with piped input; LeetCode: imports `solution.py`, calls the
+  method with eval'd argument literals; line-normalized compare with float
+  tolerance, mirroring LCB public-test semantics);
+- `AGENTS.md` — the UAP operating protocol, extracted verbatim from
+  `benchmarks/terminal_bench/uap_droid_agent.py` (`AGENTS_MD`);
+- `task.txt` — the droid exec task prompt.
+
+All 10 gates are validated: the published fn_multiagent pass-1 reference
+passes each gate, a stub fails, and wrong answers produce numbered failure
+messages.
+
+```sh
+# render (idempotent; needs the scoring venv + HF cache offline flags)
+HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 <venv-lcb>/bin/python render_tasks.py
+
+# drive: droid exec via the UAP chain, concurrency 1, 60-min wall cap with
+# collect-at-cap, resumable records.jsonl; aborts early if the chain is down
+python3 run_smoke.py [--only <qid>] [--dry-run]
+
+# score with the vendored scorer (hidden tests, k=1); each attempt is scored
+# alongside the published reference as a per-problem scorer control
+<venv-lcb>/bin/python score_smoke.py
+```
+
+Driver invariants: restricted tools (`Read,Glob,Grep,LS,Create,Edit,Execute`),
+`--max-turns 60` safety net, per-attempt chain snapshot (`:8080/health`,
+`:8080/v1/models`, `:4000/v1/models`, systemd unit states) recorded in
+`records.jsonl`, and a fresh workdir per attempt (leftover `solution.py`
+from an interrupted attempt is wiped).
+
