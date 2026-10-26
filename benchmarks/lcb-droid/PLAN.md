@@ -1,0 +1,231 @@
+# LCB-Droid smoke — plan and status (resume here)
+
+**Mission**: benchmark UAP-in-Droid on the local Qwen3.8-Flash-Next IQ3_S
+(abliterated pack, strata-served via LiteLLM `127.0.0.1:4000`) against
+GVS5H's *published* numbers on their exact benchmark: LiveCodeBench code
+generation `release_v6`, the 100 hardest problems, pass@1 by their
+corrected scorer. GVS5H's engine is NOT run — only its benchmark assets
+(vendored here) and its published figures are used.
+
+**Approved spec** (with user modification): smoke = 10 problems × 1 pass ×
+**arm 2 ONLY** (Droid + UAP AGENTS.md protocol). Arm 1 (Droid-bare) is
+deferred until arm 2 proves successful, then used to measure Droid impact.
+Full spec: `~/.factory/specs/2026-10-25-lcb-droid-smoke-local-flash-next-uap-in-droid-vs-gvs5h-published-anchors.md`
+
+## Status
+
+| Phase | State | Evidence |
+|---|---|---|
+| 0. Wiring + scorer validation | **DONE** (commit `1153f35a`) | README.md below, `anchors.json`, artifact dir |
+| 1. Build runner (arm-2 driver) | not started | design constraints below |
+| 1. Smoke run 10 × 1 pass, arm 2 | not started | needs runner first |
+| 2. Report + findings doc | not started | see Phase 2 requirements |
+
+## Phase 0 — done, evidence
+
+- Worktree `368-lcb-droid-smoke`, branch `feature/368-lcb-droid-smoke`.
+- Vendor at pinned SHA `707e2129` (see `vendor/GVS5H/PINNED_SHA`); scoring
+  venv recipe in README.md; artifact dir:
+  `benchmark-results/lcb-droid-smoke-20261025-175708/` (gitignored; contains
+  `venv-lcb`, sanity transcripts, session logs).
+- Scorer sane: reference passes / stub fails on `arc196_b`; all 10 smoke ids
+  present in `release_v6` (1–4 public tests each, all difficulty=hard).
+- Anchors pinned in `anchors.json`: FN single **84.2**, FN orchestrated
+  **93.0**, Fable-5 single **90.4**, 27B **66.8→92.4** (corrected grader;
+  cross-checked vs `paper/tab-regrade.tex`); per-problem published verdicts
+  for the smoke-10 included.
+- Wiring verified twice; the strata backend restarted onto the
+  `abliterated-iq3_s` pack mid-Phase-0 (18:13 AEDT 2026-10-25), which the
+  spec assumes. Driver MUST snapshot the live alias per record.
+
+## Phase 1 — runner design (constraints learned in Phase 0)
+
+Per-problem workdir under the artifact dir (gitignored):
+
+- `problem.md` — GVS5H's exact `build_code_prompt` text (copy verbatim from
+  `vendor/GVS5H/escalation/run_bench.py`).
+- `public_tests/` + a `run_gate.sh` running ONLY the public tests (the
+  visible gate; GVS5H workers also see public tests).
+- `solution.py` — the target file the model writes.
+- `AGENTS.md` — the UAP operating protocol text from
+  `benchmarks/terminal_bench/uap_droid_agent.py` (`AGENTS_MD` constant) in
+  the MAIN checkout — drop it in per-problem (arm 2 mechanism).
+
+Driver invocation (per problem):
+
+```sh
+droid exec --skip-permissions-unsafe \
+  --model "custom:Qwen3.8-IQ3_S-(UAP-local)-0" \
+  --only-tools Read,Glob,Grep,LS,Create,Edit,Execute \
+  --output-format json --cwd <problem-workdir> "<task prompt>"
+```
+
+Mandatory driver behaviors (each from an observed Phase-0 failure):
+1. **Restricted tools** — the model polls `TaskOutput` on hallucinated ids
+   when allowed (27 calls until the proxy ERROR-LOOP guard killed it).
+2. **Wall-clock cap per problem** (60 min) + hard kill; **collect
+   `solution.py` at cap regardless of session state** — the model does not
+   self-terminate after finishing (run 2 kept generating past the kill with
+   the task done).
+3. **Snapshot the live served-model alias** (`http://127.0.0.1:8080/health`
+   and `/v1/models`) + proxy health into every record — profiles drift
+   from the live backend (repo test `model-profiles-qwen38-rails` currently
+   fails on master for exactly this reason).
+4. **Checkpoint JSONL**, resumable (GVS5H's own pattern); record pass/fail,
+   tokens, turns, wall time, stop reason, final solution hash.
+5. Concurrency 2 (GPU slots); smoke subset = first 10 ids in
+   `vendor/GVS5H/escalation/lcb100_hardest_v6.json` (deterministic, logged).
+
+Scoring: same path as `scorer_sanity.py` (venv `lcb_runner`,
+`codegen_metrics(k_list=[1])` against `release_v6` hidden tests), scoring
+each problem's collected `solution.py`.
+
+## Phase 2 — report requirements
+
+- Per-problem table (id, pass/fail, turns, tokens, wall time, stop reason)
+  + arm-2 pass@1 on the 10-subset; side-by-side with the published
+  per-problem verdicts from `anchors.json`.
+- **Mandatory caveat box**: local **IQ3_S abliterated quant** ≠ paper's
+  full-precision remote flash-next; UAP-protocol-as-prompt ≠ GVS5H ledger
+  self-orchestration (different mechanism); 10-of-100 subset, 1 pass —
+  everything labeled descriptive/underpowered.
+- Deliverables: `docs/benchmarks/LCB_DROID_SMOKE.md`,
+  `benchmark-results/lcb-droid-smoke-<ts>/` (records.jsonl, report.md),
+  UAP memory stores.
+
+## Decision gate after smoke (explicit go required)
+
+Stop / pilot 50×3 / full 100×5 — presented with smoke data. Arm 1
+(Droid-bare, same 10 problems) becomes an option here per the user's
+"if that proves successful we can do arm 1 to determine the Droid impact".
+
+## Known blockers / notes
+
+- **Version bump deferred**: `npm test` fails on master (pre-existing, live
+  backend drift vs the Swift-1.5 trial profile). Bump once the profile is
+  reconciled with whichever pack stays live. Branch adds no TS.
+- GPU is shared: a cold trivial task took ~19 min at 100% contention.
+  Confirm the 3090 is free before launching the smoke.
+- The correct Droid model ref is `custom:Qwen3.8-IQ3_S-(UAP-local)-0`
+  (derived from the BYOK display name).
+
+## Engine and model-file options — DECIDED & LIVE (2026-10-26)
+
+Both choices adopted per operator go ("do 1,2"); Phase 1 runs on them:
+
+- **Model file: pristine ISTA-DASLab GSQ-RCO IQ3_S** (the tqLLM-benchmarked
+  file; ISTA-measured −0.57pp LCB v6 vs BF16). Served via
+  `uap-tqllm-server.service` from `/home/cogtek/models/tqllm/flashnext`
+  (shards hardlinked from `strata-data/models/IQ3_S`, zero extra disk).
+- **Engine: tqLLM 1.2.3** (Docker `ghcr.io/turbo-tan/tqllm:1.2.3`, engine
+  commit 9005f4e), container 8086 → host **:8080**, so the UAP proxy
+  (`LLAMA_CPP_BASE` unchanged) and every agent route work unmodified.
+  Flags: `--context 131072 --np 2` (2 × 65536 slots) `--reasoning on
+  --max-tokens 16384 --name qwen3.8-flash-next-iq3_s`.
+- Switch/revert: `~/.config/uap/model-switch.sh tqllm | strata` (the tqllm
+  case was added; all other cases now disable uap-tqllm-server).
+- **Fleet impact**: all `:4000` agent traffic now runs pristine IQ3_S on
+  tqLLM, not the DavidAU abliterated strata arm. Revert is one command.
+- **Wiring sanity #3 (tqLLM chain, 2026-10-26)**: Droid → :4000 → tqserve,
+  restricted tools, exit 0, `subtype: success`, exact PHASE0-OK, 10 turns in
+  327 s, **clean self-termination** — vs sanity #1 (strata, ERROR-LOOP kill
+  at 380 s) and #2 (strata, driver kill at 20 min with task done at 19).
+  The engine's repeat-limit + reasoning handling plus `--only-tools`
+  resolved the stop-discipline failure mode.
+- Direct + proxy completions verified (thinking on, clean stops);
+  `/v1/models` reports exactly the name the Droid BYOK route sends.
+
+Context for the record (tqLLM's same-file/same-GPU head-to-head vs strata
+0.2.2): decode 76.4 vs 72.2 @32K, 85.1 vs 63.6 @64K, 77.1 vs 47.2 @128K
+tok/s, short-chat TTFT 0.32–0.41 s vs 1.07–1.29 s, up to 8 same-text slots
+vs strata's 1. The earlier abliterated-vs-Swift strata A/B (2026-10-23,
+throughput, abliterated won +7–8% decode) is superseded for this arm by the
+pristine choice: abliteration was the unmeasured quality confound.
+
+**Engine: strata 0.2.2 (current) vs tqLLM 1.2.3** (tqllm.com, Apache-2.0,
+Docker, OpenAI-compatible API on :8086, exact speculative decoding). tqLLM's
+published head-to-head is against our exact stack — same RTX 3090, same
+ISTA IQ3_S file, Strata 0.2.2:
+
+| Regime | tqLLM | Strata (ours) |
+|---|---|---|
+| decode @32K ctx | 76.4 tok/s | 72.2 |
+| decode @64K ctx | 85.1 | 63.6 |
+| decode @128K ctx | 77.1 | 47.2 |
+| short-chat TTFT | 0.32–0.41 s | 1.07–1.29 s |
+| parallel slots (`--np`) | up to 8, same text | 1 (live `/props`) |
+
+Pros: 1.3–1.6x decode at benchmark-typical long context, 3x TTFT on short
+turns, `--prompt-cache` (agentic multi-turn), `--np` enables the planned
+concurrency 2, `--reasoning-budget` + answer reserve + `--repeat-limit`
+directly mitigate the observed no-self-stop failure mode. Cons: new moving
+part (Docker unit + LiteLLM entry), self-reported flash-next bench (reason
+off; our workload is reasoning on), flash-next drafter `mtp-blk48-iq4.gguf`
+may need downloading, RAM 121 GB shared with the current 98 GB in use.
+
+**Model file: current abliterated IQ3_S vs pristine ISTA IQ3_S vs Swift
+IQ3_S.** All three exist locally (`strata-data/models/{,abliterated-,swift-}IQ3_S`).
+ISTA-DASLab publishes LCB v6 numbers for the pristine quants (vs BF16 base
+87.43): IQ3_S **86.86** (−0.57pp), IQ3_XXS 86.29, Q2_0 81.14. The quant
+itself is near-lossless on code; the **abliteration** delta is unmeasured
+anywhere (no published eval) and is the bigger unknown confound.
+
+Recommendation for benchmark hygiene: run arm 2 on the **pristine IQ3_S**
+pack (exists locally as `packs/iq3_s`) so the only mechanism delta vs the
+published anchors is UAP-in-Droid, with quant loss pinned at −0.57pp. Keep
+the current abliterated pack only if continuity with the earlier K3/TB
+trials matters more than a clean label. Engine swap (tqLLM) is orthogonal
+and worth it mainly for the long-context decode and `--np 2` concurrency;
+expected pass@1 impact of the engine itself is ~0 (both decode greedily
+exactly).
+
+## Resume recipe
+
+```sh
+cd /home/cogtek/dev/miller-tech/universal-agent-protocol
+# branch feature/368-lcb-droid-smoke, worktree .worktrees/368-lcb-droid-smoke
+ART=.worktrees/368-lcb-droid-smoke/benchmark-results/lcb-droid-smoke-20261025-175708
+source $ART/venv-lcb/bin/activate   # scoring venv
+# next: build the Phase-1 runner per the design above, then run 10×1 arm 2
+uap memory query "LCB-Droid GVS5H"  # session memory trail
+```
+
+## Operator supersession — 2026-10-27 (benchmark PAUSED)
+
+**SUPERSEDES the "DECIDED & LIVE" engine section above.** Per operator
+instruction the fleet switched back to the **DavidAU abliterated** pack
+(strata, `uap-strata-server`, served name `abliterated-iq3_s`) and the
+benchmark run is **paused** — do not resume without an explicit go.
+
+Quick same-pack head-to-head (direct :8080, 2 reps, measured 2026-10-27):
+
+| metric | strata-abliterated | tqLLM-abliterated |
+|---|---|---|
+| decode short | **93–97 tok/s** | 54–60 tok/s |
+| decode @16K ctx | **120–135 tok/s** | 57–61 tok/s |
+| TTFT short | **0.06–0.6 s** | 0.8–0.9 s |
+| TTFT @16K repeat | **0.07 s** (prompt cache) | 8.2 s |
+
+Reverses the pristine-pack result; hypothesis: `flashnext.tqfn`
+layer_slots/expert-cache layout matches the pristine shard split
+(52+27 GB), not the abliterated one (55.1+28.8 GB). `--prompt-cache` is
+not enabled in the tqllm unit. Unit inventory now:
+`uap-tqllm-server` (pristine, idle), `uap-tqllm-abliterated-server`
+(new, idle; bundle `/home/cogtek/models/tqllm/flashnext-abliterated`,
+hardlinked shards; served alias unchanged), `uap-strata-server`
+(**live**). Mutual Conflicts wired via drop-ins both directions.
+
+Resume-time consequences (also in UAP memory, importance 9):
+
+1. **Caveat box must lead with the unmeasured abliteration delta** —
+   a stronger confound than the quant's −0.57pp (pristine numbers stay
+   available via `model-switch.sh tqllm` for an A/B if ever wanted).
+2. **Driver concurrency 2 → 1** (strata is single-slot).
+3. Stop-discipline relies fully on the driver wall-cap + collect-at-cap
+   (strata lacks tqserve's repeat-limit; sanity #1/#2 stop failures were
+   strata-era, #3's clean self-stop was tqLLM).
+4. Prerequisite unchanged: restart `uap-anthropic-proxy.service`
+   (ERROR-LOOP zero-exit fix, merged master `2c3868be`, published
+   @miller-tech/uap 2.36.4) before the smoke so guard false positives
+   cannot eat an attempt.
+

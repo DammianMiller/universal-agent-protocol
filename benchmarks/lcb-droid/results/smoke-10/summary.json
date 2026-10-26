@@ -1,0 +1,18 @@
+{
+ "schema": "lcb-droid-smoke-10/1",
+ "run_utc": "2026-10-27T00:21+0530 (start), scoring complete 2026-10-27",
+ "model": "abliterated-iq3_s (DavidAU Qwen3.8-Flash-Next IQ3_S abliterated, served by strata)",
+ "chain": "droid exec -> uap-anthropic-proxy :4000 -> strata :8080",
+ "arm": "2 (UAP AGENTS.md protocol in Droid), pass 1, concurrency 1",
+ "n": 10,
+ "hidden_pass": 10,
+ "pass_at_1": 1.0,
+ "public_gate_all_pass": true,
+ "reference_control_all_pass": true,
+ "stop_reasons": {
+  "done": 9,
+  "wall-cap": 1
+ },
+ "wall_min_total": 284.1,
+ "wall_min_mean": 28.4
+}
