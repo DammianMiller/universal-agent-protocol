@@ -710,15 +710,20 @@ function manifestEntriesForPath(
 
 const MiB = (n: number): string => `${Math.round(n / (1024 * 1024)).toLocaleString()} MiB`;
 
-/**
- * Repo root of the RUNNING cli (dist/cli/models.js → ../../.. in dist; same
- * layout from src via tsx). The recovery commands default their registry to
- * cwd when it has one (a developer inside the repo), else to THIS root: a
- * unit ExecStartPre runs with WorkingDirectory set to the engine's checkout,
- * and a deleted 15 GiB GGUF must not become "not declared" because the cwd
- * happened to be /home/cogtek/dev/flash-next-bench/llamAmpere.
- */
-const CLI_REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+// The recovery commands default their registry to the cwd when it has one
+// (a developer inside the repo), else to the RUNNING cli's own repo root: a
+// unit ExecStartPre runs with WorkingDirectory set to the engine's checkout,
+// and a present 15 GiB GGUF must not read as "not declared" just because the
+// cwd happened to be /home/cogtek/dev/flash-next-bench/llamAmpere.
+// The module sits at <repo>/src/cli/models.ts (tsx) or <repo>/dist/cli/models.js
+// (built) — in BOTH layouts the repo root is two directories up. The
+// existsSync walk covers non-standard installs; a missing registry at every
+// candidate keeps the last one so the error names a real path.
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const CLI_REPO_ROOT =
+  [resolve(MODULE_DIR, '../..'), resolve(MODULE_DIR, '../../..')].find((d) =>
+    existsSync(join(d, 'config', 'model-registry.json')),
+  ) ?? resolve(MODULE_DIR, '../..');
 /** Pure form of the fallback, exported for tests (no machine state). */
 export function resolveEnsureProjectDir(cwd: string, cliRoot: string, explicit?: string): string {
   return explicit ?? (existsSync(join(cwd, 'config', 'model-registry.json')) ? cwd : cliRoot);
