@@ -4,11 +4,11 @@
  * in model-files.test.ts with a stubbed curl runner; these tests must never
  * touch the network.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { modelsCommand } from '../../src/cli/models.js';
+import { modelsCommand, resolveEnsureProjectDir } from '../../src/cli/models.js';
 
 let dir: string;
 beforeAll(() => {
@@ -99,5 +99,23 @@ describe('models ensure (CLI)', () => {
       dryRun: true,
     });
     expect(code).toBe(1);
+  });
+
+  it('registry lookup falls back to the CLI repo when the cwd has no registry (unit ExecStartPre runs from the engine checkout)', async () => {
+    // Regression (2026-10-30, live): the ampere unit's ExecStartPre ran with
+    // WorkingDirectory=llamAmpere, the cwd had no config/model-registry.json,
+    // and a perfectly present GGUF read as "not declared".
+    const withRegistry = mkdtempSync(join(tmpdir(), 'with-reg-'));
+    const withoutRegistry = mkdtempSync(join(tmpdir(), 'without-reg-'));
+    try {
+      mkdirSync(join(withRegistry, 'config'), { recursive: true });
+      writeFileSync(join(withRegistry, 'config', 'model-registry.json'), '{"version":1}');
+      expect(resolveEnsureProjectDir(withoutRegistry, '/cli/root')).toBe('/cli/root');
+      expect(resolveEnsureProjectDir(withRegistry, '/cli/root')).toBe(withRegistry);
+      expect(resolveEnsureProjectDir(withoutRegistry, '/cli/root', '/explicit')).toBe('/explicit');
+    } finally {
+      rmSync(withRegistry, { recursive: true, force: true });
+      rmSync(withoutRegistry, { recursive: true, force: true });
+    }
   });
 });
