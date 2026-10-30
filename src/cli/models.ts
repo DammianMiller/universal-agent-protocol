@@ -28,7 +28,8 @@
  *              also hash).
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
+import { dirname, join, resolve } from 'path';
 import {
   REGISTRY_VERSION,
   configCostMiB,
@@ -709,6 +710,22 @@ function manifestEntriesForPath(
 
 const MiB = (n: number): string => `${Math.round(n / (1024 * 1024)).toLocaleString()} MiB`;
 
+/**
+ * Repo root of the RUNNING cli (dist/cli/models.js → ../../.. in dist; same
+ * layout from src via tsx). The recovery commands default their registry to
+ * cwd when it has one (a developer inside the repo), else to THIS root: a
+ * unit ExecStartPre runs with WorkingDirectory set to the engine's checkout,
+ * and a deleted 15 GiB GGUF must not become "not declared" because the cwd
+ * happened to be /home/cogtek/dev/flash-next-bench/llamAmpere.
+ */
+const CLI_REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+/** Pure form of the fallback, exported for tests (no machine state). */
+export function resolveEnsureProjectDir(cwd: string, cliRoot: string, explicit?: string): string {
+  return explicit ?? (existsSync(join(cwd, 'config', 'model-registry.json')) ? cwd : cliRoot);
+}
+const ensureProjectDir = (explicit?: string): string =>
+  resolveEnsureProjectDir(process.cwd(), CLI_REPO_ROOT, explicit);
+
 async function printEnsureResult(
   label: string,
   result: Awaited<ReturnType<typeof ensureFiles>>,
@@ -741,7 +758,7 @@ async function printEnsureResult(
 }
 
 async function modelsEnsureSpecCommand(spec: string, opts: ModelsEnsureOptions): Promise<number> {
-  const { registry, errors } = loadModelRegistry(opts.projectDir ?? process.cwd(), {
+  const { registry, errors } = loadModelRegistry(ensureProjectDir(opts.projectDir), {
     repoPath: opts.repoPath,
     localPath: opts.localPath,
   });
@@ -767,7 +784,7 @@ async function modelsEnsureSpecCommand(spec: string, opts: ModelsEnsureOptions):
 }
 
 async function modelsEnsureByPathCommand(path: string, opts: ModelsEnsureOptions): Promise<number> {
-  const { registry, errors } = loadModelRegistry(opts.projectDir ?? process.cwd(), {
+  const { registry, errors } = loadModelRegistry(ensureProjectDir(opts.projectDir), {
     repoPath: opts.repoPath,
     localPath: opts.localPath,
   });
