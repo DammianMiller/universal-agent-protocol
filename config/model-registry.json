@@ -54,6 +54,28 @@
           "engine": "strata",
           "unit": "uap-strata-server",
           "note": "Swift 1.5 (UkisAI reasoning-efficient Flash-Next post-train) GSQ-RCO IQ3_S on the strata engine; A/B trial vs strata-iq3_s since 2026-10-17 with identical tuning (spec 8/0.70, vram-reserve 3072, int8 KV resident 32768, 131k). Weights: ukisai Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, sha256-verified, PLE table in shard 1 (setup-detected); pack strata-data/packs/swift-iq3_s; config strata-swift-iq3_s.json behind uap-strata-server.service (revert: point the unit --config back at strata-iq3_s.json, daemon-reload, restart). Run `uap models measure` to record this machine's footprint before it can load (fail-closed). Trial evidence: /home/cogtek/dev/strata/bench/results/2026-10-17-swift-iq3s-trial/."
+        },
+        "strata-abliterated-iq2_xs": {
+          "status": "unmeasured",
+          "engine": "strata",
+          "unit": "uap-strata-server",
+          "note": "The LIVE :8080 default arm since 2026-10-28 (DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; engine 0.1.52, config strata-abliterated-iq2_xs.json). Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28).",
+          "files": [
+            {
+              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
+              "repo": "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
+              "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
+              "bytes": 39665015072,
+              "sha256": "4acc3ebb5050d20117bdc77fc39200e709dfe2b2367f3522c95b9112a30aff81"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00002-of-00002.gguf",
+              "repo": "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
+              "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00002-of-00002.gguf",
+              "bytes": 28800138432,
+              "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+            }
+          ]
         }
       },
       "advertises": ["qwen3.8-flash-next-iq3_s", "swift-1.5-iq3_s", "gpt-5.1-codex"]
@@ -64,13 +86,21 @@
       "task_affinity": ["code", "general"],
       "affinity": { "device": ["gpu0"] },
       "endpoint": "http://127.0.0.1:8080",
-      "advertises": ["Qwen3.8-27B"],
+      "advertises": ["Qwen3.8-27B", "qwen38-ampere-27b", "qwen38-swift-27b", "Qwen3.8-27B-Q4_K_M.gguf"],
       "configs": {
         "llama-mtp": {
           "status": "unmeasured",
           "engine": "llama.cpp",
           "unit": "uap-llama-server",
-          "profile": "config/llama-profiles/qwen38-27b-mtp.env"
+          "profile": "config/llama-profiles/qwen38-27b-mtp.env",
+          "files": [
+            {
+              "path": "/home/cogtek/Downloads/Qwen3.8-27B-UD-IQ4_XS.gguf",
+              "repo": "unsloth/Qwen3.8-27B-GGUF",
+              "file": "Qwen3.8-27B-UD-IQ4_XS.gguf",
+              "bytes": 14252845984
+            }
+          ]
         },
         "exl3-4bit": {
           "status": "unmeasured",
@@ -86,23 +116,83 @@
         "signal": {
           "status": "unmeasured",
           "engine": "llama.cpp",
-          "unit": "uap-signal-server"
+          "unit": "uap-signal-server",
+          "files": [
+            {
+              "path": "/home/cogtek/models/signal-27b/AP-IQ4_XS/Signal-3.8-27B-AP-IQ4_XS.gguf",
+              "bytes": 14252844608
+            },
+            {
+              "path": "/home/cogtek/models/signal-27b/mmproj-BF16.gguf",
+              "bytes": 931146432
+            }
+          ]
         },
         "gsq-rco": {
           "status": "unmeasured",
           "engine": "llama.cpp",
           "unit": "uap-gsq-rco-server",
-          "service": "gsq-rco-server"
+          "service": "gsq-rco-server",
+          "files": [
+            {
+              "path": "/home/cogtek/models/qwen3.8-27b-gsq-rco/Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+              "bytes": 11771546784
+            },
+            {
+              "path": "/home/cogtek/models/qwen3.8-27b-gsq-rco/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
+              "bytes": 12120016960
+            },
+            {
+              "path": "/home/cogtek/models/qwen3.8-27b-gsq-rco/mmproj-Qwen3.8-27B-BF16.gguf",
+              "bytes": 931146528
+            }
+          ]
         },
         "ampere": {
           "status": "unmeasured",
           "engine": "llama.cpp",
-          "unit": "uap-ampere-server"
+          "unit": "uap-ampere-server",
+          "rails": 2,
+          "note": "ATX-IQ4_XS-M (4.56 bpw, llamAmpere-tuned recipe: bulk IQ4_XS, Q5_0/Q6_K attention K/V, Q8_0 GDN vectors) on llamAmpere v0.3, the engine+quant pair measured on this GPU class (3090/3090 Ti): 99.4 tok/s clean decode, 93.2 at 100K depth, exact p/q draft verification (output distribution = target's exactly). The 2-rail arm since 2026-10-30: -c 163840 total / -np 2 = 81920 per rail, q8_0 K + turbo3 V KV (the fused SM86 MMA path), MTP-3 spec decode, leaving 3-4 GiB VRAM free. Unit ExecStartPre runs `uap models ensure-by-path` so a deleted GGUF re-downloads before the start fails.",
+          "files": [
+            {
+              "path": "/home/cogtek/models/atx-iq4xs-m/Qwen3.8-27B-ATX-4-XS.gguf",
+              "repo": "jakeatx/Qwen3.8-27B-ATX-IQ4_XS-M-GGUF",
+              "file": "Qwen3.8-27B-ATX-4-XS.gguf",
+              "bytes": 15588551712,
+              "sha256": "5cf05ad901dcaa76f41db13a5629146ed882219339377a80e37b12a8528d963b"
+            }
+          ]
         },
         "swift": {
           "status": "unmeasured",
           "engine": "llama.cpp",
-          "unit": "uap-swift-server"
+          "unit": "uap-swift-server",
+          "files": [
+            {
+              "path": "/home/cogtek/models/swift-27b/Swift-Qwen3.8-27B-IQ4_XS.gguf",
+              "repo": "ukisai/Swift-Qwen3.8-27B-GGUF",
+              "file": "Swift-Qwen3.8-27B-IQ4_XS.gguf",
+              "bytes": 15688288352,
+              "sha256": "27f5531a012a4bb3c3e379318dc62216f057131d34347498fabfc23186a4ffda"
+            }
+          ]
+        },
+        "openjet": {
+          "status": "unmeasured",
+          "engine": "openjet",
+          "unit": "uap-openjet-server",
+          "note": "OpenJet megakernel arm (:8080 default 2026-10-28 daytime, stood down evening for the strata switch-back). The Q4_K_M file under models/qwen3.8-27b-q4km went missing from disk after the arm was stood down — restored-on-demand via this manifest. unsloth deleted the file from main on 2026-08-19, so the source is the OpenJet catalog's pinned revision (open-jet src/config.py QWEN38_27B_URL).",
+          "files": [
+            {
+              "path": "/home/cogtek/models/qwen3.8-27b-q4km/Qwen3.8-27B-Q4_K_M.gguf",
+              "repo": "unsloth/Qwen3.8-27B-GGUF",
+              "file": "Qwen3.8-27B-Q4_K_M.gguf",
+              "rev": "566347e99d832d31f6245a577198d10d5bdd389e",
+              "bytes": 17106775008,
+              "sha256": "7e78da5d7e3ae28d178121f58646953305f3e5bd3cb46f4a75584e8b6c6fe169"
+            }
+          ]
         }
       }
     }

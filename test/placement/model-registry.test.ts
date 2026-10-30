@@ -292,3 +292,115 @@ describe('repo registry: ugc brain (qwen3.6-27b) wiring', () => {
     expect(configCostMiB(cfg, 16384)).toBe(16000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Files manifest: what `uap models ensure` recovers a deleted weight from
+// ---------------------------------------------------------------------------
+
+describe('files manifest (model-file recovery)', () => {
+  it('accepts path/repo/rev/bytes/sha256 on any config, measured or unmeasured', () => {
+    const own = mkdtempSync(join(tmpdir(), 'files-registry-'));
+    try {
+      const repoPath = join(own, 'repo.json');
+      writeFileSync(repoPath, JSON.stringify({
+        version: 1,
+        devices: { gpu0: { kind: 'gpu' }, cpu0: { kind: 'cpu' } },
+        models: {
+          'qwen3.8-27b': {
+            display: 'Qwen3.8 27B',
+            configs: {
+              ampere: {
+                status: 'unmeasured',
+                files: [
+                  {
+                    path: '/home/x/Qwen3.8-27B-ATX-4-XS.gguf',
+                    repo: 'jakeatx/Qwen3.8-27B-ATX-IQ4_XS-M-GGUF',
+                    bytes: 15588551712,
+                    sha256: 'a'.repeat(64),
+                  },
+                ],
+              },
+              openjet: {
+                // A measured entry must also carry the manifest — a measure
+                // write replaces the repo config wholesale, so identity
+                // (files included) has to survive it.
+                unit: 'uap-openjet-server',
+                files: [
+                  {
+                    path: '/home/x/Qwen3.8-27B-Q4_K_M.gguf',
+                    repo: 'unsloth/Qwen3.8-27B-GGUF',
+                    rev: '566347e99d832d31f6245a577198d10d5bdd389e',
+                    bytes: 17106775008,
+                  },
+                ],
+                resident_gpu_mib: 23600,
+                host_rss_mib: 24000,
+                context_pool_cells: 115968,
+                kv_resident_cells: 115968,
+                kv_kind: 'q8_0',
+                measured_at: '2026-10-28T00:00:00Z',
+                measured_on: 'gpu0',
+              },
+            },
+          },
+        },
+      }));
+      const loaded = loadModelRegistry(own, { repoPath, localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const ampere = loaded.registry.models['qwen3.8-27b'].configs['ampere'];
+      expect(ampere.files?.[0].repo).toBe('jakeatx/Qwen3.8-27B-ATX-IQ4_XS-M-GGUF');
+      const openjet = loaded.registry.models['qwen3.8-27b'].configs['openjet'];
+      expect(openjet.files?.[0].rev).toBe('566347e99d832d31f6245a577198d10d5bdd389e');
+      expect(isPlaceable(openjet)).toBe(true);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a malformed sha256 — never record a digest we cannot verify against', () => {
+    const own = mkdtempSync(join(tmpdir(), 'files-bad-registry-'));
+    try {
+      const repoPath = join(own, 'repo.json');
+      writeFileSync(repoPath, JSON.stringify({
+        version: 1,
+        devices: { gpu0: { kind: 'gpu' } },
+        models: {
+          m: {
+            display: 'M',
+            configs: {
+              c: {
+                status: 'unmeasured',
+                files: [{ path: '/home/x/a.gguf', repo: 'o/r', sha256: 'A'.repeat(63) }],
+              },
+            },
+          },
+        },
+      }));
+      const loaded = loadModelRegistry(own, { repoPath, localPath: join(own, 'no-local.json') });
+      expect(loaded.errors.length).toBeGreaterThan(0);
+      expect(loaded.errors[0]).toMatch(/sha256/);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+
+  it('the shipped registry declares the 27B arms with recorded sources and sizes', () => {
+    const own = mkdtempSync(join(tmpdir(), 'files-shipped-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const ampere = loaded.registry.models['qwen3.8-27b'].configs['ampere'];
+      expect(ampere.files?.[0]).toMatchObject({
+        repo: 'jakeatx/Qwen3.8-27B-ATX-IQ4_XS-M-GGUF',
+        bytes: 15588551712,
+      });
+      const openjet = loaded.registry.models['qwen3.8-27b'].configs['openjet'];
+      // unsloth deleted the Q4_K_M from main — the manifest MUST pin the rev.
+      expect(openjet.files?.[0].rev).toBe('566347e99d832d31f6245a577198d10d5bdd389e');
+      const strata = loaded.registry.models['qwen3.8-flash-next'].configs['strata-abliterated-iq2_xs'];
+      expect(strata.files).toHaveLength(2);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+});

@@ -19,9 +19,16 @@
  *   unload   — drain, stop, verify-free, refresh for a model's residents.
  *   units    — write Conflicts= drop-ins for same-device units (systemd
  *              itself then refuses two same-device residents).
+ *   ensure / ensure-by-path — verify a config's declared model files are
+ *              present (stat + size only; cheap enough for a unit preflight)
+ *              and re-download what a deletion or truncation removed, from
+ *              the source recorded in the registry files manifest. The unit
+ *              ExecStartPre hooks use ensure-by-path; an operator uses
+ *              ensure <model>/<config> (--dry-run to list, --verify to
+ *              also hash).
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { dirname, resolve } from 'path';
 import {
   REGISTRY_VERSION,
   configCostMiB,
@@ -68,6 +75,10 @@ import {
 } from '../placement/auto.js';
 import { loadPolicy } from '../capacity/probe.js';
 import { looksLikeStrataMetrics, parseStrataEngine } from '../inference/strata.js';
+import {
+  ensureFiles,
+  type ModelFileManifest,
+} from '../inference/model-files.js';
 
 const PROBE_TIMEOUT_MS = 5000;
 
@@ -233,8 +244,9 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
   if (rss === null) fail(`no /proc/<pid>/status readable for [${pids.join(', ')}] — refusing to guess host RSS`);
 
   const device = opts.device ?? Object.entries(loaded.registry.devices).find(([, d]) => d.kind === 'gpu')?.[0] ?? 'gpu0';
-  // Identity fields (unit/profile/service/...) come from the merged entry so
-  // the measured write never drops how the config was found.
+  // Identity fields (unit/profile/service/... and the files manifest) come
+  // from the merged entry so the measured write never drops how the config
+  // was found — or what ensure needs to recover its weights.
   const measured = {
     engine: entry.engine,
     unit: entry.unit,
@@ -243,6 +255,7 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
     note: entry.note,
     flags: entry.flags,
     rails: entry.rails,
+    files: entry.files,
     resident_gpu_mib: residentGpu,
     host_rss_mib: rss,
     context_pool_cells: engine.maxContext,
@@ -642,6 +655,147 @@ export function modelsAutoCommand(opts: ModelsAutoOptions = {}): number {
 }
 
 // ---------------------------------------------------------------------------
+// ensure (files present / recover deleted weights)
+// ---------------------------------------------------------------------------
+
+export interface ModelsEnsureOptions {
+  projectDir?: string;
+  repoPath?: string;
+  localPath?: string;
+  dryRun?: boolean;
+  download?: boolean;
+  verify?: boolean;
+}
+
+/** All files a `model` or `model/config` spec declares, with its label. */
+function manifestEntriesForSpec(
+  registry: ModelRegistry,
+  spec: string,
+): { label: string; entries: ModelFileManifest[] } | { error: string } {
+  const [modelKey, configKey] = spec.split('/');
+  const model = registry.models[modelKey];
+  if (!model) {
+    const known = Object.keys(registry.models).join(', ');
+    return { error: `unknown model '${modelKey}' in the registry (known: ${known})` };
+  }
+  if (!configKey) {
+    const entries: ModelFileManifest[] = [];
+    for (const cfg of Object.values(model.configs)) entries.push(...(cfg.files ?? []));
+    return { label: modelKey, entries };
+  }
+  const cfg = model.configs[configKey];
+  if (!cfg) {
+    const known = Object.keys(model.configs).join(', ');
+    return { error: `unknown config '${configKey}' for ${modelKey} (known: ${known})` };
+  }
+  return { label: `${modelKey}/${configKey}`, entries: [...(cfg.files ?? [])] };
+}
+
+/** Every config that declares exactly this file path (any model). */
+function manifestEntriesForPath(
+  registry: ModelRegistry,
+  path: string,
+): Array<{ label: string; entries: ModelFileManifest[] }> {
+  const wanted = resolve(path);
+  const hits: Array<{ label: string; entries: ModelFileManifest[] }> = [];
+  for (const [modelKey, model] of Object.entries(registry.models)) {
+    for (const [configKey, cfg] of Object.entries(model.configs)) {
+      const entries = (cfg.files ?? []).filter((f) => resolve(f.path) === wanted);
+      if (entries.length > 0) hits.push({ label: `${modelKey}/${configKey}`, entries });
+    }
+  }
+  return hits;
+}
+
+const MiB = (n: number): string => `${Math.round(n / (1024 * 1024)).toLocaleString()} MiB`;
+
+async function printEnsureResult(
+  label: string,
+  result: Awaited<ReturnType<typeof ensureFiles>>,
+): Promise<number> {
+  for (const f of result.repaired) console.log(`repaired  ${f.path} (downloaded from recorded source)`);
+  for (const { entry, state } of result.broken) {
+    if (result.repaired.some((r) => r.path === entry.path)) continue;
+    if (result.failed.some((r) => r.entry.path === entry.path)) continue;
+    const why =
+      state.status === 'missing'
+        ? 'missing'
+        : state.status === 'size-mismatch'
+          ? `truncated (${MiB(state.bytes)} of ${MiB(state.expectedBytes)})`
+          : state.status === 'sha-mismatch'
+            ? 'sha256 mismatch'
+            : 'broken';
+    console.log(`${why.padEnd(9)}${entry.path}${entry.repo ? '' : ' — no source recorded; repair manually'}`);
+  }
+  for (const f of result.failed) console.log(`FAILED    ${f.entry.path}: ${f.error}`);
+  if (result.failed.length > 0) {
+    console.error(`${label}: ${result.failed.length} file(s) could not be recovered`);
+    return 1;
+  }
+  if (result.broken.length > 0) {
+    console.error(`${label}: ${result.broken.length} file(s) missing and not repaired`);
+    return 1;
+  }
+  console.log(`${label}: ${result.present}/${result.checked} file(s) present`);
+  return 0;
+}
+
+async function modelsEnsureSpecCommand(spec: string, opts: ModelsEnsureOptions): Promise<number> {
+  const { registry, errors } = loadModelRegistry(opts.projectDir ?? process.cwd(), {
+    repoPath: opts.repoPath,
+    localPath: opts.localPath,
+  });
+  if (errors.length > 0) {
+    for (const err of errors) console.error(`models ensure: registry: ${err}`);
+    return 1;
+  }
+  const found = manifestEntriesForSpec(registry, spec);
+  if ('error' in found) {
+    console.error(`models ensure: ${found.error}`);
+    return 1;
+  }
+  if (found.entries.length === 0) {
+    console.error(`models ensure: ${found.label} declares no files manifest — add one to config/model-registry.json first`);
+    return 1;
+  }
+  const result = await ensureFiles(found.entries, {
+    dryRun: opts.dryRun === true,
+    download: opts.download,
+    verifySha: opts.verify === true,
+  });
+  return printEnsureResult(found.label, result);
+}
+
+async function modelsEnsureByPathCommand(path: string, opts: ModelsEnsureOptions): Promise<number> {
+  const { registry, errors } = loadModelRegistry(opts.projectDir ?? process.cwd(), {
+    repoPath: opts.repoPath,
+    localPath: opts.localPath,
+  });
+  if (errors.length > 0) {
+    for (const err of errors) console.error(`models ensure-by-path: registry: ${err}`);
+    return 1;
+  }
+  const hits = manifestEntriesForPath(registry, path);
+  if (hits.length === 0) {
+    console.error(
+      `models ensure-by-path: ${path} is not declared in any registry config — ` +
+        'add a files entry for it (repo + bytes + sha256) so it can be recovered',
+    );
+    return 1;
+  }
+  let worst = 0;
+  for (const hit of hits) {
+    const result = await ensureFiles(hit.entries, {
+      dryRun: opts.dryRun === true,
+      download: opts.download,
+      verifySha: opts.verify === true,
+    });
+    worst = Math.max(worst, await printEnsureResult(hit.label, result));
+  }
+  return worst;
+}
+
+// ---------------------------------------------------------------------------
 // dispatcher
 // ---------------------------------------------------------------------------
 
@@ -655,7 +809,9 @@ export type ModelsAction =
   | 'load'
   | 'unload'
   | 'units'
-  | 'auto';
+  | 'auto'
+  | 'ensure'
+  | 'ensure-by-path';
 
 export async function modelsCommand(action: ModelsAction, opts: Record<string, unknown>): Promise<number> {
   if (action === 'validate') return modelsValidateCommand(opts as ModelsValidateOptions);
@@ -667,5 +823,21 @@ export async function modelsCommand(action: ModelsAction, opts: Record<string, u
   if (action === 'unload') return modelsUnloadCommand(opts as { model?: string } & ModelsStatusOptions);
   if (action === 'units') return modelsUnitsCommand(opts as ModelsStatusOptions);
   if (action === 'auto') return modelsAutoCommand(opts as ModelsAutoOptions);
+  if (action === 'ensure') {
+    const spec = String(opts.spec ?? '');
+    if (!spec) {
+      console.error("models ensure: missing '<model>/<config>' argument");
+      return 1;
+    }
+    return modelsEnsureSpecCommand(spec, opts as ModelsEnsureOptions);
+  }
+  if (action === 'ensure-by-path') {
+    const path = String(opts.path ?? '');
+    if (!path) {
+      console.error('models ensure-by-path: missing <path> argument');
+      return 1;
+    }
+    return modelsEnsureByPathCommand(path, opts as ModelsEnsureOptions);
+  }
   return modelsPendingCommand(opts as ModelsStatusOptions);
 }

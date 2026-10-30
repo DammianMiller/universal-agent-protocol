@@ -792,6 +792,46 @@ program
         });
         if (code) process.exitCode = code;
       }),
+  )
+  .addCommand(
+    new Command('ensure')
+      .argument('<spec>', 'registry model or model/config (e.g. qwen3.8-27b/ampere)')
+      .description('Verify a config\'s declared model files are present (stat + size), re-download missing/truncated ones from the recorded source')
+      .option('--dry-run', 'Report what is missing; download nothing')
+      .option('--no-download', 'Alias of --dry-run (report only)')
+      .option('--verify', 'Also hash sha256 (minutes for tens of GiB; not for unit preflights)')
+      .option('--repo-path <path>', 'explicit repo registry path (default: <project>/config/model-registry.json)')
+      .option('--local-path <path>', 'explicit machine-local registry path (default: ~/.uap/model-registry.json)')
+      .action(async (spec, options) => {
+        const code = await (await lazy.models())('ensure', {
+          spec,
+          dryRun: options.dryRun === true || options.download === false,
+          download: options.download !== false,
+          verify: options.verify === true,
+          repoPath: options.repoPath,
+          localPath: options.localPath,
+        });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('ensure-by-path')
+      .argument('<path>', 'absolute model file path as declared in the registry')
+      .description('Unit preflight form of ensure: verify this file is present (cheap), re-download if missing')
+      .option('--dry-run', 'Report what is missing; download nothing')
+      .option('--verify', 'Also hash sha256 (slow)')
+      .option('--repo-path <path>', 'explicit repo registry path (default: <project>/config/model-registry.json)')
+      .option('--local-path <path>', 'explicit machine-local registry path (default: ~/.uap/model-registry.json)')
+      .action(async (path, options) => {
+        const code = await (await lazy.models())('ensure-by-path', {
+          path,
+          dryRun: options.dryRun === true,
+          verify: options.verify === true,
+          repoPath: options.repoPath,
+          localPath: options.localPath,
+        });
+        if (code) process.exitCode = code;
+      }),
   );
 
 // Quality-metrics gate — complexity/coverage/mutation policing with a ratchet
