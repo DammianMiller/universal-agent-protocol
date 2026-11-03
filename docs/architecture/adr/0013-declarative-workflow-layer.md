@@ -1,6 +1,8 @@
 # ADR 0013: Declarative workflow layer — static step DAGs over the orchestrator
 
-- Status: Accepted
+- Status: Accepted (amended by ADR 0014: a fourth step kind `loop`, the
+  caller-injected convergence-loop seam, and the team-solve-deliver
+  posture that `uap deliver` auto-engages on high/critical missions)
 - Date: 2026-11-03
 - Spec: `uap workflow` (src/workflow/, src/cli/workflow.ts,
   examples/workflows/team-solve/, docs/guides/WORKFLOWS.md).

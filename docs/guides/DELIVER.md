@@ -58,6 +58,7 @@ For a mission too large to hold in one context, `deliver` scales down the contex
 - **`--decompose`** splits the mission into sequential phases, each converged by its own loop (auto for long, complex instructions; `--no-decompose` forbids it).
 - **`--orchestrate`** runs those phases through the **blackboard orchestrator** with *minimal* per-task context — each task sees only its goal + its direct-dependency outputs. Implies `--decompose`.
 - **`--epics`** runs a massive mission as a sequence of **epics, each a fresh session** — only prior epics' summaries are injected, never their full code — looped until each is accepted (auto for very long missions; `--no-epics` disables).
+- **`--team-solve`** runs the mission through the **team-solve-deliver workflow**: team roles direct the convergence loop. A planner and two parallel ideators (minimal-change vs structural) produce an approach; the **solve** step runs the SAME posture decision as any other mission (epics → orchestrated → phased → single) with that approach enriching the instruction; a **fresh-context reviewer** judges the outcome against the plan; a review-seeded **repair** loop applies only what the review named; and a **gates-only verify** pass — the tiered ladder with no executor turns — decides the mission. **AUTO by default**: engages for high/critical-complexity missions only (the reliability ladder's hardest-tier row), stands down on self-gate, lazy-solved, and resumed runs. `--no-team-solve`, `UAP_DELIVER_TEAM_SOLVE=0`, or `.uap.json` `deliver.teamSolve: "off"` disable; `deliver.teamSolve: "on"` always engages. The role ledger (plan, proposals, repair brief) lands in `.uap/workflow-runs/<runId>/`. See [Workflows](WORKFLOWS.md) for the workflow format.
 
 **Contracts-first** (on by default inside epic/decompose runs; `UAP_DELIVER_CONTRACTS=0` disables): the first epic plans the shared types, interfaces, and registry APIs the rest build against. Once accepted, its files are **locked read-only** so later epics build against frozen signatures and can't drift them. The public surface is *extracted and verified against emitted source* — only names proven present are recorded — which is what makes cross-module composition reliable without holding every module in context.
 
@@ -202,13 +203,14 @@ Long autonomous runs fail in predictable ways; `deliver` has a guard for each:
 | `--ci-passes <n>` | Max CI re-converge passes on failure (1–10, default `2`) |
 | `--ci-timeout <minutes>` | CI watch budget in minutes (1–120, default `20`) |
 
-**Big builds (decompose → orchestrate → epics)**
+**Big builds (decompose → orchestrate → epics → team-solve)**
 
 | Flag | Purpose |
 |---|---|
 | `--decompose` / `--no-decompose` | Split the mission into sequential phases, each converged by its own loop (auto for long complex tasks) |
 | `--orchestrate` / `--no-orchestrate` | Run decomposed tasks through the blackboard orchestrator with MINIMAL per-task context (implies `--decompose`) |
 | `--epics` / `--no-epics` | Run a massive mission as a sequence of fresh-session epics until each is accepted (auto for very long missions) |
+| `--team-solve` / `--no-team-solve` | Run the mission through the team-solve-deliver workflow: roles plan/ideate/review, solve+repair are gates-driven convergence loops, verify is gates-only (AUTO on high/critical complexity) |
 
 **Exploration & quality aids**
 

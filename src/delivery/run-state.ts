@@ -34,7 +34,7 @@ export interface DeliverRunState {
    * epic path; everything else takes the phased (cursor-honoring) path, and
    * a mismatch triggers a loud downgrade warning instead of a silent
    * execution-model switch. */
-  runnerKind?: 'single' | 'phased' | 'orchestrated' | 'epic';
+  runnerKind?: 'single' | 'phased' | 'orchestrated' | 'epic' | 'teamsolve';
   /** One-line summaries of completed phases — or, for epic-kind runs,
    * completed EPICS (harness-owned, injected into later phases/epics). */
   phaseSummaries?: string[];
@@ -106,7 +106,7 @@ export const MAX_PERSISTED_PHASES = MAX_PHASES;
 const MAX_SUMMARY_CHARS = 300;
 const MAX_CRITERIA = 6;
 const MAX_CRITERION_CHARS = 200;
-const VALID_RUNNER_KINDS = new Set(['single', 'phased', 'orchestrated', 'epic']);
+const VALID_RUNNER_KINDS = new Set(['single', 'phased', 'orchestrated', 'epic', 'teamsolve']);
 const PHASE_ID_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
 
 /**

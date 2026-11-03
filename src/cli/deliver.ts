@@ -514,6 +514,12 @@ export interface DeliverOptions {
    * summaries injected), looped with fresh sessions until accepted. Auto for
    * very long complex missions; commander sets false on --no-epics. */
   epics?: boolean;
+  /** `--team-solve`: run the mission through the team-solve-deliver workflow —
+   * team roles (plan → parallel ideations → fresh review) direct the
+   * convergence loop, with solve/repair as gates-driven loops and a
+   * gates-only verify verdict. AUTO by default: engages for high/critical
+   * complexity only; commander sets false on --no-team-solve. */
+  teamSolve?: boolean;
   /** `--allow-noop`: permit success without any tree change (disables the
    * anti-no-op acceptance rail for missions that genuinely require none). */
   allowNoop?: boolean;
@@ -761,6 +767,61 @@ export function resolveDecomposeWanted(opts: {
   if (opts.decomposeOption === true) return true;
   if (opts.decomposeOption === undefined && opts.envDecompose !== '0' && opts.heuristic()) return true;
   return false;
+}
+
+/**
+ * AUTO-engagement scope floor (PURE): true when the instruction names exactly
+ * one file and is short — a well-scoped single-file edit. The complexity
+ * classifier's keyword ladder deliberately promotes architecture-worded
+ * missions ("optimize", "refactor") regardless of scope — right for MODEL
+ * ROUTING, where the bet is one cheap completion; team-solve multiplies the
+ * pipeline's cost 4-6× before the first tool turn, so the AUTO row requires
+ * more than a keyword hit. The reliability ladder's hardest-tier row is
+ * "novel/ambiguous": an operator who names one file has already
+ * disambiguated the scope. Zero named files is NOT this floor (scope is
+ * genuinely ambiguous — the tier gate alone decides). Explicit --team-solve
+ * and config-on bypass the floor entirely.
+ */
+export function looksSingleFileScoped(instruction: string): boolean {
+  if (instruction.length > 600) return false;
+  const pathish = instruction.match(/(?:[\w@.-]+\/)*[\w@.-]+\.[A-Za-z]{1,5}\b/g) ?? [];
+  return new Set(pathish).size === 1;
+}
+
+/**
+ * Whether the team-solve posture engages for a mission — the combined engine:
+ * the team-solve-deliver workflow's roles (plan → parallel ideations → solve
+ * → fresh review → repair → gates-only verify) directing the SAME mission
+ * dispatch, with solve/repair as convergence loops against the project gates.
+ * Explicit intent always wins: `--team-solve` / `--no-team-solve`,
+ * UAP_DELIVER_TEAM_SOLVE=0, or `.uap.json` deliver.teamSolve 'on'|'off'|
+ * true|false (set with `uap config`). Absent explicit intent the default is
+ * AUTO and TIER-GATED: engage only for high/critical complexity AND a
+ * non-single-file scope (looksSingleFileScoped) — the reliability ladder's
+ * "hardest tier → full loop + escalation" row — so simple tasks and named
+ * one-file edits keep their cheap posture and the role overhead is paid only
+ * where it can matter. A resume stands down (the interrupted run continues
+ * on its own recorded posture). Self-gate, acceptance-primary (no objective
+ * ladder for the roles to converge against — the verify pass would be
+ * vacuous), and lazy-solved missions are filtered by the caller. Exported
+ * for tests.
+ */
+export function resolveTeamSolveWanted(opts: {
+  teamSolveOption: boolean | undefined;
+  envTeamSolve: string | undefined;
+  cfgTeamSolve: unknown;
+  tier: string | undefined;
+  singleFileScoped: boolean;
+  resumed: boolean;
+}): boolean {
+  if (opts.teamSolveOption === true) return true;
+  if (opts.teamSolveOption === false) return false;
+  if (opts.envTeamSolve === '0') return false;
+  if (opts.cfgTeamSolve === 'on' || opts.cfgTeamSolve === true) return true;
+  if (opts.cfgTeamSolve === 'off' || opts.cfgTeamSolve === false) return false;
+  if (opts.resumed) return false;
+  if (opts.singleFileScoped) return false;
+  return opts.tier === 'high' || opts.tier === 'critical';
 }
 
 /**
@@ -4351,54 +4412,126 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         resumeCheckpoint = undefined;
       }
     }
-    if (lazySolved) {
-      runState.runnerKind = 'single';
-      saveRunState(runState);
-      result = result!;
-    } else if (epicsEnabled) {
-      if (resumeState && resumeCheckpoint) {
-        console.log(
-          chalk.dim(
-            '  resume: mid-epic loop checkpoint discarded — epic missions resume at the epic boundary (completed epics carry forward as summaries).'
-          )
-        );
-        resumeCheckpoint = undefined;
+    // Team-solve posture (resolveTeamSolveWanted): the bundled
+    // team-solve-deliver workflow's roles direct the convergence loop. Computed
+    // here (not with the other postures) because lazySolved is only known now;
+    // stands down on self-gate and acceptance-primary (no objective ladder for
+    // the roles to converge against — the verify pass would be vacuous),
+    // lazy-solved runs (nothing left to direct), and resumes (the interrupted
+    // run continues on its recorded posture).
+    const cfgTeamSolve = (cfgRaw.deliver as Record<string, unknown> | undefined)?.teamSolve;
+    const teamSolveWanted =
+      !needsSelfGate &&
+      !acceptancePrimary &&
+      !lazySolved &&
+      resolveTeamSolveWanted({
+        teamSolveOption: options.teamSolve,
+        envTeamSolve: process.env.UAP_DELIVER_TEAM_SOLVE,
+        cfgTeamSolve,
+        tier: classifyComplexity({ instruction }).tier,
+        singleFileScoped: looksSingleFileScoped(instruction),
+        resumed: Boolean(resumeState),
+      });
+
+    // The mission dispatch as a callable: team-solve (when engaged) runs THIS
+    // SAME posture decision as its solve step — the team's approach enriches
+    // the instruction; the epics → orchestrated → phased → single chain is
+    // untouched. Extraction is verbatim: each branch still owns its
+    // runnerKind + checkpoint discipline, and the kind it records is what a
+    // resume re-enters.
+    const runMissionDispatch = async (): Promise<DeliveryResult> => {
+      if (lazySolved) {
+        runState.runnerKind = 'single';
+        saveRunState(runState);
+        return result!;
       }
-      runState.runnerKind = 'epic';
-      saveRunState(runState);
-      result = await runEpicMission();
-    } else if (
-      phases &&
-      phases.length >= 2 &&
-      orchestrateEnabled &&
-      (!resumeState || resumeState.runnerKind === 'orchestrated')
-    ) {
-      // Resume routing: ONLY an orchestrated-kind resume may re-enter this
-      // path — it resumes at the task boundary (persisted taskOutcomes seed
-      // the done set + blackboard). A resumed PHASED run must not route
-      // here: the orchestrated runner ignores phaseIndex, and
-      // runPhasedMission below is the only phase-cursor-honoring path.
-      if (resumeState && resumeCheckpoint) {
-        console.log(
-          chalk.dim(
-            '  resume: mid-task loop checkpoint discarded — orchestrated missions resume at the task boundary (completed tasks carry forward via persisted outcomes).'
-          )
-        );
-        resumeCheckpoint = undefined;
+      if (epicsEnabled) {
+        if (resumeState && resumeCheckpoint) {
+          console.log(
+            chalk.dim(
+              '  resume: mid-epic loop checkpoint discarded — epic missions resume at the epic boundary (completed epics carry forward as summaries).'
+            )
+          );
+          resumeCheckpoint = undefined;
+        }
+        runState.runnerKind = 'epic';
+        saveRunState(runState);
+        return runEpicMission();
       }
-      runState.runnerKind = 'orchestrated';
-      saveRunState(runState);
-      result = await runOrchestratedMission();
-    } else if (phases && phases.length >= 2) {
-      runState.runnerKind = 'phased';
-      saveRunState(runState);
-      result = await runPhasedMission();
-    } else {
+      if (
+        phases &&
+        phases.length >= 2 &&
+        orchestrateEnabled &&
+        (!resumeState || resumeState.runnerKind === 'orchestrated')
+      ) {
+        // Resume routing: ONLY an orchestrated-kind resume may re-enter this
+        // path — it resumes at the task boundary (persisted taskOutcomes seed
+        // the done set + blackboard). A resumed PHASED run must not route
+        // here: the orchestrated runner ignores phaseIndex, and
+        // runPhasedMission below is the only phase-cursor-honoring path.
+        if (resumeState && resumeCheckpoint) {
+          console.log(
+            chalk.dim(
+              '  resume: mid-task loop checkpoint discarded — orchestrated missions resume at the task boundary (completed tasks carry forward via persisted outcomes).'
+            )
+          );
+          resumeCheckpoint = undefined;
+        }
+        runState.runnerKind = 'orchestrated';
+        saveRunState(runState);
+        return runOrchestratedMission();
+      }
+      if (phases && phases.length >= 2) {
+        runState.runnerKind = 'phased';
+        saveRunState(runState);
+        return runPhasedMission();
+      }
       runState.runnerKind = 'single';
       saveRunState(runState);
       if (resumeCheckpoint) loopConfig.resumeFrom = resumeCheckpoint;
       const loop = new ConvergenceLoop(loopConfig, runExecutor, seams);
-      result = await loop.deliver(instruction);
+      return loop.deliver(instruction);
+    };
+
+    // The team-solve wrapper lives in src/delivery/team-solve-deliver.ts
+    // (extracted, deps-injected, unit-tested — the epic/phased/orchestrated
+    // precedent). Injected lazily so the workflow engine only loads when the
+    // posture actually engages.
+    const runTeamSolveDeliver = async (): Promise<DeliveryResult> => {
+      const { runTeamSolveDeliver: run } = await import('../delivery/team-solve-deliver.js');
+      const { loadWorkflow } = await import('../workflow/loader.js');
+      const runner = await import('../workflow/runner.js');
+      return run({
+        projectRoot,
+        getInstruction: () => instruction,
+        setInstruction: (text) => {
+          instruction = text;
+        },
+        dispatch: runMissionDispatch,
+        judgeExecutor: evaluatorExecutor,
+        generatorExecutor: blindExecutor,
+        buildRepairLoop: (config) => new ConvergenceLoop(config, runExecutor, seams),
+        loopConfig,
+        resolveModel: () => model,
+        runGates: async () => {
+          const combined = mergeRedetectedRungs(rungs, detectRungs(projectRoot), loopConfig.redetectFilter);
+          const ladder = await tieredRunner(combined, projectRoot, {});
+          return { passed: ladder.passed, feedback: ladder.feedback, count: combined.length };
+        },
+        loadWorkflow: () => loadWorkflow('team-solve-deliver', projectRoot),
+        runWorkflow: runner.runWorkflow,
+        runsDir: () => runner.runsDir(projectRoot),
+        newRunId: () => runner.newRunId('team-solve-deliver'),
+        log: (line) => console.log(line),
+      });
+    };
+
+    if (teamSolveWanted) {
+      runState.runnerKind = 'teamsolve';
+      saveRunState(runState);
+      result = await runTeamSolveDeliver();
+    } else {
+      result = await runMissionDispatch();
     }
 
     // CI watch boundary + re-converge: once local tiers are green, commit/push

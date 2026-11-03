@@ -157,26 +157,30 @@ comparator (K3's published 88.3, harness caveat attached).
 
 **Claims:** C1 (its strongest form) · **Cost:** GPU-hours only ·
 **Prereqs:** `uap workflow` (shipped) + the bundled
-[team-solve](../../examples/workflows/team-solve/README.md) + a
+[team-solve](../../examples/workflows/team-solve/README.md) +
+[team-solve-deliver](../../examples/workflows/team-solve-deliver/README.md)
+(auto-applied by `uap deliver` on high/critical complexity) + a
 LiveCodeBench-Hard-style task set.
 
 The measured prior is external and published: five Qwen3.8-27B roles on a
 static relay-with-cross-correction graph matched the authors' own harness on
 LiveCodeBench Hard (9.8/10 vs 9.6 on their first ten; Fable 5 single-call at
 8.0) — structure, not model class, carried the result. UAP now has the
-capability to test that prior against ITS OWN baseline: the gate loop. A
-paired three-arm design on the same local model, same tasks, same seeds:
+capability to test that prior against ITS OWN baseline: the gate loop. The
+experiment now validates EXACTLY what ships — team-solve-deliver is the
+auto-applied posture for high/critical missions, so arm C is the product's
+default hardest-tier behavior, not a bespoke rig:
 
 | arm | treatment |
 |---|---|
 | A | single-shot (one completion per problem) |
-| B | `uap deliver` gate loop (the existing C1 baseline) |
-| C | `uap workflow run team-solve` (role-DAG + cross-correction + deterministic verify) |
+| B | `uap deliver --no-team-solve` gate loop (the pre-existing C1 baseline) |
+| C | `uap deliver --team-solve` (the shipped auto posture: roles direct the convergence loop; solve/repair are gates-driven loops; verify is gates-only) |
 
 - **Would prove:** whether role-DAG structure lifts a weak local model
   BEYOND the gate loop alone — the C1 claim's strongest form, and the first
-  number that would justify the workflow layer on measured grounds rather
-  than the GVS5H prior.
+  number that would justify the workflow layer (and its auto-engagement on
+  the hardest tier) on measured grounds rather than the GVS5H prior.
 - **Would NOT prove:** parity with the authors' harness (their numbers are
   theirs — different prompts, OpenRouter host, their grader; UAP's port
   keeps the method, not the bytes), anything about frontier models, or any

@@ -27,6 +27,8 @@ import type { ModelConfig } from '../models/types.js';
 import {
   WORKFLOW_EXIT,
   type LoadedWorkflow,
+  type LoopStepExecutor,
+  type StepCallExecutor,
   type WorkflowRunState,
   type WorkflowStep,
 } from './types.js';
@@ -56,8 +58,21 @@ export interface RunWorkflowOptions {
   mission: string;
   /** Resolve a step pin (undefined = workflow/CLI/fleet default) to a ModelConfig. */
   resolveModel: (preset: string | undefined) => ModelConfig;
-  /** Completion seam for agent steps — production: OpenAICompatClient. */
-  client: ModelClient;
+  /**
+   * Completion seam for agent steps — production (standalone runs):
+   * OpenAICompatClient. Optional ONLY when `completeStep` covers every
+   * agent step: a caller with its own executor rails (deliver's
+   * generator/judge plan) drives the roles through them instead.
+   */
+  client?: ModelClient;
+  /** Per-step role-call seam — takes precedence over `client` when present. */
+  completeStep?: StepCallExecutor;
+  /**
+   * Convergence-loop seam for `kind: loop` steps — REQUIRED when the
+   * workflow declares any (fail-closed at run start, not mid-run). The
+   * caller owns loop construction; the engine owns assembly + the graph.
+   */
+  runLoop?: LoopStepExecutor;
   /** Prior accepted steps — resume seeding (orchestrate initialDone). */
   initialDone?: Array<{ id: string; summary: string; contract?: string }>;
   /** Sampling temperature for agent steps (default 0.7). */
@@ -213,6 +228,23 @@ function spawnCommand(
 export async function runWorkflow(opts: RunWorkflowOptions): Promise<WorkflowRunResult> {
   const { loaded, runDir, mission } = opts;
   assertNoReservedWrites(loaded);
+  // Preflight the seams BEFORE the run directory or state file exists — a
+  // rejected run must leave nothing behind (a fresh ledger dir with
+  // status 'running' would read as a live run in `status`). A missing loop
+  // provider or an agent seam must fail at start (exit-path clear), never
+  // mid-run after roles have been paid for. Pin preflight: the loader
+  // validated FILE pins at load; this catches CLI --model / --endpoint
+  // inputs too.
+  opts.resolveModel(undefined);
+  if (loaded.def.steps.some((s) => s.kind === 'loop') && !opts.runLoop) {
+    throw new Error(
+      'this workflow declares loop: steps but no convergence-loop provider was injected — ' +
+        'loop steps run via a caller-owned seam (e.g. `uap deliver`); a standalone `uap workflow run` cannot execute them'
+    );
+  }
+  if (loaded.def.steps.some((s) => s.kind === 'agent') && !opts.completeStep && !opts.client) {
+    throw new Error('agent steps need a completion seam (client, or completeStep from the caller)');
+  }
   mkdirSync(runDir, { recursive: true });
   const log = opts.log ?? ((): void => undefined);
   const byId = new Map(loaded.def.steps.map((s) => [s.id, s]));
@@ -235,7 +267,7 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<WorkflowRun
 
   const tasks: OrchestratorTask[] = loaded.def.steps.map((s) => {
     const goal =
-      s.kind === 'agent'
+      s.kind === 'agent' || s.kind === 'loop'
         ? (loaded.rolePrompts.get(s.id) ?? s.goal ?? '')
         : s.kind === 'command'
           ? `Run: ${s.command}`
@@ -253,10 +285,8 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<WorkflowRun
     };
   });
 
-  // Preflight the pin ladder once: the loader validated FILE pins at load
-  // (exit 3 before anything runs); this catches the CLI --model / --endpoint
-  // inputs the file could not — still before any step executes.
-  opts.resolveModel(undefined);
+  // Seam preflights ran BEFORE the run dir existed (top of this function);
+  // nothing else gates the start.
 
   const runTask = async (ctx: { prompt: string }, task: OrchestratorTask): Promise<TaskOutcome> => {
     const step = byId.get(task.id);
@@ -264,14 +294,19 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<WorkflowRun
       return { taskId: task.id, success: false, summary: `unknown step "${task.id}"`, turns: 0 };
     }
     if (step.kind === 'agent') {
-      const model = opts.resolveModel(step.model);
       const prompt = ctx.prompt + inlineReads(runDir, step, log);
-      const r = await opts.client.complete(model, prompt, { temperature: opts.temperature ?? 0.7 });
+      // completeStep (the caller's executor rails) takes precedence over the
+      // raw client — deliver's generator≠evaluator discipline rides through.
+      const content = opts.completeStep
+        ? await opts.completeStep(step, prompt)
+        : (await opts.client!.complete(opts.resolveModel(step.model), prompt, {
+            temperature: opts.temperature ?? 0.7,
+          })).content;
       // Fail-closed on the empty reply: writing an empty file and crediting
       // the step would poison every dependent that reads it. (A truncated
       // reply still lands — the client already re-requested once at 4x the
       // budget; emptiness is the case that is unambiguously broken.)
-      if (!r.content || !r.content.trim()) {
+      if (!content || !content.trim()) {
         return {
           taskId: step.id,
           success: false,
@@ -282,12 +317,33 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<WorkflowRun
       const target = step.writes?.[0];
       if (target) {
         mkdirSync(dirname(join(runDir, target)), { recursive: true });
-        writeFileSync(join(runDir, target), r.content);
+        writeFileSync(join(runDir, target), content);
       }
       const summary = target
-        ? `wrote ${target} (${r.content.length} chars)`
-        : r.content.slice(0, 200).replace(/\s+/g, ' ');
+        ? `wrote ${target} (${content.length} chars)`
+        : content.slice(0, 200).replace(/\s+/g, ' ');
       return { taskId: step.id, success: true, summary, turns: 1 };
+    }
+    if (step.kind === 'loop') {
+      // The convergence-loop seam: the engine assembles the instruction
+      // (role prompt + direct-dependency outputs + inlined reads) and hands
+      // it to the caller-owned loop. Gates are the loop's exit condition;
+      // the graph around it (repairs, skip cascade, resume) stays ours.
+      const prompt = ctx.prompt + inlineReads(runDir, step, log);
+      log(`  ↻ loop ${step.id}${step.verifyOnly ? ' (verify-only)' : ''}`);
+      const r = await opts.runLoop!({
+        stepId: step.id,
+        prompt,
+        ...(step.model ? { model: step.model } : {}),
+        ...(step.verifyOnly ? { verifyOnly: true } : {}),
+        ...(step.turns !== undefined ? { turns: step.turns } : {}),
+      });
+      return {
+        taskId: step.id,
+        success: r.success,
+        summary: r.summary.slice(0, 400),
+        turns: r.turns ?? 1,
+      };
     }
     if (step.kind === 'command') {
       if (!step.command) {

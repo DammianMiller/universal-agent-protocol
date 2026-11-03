@@ -21,7 +21,7 @@
 import { z } from 'zod';
 
 /** Step kinds. Each maps to one execution seam in the runner. */
-export const STEP_KINDS = ['agent', 'command', 'gate'] as const;
+export const STEP_KINDS = ['agent', 'command', 'gate', 'loop'] as const;
 export type StepKind = (typeof STEP_KINDS)[number];
 
 /**
@@ -47,7 +47,8 @@ const WorkflowStepSchema = z.object({
    * Path to the role-prompt file, relative to the workflow directory.
    * Agent steps take `prompt` XOR `goal` — a file keeps the workflow.yaml
    * reviewable while the role prompt stays a first-class artifact (the
-   * Memdoor layout: one file per step).
+   * Memdoor layout: one file per step). Loop steps take the same pair:
+   * the role instruction the convergence loop executes against.
    */
   prompt: z.string().min(1).optional(),
   /** Inline role prompt (alternative to `prompt:`). */
@@ -58,7 +59,9 @@ const WorkflowStepSchema = z.object({
    * Run-directory files this step produces. The first entry receives the
    * agent reply (or the command's captured output); the rest are declared
    * for the graph's write-collision check. Overwrite semantics — the file
-   * ledger is authoritative, chat is not.
+   * ledger is authoritative, chat is not. NOT for loop steps: a loop works
+   * the project tree (its DeliveryResult is the blackboard entry), not the
+   * run directory.
    */
   writes: z.array(z.string().min(1)).optional(),
   /** DAG edges: step ids that must SUCCEED before this one runs. */
@@ -84,6 +87,19 @@ const WorkflowStepSchema = z.object({
    * something a headless run should block a terminal on.
    */
   waitMs: z.number().int().nonnegative().optional(),
+  /**
+   * loop kind: max executor turns for the convergence loop this step runs
+   * (the caller's default applies when absent). The loop's exit condition
+   * is the project's real completion gates — this bounds the attempt
+   * budget, it does not replace verification.
+   */
+  turns: z.number().int().positive().optional(),
+  /**
+   * loop kind: run the gates ONLY — no executor turns. The independent
+   * final verdict after repair steps: a green repair is not "delivered"
+   * until a verify-only pass says so.
+   */
+  verifyOnly: z.boolean().optional(),
 });
 
 const WorkflowDefSchema = z.object({
@@ -166,6 +182,33 @@ export const WORKFLOW_EXIT = {
   /** The workflow file itself is invalid — never retriable as-is. */
   invalid: 3,
 } as const;
+
+/**
+ * The convergence-loop seam for `kind: loop` steps — the composition point
+ * where a workflow DIRECTS delivery machinery. The caller owns loop
+ * construction (deliver wires its ConvergenceLoop / mission dispatch);
+ * the engine owns assembly (role instruction + dependency outputs + reads)
+ * and the graph semantics around it. `stepId` lets one seam serve several
+ * roles (solve vs repair vs a verify-only verdict).
+ */
+export type LoopStepExecutor = (args: {
+  stepId: string;
+  /** Assembled instruction: role prompt + direct-dependency outputs + reads. */
+  prompt: string;
+  /** The step's model pin, when the workflow names one. */
+  model?: string;
+  /** A verify-only step: gates, no executor turns. */
+  verifyOnly?: boolean;
+  /** The step's turns bound, when the workflow names one. */
+  turns?: number;
+}) => Promise<{ success: boolean; summary: string; turns?: number }>;
+
+/**
+ * Per-step role-call seam for agent steps — lets a caller with its own
+ * executor rails (deliver's generator/judge plan) drive role steps through
+ * them instead of a raw model client, preserving its discipline.
+ */
+export type StepCallExecutor = (step: { id: string; kind: StepKind }, prompt: string) => Promise<string>;
 
 /** Narrow the raw parsed YAML into the typed def, with a flat error list. */
 export function parseWorkflowDef(raw: unknown): WorkflowDef {

@@ -53,7 +53,7 @@ runs, keeping `--help` fast.
 | [`proxy`](#proxy) | Reference-counted, session-scoped local inference proxy lifecycle |
 | [`orchestrator`](#orchestrator) | Toggle the long multi-turn deliver orchestrator |
 | [`handsfree`](#handsfree) (`hf`) | Hands-free persistence: loop any model to a 100% ledger |
-| [`workflow`](#workflow) | Static YAML step DAGs (agent/command/gate) over the orchestrator |
+| [`workflow`](#workflow) | Static YAML step DAGs (agent/command/gate/loop) over the orchestrator |
 | [`challenge`](#challenge) | Open multi-agent challenge with a significance-gated leaderboard |
 | [`sandbox`](#sandbox) | Run a command with a kernel-enforced writable-dir boundary |
 | [`react`](#react) | Resolve dynamic experts/skills/patterns for a lifecycle event (JSON) |
@@ -766,9 +766,11 @@ See [Orchestrator & Hands-Free](../guides/ORCHESTRATOR.md).
 ## `workflow`
 
 Declarative workflows: a static `workflow.yaml` step DAG (agent | command |
-gate) executed on the blackboard orchestrator — role-specialized steps in
-fresh contexts talking through files, deterministic command verdicts,
-approval gates, resume at the step boundary.
+gate | loop) executed on the blackboard orchestrator — role-specialized steps
+in fresh contexts talking through files, deterministic command verdicts,
+approval gates, resume at the step boundary. `loop` steps run through a
+caller-injected convergence loop (`uap deliver --team-solve` is the caller
+that can; a standalone run of a loop-bearing workflow fails closed).
 
 `uap workflow [list | show <name> | run <name> | status [runId] | resume <runId> | approve <runId> <step>]`
 
@@ -786,6 +788,7 @@ Exit codes: `0` success · `1` step failed · `2` blocked at a gate (resumable) 
 
 ```bash
 uap workflow run team-solve --input examples/workflows/team-solve/sample
+uap workflow show team-solve-deliver     # the deliver-driven variant (loop steps)
 ```
 
 See [Workflows](../guides/WORKFLOWS.md).

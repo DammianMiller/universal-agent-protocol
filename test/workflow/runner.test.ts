@@ -348,4 +348,121 @@ describe('workflow runner', () => {
     expect(calls).toHaveLength(1);
     expect(existsSync(join(dir, 'one.md'))).toBe(false);
   });
+
+  it('a loop step executes through the runLoop seam: dep summary + reads inlined, turns + summary flow back', async () => {
+    // The convergence-loop contract: the engine assembles (role directive +
+    // dependency output + inlined reads) and hands it to the caller's loop;
+    // the seam's result IS the step outcome.
+    const def = defOf({
+      name: 'loopseam',
+      steps: [
+        { id: 'judge', kind: 'agent', goal: 'judge', writes: ['brief.md'], requires: [] },
+        {
+          id: 'fix',
+          kind: 'loop',
+          goal: 'fix until gates pass',
+          reads: ['brief.md'],
+          turns: 7,
+          requires: ['judge'],
+        },
+      ],
+    });
+    const seen: Record<string, unknown> = {};
+    const res = await runWorkflow(
+      opts(def, dir, stubClient(() => 'THE BRIEF'), {
+        runLoop: async (args) => {
+          Object.assign(seen, args);
+          expect(args.stepId).toBe('fix');
+          return { success: true, summary: 'gates green after 3 turns', turns: 3 };
+        },
+      })
+    );
+    expect(res.status).toBe('succeeded');
+    // Assembly: the role directive + the dependency summary + the read file.
+    expect(String(seen.prompt)).toContain('fix until gates pass');
+    expect(String(seen.prompt)).toContain('THE BRIEF');
+    // The declared turns bound reaches the seam; the seam's ACTUAL turns are
+    // what the task records (the loop reports its own accounting).
+    expect(seen.turns).toBe(7);
+    const state = readRunState(dir);
+    const fix = state?.done.find((d) => d.id === 'fix');
+    expect(fix?.summary).toContain('gates green after 3 turns');
+  });
+
+  it('a failed loop step fails the workflow honestly (the seam decides, the graph cascades)', async () => {
+    const def = defOf({
+      name: 'loopfail',
+      steps: [
+        { id: 'build', kind: 'loop', goal: 'build it', requires: [] },
+        { id: 'ship', kind: 'command', command: 'test -f anything', requires: ['build'] },
+      ],
+    });
+    const res = await runWorkflow(
+      opts(def, dir, stubClient(() => 'unused'), {
+        runLoop: async () => ({ success: false, summary: 'gates red after 5 turns', turns: 5 }),
+      })
+    );
+    expect(res.status).toBe('failed');
+    expect(res.failed).toContain('build');
+    expect(res.exitCode).toBe(1);
+  });
+
+  it('a loop step with NO injected provider fails closed at run start (before any role is paid)', async () => {
+    const def = defOf({
+      name: 'noloop',
+      steps: [{ id: 'build', kind: 'loop', goal: 'build it', requires: [] }],
+    });
+    await expect(runWorkflow(opts(def, dir, stubClient(() => 'x')))).rejects.toThrow(
+      /no convergence-loop provider/
+    );
+  });
+
+  it('agent steps with neither client nor completeStep fail closed at run start', async () => {
+    const def = defOf({
+      name: 'noseam',
+      steps: [{ id: 'a', kind: 'agent', goal: 'x', requires: [] }],
+    });
+    const { client: _drop, ...bare } = opts(def, dir, stubClient(() => 'x'));
+    await expect(runWorkflow(bare)).rejects.toThrow(/completion seam/);
+  });
+
+  it('completeStep takes precedence over the raw client — the caller\u2019s executor rails drive the roles', async () => {
+    const def = defOf({
+      name: 'rails',
+      steps: [{ id: 'plan', kind: 'agent', goal: 'plan it', writes: ['plan.md'], requires: [] }],
+    });
+    const res = await runWorkflow(
+      opts(def, dir, stubClient(() => 'RAW CLIENT — MUST NOT BE USED'), {
+        completeStep: async (step, prompt) => {
+          expect(step.id).toBe('plan');
+          expect(prompt).toContain('plan it');
+          return 'FROM THE RAILS';
+        },
+      })
+    );
+    expect(res.status).toBe('succeeded');
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('FROM THE RAILS');
+  });
+
+  it('verifyOnly reaches the seam as a distinct call shape (gates-only verdict, no executor turns)', async () => {
+    const def = defOf({
+      name: 'verdict',
+      steps: [
+        { id: 'build', kind: 'loop', goal: 'build', requires: [] },
+        { id: 'verdict', kind: 'loop', goal: 'final verdict', verifyOnly: true, requires: ['build'] },
+      ],
+    });
+    const calls: Array<Record<string, unknown>> = [];
+    const res = await runWorkflow(
+      opts(def, dir, stubClient(() => 'unused'), {
+        runLoop: async (args) => {
+          calls.push({ ...args });
+          return { success: true, summary: 'ok', turns: args.verifyOnly ? 0 : 2 };
+        },
+      })
+    );
+    expect(res.status).toBe('succeeded');
+    expect(calls[0].verifyOnly).toBeUndefined();
+    expect(calls[1].verifyOnly).toBe(true);
+  });
 });

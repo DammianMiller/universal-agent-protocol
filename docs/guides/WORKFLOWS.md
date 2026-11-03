@@ -22,12 +22,21 @@ uap workflow list                                        # what exists, from whe
 uap workflow show team-solve                             # the validated plan + pins
 uap workflow run team-solve \
   --input examples/workflows/team-solve/sample           # run the LIS smoke task
+uap workflow show team-solve-deliver                     # the loop-step variant (deliver-driven)
 uap workflow status                                      # every run + its verdict
 uap workflow resume <runId>                              # continue at the boundary
 ```
 
 Exit codes: `0` success · `1` a step failed · `2` blocked at a gate
 (resumable) · `3` the workflow file is invalid. Cron-safe by construction.
+
+Two bundled workflows: **team-solve** (contest-shaped: everything happens in
+the run directory, a command step is the verdict — runs standalone) and
+**team-solve-deliver** (repo missions: solve/repair are convergence loops
+against the project's real gates, verify is gates-only — driven by
+`uap deliver --team-solve`, which injects the loop machinery; standalone
+runs fail closed). See
+[examples/workflows/team-solve-deliver/README.md](../../examples/workflows/team-solve-deliver/README.md).
 
 ## Where workflows live
 
@@ -48,7 +57,7 @@ parallel: 2                  # max concurrent independent steps (default 1)
 maxRepairsPerStep: 1         # bounded re-execution of a failed step
 steps:
   - id: plan                 # lowercase slug (repair chains use <id>.r0-…)
-    kind: agent              # agent | command | gate
+    kind: agent              # agent | command | gate | loop
     title: Planner           # optional label
     prompt: steps/plan.md    # role-prompt file, relative to this directory
     reads: [task.md]         # run-dir files inlined into the prompt
@@ -80,6 +89,19 @@ steps:
   returns immediately as BLOCKED (exit 2); `uap workflow approve <runId>
   <step>` records the approval, then `resume` re-runs the gate and passes.
   Set `waitMs` if a run should hold a terminal open for approval instead.
+- **loop** — a convergence loop owned by the CALLER, not the engine: the
+  engine assembles the instruction (role prompt or `goal:`, plus
+  direct-dependency summaries and inlined `reads:`) and hands it to an
+  injected `runLoop` seam, which drives a tools-and-gates iteration to
+  completion and reports `{ success, summary, turns }`. The step outcome is
+  the seam's result — there is no `writes[0]` (a loop works the project
+  tree; its DeliveryResult is the record). Loop-only fields: `turns:` (a
+  turn bound passed through to the seam) and `verifyOnly:` (the loop runs
+  the gates with NO executor turns — a verdict, not a builder; this is what
+  `team-solve-deliver`'s final step is). A standalone `uap workflow run`
+  cannot execute loop steps — no provider is injected — and fails closed at
+  run start with that message; `uap deliver --team-solve` is the caller
+  that can.
 
 ### Trust boundary
 

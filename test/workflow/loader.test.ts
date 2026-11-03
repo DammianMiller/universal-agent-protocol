@@ -132,4 +132,70 @@ describe('workflow loader', () => {
     expect(roots[0]).toBe(join(PROJECT_ROOT, '.uap', 'workflows'));
     expect(roots[2]).toContain(join('examples', 'workflows'));
   });
+
+  it('loads the bundled team-solve-deliver: 3 agent roles + 3 loop steps, verify is verifyOnly', () => {
+    const loaded = loadWorkflow('team-solve-deliver', PROJECT_ROOT);
+    const kinds = loaded.def.steps.map((s) => `${s.id}:${s.kind}`);
+    expect(kinds).toEqual([
+      'plan:agent',
+      'ideate-a:agent',
+      'ideate-b:agent',
+      'solve:loop',
+      'review:agent',
+      'repair:loop',
+      'verify:loop',
+    ]);
+    // The gates-only verdict must stay verifyOnly — the flag is what keeps the
+    // final say out of any executor's hands.
+    expect(loaded.def.steps.find((s) => s.id === 'verify')?.verifyOnly).toBe(true);
+    expect(loaded.def.steps.find((s) => s.id === 'solve')?.verifyOnly).toBeUndefined();
+    // Loop directives resolve from files exactly like role prompts.
+    expect(loaded.rolePrompts.get('solve')).toContain('SOLVE');
+    expect(loaded.rolePrompts.get('verify')).toContain('gates');
+  });
+
+  it('accepts a loop step with reads: (a repair loop reads the review brief) and with goal:', () => {
+    expect(() =>
+      loadRaw(
+        `name: loopreads\nsteps:\n  - id: judge\n    kind: agent\n    goal: judge it\n    writes: [verdict.md]\n    requires: []\n  - id: fix\n    kind: loop\n    goal: fix it until gates pass\n    reads: [verdict.md]\n    requires: [judge]\n`,
+        'loopreads'
+      )
+    ).not.toThrow();
+  });
+
+  it('rejects a loop step that declares writes: — its outcome is the delivery result, not a run-dir file', () => {
+    expect(() =>
+      loadRaw(
+        `name: loopwrite\nsteps:\n  - id: a\n    kind: loop\n    goal: build it\n    writes: [out.md]\n    requires: []\n`,
+        'loopwrite'
+      )
+    ).toThrow(/loop step "a" declares writes/);
+  });
+
+  it('rejects a loop step without prompt: or goal:', () => {
+    expect(() => loadRaw(`name: bareloop\nsteps:\n  - id: a\n    kind: loop\n    requires: []\n`, 'bareloop')).toThrow(
+      /exactly one of prompt: or goal:/
+    );
+  });
+
+  it('rejects loop-only fields (turns:/verifyOnly:) on non-loop steps', () => {
+    expect(() =>
+      loadRaw(`name: fakeloop\nsteps:\n  - id: a\n    kind: agent\n    goal: x\n    turns: 4\n    requires: []\n`, 'fakeloop')
+    ).toThrow(/loop-only fields/);
+    expect(() =>
+      loadRaw(
+        `name: fakeverify\nsteps:\n  - id: a\n    kind: agent\n    goal: x\n    verifyOnly: true\n    requires: []\n`,
+        'fakeverify'
+      )
+    ).toThrow(/loop-only fields/);
+  });
+
+  it('rejects command-only fields on a loop step (a loop is not a shell command)', () => {
+    expect(() =>
+      loadRaw(
+        `name: loopcmd\nsteps:\n  - id: a\n    kind: loop\n    goal: x\n    command: echo hi\n    requires: []\n`,
+        'loopcmd'
+      )
+    ).toThrow(/command-only fields/);
+  });
 });

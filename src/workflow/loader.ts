@@ -97,9 +97,9 @@ function validateGraph(def: WorkflowDef): void {
     for (const d of s.requires ?? []) {
       if (!ids.has(d)) throw new Error(`step "${s.id}" requires unknown step "${d}"`);
     }
-    if (s.kind === 'agent') {
+    if (s.kind === 'agent' || s.kind === 'loop') {
       if ((s.prompt ? 1 : 0) + (s.goal ? 1 : 0) !== 1) {
-        throw new Error(`agent step "${s.id}" needs exactly one of prompt: or goal:`);
+        throw new Error(`${s.kind} step "${s.id}" needs exactly one of prompt: or goal:`);
       }
     }
     if (s.kind === 'command' && !s.command) {
@@ -111,8 +111,16 @@ function validateGraph(def: WorkflowDef): void {
     if (s.kind !== 'gate' && s.approvalPrompt) {
       throw new Error(`step "${s.id}" declares approvalPrompt: but is kind: ${s.kind}`);
     }
-    if (s.kind !== 'agent' && (s.prompt || s.goal || s.reads)) {
-      throw new Error(`step "${s.id}" declares agent-only fields but is kind: ${s.kind}`);
+    if (s.kind !== 'agent' && s.kind !== 'loop' && (s.prompt || s.goal || s.reads)) {
+      throw new Error(`step "${s.id}" declares agent/loop-only fields but is kind: ${s.kind}`);
+    }
+    if (s.kind !== 'loop' && (s.turns !== undefined || s.verifyOnly !== undefined)) {
+      throw new Error(`step "${s.id}" declares loop-only fields but is kind: ${s.kind}`);
+    }
+    if (s.kind === 'loop' && s.writes && s.writes.length > 0) {
+      // A loop works the project tree; its DeliveryResult is the blackboard
+      // entry. Declaring run-dir writes would be dead data at best.
+      throw new Error(`loop step "${s.id}" declares writes: — a loop's outcome is its delivery result, not a run-dir file`);
     }
     for (const p of s.reads ?? []) assertRunDirRelative(`step "${s.id}" reads`, p, '');
     for (const p of s.writes ?? []) assertRunDirRelative(`step "${s.id}" writes`, p, '');
@@ -215,7 +223,7 @@ export function loadWorkflow(name: string, projectRoot: string): LoadedWorkflow 
   validateGraph(def);
   const rolePrompts = new Map<string, string>();
   for (const s of def.steps) {
-    if (s.kind !== 'agent' || !s.prompt) continue;
+    if ((s.kind !== 'agent' && s.kind !== 'loop') || !s.prompt) continue;
     assertRunDirRelative(`step "${s.id}" prompt`, s.prompt, dir);
     const p = join(dir, s.prompt);
     if (!existsSync(p)) throw new Error(`step "${s.id}" prompt file not found: ${s.prompt}`);
