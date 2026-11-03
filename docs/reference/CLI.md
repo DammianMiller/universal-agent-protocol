@@ -53,6 +53,7 @@ runs, keeping `--help` fast.
 | [`proxy`](#proxy) | Reference-counted, session-scoped local inference proxy lifecycle |
 | [`orchestrator`](#orchestrator) | Toggle the long multi-turn deliver orchestrator |
 | [`handsfree`](#handsfree) (`hf`) | Hands-free persistence: loop any model to a 100% ledger |
+| [`workflow`](#workflow) | Static YAML step DAGs (agent/command/gate) over the orchestrator |
 | [`challenge`](#challenge) | Open multi-agent challenge with a significance-gated leaderboard |
 | [`sandbox`](#sandbox) | Run a command with a kernel-enforced writable-dir boundary |
 | [`react`](#react) | Resolve dynamic experts/skills/patterns for a lifecycle event (JSON) |
@@ -759,6 +760,35 @@ Auto-on.
 | `--items <json>` | JSON array of ledger items for `init` |
 
 See [Orchestrator & Hands-Free](../guides/ORCHESTRATOR.md).
+
+---
+
+## `workflow`
+
+Declarative workflows: a static `workflow.yaml` step DAG (agent | command |
+gate) executed on the blackboard orchestrator — role-specialized steps in
+fresh contexts talking through files, deterministic command verdicts,
+approval gates, resume at the step boundary.
+
+`uap workflow [list | show <name> | run <name> | status [runId] | resume <runId> | approve <runId> <step>]`
+
+| Flag | Purpose |
+|------|---------|
+| `--input <dir>` | Task directory copied into the run (what the steps read) |
+| `--model <preset>` | Model pin (ladder: step → workflow default → this → fleet default) |
+| `--endpoint <url>` | Override the model endpoint (OpenAI-compatible `/v1`) |
+| `--run-id <id>` | Name the run directory under `.uap/workflow-runs/` |
+| `--mission <text>` | One-line objective assembled into every step context |
+| `--dry-run` | Validate and print the execution plan; run nothing |
+
+Exit codes: `0` success · `1` step failed · `2` blocked at a gate (resumable) ·
+`3` invalid workflow.
+
+```bash
+uap workflow run team-solve --input examples/workflows/team-solve/sample
+```
+
+See [Workflows](../guides/WORKFLOWS.md).
 
 ---
 

@@ -116,6 +116,7 @@
     "dist",
     "web",
     "docs",
+    "examples",
     "config",
     "templates",
     "src/policies/schemas/policies",

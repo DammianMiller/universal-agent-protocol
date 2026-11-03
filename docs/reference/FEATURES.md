@@ -189,6 +189,23 @@ you'd run by hand.
 | Sandbox grants + egress boundary (`sandbox-grants.ts`, `sandbox.ts`) | Recorded authority for the bubblewrap sandbox: extra writable holes are per-session GRANTS (`uap sandbox grant <path> --session <id> --reason "..."`, TTL 8h default / 7d cap, revocable) from a consent ledger at the main checkout root, audit-logged per run — the legacy `UAP_SANDBOX_ALLOW` env still works but is named UNRECORDED in the audit. The out-of-checkout trust anchor (`sandbox-anchor.ts`) records the sanitized-ledger hash after every recorded mutation; a ledger changed outside a consent operation is detected on load — new grants refused, the session resolves ZERO grant-derived holes (fail-closed), and the grants listing stamps every row unverified. The audit JSONL is seq-stamped and bounded (past 12,000 lines it compacts to the 10,000 newest event lines plus the triggering event and one recorded `audit-compaction` marker — 10,002 total). `uap dashboard` (session view) surfaces the active grants per session with the anchor verdict and a revoke command per grant. `--net off` is the kernel egress boundary: own network namespace with nothing up (no TCP, no DNS, not even loopback) for untrusted code, evals, and data-only work. The proxy's optional `PROXY_SOCKET` (0600 AF_UNIX) is the permission-gated model choke point; `uap proxy connect` re-serves it on local TCP for AF_UNIX-less clients. |
 | Integrity (`integrity.ts`) | Test-protection / integrity guard — stops the model from gutting the tests to "pass." |
 
+## Workflows (`src/workflow/`) — Build (structured)
+
+> **Stage: Build.** The declarative layer over the blackboard orchestrator: a
+> workflow is DATA — a static `workflow.yaml` step DAG with role prompts,
+> deterministic command steps, and approval gates — so the graph that five
+> small models execute is authored once, reviewed, and re-run, instead of
+> re-planned by a model every mission. The GVS5H/Memdoor team-solve shape:
+> role-specialized steps cross-correct each other through files, and a
+> command step's exit code — not a model's claim — is the verdict.
+
+| Feature | Description |
+|---------|-------------|
+| Workflow loader (`loader.ts`) | Fail-closed front door: zod schema + graph checks (unique ids, known `requires:`, cycle rejection, kind/field confusion, parallel write collision, run-dir path escapes, reserved paths) before any model is paid. Search roots: project `.uap/workflows/` → `~/.uap/workflows/` → bundled `examples/workflows/`. |
+| Workflow runner (`runner.ts`) | Three step kinds onto `orchestrate()` unchanged: `agent` (fresh single completion; `reads:` inlined into the prompt, the reply IS the file — the ledger discipline), `command` (exit-code verdict with `neverFails` evidence mode), `gate` (approval pause → `uap workflow approve`, exit 2, resumable). Run state persists after every accepted step; resume seeds `initialDone` so finished work is never redone. Exit contract 0/1/2/3 for CI/cron. |
+| Workflow CLI (`cli/workflow.ts`) | `uap workflow list | show | run | status | resume | approve`. Steps name no model: the pin ladder (step → workflow `defaultModel` → `--model` → the local fleet default, `qwen38-27b` on the strata arm) answers, so one workflow file is portable across arms and endpoints. |
+| Bundled team-solve (`examples/workflows/team-solve/`) | The flagship: plan → parallel ideate-a/ideate-b → solve → deterministic test → review → repair → verify, five roles, files only. The sample LIS task runs end-to-end on the local fleet; its provenance and caveats (the 9.8/10 LiveCodeBench Hard numbers are the authors', on OpenRouter) are documented in place. |
+
 ## MCP Router (`src/mcp-router/`) — Cross-cutting (lean context)
 
 > **Stage: Every station.** A stuffed context window slows and confuses the whole

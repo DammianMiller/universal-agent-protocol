@@ -46,6 +46,7 @@ const lazy = {
   interaction: () => import('../cli/interaction.js').then((m) => m.interactionCommand),
   orchestratorToggle: () => import('../cli/orchestrator-toggle.js').then((m) => m.orchestratorToggleCommand),
   handsfree: () => import('../cli/handsfree.js').then((m) => m.handsfreeCommand),
+  workflow: () => import('../cli/workflow.js').then((m) => m.workflowCommand),
   eta: () => import('../cli/eta.js').then((m) => m.etaCommand),
   diff: () => import('../cli/diff.js').then((m) => m.diffCommand),
   proxy: () => import('../cli/proxy.js').then((m) => m.proxyCommand),
@@ -1170,6 +1171,23 @@ program
   .action(async (subcommand, arg, options) => {
     const cmd = await lazy.handsfree();
     await cmd(subcommand, arg, options);
+  });
+
+program
+  .command('workflow [action] [name] [step]')
+  .description('Declarative workflows: static YAML step DAGs (agent | command | gate) over the blackboard orchestrator. list | show <name> | run <name> [--input <dir>] | status [runId] | resume <runId> | approve <runId> <step>. Exit 0 ok / 1 step failed / 2 gate blocked / 3 invalid.')
+  .option('--input <dir>', 'Directory copied into the run (the task files a workflow reads)')
+  .option('--model <preset>', 'Model preset pin (default: per step, then workflow defaultModel, then the local fleet default)')
+  .option('--endpoint <url>', 'Override the model endpoint (OpenAI-compatible /v1)')
+  .option('--run-id <id>', 'Name the run directory under .uap/workflow-runs/')
+  .option('--mission <text>', 'One-line objective assembled into every step context')
+  .option('--parallel <n>', 'Concurrency override for independent steps (1-16; default: the workflow\'s parallel:)')
+  .option('--temperature <t>', 'Sampling temperature for agent steps (default 0.7)')
+  .option('--dry-run', 'Validate and print the execution plan; run nothing')
+  .option('--json', 'JSON output for `status`')
+  .action(async (action, name, step, options) => {
+    const cmd = await lazy.workflow();
+    await cmd(action ?? 'status', name, step, options);
   });
 
 program

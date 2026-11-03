@@ -153,12 +153,47 @@ comparator (K3's published 88.3, harness caveat attached).
 - **Discrimination status:** 89 tasks × 5 attempts is powered for the
   published convention's effect sizes; report Δ with bootstrap CI + McNemar.
 
+### O7 — Role-DAG structure vs the gate loop (free, GPU-local)
+
+**Claims:** C1 (its strongest form) · **Cost:** GPU-hours only ·
+**Prereqs:** `uap workflow` (shipped) + the bundled
+[team-solve](../../examples/workflows/team-solve/README.md) + a
+LiveCodeBench-Hard-style task set.
+
+The measured prior is external and published: five Qwen3.8-27B roles on a
+static relay-with-cross-correction graph matched the authors' own harness on
+LiveCodeBench Hard (9.8/10 vs 9.6 on their first ten; Fable 5 single-call at
+8.0) — structure, not model class, carried the result. UAP now has the
+capability to test that prior against ITS OWN baseline: the gate loop. A
+paired three-arm design on the same local model, same tasks, same seeds:
+
+| arm | treatment |
+|---|---|
+| A | single-shot (one completion per problem) |
+| B | `uap deliver` gate loop (the existing C1 baseline) |
+| C | `uap workflow run team-solve` (role-DAG + cross-correction + deterministic verify) |
+
+- **Would prove:** whether role-DAG structure lifts a weak local model
+  BEYOND the gate loop alone — the C1 claim's strongest form, and the first
+  number that would justify the workflow layer on measured grounds rather
+  than the GVS5H prior.
+- **Would NOT prove:** parity with the authors' harness (their numbers are
+  theirs — different prompts, OpenRouter host, their grader; UAP's port
+  keeps the method, not the bytes), anything about frontier models, or any
+  C2/C3 claim.
+- **Discrimination status:** pilot first (10 problems × 3 arms × 3 passes);
+  the paired format's bootstrap CI sizes the power-up. Contamination
+  caveats travel with the tasks exactly as they did for the authors.
+
 ## Suggested order
 
 1. **O1** (free, hours of analysis, no risk) → publishes the descriptive dataset and
    targets O2's strata.
 2. **O2 hardest-tier replication** (free, targeted) → upgrades the ladder's
    strongest row from underpowered to powered, or retires it honestly.
+   **O7** (also free, also C1) can ride the same task-set effort: pilot the
+   three arms once the task set exists, and only power up whichever arm
+   delta the pilot says is worth powering.
 3. **O4 + O5** (free, small) → the C3 throughput numbers, including the
    demote-if-null honesty.
 4. **O3** (the gap) → design review first (the sequence design is its own
