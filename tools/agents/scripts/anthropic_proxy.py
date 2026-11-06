@@ -1621,11 +1621,23 @@ PROXY_EMPTY_TOOL_LOOP_BREAK = int(
 # ever-growing transcript (observed: ctx 936%, model emits tool_calls 18/min
 # despite tool_choice=auto). After this many consecutive turns at/above the
 # ratio, strip tools entirely so the only possible response is a terminal text
-# summary (end_turn), which ends the client's agentic loop. Ratio is set high
-# enough that only a true runaway trips it — a merely-full session tops out near
-# 100-130%, never 300%. 0 disables.
+# summary (end_turn), which ends the client's agentic loop.
+#
+# Ratio sits above the merely-full band but inside the runaway band. A
+# merely-full session tops out near 100-141%: a client that honestly believes
+# a ~200k window (PROXY_CLIENT_ASSUMED_WINDOW) and compacts at 92.5% sends at
+# most ~185k against a 131,072 rail. A window-blind runaway plateaus wherever
+# its own belief caps it, and that plateau can sit far below 300%: live
+# 2026-11-06 (droid + flash-next, cognition-engine), a client with no
+# maxContextLimit (assumed 250k) ramped 132% -> 198% in 4 minutes and then sat
+# at 190-198% for 4+ HOURS — every turn CRITICAL-PRUNEd blind to ~6 messages
+# (~24-40k actually sent upstream), findings evaporating, the model re-reading
+# the same files — because the 3.0 gate was written for 936% runaways and this
+# one never crossed 200%. 1.6 clears the merely-full band (141% plus one
+# ~19k-token turn of headroom) while ending that class of treadmill within
+# STREAK turns. 0 disables.
 PROXY_RAW_CTX_FINALIZE_RATIO = float(
-    os.environ.get("PROXY_RAW_CTX_FINALIZE_RATIO", "3.0")
+    os.environ.get("PROXY_RAW_CTX_FINALIZE_RATIO", "1.6")
 )
 PROXY_RAW_CTX_FINALIZE_STREAK = int(
     os.environ.get("PROXY_RAW_CTX_FINALIZE_STREAK", "2")
