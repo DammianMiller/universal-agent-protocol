@@ -11,7 +11,7 @@
 
 447 TypeScript modules across 34 subsystems · 530 vitest suites (~6,250 tests, + a ~1,400-test Python enforcer/proxy suite) · 9 agent harnesses
 
-[Quickstart](#quickstart) · [Why UAP?](#why-uap) · [Origin & principle](#origin--principle) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
+[Quickstart](#quickstart) · [Why UAP?](#why-uap) · [Origin & principle](#origin--principle) · [Proven in production](#proven-in-production) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
 
 </div>
 
@@ -22,6 +22,21 @@
 UAP is a **Miller-Tech** tool built for real delivery floors. The failures it targets are the ones that keep recurring in agentic development — "done" code that never ran, edits on `main`, forgotten decisions, prose architecture rules that blocked nothing, agents that stall on any question or silently decide for you. The fix that works, every time, is the same: **turn the software-engineering practice into an executable check the agent cannot route around. Enforce, don't suggest.**
 
 That principle became UAP — a discipline layer installed *underneath* the agent harness, putting a verification station at every point where agentic development actually breaks. It is hardened under its own gates (worktree isolation, parallel review, evidence-bound shipping), which makes the tool the proof of its own thesis. Design decisions are recorded in the [ADR set](docs/architecture/OVERVIEW.md); inspirations and prior art are credited in [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md).
+
+---
+
+## Proven in production
+
+The floors this line was built for are real. Miller-Tech runs UAP as the discipline layer under its whole delivery process, and used it to ship **two commercial products**, both live today:
+
+| | **Pay2U** — payments SaaS | **The Miller-Tech Platform** — the operating platform it runs on |
+|---|---|---|
+| In production | `app` / `api` / `auth` / `observe` `.pay2u.com.au` | subscribable IaC/observability/auth platform, pinned by consumers at semver tags |
+| Shipped through the line | 4,644 commits · 187 merged PRs | 501 commits · 52 merged PRs |
+| Under the gates | 35 materialized policy enforcers · 17 worktrees | 36 materialized enforcers (the IaC destruction check is *load-bearing*) · 9 worktrees |
+| One shared memory | 4 agent harnesses wired to a single memory store | 5 harnesses, same store |
+
+Every number is countable in the repos themselves. How the policy engine and gating, the convergence and ideation loop, small-model guardrails, project-level shared memory, multi-agent coordination, and endless-context injection actually carried those builds — evidence included — is the full story in **[docs/CASE_STUDY.md](docs/CASE_STUDY.md)**.
 
 ---
 

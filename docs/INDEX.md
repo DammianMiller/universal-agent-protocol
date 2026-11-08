@@ -9,6 +9,8 @@ The complete documentation for the **Universal Agent Protocol** (`@miller-tech/u
 
 New here? Start with the **[Delivery Pipeline tour](guides/DELIVERY_PIPELINE.md)** — it walks the whole factory floor, station by station, showing where agents normally break and what UAP puts in place to catch it, all under one principle: *enforce, don't suggest*. Then grab the [Quickstart](getting-started/QUICKSTART.md).
 
+Want proof it holds on real floors? **[The production case study](CASE_STUDY.md)** shows how Miller-Tech used UAP to ship two commercial products — Pay2U, a payments SaaS live at `pay2u.com.au`, and the Miller-Tech Platform it runs on — with countable numbers for the policy gating, convergence loop, shared memory, coordination, and context machinery that carried them.
+
 ---
 
 ## Find your way by station
@@ -45,6 +47,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 
 | Doc | What it covers |
 |---|---|
+| [**Case Study: two commercial products**](CASE_STUDY.md) | How Miller-Tech shipped Pay2U and the Miller-Tech Platform on UAP — policy engine & gating, convergence & ideation, small-model guardrails, project-level shared memory, multi-agent coordination, endless-context injection — every number verifiable from the repos ⭐ |
 | [**The Delivery Pipeline**](guides/DELIVERY_PIPELINE.md) | The station-by-station tour — the big-picture map of the whole floor ⭐ |
 | [**What UAP Does Automatically**](guides/AUTOMATIC_FEATURES.md) | Every feature in benefit / when-it-kicks-in terms — install once, it all self-applies ⭐ |
 | [What UAP Does Automatically (compact)](guides/AUTOMATIC.md) | A shorter, trigger-by-trigger telling of the same ground as AUTOMATIC_FEATURES |
