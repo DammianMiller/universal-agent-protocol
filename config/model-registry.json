@@ -40,26 +40,21 @@
       "engine": "strata",
       "unit": "uap-strata-server",
       "service": "strata-server",
-      "launch": "/home/cogtek/dev/strata/run-iq3_s.sh",
       "endpoint": "http://127.0.0.1:8080",
       "task_affinity": ["code", "general"],
       "affinity": { "device": ["gpu0"] },
       "configs": {
-        "strata-iq3_s": {
-          "status": "unmeasured",
-          "note": "active backend on this host; run `uap models measure` to record its footprint"
-        },
         "strata-swift-iq3_s": {
           "status": "unmeasured",
           "engine": "strata",
-          "unit": "uap-strata-server",
-          "note": "Swift 1.5 (UkisAI reasoning-efficient Flash-Next post-train) GSQ-RCO IQ3_S on the strata engine; A/B trial vs strata-iq3_s since 2026-10-17 with identical tuning (spec 8/0.70, vram-reserve 3072, int8 KV resident 32768, 131k). Weights: ukisai Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, sha256-verified, PLE table in shard 1 (setup-detected); pack strata-data/packs/swift-iq3_s; config strata-swift-iq3_s.json behind uap-strata-server.service (revert: point the unit --config back at strata-iq3_s.json, daemon-reload, restart). Run `uap models measure` to record this machine's footprint before it can load (fail-closed). Trial evidence: /home/cogtek/dev/strata/bench/results/2026-10-17-swift-iq3s-trial/."
+          "unit": "uap-strata-swift-server",
+          "note": "Swift 1.5 (UkisAI reasoning-efficient Flash-Next post-train) GSQ-RCO IQ3_S on the strata engine; A/B trial vs the base IQ3_S arm since 2026-10-17 with identical tuning (spec 8/0.70, vram-reserve 3072, int8 KV resident 32768, 131k). Weights: ukisai Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, sha256-verified, PLE table in shard 1 (setup-detected); pack strata-data/packs/swift-iq3_s; config strata-swift-iq3_s.json behind its own unit uap-strata-swift-server.service since the 2026-10-23 split (switch: model-switch.sh strata-swift). The base IQ3_S arm was dropped 2026-11-11, superseded by this arm at the same quant; revert paths are now model-switch.sh strata (the v31 default) or strata-abliterated. Run `uap models measure` to record this machine's footprint before it can load (fail-closed). Trial evidence: /home/cogtek/dev/strata/bench/results/2026-10-17-swift-iq3s-trial/."
         },
         "strata-abliterated-iq2_xs": {
           "status": "unmeasured",
           "engine": "strata",
-          "unit": "uap-strata-server",
-          "note": "The LIVE :8080 default arm since 2026-10-28 (DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; engine 0.1.52, config strata-abliterated-iq2_xs.json). Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28).",
+          "unit": "uap-strata-abliterated-server",
+          "note": "The :8080 default arm 2026-10-28 -> 2026-11-11, switchable since via its own unit uap-strata-abliterated-server (model-switch.sh strata-abliterated; DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; config strata-abliterated-iq2_xs.json, engine 0.1.52 at retirement). Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28).",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
@@ -76,9 +71,49 @@
               "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
             }
           ]
+        },
+        "strata-unsloth-ud-iq4_xs-v31": {
+          "status": "unmeasured",
+          "engine": "strata",
+          "unit": "uap-strata-server",
+          "note": "The LIVE :8080 default arm since 2026-11-11: Unsloth Dynamic v3.1 UD-IQ4_XS of Qwen3.8-Flash-Next (the 2026-11-04 republication, revision d96201194f; the x.com aidavid125 2120325656911441988 stack — Strata 0.2.13.1 / engine 0.1.59.1, faster DSH tool-calling). RAM-budget mode --resident-budget-gib 40: the hottest 40 GiB of the 60.4 GB routed-expert arena page-locked in RAM, cold experts read from the GGUF files on the SSD. The planned 48 plus setup's --ple-io ram choice OOM-killed the engine four times on this box on 2026-11-11 (kernel kills at 21:39 first-request, 21:49 reload, 22:05 decode burst; the 21:31 first start died the same way) — 40 with the 28.8 GB FP8 n-gram table back on the SSD (--ple-io ram removed; the page cache holds it reclaimably) restores the ~25 GiB available-RAM margin the IQ2_XS arm held for two weeks (bench/results/2026-10-28-iq2xs-fullpin). Drafter: the model's own MTP layer, PINNED by \"drafting\": \"mtp\" in the config — live /metrics: spec window 12, mtp_max 4, spec-min-p 0.5. Setup's auto plan for this model class is DFlash2 (spec 6 / conf 0.7, the tuned strata1 pack), but its engine start OOM-killed twice on 2026-11-11 and the serve wrapper's DIDNT_START fallback landed on MTP; sm_86 is also the card class where upstream measured DFlash2 slower than MTP (strata_control/drafting.py _SLOWER) and this box's own 2026-10-28 A/B rejected the stock drafter (-5.5% mean decode) — a dflash2 retry is a follow-up behind a smaller budget and a fresh A/B, not the live plan. CPU vision encoder, int8 KV resident 32768, 131k, vram-reserve 3072; config strata-unsloth-ud-iq4_xs-v31.json behind uap-strata-server.service (revert: model-switch.sh strata-abliterated). Run `uap models measure` to record this machine's footprint before it can load (fail-closed).",
+          "files": [
+            {
+              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+              "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+              "file": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+              "rev": "d96201194f103c906994f283f504209dc8d2a10c",
+              "bytes": 10946618,
+              "sha256": "93ff23a08e5cd7501f24fa16f5b415d5807d0175e04edd3ed6a7a41b601a4eef"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf",
+              "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+              "file": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf",
+              "rev": "d96201194f103c906994f283f504209dc8d2a10c",
+              "bytes": 49604491008,
+              "sha256": "13d5dc8b93d039e4cfade5a9af7037f10c97f7ec4e53f75bd2e9ae34aae54aeb"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00004.gguf",
+              "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+              "file": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00004.gguf",
+              "rev": "d96201194f103c906994f283f504209dc8d2a10c",
+              "bytes": 15256783680,
+              "sha256": "f6b9b5934908a2043732269dd740155d0f921d0763a1dcdd3452246311651f87"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf",
+              "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+              "file": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf",
+              "rev": "d96201194f103c906994f283f504209dc8d2a10c",
+              "bytes": 28800138432,
+              "sha256": "5de8b5dbf89409acc39468decafd4a4a95b13c29d88a14b0356107897829ec36"
+            }
+          ]
         }
       },
-      "advertises": ["qwen3.8-flash-next-iq3_s", "swift-1.5-iq3_s", "gpt-5.1-codex"]
+      "advertises": ["qwen3.8-flash-next-iq3_s", "swift-1.5-iq3_s", "gpt-5.1-codex", "qwen3.8-flash-next-unsloth-ud-iq4_xs-v31"]
     },
     "qwen3.8-27b": {
       "display": "Qwen3.8 27B",

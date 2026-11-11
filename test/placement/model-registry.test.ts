@@ -404,3 +404,79 @@ describe('files manifest (model-file recovery)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 2026-11-11: the Unsloth Dynamic v3.1 arm — installed for the aidavid125
+// stack (Strata 0.2.13.1 / engine 0.1.59); the base IQ3_S arm was dropped
+// the same day (superseded by the Swift 1.5 arm at the same quant since
+// 2026-10-17, its shards deleted after a links=1 check).
+// ---------------------------------------------------------------------------
+
+describe('repo registry: unsloth UD-IQ4_XS-v31 arm wiring', () => {
+  it('ships the v31 config with the pinned 4-shard manifest and fails closed until measured', () => {
+    const own = mkdtempSync(join(tmpdir(), 'unsloth-v31-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['qwen3.8-flash-next'];
+      // setup writes model_name = <family name>-<model key lowercased> — the
+      // dash form, the same convention as the config file name.
+      expect(entry.advertises).toContain('qwen3.8-flash-next-unsloth-ud-iq4_xs-v31');
+      // The short form matches nothing this arm advertises — it must not ship.
+      expect(entry.advertises).not.toContain('unsloth-ud-iq4_xs_v31');
+      const cfg = entry.configs['strata-unsloth-ud-iq4_xs-v31'];
+      expect(cfg, 'config/model-registry.json must keep the v31 arm').toBeTruthy();
+      expect(cfg.unit).toBe('uap-strata-server');
+      expect(cfg.engine).toBe('strata');
+      // Shape only until `uap models measure` records this machine (spec §4.1).
+      expect(isPlaceable(cfg)).toBe(false);
+      // The v3.1 republication is HEAD-pinned: every shard must record the
+      // revision, size and digest, or `uap models ensure` could re-download
+      // from a moved head (the openjet lesson — unsloth moves files).
+      expect(cfg.files).toHaveLength(4);
+      expect(cfg.files?.every((f) => f.rev === 'd96201194f103c906994f283f504209dc8d2a10c')).toBe(true);
+      // The shards live under the repo's UD-IQ4_XS/ SUBFOLDER — the manifest
+      // must record the repo-relative path, or `uap models ensure` repair
+      // hits a 404 even with the revision pinned (the 2026-11-11 review
+      // catch; hfResolveUrl encodes each segment on its own).
+      expect(cfg.files?.map((f) => f.file)).toEqual([
+        'UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf',
+        'UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf',
+        'UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00004.gguf',
+        'UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf',
+      ]);
+      expect(cfg.files?.[1]).toMatchObject({
+        repo: 'unsloth/Qwen3.8-Flash-Next-GGUF',
+        bytes: 49604491008,
+        sha256: '13d5dc8b93d039e4cfade5a9af7037f10c97f7ec4e53f75bd2e9ae34aae54aeb',
+      });
+      // Shard 4 is the n-gram table, byte-identical across every 4-shard
+      // v3.1 set (the 3-shard sets carry a different n-gram shard).
+      expect(cfg.files?.[3].sha256).toBe('5de8b5dbf89409acc39468decafd4a4a95b13c29d88a14b0356107897829ec36');
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+
+  it('no longer ships the dropped base IQ3_S arm — the files are gone, so the entry must be too', () => {
+    const own = mkdtempSync(join(tmpdir(), 'iq3s-dropped-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['qwen3.8-flash-next'];
+      expect(entry.configs['strata-iq3_s']).toBeUndefined();
+      // What remains: the v31 default, the switchable abliterated IQ2_XS and
+      // the Swift 1.5 A/B arm — each naming the unit that actually serves it.
+      expect(Object.keys(entry.configs).sort()).toEqual([
+        'strata-abliterated-iq2_xs',
+        'strata-swift-iq3_s',
+        'strata-unsloth-ud-iq4_xs-v31',
+      ]);
+      expect(entry.configs['strata-abliterated-iq2_xs'].unit).toBe('uap-strata-abliterated-server');
+      expect(entry.configs['strata-swift-iq3_s'].unit).toBe('uap-strata-swift-server');
+      expect(entry.configs['strata-unsloth-ud-iq4_xs-v31'].unit).toBe('uap-strata-server');
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+});

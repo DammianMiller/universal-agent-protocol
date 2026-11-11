@@ -90,6 +90,33 @@ describe('hfResolveUrl', () => {
       'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/566347e99d832d31f6245a577198d10d5bdd389e/Qwen3.8-27B-Q4_K_M.gguf',
     );
   });
+
+  it('encodes each segment of a subfolder file, keeping the separators intact', () => {
+    // 2026-11-11: unsloth publishes the Flash-Next shards under "UD-IQ4_XS/"
+    // in the repo, not at the root — the manifest must carry the subfolder
+    // path, and encoding the whole path would %2F the separator and 404.
+    const subfolder: ModelFileManifest = {
+      path: '/home/x/m/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf',
+      repo: 'unsloth/Qwen3.8-Flash-Next-GGUF',
+      file: 'UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf',
+      rev: 'd96201194f103c906994f283f504209dc8d2a10c',
+    };
+    expect(hfResolveUrl(subfolder)).toBe(
+      'https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/d96201194f103c906994f283f504209dc8d2a10c/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf',
+    );
+    expect(manifestRepoFile(subfolder)).toBe('UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf');
+
+    // A space inside each segment proves the encoding is per-segment,
+    // not skipped for the whole path.
+    const spaced: ModelFileManifest = {
+      path: '/home/x/m/UD-IQ4_XS/model q4.gguf',
+      repo: 'org/Model-GGUF',
+      file: 'UD IQ4_XS/model q4.gguf',
+    };
+    expect(hfResolveUrl(spaced)).toBe(
+      'https://huggingface.co/org/Model-GGUF/resolve/main/UD%20IQ4_XS/model%20q4.gguf',
+    );
+  });
 });
 
 describe('downloadModelFile', () => {
