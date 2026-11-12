@@ -14,8 +14,18 @@ fi
 # Read tool input from stdin (JSON)
 INPUT=$(cat)
 
-# Extract command from tool_input
-CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+# Extract command from tool_input, with bounded retries. Under a full
+# parallel suite (or a busy box) a jq spawn can fail transiently, and a
+# fail-open on that would silently allow exactly the edits this guard
+# exists to block — measured as the recurring jq '.version = "9.9.9"'
+# semver-suite flake (3 strikes on 2026-11-12: two CI runs, one local).
+# Fail-open stays the LAST resort for genuinely unparseable input.
+CMD=""
+for _attempt in 1 2 3 4 5; do
+  CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+  [ -n "$CMD" ] && break
+  sleep 0.05
+done
 
 # If we can't determine the command, fail open
 if [ -z "$CMD" ]; then
