@@ -250,7 +250,22 @@ jobs:
         uses: actions/checkout@v6
       - name: Get package version
         id: get_version
-        run: echo "VERSION=$(node -p 'require(\"./package.json\").version')" >> $GITHUB_OUTPUT
+        # Keep this FLAT. The previous one-liner nested escaped double quotes
+        # inside the single-quoted node expression (backslash-quote pairs
+        # around the package.json require), which handed node invalid JS; the
+        # $( ) swallowed the error, the step "succeeded" with VERSION empty,
+        # the tag check then queried the bare refs/tags/v refspec (matching
+        # the junk `v` tag from 2026-10-09), and every release was skipped as
+        # "already existing" — the v2.41.0 through v2.43.1 master pushes all
+        # no-oped this way. Extract first, refuse loudly on empty, and only
+        # then publish the step output.
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ -z "$VERSION" ]; then
+            echo "::error::package.json version extraction failed (empty VERSION)"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
       - name: Check if tag exists
         id: check_tag
         env:
