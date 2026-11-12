@@ -75,8 +75,12 @@ re-verify the hashes *inside* the run, and the workspace copy is writable, so th
 guarantee here is audit-after-the-fact rather than runtime enforcement. That is enough
 to make the pass rate falsifiable — a tampered gate would show up as a hash mismatch
 when checked — but it is not the same as a read-only mount or a pre-flight assertion.
-The transferable part stands either way: without a pinned verifier, a 67% pass rate is
-unfalsifiable, because the cheapest path to 12/12 is editing the checker. This is the
+Closing that gap is cheap: recompute the workspace gate hashes after the model's
+script has written and before the gates execute, and score the attempt 0 on mismatch.
+Four `hashlib` calls in the runner turn "no tampering was found afterwards" into
+"tampering could not have helped". The transferable part stands either way: without a
+pinned verifier, a 67% pass rate is unfalsifiable, because the cheapest path to 12/12
+is editing the checker. This is the
 same `enforce, don't suggest` stance as everywhere else in UAP, applied to the verifier
 rather than the producer.
 
