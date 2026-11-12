@@ -37,6 +37,7 @@ interface RegistryModel {
 }
 interface Registry {
   models: Record<string, RegistryModel>;
+  retired_local_aliases?: string[];
 }
 interface DroidModel {
   model?: string;
@@ -59,13 +60,10 @@ const profile = readJson<Profile>(resolve(ROOT, 'config/model-profiles/qwen38.js
 const registry = readJson<Registry>(resolve(ROOT, 'config/model-registry.json'));
 const arm = registry.models['qwen3.8-flash-next'];
 
-const RETIRED = [
-  'qwen35-a3b-iq4xs',
-  'qwen38-gsq-rco-27b',
-  'abliterated-iq2_xs',
-  'qwen3.8-flash-next-iq3_s',
-  'swift-1.5-iq3_s',
-];
+// Retired ids are single-sourced in the registry (retired_local_aliases) —
+// the same list the installer migrates from — so this suite never
+// transcribes them either.
+const RETIRED = registry.retired_local_aliases ?? [];
 
 describe('qwen38 model knowledge — registry follows the profile', () => {
   it('advertises the alias the profile pins, so placement can match the served id', () => {
@@ -78,10 +76,15 @@ describe('qwen38 model knowledge — registry follows the profile', () => {
     expect(arm.configs).toHaveProperty(m![0].replace(/\.json$/, ''));
   });
 
-  it('declares the unsloth arm with a verified 4-shard manifest', () => {
-    const cfg = arm.configs['strata-unsloth-ud-iq4_xs-v31'];
-    expect(cfg.files).toHaveLength(4);
-    for (const f of cfg.files ?? []) {
+  it('declares the arm the profile names with a verified shard manifest', () => {
+    // derived, not hardcoded: after the next arm swap this keeps testing the
+    // LIVE arm, not yesterday's
+    const key = /strata-[a-z0-9._-]+\.json/.exec(profile._engine)![0].replace(/\.json$/, '');
+    const cfg = arm.configs[key];
+    if (!cfg) throw new Error(`arm config ${key} missing from the registry`);
+    const files = cfg.files ?? [];
+    expect(files.length, `${key} carries no shard manifest`).toBeGreaterThan(0);
+    for (const f of files) {
       expect(f.bytes).toBeGreaterThan(0);
       expect(f.sha256).toMatch(/^[0-9a-f]{64}$/);
     }
@@ -92,10 +95,14 @@ describe('qwen38 client sync tooling — droid list follows the profile', () => 
   const script = readFileSync(resolve(ROOT, 'scripts/sync-local-agent-configs.sh'), 'utf8');
   const sandbox = readFileSync(resolve(ROOT, 'scripts/test-sync-sandbox.sh'), 'utf8');
 
-  it('migrates every retired arm alias, not just the qwen35-era ones', () => {
-    for (const retired of RETIRED) {
-      expect(script).toContain(`"${retired}"`);
-    }
+  it('migrates every retired arm alias FROM THE REGISTRY, never transcribed', () => {
+    expect(RETIRED.length, 'registry.retired_local_aliases is missing').toBeGreaterThan(0);
+    expect(script).toContain('retired_local_aliases');
+    // the Droid migration tuple must be DERIVED, not spelled out (the
+    // opencode section's legacy is_local_ref matcher may still name an old
+    // id as a pattern — different semantic, kept).
+    expect(script).not.toMatch(/RETIRED\s*=\s*\(/);
+    expect(RETIRED).not.toContain(profile.model);
   });
 
   it('has a models-only mode that reads the LIVE alias and can target the project settings', () => {

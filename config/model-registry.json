@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "Repo defaults for the model placement registry. Shape only: unit/service names, engines, profiles, affinity, and the config inventory. Measured footprints (resident_gpu_mib, host_rss_mib, device totals) are machine state and live in ~/.uap/model-registry.json, deep-merged over this file. A config without a measurement is 'unmeasured' and fails closed: it may be served if already resident, but it can never be loaded or evicted. See docs/specs/operator-model-placement.md §4.1.",
+  "_comment": "Repo defaults for the model placement registry. Shape only: unit/service names, engines, profiles, affinity, and the config inventory. Measured footprints (resident_gpu_mib, host_rss_mib, device totals) are machine state and live in ~/.uap/model-registry.json, deep-merged over this file. A config without a measurement is 'unmeasured' and fails closed: it may be served if already resident, but it can never be loaded or evicted. See docs/specs/operator-model-placement.md §4.1. retired_local_aliases is the single source the Droid sync (scripts/sync-local-agent-configs.sh) migrates from — append the just-retired alias there on every arm swap.",
   "devices": {
     "gpu0": {
       "kind": "gpu"
@@ -9,6 +9,13 @@
       "kind": "cpu"
     }
   },
+  "retired_local_aliases": [
+    "qwen35-a3b-iq4xs",
+    "qwen38-gsq-rco-27b",
+    "abliterated-iq2_xs",
+    "qwen3.8-flash-next-iq3_s",
+    "swift-1.5-iq3_s"
+  ],
   "models": {
     "qwen3.6-27b": {
       "display": "Qwen3.6 27B",
@@ -59,7 +66,7 @@
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-server",
-          "note": "The :8080 default arm 2026-10-28 -> 2026-11-11 (DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; engine 0.1.52, config strata-abliterated-iq2_xs.json); SUPERSEDED by strata-unsloth-ud-iq4_xs_v31 on 2026-11-11, kept switchable via ~/.config/uap/model-switch.sh strata-abliterated. Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28).",
+          "note": "The :8080 default arm 2026-10-28 -> 2026-11-11 (DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; engine 0.1.52, config strata-abliterated-iq2_xs.json); SUPERSEDED by strata-unsloth-ud-iq4_xs-v31 on 2026-11-11, kept switchable via ~/.config/uap/model-switch.sh strata-abliterated. Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28).",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
@@ -81,7 +88,7 @@
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-server",
-          "note": "The LIVE :8080 default arm since 2026-11-11 (the PRISTINE base-model quant: Unsloth Dynamic v3.1 UD-IQ4_XS Qwen3.8-Flash-Next, 4 shards; engine 0.1.59.1, config strata-unsloth-ud-iq4_xs_v31.json, spec 4 / spec-min-p 0.5 MTP, 40 GiB resident expert budget + SSD streaming, int8 KV resident 32768, mmproj vision, 131k pool; revert: ~/.config/uap/model-switch.sh strata-abliterated). Raw GGUF shards declared here: the pack (strata-data/packs/unsloth-ud-iq4_xs_v31) is derived from them by tools/iq_pack.py (see its conversions.json) and rebuilds from these files. The HF source repo is NOT yet pinned (no download record carries it): bytes + sha256 below are the download-time .done markers, verified against shard 1 on 2026-11-12 — pin `repo`/`rev` in this entry before relying on `uap models ensure` to re-fetch.",
+          "note": "The LIVE :8080 default arm since 2026-11-11 (the PRISTINE base-model quant: Unsloth Dynamic v3.1 UD-IQ4_XS Qwen3.8-Flash-Next, 4 shards; engine 0.1.59.1, config strata-unsloth-ud-iq4_xs-v31.json, spec 4 / spec-min-p 0.5 MTP, 40 GiB resident expert budget + SSD streaming, int8 KV resident 32768, mmproj vision, 131k pool; revert: ~/.config/uap/model-switch.sh strata-abliterated). Raw GGUF shards declared here: the pack (strata-data/packs/unsloth-ud-iq4_xs-v31) is derived from them by tools/iq_pack.py (see its conversions.json) and rebuilds from these files. The HF source repo is NOT yet pinned (no download record carries it): bytes + sha256 below are the download-time .done markers, verified against shard 1 on 2026-11-12 — pin `repo`/`rev` in this entry before relying on `uap models ensure` to re-fetch.",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",

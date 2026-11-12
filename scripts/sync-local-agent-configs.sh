@@ -137,19 +137,24 @@ droid_sync_lock() {
 # atomic, idempotent (no change => byte-identical), and add the canonical
 # proxy entry to a settings.json that has no local entry at all. A per-file
 # failure prints WARN and returns 0 — one unreadable file must not abort the
-# other targets.
+# other targets. create=1 also means a fresh clone of this repo gains a
+# machine-local (gitignored) .factory/settings.json pointing at the local
+# stack — a dead entry on machines without it, accepted for an operator box.
 sync_droid_models() { # <file> <create: 0|1>
   local f="$1" create="${2:-0}"
   if [ "$create" = "1" ]; then
     mkdir -p "$(dirname "$f")"
   fi
   [ -f "$f" ] || [ "$create" = "1" ] || { note "absent: $f"; return 0; }
-  backup "$f"
+  # backup happens INSIDE the python, only when something actually changed —
+  # the session hook fires this constantly, and copies of unchanged files
+  # are pure $HOME accumulation.
   UAP_SYNC_TOKEN="$PROXY_TOKEN" DRY_RUN="$DRY_RUN" \
+    UAP_SYNC_BACKUP="$BACKUP_DIR" UAP_SYNC_REPO_ROOT="$REPO_ROOT" \
     python3 - "$f" "$PROXY_URL" "$DIRECT_URL" "$MODEL_ALIAS" \
               "$DROID_ANTHROPIC_BASE_MODEL" "$CTX_SESSION" "$CTX_POOL" \
               "$MAX_OUTPUT" "$create" <<'PY' || { note "WARN: $f could not be synced"; return 0; }
-import json, os, re, sys, tempfile
+import json, os, re, shutil, sys, tempfile
 
 path, proxy, direct, alias, base_model, ctx_s, ctx_p, out, create = sys.argv[1:10]
 token = os.environ.get("UAP_SYNC_TOKEN", "not-needed")
@@ -157,16 +162,13 @@ dry = os.environ.get("DRY_RUN", "0") == "1"
 ctx_s, ctx_p, out = int(ctx_s), int(ctx_p), int(out)
 
 # Retired local ids: every arm this box has served since 2026-09. A client
-# still pinned to one is the exact drift this sync exists to converge. New
-# retired ids are appended here and ONLY here (never as the alias — the
-# alias comes from the profile read above).
-RETIRED = (
-    "qwen35-a3b-iq4xs",         # pre-2026-10 qwen35 era
-    "qwen38-gsq-rco-27b",       # this script's own pre-2026-10-07 hardcode
-    "abliterated-iq2_xs",       # default arm 2026-10-28 -> 2026-11-11
-    "qwen3.8-flash-next-iq3_s",
-    "swift-1.5-iq3_s",          # Swift-1.5 A/B trial arm, 2026-10-17
-)
+# still pinned to one is the exact drift this sync exists to converge. They
+# live in config/model-registry.json (retired_local_aliases) — the file that
+# already keeps every arm — so the next arm swap is a profile + registry
+# edit, never a tuple transcription here. Fail closed: a registry that
+# cannot be read is a migration this script refuses to run blind.
+reg = os.path.join(os.environ["UAP_SYNC_REPO_ROOT"], "config", "model-registry.json")
+RETIRED = tuple(json.load(open(reg))["retired_local_aliases"])
 
 def spell(camel):
     if camel:
@@ -216,12 +218,16 @@ for key in keys:
             base = m[BK]
         model = m.get("model")
         # Ours to converge: retired ids, the live alias itself, or a model-less
-        # entry already pointed at the local stack. Everything else — cloud
-        # models, the :8317 cloud-router entries, other LAN servers — is a
-        # deliberate user choice and must survive this script untouched.
-        ours = model in RETIRED or model == alias or (
-            model is None and (":4000" in base or ":8080" in base)
-        )
+        # entry already pointed at THIS box's ports. Everything else — cloud
+        # models, the :8317 cloud-router entries, other LAN servers (ports
+        # alone don't identify this host) — is a deliberate user choice and
+        # must survive this script untouched.
+        if model is None:
+            hlocal = any(t in base for t in ("://127.0.0.1:", "://localhost:", "://[::1]:")) \
+                or base.startswith(("127.0.0.1:", "localhost:"))
+            ours = hlocal and (":4000" in base or ":8080" in base)
+        else:
+            ours = model in RETIRED or model == alias
         if not ours:
             continue
         if model != alias:
@@ -286,6 +292,16 @@ if dry:
     for c in changed:
         print(f"     - {c}")
     sys.exit(0)
+# Backup-on-change-only: the session hook fires this constantly, and a copy
+# of an unchanged file is pure $HOME accumulation. Only this moment — the
+# file existed AND something changed — owes a backup (same flattened name
+# and mode preservation as the bash backup()).
+if exists and os.environ.get("UAP_SYNC_BACKUP"):
+    bdir = os.environ["UAP_SYNC_BACKUP"]
+    os.makedirs(bdir, exist_ok=True)
+    home = os.path.expanduser("~")
+    rel = os.path.relpath(path, home) if path.startswith(home + os.sep) else path.lstrip("/")
+    shutil.copy2(path, os.path.join(bdir, rel.replace(os.sep, "_")))
 # Atomic write: a Droid session starting right now must never see a
 # half-written settings file.
 text = json.dumps(d, indent=2) + "\n"

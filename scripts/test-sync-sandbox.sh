@@ -111,9 +111,11 @@ EOF
 # settings.json uses the camelCase spelling and covers all three routes: the
 # anthropic Messages shape (baseUrl at the proxy ROOT, no /v1 — exactly the
 # real entry that shipped without baseModelId), :4000/v1 chat entries from two
-# retired eras, and an entry with no `model` key at all aimed at the retired
-# 8317 host — the shape that used to raise TypeError mid-run and must now take
-# ONLY the split-brain host fixup.
+# retired eras, and a model-less trio: one aimed at the retired 8317 host
+# (the shape that used to raise TypeError mid-run and must now take ONLY the
+# split-brain host fixup), one LOCAL on :8080 (must converge onto the direct
+# route), and one on ANOTHER LAN host (must survive untouched — ports alone
+# don't identify this box).
 cat > "$SANDBOX/.factory/settings.json" <<EOF
 { "customModels": [
   { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
@@ -123,7 +125,9 @@ cat > "$SANDBOX/.factory/settings.json" <<EOF
     "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale" },
   { "displayName": "Qwen3.8 IQ2_XS (local)", "model": "abliterated-iq2_xs",
     "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale" },
-  { "displayName": "Odd entry", "baseUrl": "http://192.168.1.165:8317" }
+  { "displayName": "Odd entry", "baseUrl": "http://192.168.1.165:8317" },
+  { "displayName": "LAN bare 8080", "baseUrl": "http://192.168.1.5:8080/v1", "apiKey": "lan" },
+  { "displayName": "Local bare 8080", "baseUrl": "http://127.0.0.1:8080/v1", "apiKey": "bare" }
 ] }
 EOF
 # A project-level settings file with NO local entry at all: after the run it
@@ -296,8 +300,9 @@ assert a.get("baseModelId") == base_model, f"baseModelId wrong: {a.get('baseMode
 assert a["maxContextLimit"] == ctx, "anthropic entry not session-sized"
 assert a["displayName"] == "Qwen3.8 Flash-Next (UAP proxy)"
 assert not a.get("noImageSupport"), "vision still disabled"
-# the two :4000/v1 chat entries converged on the scoped token
-chat = [m for m in entries if m.get("baseUrl", "").endswith("/v1")]
+# the two :4000/v1 chat entries converged on the scoped token (the direct
+# :8080/v1 entry also ends in /v1 — filter on the port, not the suffix)
+chat = [m for m in entries if ":4000" in m.get("baseUrl", "") and m.get("baseUrl", "").endswith("/v1")]
 assert len(chat) == 2, f"expected two proxy-chat entries, got {len(chat)}"
 for m in chat:
     assert m["apiKey"] == tok, "chat entry not on the scoped token"
@@ -306,6 +311,16 @@ for m in chat:
 odd = [m for m in models if m.get("displayName") == "Odd entry"]
 assert len(odd) == 1 and "model" not in odd[0], "model-less entry was force-migrated"
 assert odd[0]["baseUrl"] == "http://localhost:8317", "8317 host not fixed"
+# the model-less LOCAL :8080 entry converged onto the direct route (pool-sized)
+dire = [m for m in entries if ":8080" in m.get("baseUrl", "")]
+assert len(dire) == 1, f"expected the model-less local entry on direct, got {len(dire)}"
+assert dire[0]["maxContextLimit"] == pool, "direct entry not pool-sized"
+# the model-less entry on ANOTHER LAN host survived untouched
+lan = [m for m in models if m.get("displayName") == "LAN bare 8080"]
+assert len(lan) == 1, "LAN model-less entry vanished"
+assert "model" not in lan[0], "LAN model-less entry was force-migrated"
+assert lan[0]["baseUrl"] == "http://192.168.1.5:8080/v1", "LAN model-less entry was repointed"
+assert lan[0]["apiKey"] == "lan", "LAN entry key clobbered"
 # add-if-missing must NOT fire: a local entry already exists
 assert not any(str(m.get("id", "")).startswith("custom:Qwen3.8-UAP-local-") for m in models), \
     "canonical entry added although local entries exist"
@@ -407,7 +422,87 @@ PY
 [ ! -e "$S3/.config/uap/anthropic-proxy.env" ] && ok "MODELS_ONLY: no proxy env created" || bad "MODELS_ONLY: created the proxy env"
 [ ! -e "$S3/.codex/config.toml" ]              && ok "MODELS_ONLY: no codex config created" || bad "MODELS_ONLY: wrote codex config"
 [ ! -e "$S3/.config/opencode" ]                && ok "MODELS_ONLY: no opencode config created" || bad "MODELS_ONLY: wrote opencode config"
+# Backup-on-change-only: the run above CHANGED both files, so it owes exactly
+# one backup dir; a no-op re-run must not add another (the session hook fires
+# this constantly — unbounded per-fire backups were the review finding).
+BKS="$S3/.uap-backups"
+NB=$(find "$BKS" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
+[ "$NB" = "1" ] && ok "MODELS_ONLY: one backup dir for the run that changed files" || bad "MODELS_ONLY: expected 1 backup dir, found $NB"
+if MODELS_ONLY=1 DIRECT_URL=http://127.0.0.1:9 PROJECT_FACTORY_SET="$PSET3" \
+     DROID_SYNC_LOCK="$S3/droid-sync.lock" HOME="$S3" \
+     bash "$HERE/sync-local-agent-configs.sh" >/dev/null 2>&1; then
+  NB2=$(find "$BKS" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
+  [ "$NB2" = "$NB" ] && ok "MODELS_ONLY: no-op re-run adds NO backup dir (hook-safe)" \
+    || bad "MODELS_ONLY: no-op re-run created $((NB2 - NB)) extra backup dir(s)"
+else
+  bad "MODELS_ONLY: no-op re-run exited nonzero"
+fi
 rm -rf "$S3"
+
+# 7b. MODELS_ONLY live-alias override — the mode's stated reason to exist: a
+# backend ACTUALLY serving a different alias than the profile pins must win
+# (live reality over a stale profile). A local /props stub stands in for the
+# engine; the probe's 3s curl bound keeps the run hermetic either way.
+S4=$(TMPDIR=/tmp mktemp -d)
+mkdir -p "$S4/.factory"
+cat > "$S4/.factory/settings.json" <<EOF
+{ "customModels": [
+  { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
+    "baseUrl": "http://localhost:4000", "apiKey": "not-needed", "provider": "anthropic" }
+] }
+EOF
+STUB_ALIAS="stub-arm-live-alias"
+STUB_PORT_FILE="$S4/port"
+python3 - "$STUB_PORT_FILE" "$STUB_ALIAS" <<'STUBPY' &
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+pf, alias = sys.argv[1], sys.argv[2]
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/props":
+            body = json.dumps({"model_alias": alias,
+                               "default_generation_model": {"id": alias}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+    def log_message(self, *a):
+        pass
+srv = HTTPServer(("127.0.0.1", 0), H)
+with open(pf, "w") as fh:
+    fh.write(str(srv.server_port))
+srv.serve_forever()
+STUBPY
+STUB_PID=$!
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [ -s "$STUB_PORT_FILE" ] && break
+  sleep 0.1
+done
+STUB_PORT=$(cat "$STUB_PORT_FILE" 2>/dev/null || echo 0)
+if [ "$STUB_PORT" != "0" ] && MODELS_ONLY=1 DIRECT_URL="http://127.0.0.1:$STUB_PORT" \
+     DROID_SYNC_LOCK="$S4/droid-sync.lock" HOME="$S4" \
+     bash "$HERE/sync-local-agent-configs.sh" >/dev/null 2>&1; then
+  ok "MODELS_ONLY live-override: run exited 0 against the /props stub"
+else
+  bad "MODELS_ONLY live-override: run failed (stub port $STUB_PORT)"
+fi
+python3 - "$S4/.factory/settings.json" "$STUB_ALIAS" <<PY && ok "MODELS_ONLY live-override: converged onto the alias the backend SERVES" || bad "MODELS_ONLY live-override: assertions failed"
+import json, sys
+alias = sys.argv[2]
+u = json.load(open(sys.argv[1]))["customModels"]
+hits = [m for m in u if m.get("model") == alias]
+assert hits, "entries not converged onto the alias the backend SERVES"
+assert not any(m.get("model") == "qwen35-a3b-iq4xs" for m in u), "retired id survived"
+for m in hits:
+    assert m["baseUrl"] == "http://127.0.0.1:4000", m["baseUrl"]
+    assert m.get("baseModelId"), "anthropic entry missing baseModelId"
+PY
+kill "$STUB_PID" 2>/dev/null || true
+rm -rf "$S4"
 
 # 8. refuses to report success with no proxy env (FULL mode keeps the guard)
 S2=$(TMPDIR=/tmp mktemp -d); mkdir -p "$S2/.config/opencode"
