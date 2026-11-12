@@ -94,6 +94,32 @@ class WriteComplexityTest(unittest.TestCase):
         self.assertEqual(small[0], 0, small[1])
         self.assertEqual(big[0], 2, big[1])
 
+    def test_droid_edit_spelling_is_measured_the_same(self):
+        # Droid (Factory) sends old_str/new_str. Before 2026-11-12 those
+        # spellings measured as None — "whole-file rewrite" — so EVERY Droid
+        # Edit escalated as complex regardless of size. Same sizes as the
+        # Claude-spelling case must get the same verdicts.
+        root = project()
+        target = os.path.join(root, "src", "thing.ts")
+        small = run(root, {"file_path": target, "old_str": "a" * 20, "new_str": "b" * 20}, op="Edit")
+        big = run(root, {"file_path": target, "old_str": "a" * 300, "new_str": "b" * 300}, op="Edit")
+        self.assertEqual(small[0], 0, small[1])
+        self.assertEqual(big[0], 2, big[1])
+
+    def test_multiedit_droid_spelling_sums_across_edits(self):
+        root = project()
+        target = os.path.join(root, "src", "multi.ts")
+        code_ok, out_ok = run(root, {"file_path": target, "edits": [
+            {"old_str": "a" * 20, "new_str": "b" * 20},
+            {"old_str": "c" * 20, "new_str": "d" * 20},
+        ]}, op="MultiEdit")
+        code_big, _ = run(root, {"file_path": target, "edits": [
+            {"old_str": "a" * 200, "new_str": "b" * 200},
+            {"old_str": "c" * 200, "new_str": "d" * 200},
+        ]}, op="MultiEdit")
+        self.assertEqual(code_ok, 0, out_ok)
+        self.assertEqual(code_big, 2)
+
     def test_nature_exemptions_are_unchanged(self):
         root = project()
         docs = run(root, {"file_path": os.path.join(root, "docs", "n.md"), "content": "x" * 9000})

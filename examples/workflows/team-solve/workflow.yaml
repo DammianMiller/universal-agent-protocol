@@ -1,0 +1,78 @@
+# team-solve — the GVS5H method as a static UAP workflow.
+#
+# Five roles, one programming problem, fresh context each, files as the only
+# channel. The steps name NO model: the pin ladder (step -> workflow
+# defaultModel -> CLI --model -> local fleet default, see `uap workflow run
+# --help`) answers, so this same file runs on the local strata arm or any
+# OpenAI-compatible endpoint.
+#
+#   plan ──┬── ideate-a ──┬── solve ── test ── review ── repair ── verify
+#          └── ideate-b ──┘
+#
+# test:  deterministic samples, captured, NEVER fails the run (evidence).
+# verify: the same samples as the verdict — a nonzero exit fails the run.
+name: team-solve
+description: >
+  Five-role relay with cross-correction for one programming problem: plan,
+  two parallel ideations from different algorithm families, solve,
+  deterministic sample test, review, repair, hidden-style verify. The
+  GVS5H method (five small models beating a frontier single-call on
+  LiveCodeBench Hard) as a static workflow over the blackboard orchestrator.
+parallel: 2
+maxRepairsPerStep: 1
+steps:
+  - id: plan
+    kind: agent
+    title: Planner
+    prompt: steps/plan.md
+    reads: [task.md]
+    writes: [plan.md]
+    requires: []
+  - id: ideate-a
+    kind: agent
+    title: Ideator A (direct family)
+    prompt: steps/ideate-a.md
+    reads: [task.md, plan.md]
+    writes: [proposal-a.md]
+    requires: [plan]
+  - id: ideate-b
+    kind: agent
+    title: Ideator B (different family)
+    prompt: steps/ideate-b.md
+    reads: [task.md, plan.md]
+    writes: [proposal-b.md]
+    requires: [plan]
+  - id: solve
+    kind: agent
+    title: Solver
+    prompt: steps/solve.md
+    reads: [task.md, plan.md, proposal-a.md, proposal-b.md]
+    writes: [solution.py]
+    requires: [ideate-a, ideate-b]
+  - id: test
+    kind: command
+    title: Sample test (evidence only)
+    command: bash "$UAP_WORKFLOW_DIR/check-samples.sh"
+    neverFails: true
+    writes: [test-output.log]
+    requires: [solve]
+  - id: review
+    kind: agent
+    title: Reviewer / manager
+    prompt: steps/review.md
+    reads: [task.md, plan.md, solution.py, test-output.log]
+    writes: [repair.md]
+    requires: [test]
+  - id: repair
+    kind: agent
+    title: Repair worker
+    prompt: steps/repair.md
+    reads: [task.md, solution.py, repair.md]
+    writes: [solution.py]
+    requires: [review]
+  - id: verify
+    kind: command
+    title: Verdict
+    command: bash "$UAP_WORKFLOW_DIR/check-samples.sh" --strict
+    writes: [verify.log]
+    requires: [repair]

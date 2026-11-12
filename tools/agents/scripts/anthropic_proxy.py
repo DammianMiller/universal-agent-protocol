@@ -697,6 +697,24 @@ _FAILURE_DECLARATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The harness's own zero-exit envelope: the tool CALL succeeded, whatever the
+# output QUOTES. Droid/BYOK appends "[Process exited with code N]" to every
+# Execute result; other harnesses print their own form. Decisive in the
+# flag-ABSENT path only (a client that declares is_error True still wins):
+# 2026-10-26, cognition-engine fdc94474 -- two ERROR-LOOP hard stops were
+# served on SIX successful state-checks whose `git diff` output quoted the
+# session's own in-flight `eprintln!("pg-server: metrics: failed to bind
+# ...")` line; the keyword sniff turned each clean diff into the same
+# "failure" signature and the streak escalated to a 400.
+_ZERO_EXIT_ENVELOPE_RE = re.compile(
+    r"\[process exited with code 0\]"  # Droid / BYOK Execute result footer
+    r"|\bexited with code 0\b"         # generic harness prose
+    r"|\bexit (?:code|status)\s*[:=]?\s*0\b"  # 'exit code 0' / 'exit status: 0'
+    r"|\bexit_code=0\b"                # python subprocess env style
+    r"|\bEXIT=0\b",                   # shell-echoed status
+    re.IGNORECASE,
+)
+
 
 def _is_successful_result(text: str) -> bool:
     """True when the payload structurally declares success.
@@ -867,9 +885,24 @@ def _error_signature_for_result(text: str, result_error: bool | None = None) -> 
                         (_first_meaningful_signature), so an unfamiliar error
                         shape still forms a streak; a wrapper-only payload
                         stays unnameable -- DOUBLING-DOWN owns that shape.
-      absent         -> fall back to the keyword heuristics as before.
+      absent         -> keyword heuristics as before, EXCEPT a payload that
+                        carries the harness's zero-exit envelope
+                        (_ZERO_EXIT_ENVELOPE_RE): the call succeeded, so
+                        failure-shaped words it merely QUOTES (a git diff of
+                        in-flight edits, a grep over source) cannot anchor a
+                        streak. 2026-10-26: two ERROR-LOOP hard stops on six
+                        clean state-checks whose git-diff output quoted the
+                        session's own `eprintln!("...failed to bind...")`
+                        source line; a declared True flag still wins over
+                        the envelope.
     """
     if result_error is False:
+        return ""
+    if result_error is None and _ZERO_EXIT_ENVELOPE_RE.search(text or ""):
+        # Flag-ABSENT and the harness's own footer says the call exited 0:
+        # the result is clean whatever the bytes quote. Only the heuristic
+        # path is narrowed -- is_error True/False keep their declared
+        # precedence above.
         return ""
     sig = _error_signature(text)
     if sig or result_error is not True:
@@ -1588,11 +1621,23 @@ PROXY_EMPTY_TOOL_LOOP_BREAK = int(
 # ever-growing transcript (observed: ctx 936%, model emits tool_calls 18/min
 # despite tool_choice=auto). After this many consecutive turns at/above the
 # ratio, strip tools entirely so the only possible response is a terminal text
-# summary (end_turn), which ends the client's agentic loop. Ratio is set high
-# enough that only a true runaway trips it — a merely-full session tops out near
-# 100-130%, never 300%. 0 disables.
+# summary (end_turn), which ends the client's agentic loop.
+#
+# Ratio sits above the merely-full band but inside the runaway band. A
+# merely-full session tops out near 100-141%: a client that honestly believes
+# a ~200k window (PROXY_CLIENT_ASSUMED_WINDOW) and compacts at 92.5% sends at
+# most ~185k against a 131,072 rail. A window-blind runaway plateaus wherever
+# its own belief caps it, and that plateau can sit far below 300%: live
+# 2026-11-06 (droid + flash-next, cognition-engine), a client with no
+# maxContextLimit (assumed 250k) ramped 132% -> 198% in 4 minutes and then sat
+# at 190-198% for 4+ HOURS — every turn CRITICAL-PRUNEd blind to ~6 messages
+# (~24-40k actually sent upstream), findings evaporating, the model re-reading
+# the same files — because the 3.0 gate was written for 936% runaways and this
+# one never crossed 200%. 1.6 clears the merely-full band (141% plus one
+# ~19k-token turn of headroom) while ending that class of treadmill within
+# STREAK turns. 0 disables.
 PROXY_RAW_CTX_FINALIZE_RATIO = float(
-    os.environ.get("PROXY_RAW_CTX_FINALIZE_RATIO", "3.0")
+    os.environ.get("PROXY_RAW_CTX_FINALIZE_RATIO", "1.6")
 )
 PROXY_RAW_CTX_FINALIZE_STREAK = int(
     os.environ.get("PROXY_RAW_CTX_FINALIZE_STREAK", "2")
@@ -2423,6 +2468,31 @@ PROXY_ATTRACTOR_TEMP_OVERRIDE = float(
 PROXY_ATTRACTOR_FINALIZE_THRESHOLD = max(1, int(
     os.environ.get("PROXY_ATTRACTOR_FINALIZE_THRESHOLD", "2")
 ))
+# Post-contamination low-temp clamp exemption. The standard contamination
+# reset clamps the next tool turn to temperature 0.10 (Cycle 15 Option 2:
+# deterministic output repairs malformed JSON). For DEGENERATE-CONTENT faults
+# (garbled args) determinism is exactly wrong: temp ~0 re-enters the same
+# degenerate attractor that triggered the reset (live 2026-10-30: 9
+# contamination-forced finalize stops in one day, the 0.10 clamp active on
+# every post-reset turn). Reset causes listed here keep the normal
+# PROXY_TOOL_TURN_TEMPERATURE instead of the 0.10 clamp. Empty string
+# disables the exemption entirely (always clamp).
+PROXY_CONTAMINATION_LOW_TEMP_EXEMPT_KINDS = {
+    k.strip()
+    for k in os.environ.get(
+        "PROXY_CONTAMINATION_LOW_TEMP_EXEMPT_KINDS", "invalid_tool_args"
+    ).split(",")
+    if k.strip()
+}
+# Late garbled-retry output cap. The deployed env pins
+# PROXY_TOOL_TURN_MAX_TOKENS_GARBLED high (32768, raised 2026-04-22 so legit
+# multi-file heredoc edits don't truncate), which also gives a degenerate
+# generation maximum room to run. From this retry attempt onward the budget
+# drops to this cap: the observed legit commands (~4.5K tokens) still fit,
+# while runaway degeneration is starved of room (live 2026-10-30: every
+# garbled call was a long inline heredoc; short commands never garbled).
+# 0 disables the late cap.
+PROXY_GARBLE_LATE_CAP = int(os.environ.get("PROXY_GARBLE_LATE_CAP", "8192"))
 PROXY_AGENTIC_SUPPLEMENT_MODE = (
     os.environ.get("PROXY_AGENTIC_SUPPLEMENT_MODE", "clean").strip().lower()
 )
@@ -3086,6 +3156,7 @@ class SessionMonitor:
     invalid_tool_call_streak: int = 0  # consecutive invalid tool arg payloads
     required_tool_miss_streak: int = 0  # required tool turns with no tool call
     contamination_resets: int = 0  # how many contamination resets were applied
+    contamination_cause: str = ""  # dominant streak behind the last reset ("invalid_tool_args"/"malformed_payload"/"required_tool_miss"/"generic")
     last_fault_excerpt_hash: str = ""  # hash of last TOOL RESPONSE ISSUE excerpt (attractor detection)
     attractor_correction_active: bool = False  # next turn uses high-temp escape sampling
     forced_auto_cooldown_turns: int = 0  # temporary auto override turns remaining
@@ -9789,13 +9860,24 @@ def build_openai_request(
                 client_temp,
             )
         else:
-            if monitor.contamination_resets > 0:
+            # Cycle 15 Option 2: lower temperature after contamination resets —
+            # EXCEPT when the reset was driven by an exempt cause: for
+            # degenerate-content faults (garbled args) determinism re-enters
+            # the same attractor that triggered the reset (live 2026-10-30).
+            if (
+                monitor.contamination_resets > 0
+                and monitor.contamination_cause
+                not in PROXY_CONTAMINATION_LOW_TEMP_EXEMPT_KINDS
+            ):
                 target_temp = min(target_temp, 0.1)
             if client_temp is None or client_temp > target_temp:
                 openai_body["temperature"] = target_temp
                 extra = ""
                 if monitor.contamination_resets > 0:
-                    extra = f" (post-contamination reset, resets={monitor.contamination_resets})"
+                    extra = (
+                        f" (post-contamination reset, resets={monitor.contamination_resets},"
+                        f" cause={monitor.contamination_cause or 'generic'})"
+                    )
                 logger.info(
                     "TOOL TURN TEMP: forcing temperature=%.2f (was %s) for tool-enabled request%s",
                     target_temp,
@@ -10682,6 +10764,68 @@ def _hash_fault_excerpt(excerpt: str) -> str:
     if not normalized:
         return ""
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _fault_fingerprint(
+    excerpt: str, arg_excerpt: str, fault_tool_names: list[str]
+) -> str:
+    """Stable fingerprint of a tool-response fault for attractor-repeat detection.
+
+    Tool-call faults carry NO assistant text (every observed garble incident
+    logged text_len=0), so hashing only the text excerpt yielded "" — falsy —
+    and the attractor detector (hard reset + temp escape + lowered finalize
+    threshold) never fired for the dominant fault class (live 2026-10-30:
+    9 contamination-forced finalize stops, none attractor-detected). Fall
+    back to the garbled-args excerpt — its stable command head survives
+    normalization, so the same degenerate approach hashes equal across
+    resets — then the failing tool names.
+    """
+    if excerpt:
+        return _hash_fault_excerpt(excerpt)
+    if arg_excerpt:
+        return _hash_fault_excerpt(arg_excerpt)
+    if fault_tool_names:
+        return _hash_fault_excerpt(
+            "tool:" + ",".join(sorted(set(fault_tool_names)))
+        )
+    return ""
+
+
+def _retry_temperature(attempt: int, is_garbled: bool) -> float:
+    """Retry temperature ladder for malformed/garbled tool-call retries.
+
+    Attempt 1: configured retry temp (deterministic first try).
+    Attempt 2: 0.5 — escape the degenerate local minimum (Cycle 15 Option 3).
+    Attempt 3+ garbled (degenerate CONTENT): attractor-escape temperature —
+    determinism re-enters the same degenerate trajectory (live 2026-10-30:
+    garbled attempts 1-4 all reproduced at 0.05/0.5 while short commands
+    never garbled); malformed-JSON retries keep the deterministic ladder
+    because structure repair wants determinism.
+    """
+    if is_garbled and attempt >= 3:
+        return max(
+            PROXY_ATTRACTOR_TEMP_OVERRIDE, PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
+        )
+    if attempt > 1:
+        return 0.5
+    return PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
+
+
+def _contamination_reset_cause(monitor: "SessionMonitor") -> str:
+    """Dominant output-quality streak behind a contamination reset.
+
+    Drives the post-reset temperature policy: degenerate-content faults
+    (invalid_tool_args) are EXEMPT from the 0.10 low-temp clamp (see
+    PROXY_CONTAMINATION_LOW_TEMP_EXEMPT_KINDS) because determinism re-enters
+    the same attractor; malformed-JSON repairs keep the clamp.
+    """
+    if monitor.invalid_tool_call_streak > monitor.malformed_tool_streak:
+        return "invalid_tool_args"
+    if monitor.malformed_tool_streak > 0:
+        return "malformed_payload"
+    if monitor.required_tool_miss_streak > 0:
+        return "required_tool_miss"
+    return "generic"
 
 
 def _extract_openai_tool_calls(openai_resp: dict) -> list[dict]:
@@ -12366,10 +12510,20 @@ def _validate_tool_call_arguments(
     allowed_tools: set[str],
 ) -> ToolResponseIssue:
     if allowed_tools and tool_name not in allowed_tools:
+        # 2026-10-30: name the kept alternatives — a narrowed retry (the
+        # garbling tool excluded) observed the model emitting the excluded
+        # tool anyway because "use the provided tool list" gave it nothing
+        # concrete to switch to.
+        known = ", ".join(sorted(allowed_tools)[:6])
         return ToolResponseIssue(
             kind="invalid_tool_args",
             reason=f"unknown tool '{tool_name}'",
-            retry_hint="Use exactly one tool from the provided tool list.",
+            retry_hint=(
+                f"'{tool_name}' is not available on this turn. "
+                f"Call exactly one of: {known}."
+                if known
+                else "Use exactly one tool from the provided tool list."
+            ),
         )
 
     if isinstance(raw_arguments, (dict, list)):
@@ -12441,7 +12595,10 @@ def _validate_tool_call_arguments(
             reason=f"arguments for '{tool_name}' contain garbled/degenerate content",
             retry_hint=(
                 f"Emit exactly one `{tool_name}` tool call with well-formed JSON arguments. "
-                "Do not repeat closing braces, brackets, or digits."
+                "Your previous arguments degenerated (repeated digit or brace runs). "
+                "SIMPLIFY and SHORTEN the operation: split the work into smaller steps, "
+                "avoid long inline heredocs and large generated numeric blocks, and "
+                "prefer short commands. Do not repeat closing braces, brackets, or digits."
             ),
         )
 
@@ -13020,12 +13177,16 @@ def _build_malformed_retry_body(
     retry_body["stream"] = False
     retry_body["tool_choice"] = tool_choice
     # Cycle 15 Option 3: vary temperature across retries to break degenerate patterns.
-    # Attempt 1: use configured retry temp (default 0.0) for deterministic first try.
-    # Attempt 2+: increase to 0.5 to escape the degenerate local minimum.
-    if total_attempts > 1 and attempt > 1:
-        retry_body["temperature"] = 0.5
-    else:
-        retry_body["temperature"] = PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
+    # Ladder lives in _retry_temperature (garbled retries escalate to the
+    # attractor-escape temperature from attempt 3 — see its docstring).
+    retry_body["temperature"] = _retry_temperature(attempt, is_garbled)
+    if is_garbled and attempt >= 3 and PROXY_GARBLE_LATE_CAP > 0:
+        logger.info(
+            "RETRY GARBLED ESCALATION: temperature=%.2f late_cap=%d for garbled retry attempt=%d",
+            retry_body["temperature"],
+            PROXY_GARBLE_LATE_CAP,
+            attempt,
+        )
 
     if tool_choice == "required":
         retry_instruction = (
@@ -13057,7 +13218,17 @@ def _build_malformed_retry_body(
 
     # Option 1: Progressive garbled-cap within retries — use smaller max_tokens
     # when the issue involves garbled/degenerate args to limit degeneration room.
-    if is_garbled and PROXY_TOOL_TURN_MAX_TOKENS_GARBLED > 0:
+    # 2026-10-30: the deployed env pins PROXY_TOOL_TURN_MAX_TOKENS_GARBLED high
+    # (32768) so legit multi-file heredoc edits don't truncate (2026-04-22) —
+    # from attempt 3 onward, starve degeneration room with the late cap.
+    if is_garbled and attempt >= 3 and PROXY_GARBLE_LATE_CAP > 0:
+        retry_body["max_tokens"] = PROXY_GARBLE_LATE_CAP
+        logger.info(
+            "RETRY GARBLED LATE CAP: max_tokens=%d for garbled retry attempt=%d",
+            PROXY_GARBLE_LATE_CAP,
+            attempt,
+        )
+    elif is_garbled and PROXY_TOOL_TURN_MAX_TOKENS_GARBLED > 0:
         retry_body["max_tokens"] = PROXY_TOOL_TURN_MAX_TOKENS_GARBLED
         logger.info(
             "RETRY GARBLED CAP: max_tokens=%d for garbled retry attempt=%d",
@@ -13402,17 +13573,22 @@ async def _apply_malformed_tool_guardrail(
     excerpt = _openai_message_text(working_resp)[:220].replace("\n", " ")
     # Option 2: Log garbled argument content for diagnostics
     arg_excerpt = ""
+    fault_tool_names: list[str] = []
     if issue.kind == "invalid_tool_args":
         for tc in (working_resp.get("choices", [{}])[0].get("message", {}).get("tool_calls") or []):
+            fn_name = tc.get("function", {}).get("name", "")
             raw_args = tc.get("function", {}).get("arguments", "")
-            if raw_args and _is_garbled_tool_arguments(raw_args):
+            if fn_name:
+                fault_tool_names.append(fn_name)
+            if raw_args and _is_garbled_tool_arguments(raw_args) and not arg_excerpt:
                 arg_excerpt = raw_args[:200].replace("\n", " ")
-                break
     # Attractor detection — hash the normalized fault excerpt so the
     # contamination breaker can recognize the same fixed-point response
     # reappearing across consecutive resets. Whitespace-normalized so trivial
     # rendering differences don't break the match.
-    monitor.last_fault_excerpt_hash = _hash_fault_excerpt(excerpt)
+    monitor.last_fault_excerpt_hash = _fault_fingerprint(
+        excerpt, arg_excerpt, fault_tool_names
+    )
     logger.warning(
         "TOOL RESPONSE ISSUE: session=%s kind=%s reason=%s malformed=%d invalid=%d required_miss=%d excerpt=%.220s args=%.200s",
         session_id,
@@ -13768,6 +13944,7 @@ def _maybe_apply_session_contamination_breaker(
             max_contamination_resets,
         )
         monitor.set_tool_turn_phase("finalize", reason="contamination_loop")
+        monitor.contamination_cause = _contamination_reset_cause(monitor)
         monitor.contamination_resets += 1
         monitor.malformed_tool_streak = 0
         monitor.invalid_tool_call_streak = 0
@@ -13890,6 +14067,7 @@ def _maybe_apply_session_contamination_breaker(
 
     forced_before = monitor.consecutive_forced_count
     required_miss_before = monitor.required_tool_miss_streak
+    monitor.contamination_cause = _contamination_reset_cause(monitor)
     monitor.contamination_resets += 1
     # Emergency tier: the conversation itself is rewritten, so BOTH the
     # forcing-loop family (via its one policy point) and the output-quality

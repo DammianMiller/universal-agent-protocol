@@ -46,6 +46,7 @@ const lazy = {
   interaction: () => import('../cli/interaction.js').then((m) => m.interactionCommand),
   orchestratorToggle: () => import('../cli/orchestrator-toggle.js').then((m) => m.orchestratorToggleCommand),
   handsfree: () => import('../cli/handsfree.js').then((m) => m.handsfreeCommand),
+  workflow: () => import('../cli/workflow.js').then((m) => m.workflowCommand),
   eta: () => import('../cli/eta.js').then((m) => m.etaCommand),
   diff: () => import('../cli/diff.js').then((m) => m.diffCommand),
   proxy: () => import('../cli/proxy.js').then((m) => m.proxyCommand),
@@ -792,6 +793,46 @@ program
         });
         if (code) process.exitCode = code;
       }),
+  )
+  .addCommand(
+    new Command('ensure')
+      .argument('<spec>', 'registry model or model/config (e.g. qwen3.8-27b/ampere)')
+      .description('Verify a config\'s declared model files are present (stat + size), re-download missing/truncated ones from the recorded source')
+      .option('--dry-run', 'Report what is missing; download nothing')
+      .option('--no-download', 'Alias of --dry-run (report only)')
+      .option('--verify', 'Also hash sha256 (minutes for tens of GiB; not for unit preflights)')
+      .option('--repo-path <path>', 'explicit repo registry path (default: <project>/config/model-registry.json)')
+      .option('--local-path <path>', 'explicit machine-local registry path (default: ~/.uap/model-registry.json)')
+      .action(async (spec, options) => {
+        const code = await (await lazy.models())('ensure', {
+          spec,
+          dryRun: options.dryRun === true || options.download === false,
+          download: options.download !== false,
+          verify: options.verify === true,
+          repoPath: options.repoPath,
+          localPath: options.localPath,
+        });
+        if (code) process.exitCode = code;
+      }),
+  )
+  .addCommand(
+    new Command('ensure-by-path')
+      .argument('<path>', 'absolute model file path as declared in the registry')
+      .description('Unit preflight form of ensure: verify this file is present (cheap), re-download if missing')
+      .option('--dry-run', 'Report what is missing; download nothing')
+      .option('--verify', 'Also hash sha256 (slow)')
+      .option('--repo-path <path>', 'explicit repo registry path (default: <project>/config/model-registry.json)')
+      .option('--local-path <path>', 'explicit machine-local registry path (default: ~/.uap/model-registry.json)')
+      .action(async (path, options) => {
+        const code = await (await lazy.models())('ensure-by-path', {
+          path,
+          dryRun: options.dryRun === true,
+          verify: options.verify === true,
+          repoPath: options.repoPath,
+          localPath: options.localPath,
+        });
+        if (code) process.exitCode = code;
+      }),
   );
 
 // Quality-metrics gate — complexity/coverage/mutation policing with a ratchet
@@ -1090,6 +1131,8 @@ program
   .option('--no-orchestrate', 'Disable the blackboard orchestrator for this run (decomposed missions fall back to the sequential phase runner)')
   .option('--epics', 'Run a MASSIVE mission as a sequence of epics: each epic is a fresh mission (only prior epics\' summaries injected), looped with fresh sessions until accepted. Auto for very long complex missions.')
   .option('--no-epics', 'Disable the epic controller for this run')
+  .option('--team-solve', 'Run the mission through the team-solve-deliver workflow: team roles (plan, parallel ideations, fresh review) direct the convergence loop, with solve/repair as gates-driven loops and a gates-only verify verdict. Auto-engages for high/critical complexity.')
+  .option('--no-team-solve', 'Never engage team-solve for this run (even on high/critical complexity; env UAP_DELIVER_TEAM_SOLVE=0 and .uap.json deliver.teamSolve:"off" do the same persistently)')
   .option('--no-integration', 'Skip the integration tier (on by default when a test:integration/e2e suite or pytest integration marker is detected)')
   .option('--deploy-dev', 'Run a local dev deploy + smoke tier (bring up compose / start server, smoke-check, tear down) after the fast tier passes')
   .option('--no-deploy-dev', 'Disable the local dev deploy tier even when auto/optimize would enable it')
@@ -1130,6 +1173,23 @@ program
   .action(async (subcommand, arg, options) => {
     const cmd = await lazy.handsfree();
     await cmd(subcommand, arg, options);
+  });
+
+program
+  .command('workflow [action] [name] [step]')
+  .description('Declarative workflows: static YAML step DAGs (agent | command | gate) over the blackboard orchestrator. list | show <name> | run <name> [--input <dir>] | status [runId] | resume <runId> | approve <runId> <step>. Exit 0 ok / 1 step failed / 2 gate blocked / 3 invalid.')
+  .option('--input <dir>', 'Directory copied into the run (the task files a workflow reads)')
+  .option('--model <preset>', 'Model preset pin (default: per step, then workflow defaultModel, then the local fleet default)')
+  .option('--endpoint <url>', 'Override the model endpoint (OpenAI-compatible /v1)')
+  .option('--run-id <id>', 'Name the run directory under .uap/workflow-runs/')
+  .option('--mission <text>', 'One-line objective assembled into every step context')
+  .option('--parallel <n>', 'Concurrency override for independent steps (1-16; default: the workflow\'s parallel:)')
+  .option('--temperature <t>', 'Sampling temperature for agent steps (default 0.7)')
+  .option('--dry-run', 'Validate and print the execution plan; run nothing')
+  .option('--json', 'JSON output for `status`')
+  .action(async (action, name, step, options) => {
+    const cmd = await lazy.workflow();
+    await cmd(action ?? 'status', name, step, options);
   });
 
 program

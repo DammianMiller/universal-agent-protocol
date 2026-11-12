@@ -63,6 +63,29 @@ const configIdentity = {
   note: z.string().optional(),
   flags: z.array(z.string()).optional(),
   rails: z.number().int().positive().optional(),
+  /** Weight/artifact files this config needs on disk, with source and
+   * integrity facts. `uap models ensure` checks presence + size (a stat,
+   * cheap enough for a unit preflight) and re-downloads what a deletion
+   * or truncation removed; sha256 is verified after a download and on
+   * --verify. A file without `repo` is check-only: its deletion is
+   * reported, not repaired — the source is unknown and is never guessed.
+   * Downloads land only inside $HOME (a cloned repo must not get to write
+   * elsewhere). */
+  files: z
+    .array(
+      z.object({
+        path: z.string().min(1),
+        repo: z.string().min(1).optional(),
+        file: z.string().min(1).optional(),
+        /** Repo revision to fetch from, when the file is not on main
+         * (e.g. unsloth deleted Qwen3.8-27B-Q4_K_M.gguf from main on
+         * 2026-08-19; only the pinned rev still serves it). */
+        rev: z.string().min(1).optional(),
+        bytes: z.number().int().positive().optional(),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/, 'lowercase hex sha256').optional(),
+      }),
+    )
+    .optional(),
 };
 
 /** A measured footprint. `measured_at` is the discriminator in practice: it

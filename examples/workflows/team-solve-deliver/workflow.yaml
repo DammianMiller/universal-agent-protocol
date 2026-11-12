@@ -1,0 +1,74 @@
+# team-solve-deliver — the team directs the deliver convergence loop.
+#
+# The combination of the two engines: team-solve's role structure and ledger
+# discipline (fresh contexts, files as the only channel, cross-correction)
+# wrapped around deliver's convergence machinery (tools + the project's real
+# completion gates). Roles think; loops build and verify.
+#
+#   plan ──┬── ideate-a ──┬── solve ── review ── repair ── verify
+#          └── ideate-b ──┘   (loop)   (judge)    (loop)    (loop, gates-only)
+#
+# solve/repair/verify are `kind: loop` steps — they execute through a
+# CALLER-INJECTED convergence loop (uap deliver wires its own machinery and
+# auto-engages this workflow for high/critical missions). A standalone
+# `uap workflow run team-solve-deliver` fails closed: no loop provider.
+name: team-solve-deliver
+description: >
+  team-solve directing the deliver convergence loop for repo missions: an
+  approach plan, two parallel ideations from different engineering families,
+  a gates-driven solve loop, a fresh-context review, a review-seeded repair
+  loop, and a verify-only verdict. Auto-engaged by `uap deliver` on
+  high/critical complexity; force with `uap deliver --team-solve`.
+parallel: 2
+# 0 engine-level step retries: the solve/repair loops already converge
+# internally (until-delivered + escalation inside the mission dispatch), and
+# a workflow-level retry of `solve` would re-run the ENTIRE mission dispatch
+# after it already burned its turn budget — doubling the hardest-tier spend
+# and bypassing this workflow's own review→repair discipline.
+maxRepairsPerStep: 0
+steps:
+  - id: plan
+    kind: agent
+    title: Approach planner (judge rail)
+    prompt: steps/plan.md
+    writes: [plan.md]
+    requires: []
+  - id: ideate-a
+    kind: agent
+    title: Ideator A (minimal-change family)
+    prompt: steps/ideate-a.md
+    reads: [plan.md]
+    writes: [proposal-a.md]
+    requires: [plan]
+  - id: ideate-b
+    kind: agent
+    title: Ideator B (structural family)
+    prompt: steps/ideate-b.md
+    reads: [plan.md]
+    writes: [proposal-b.md]
+    requires: [plan]
+  - id: solve
+    kind: loop
+    title: Solve (convergence loop, project gates)
+    prompt: steps/solve.md
+    reads: [plan.md, proposal-a.md, proposal-b.md]
+    requires: [ideate-a, ideate-b]
+  - id: review
+    kind: agent
+    title: Fresh-context reviewer (judge rail)
+    prompt: steps/review.md
+    reads: [plan.md]
+    writes: [repair.md]
+    requires: [solve]
+  - id: repair
+    kind: loop
+    title: Repair (convergence loop, review-seeded)
+    prompt: steps/repair.md
+    reads: [repair.md]
+    requires: [review]
+  - id: verify
+    kind: loop
+    title: Verdict (gates only)
+    prompt: steps/verify.md
+    verifyOnly: true
+    requires: [repair]

@@ -1,0 +1,303 @@
+{
+  "schema": "lcb-droid-anchors/1",
+  "provenance": {
+    "source_repo": "https://github.com/slee-persis/GVS5H",
+    "pinned_commit": "707e21296bfa032250f10bdde4afaff7ec998f71",
+    "extracted_utc": "2026-10-25T07:00:14+00:00",
+    "benchmark": "LiveCodeBench code generation, release_v6, the 100 hardest problems (escalation/lcb100_hardest_v6.json)",
+    "metric": "pass@1 (k=1), corrected grader (.patched.json, post fix-rescore); identical to the paper's 'Re-ported' column",
+    "license_note": "GVS5H code is MIT; paper, figures and run data are CC BY 4.0 (LICENSE + LICENSE-CC-BY-4.0 in the vendored copy)",
+    "fn_run_config": [
+      "sha=e46c574763e881e5343d3cca6fe1bbaab755f44e",
+      "dirty: ?? codebase/v2-current/escalation/run_bench_script/run_q38_fn_5pass.sh",
+      "dirty: ?? codebase/v2-current/escalation/runs",
+      "model=groq:large-model (Qwen3.8 Flash Next via litellm 192.168.2.200:8216) cap=128000 parallel=48 release=release_v6 ids=escalation/lcb100_hardest_v6.json",
+      "engines=[single multiagent] passes=[1 2 3 4 5] reasoning=on max_iters=10 max_tasks=12 strict_format=1 checkpoint=per-problem"
+    ]
+  },
+  "published": {
+    "fn_single": {
+      "model": "Qwen3.8 Flash Next, single-call baseline",
+      "per_pass": {
+        "1": 84.0,
+        "2": 84.0,
+        "3": 82.0,
+        "4": 86.0,
+        "5": 85.0
+      },
+      "mean": 84.2,
+      "n_graded": 100,
+      "source": "runs/q38-fn-5pass/results/q38_fn_single_p*.patched.json"
+    },
+    "fn_multiagent": {
+      "model": "Qwen3.8 Flash Next, GVS5H ledger self-orchestration",
+      "per_pass": {
+        "1": 93.0,
+        "2": 92.0,
+        "3": 94.0,
+        "4": 92.0,
+        "5": 94.0
+      },
+      "mean": 93.0,
+      "n_graded": 100,
+      "source": "runs/q38-fn-5pass/results/q38_fn_multiagent_p*.patched.json"
+    },
+    "fable5_single": {
+      "model": "Claude Fable 5, single-call baseline",
+      "per_pass": {
+        "1": 89.0,
+        "2": 90.0,
+        "3": 90.0,
+        "4": 91.0,
+        "5": 92.0
+      },
+      "mean": 90.4,
+      "n_graded": 100,
+      "source": "runs/fable5-128k-reasoning-on-5pass/results/fable5_single_p*.patched.json"
+    },
+    "qwen27b": {
+      "model": "Qwen3.8-27B (FP8, served locally per paper)",
+      "values": {
+        "as_graded_single": 62.4,
+        "single": 66.8,
+        "as_graded_multiagent": 84.4,
+        "multiagent": 92.4
+      },
+      "source": "paper/tab-regrade.tex, corrected grader, 5-pass means; paper/tab-qwen-caps.tex reports single 66.8 +/- 5.2 (95% t int.)"
+    }
+  },
+  "smoke_subset": {
+    "rule": "first 10 ids of escalation/lcb100_hardest_v6.json",
+    "ids": [
+      "arc196_b",
+      "arc196_c",
+      "arc196_a",
+      "arc196_d",
+      "3777",
+      "abc400_e",
+      "abc400_g",
+      "3717",
+      "3765",
+      "abc399_e"
+    ]
+  },
+  "published_per_problem_verdicts": {
+    "note": "per-pass corrected verdicts on the smoke subset, [p1, p2, p3, p4, p5]",
+    "fn_single": {
+      "arc196_b": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "arc196_c": [
+        true,
+        false,
+        true,
+        true,
+        true
+      ],
+      "arc196_a": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "arc196_d": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "3777": [
+        true,
+        true,
+        true,
+        false,
+        true
+      ],
+      "abc400_e": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "abc400_g": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "3717": [
+        false,
+        true,
+        true,
+        false,
+        true
+      ],
+      "3765": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "abc399_e": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "fn_multiagent": {
+      "arc196_b": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "arc196_c": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "arc196_a": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "arc196_d": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "3777": [
+        true,
+        true,
+        true,
+        false,
+        true
+      ],
+      "abc400_e": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "abc400_g": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "3717": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "3765": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "abc399_e": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "fable5_single": {
+      "arc196_b": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "arc196_c": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "arc196_a": [
+        false,
+        true,
+        true,
+        true,
+        false
+      ],
+      "arc196_d": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "3777": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "abc400_e": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "abc400_g": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "3717": [
+        false,
+        false,
+        true,
+        false,
+        false
+      ],
+      "3765": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "abc399_e": [
+        false,
+        false,
+        true,
+        false,
+        false
+      ]
+    }
+  }
+}
