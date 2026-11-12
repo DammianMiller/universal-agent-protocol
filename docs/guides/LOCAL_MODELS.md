@@ -171,6 +171,44 @@ For the full picture — the `uap proxy` lifecycle, the reliability guardrails
 that keep a small model from wedging, security, and serving recipes — see the
 **[Inference Proxy guide](PROXY.md)**.
 
+## Droid (Factory) custom models — auto-populated from the live arm
+
+Droid reads its model list from `customModels` in `~/.factory/settings.json`
+(user) and `<project>/.factory/settings.json` (project). Those entries are
+static per file — Droid does not discover local servers — so a backend swap
+would otherwise leave every Droid instance pinning a retired model id.
+
+[`scripts/sync-local-agent-configs.sh`](../../scripts/sync-local-agent-configs.sh)
+closes that gap, and never transcribes the alias: it reads the model id and
+geometry from `config/model-profiles/qwen38.json` (the same single source of
+truth the rails suite drift-checks against the live `/props` on :8080), then:
+
+- migrates every retired local id (`qwen35-a3b-iq4xs`, `qwen38-gsq-rco-27b`,
+  `abliterated-iq2_xs`, `qwen3.8-flash-next-iq3_s`, `swift-1.5-iq3_s`) onto the
+  alias the current arm serves — proxy entries to `:4000`, direct-Responses
+  entries stay on `:8080`;
+- **adds** the entry when a settings file has no local qwen model at all, so
+  every Droid instance (user-level settings cover all projects) can call it;
+- sizes entries to the profile's per-session cap (114688 via the proxy, the
+  131072 pool on the direct path) and the proxy tool-turn cap (32768);
+- pins `baseModelId` on Anthropic-protocol entries (default
+  `claude-sonnet-4-6`, override `DROID_ANTHROPIC_BASE_MODEL`) so the entry
+  inherits model-specific prompts, tools, and Script-mode eligibility instead
+  of the "custom model does not map to a built-in" fallback behavior.
+
+For "at any given time" freshness, run it with `MODELS_ONLY=1`: that mode
+converges **only** the `.factory` custom-model lists, takes the alias from the
+LIVE backend (`/props` on :8080, profile fallback when unreachable), and
+touches nothing else. The project's `.factory/settings.json` installs a
+`SessionStart` hook running exactly that, so every Droid session starts with
+the qwen list pointed at whatever arm is actually serving. `DRY_RUN=1` shows
+the plan; every run backs up what it changes.
+
+```bash
+bash scripts/sync-local-agent-configs.sh          # full operator sync
+MODELS_ONLY=1 bash scripts/sync-local-agent-configs.sh   # droid lists only
+```
+
 ## Related
 
 - [Deploy Batching](./DEPLOY_BATCHING.md) — what `uap deliver --deploy` queues.
