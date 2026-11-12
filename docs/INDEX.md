@@ -121,6 +121,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Token Optimization](benchmarks/TOKEN_OPTIMIZATION.md) | Where the token savings come from |
 | [Accuracy Analysis](benchmarks/ACCURACY_ANALYSIS.md) | Success-rate and error analysis |
 | [Comprehensive Benchmarks](benchmarks/COMPREHENSIVE_BENCHMARKS.md) | Extended measurements |
+| [Prompt Uplift Field Study](benchmarks/PROMPT_UPLIFT_BLENDER.md) | Uncontrolled field run: prompt revisions only took a 2-bit model from 0/3 to 4/6 on a frozen structural + pixel gate; four transferable lessons |
 
 ## Analysis
 
