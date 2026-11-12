@@ -14,8 +14,18 @@ fi
 # Read tool input from stdin (JSON)
 INPUT=$(cat)
 
-# Extract command from tool_input
-CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+# Extract command from tool_input, with bounded retries. Under a full
+# parallel suite (or a busy box) a jq spawn can fail transiently, and a
+# fail-open on that would silently allow exactly the edits this guard
+# exists to block — measured as the recurring jq '.version = "9.9.9"'
+# semver-suite flake (3 strikes on 2026-11-12: two CI runs, one local).
+# Fail-open stays the LAST resort for genuinely unparseable input.
+CMD=""
+for _attempt in 1 2 3 4 5; do
+  CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+  [ -n "$CMD" ] && break
+  sleep 0.05
+done
 
 # If we can't determine the command, fail open
 if [ -z "$CMD" ]; then
@@ -178,7 +188,28 @@ fi
 # That is a READ. Splitting on ; && || | and newline keeps every real edit
 # (each has sed/awk/jq and package.json inside one statement) and drops the
 # cross-statement coincidence. Verified against both corpora before and after.
-if printf '%s' "$CMD" | tr ';|&\n' '\n\n\n\n' | grep -qE "(sed|awk).*package\.json.*(version|\"version\")|((sed|awk).*version.*package\.json)|(jq.*\.version.*package\.json)"; then
+#
+# Evaluated with BUILT-INS ONLY: parameter expansion for the statement split,
+# [[ =~ ]] for the match. An earlier `printf | tr | grep -qE` pipeline looked
+# equivalent but had a load-shaped hole: in an `if` condition a grep that fails
+# to spawn (exit 2/126/127 under fork pressure) is indistinguishable from a
+# no-match (exit 1), so the rule silently failed OPEN under the full parallel
+# suite — the canary still refused, so it looked like a genuine allow. That was
+# the recurring semver-suite flake (3 strikes on 2026-11-12: two CI runs, one
+# local version-bump gate). Zero forks here means no spawn can hiccup, and no
+# pipeline stage can mask a match.
+_semv_split="${CMD//[;|&]/$'\n'}"
+_semv_a='(sed|awk).*package\.json.*version'
+_semv_b='(sed|awk).*version.*package\.json'
+_semv_c='jq.*\.version.*package\.json'
+_semv_hit=""
+while IFS= read -r _semv_stmt; do
+  if [[ "$_semv_stmt" =~ $_semv_a || "$_semv_stmt" =~ $_semv_b || "$_semv_stmt" =~ $_semv_c ]]; then
+    _semv_hit="yes"
+    break
+  fi
+done <<< "$_semv_split"
+if [ -n "$_semv_hit" ]; then
   echo "BLOCKED [semver-versioning]: Manual package.json version edits are prohibited. Use: npm run version:patch, version:minor, or version:major. See policies/semver-versioning.md" >&2
   exit 2
 fi
