@@ -17,8 +17,8 @@ causal claims. For the evergreen mechanism the study informs, see
 ## The experiment
 
 Task: write a Blender Python script that builds a rigged, animated, game-ready
-robot. Acceptance is two independent gates, and the model can only edit its own build
-script:
+robot. Acceptance is two independent gates, and the model is asked to produce exactly
+one artifact, its build script:
 
 - **Structural gate** — 12 checks: exactly 19 bones, 4 clips, under 12k tris, feet
   on the floor, weapon grip at the palm, every mesh bound to the rig, FBX
@@ -59,14 +59,16 @@ split four ways: 4 `sys` crashes, 3 reasoning truncations, 1 built-but-incomplet
 
 ### 1. A gate the model can edit is not a gate
 
-The runner copies the validator, the visual gate, the render script and `gates.md`
-fresh into each attempt workspace before the build runs, then executes the model's
-script there. That keeps the frozen originals in `tooling/` out of the way, but nothing
-enforces it: the model's script runs as ordinary Blender Python with write access to
-its workspace, and the workspace sits inside the same repo as the originals. Integrity
-was therefore established *after* the fact: pinned hash matches live, and every
-workspace carried byte-identical gate copies (one distinct hash across all 63 validator
-and 24 visual-gate copies).
+The lock file states the rule in its own header: the model "may NOT edit these files.
+A hash mismatch fails the run." The runner copies the validator, the visual gate, the
+render script and `gates.md` fresh into each attempt workspace before the build runs,
+then executes the model's script there. That keeps the frozen originals in `tooling/`
+out of the way, but nothing enforces the header's sentence at runtime: the model's
+script runs as ordinary Blender Python with write access to its workspace, and the
+workspace sits inside the same repo as the originals. Integrity was therefore
+established *after* the fact: pinned hash matches live, and every workspace carried
+byte-identical gate copies (one distinct hash across all 63 validator and 24
+visual-gate copies).
 
 Be precise about the strength of that. The runner copies the gates but does not
 re-verify the hashes *inside* the run, and the workspace copy is writable, so the
