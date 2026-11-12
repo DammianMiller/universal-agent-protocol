@@ -580,7 +580,7 @@ async function buildAcceptanceExecutor(modelPreset?: string, endpoint?: string):
   const presetId = modelPreset ?? process.env.UAP_DELIVER_MODEL ?? 'qwen35-a3b';
   const model = ModelPresets[presetId];
   if (!model) {
-    throw new Error(`Unknown model preset '${presetId}'. Available: ${Object.keys(ModelPresets).join(', ')}`);
+    throw new Error(`Unknown model preset '${presetId}'. Available: ${Object.keys(ModelPresets).join(', ')}. For the local inference stack use preset 'local-auto' (resolves the served model from the endpoint at call time); --endpoint <url> repoints any preset.`);
   }
   const resolved = endpoint ? { ...model, endpoint } : model;
   // Privacy signal: the acceptance gate ships project source to the model. Warn
