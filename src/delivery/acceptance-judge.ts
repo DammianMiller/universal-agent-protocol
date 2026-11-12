@@ -13,7 +13,7 @@
  * the logic is fully unit-testable with a mock.
  */
 
-import { lstatSync, readdirSync, readFileSync } from 'fs';
+import { lstatSync, readdirSync, readFileSync, realpathSync } from 'fs';
 import { execSync } from 'child_process';
 import { basename, join, relative, dirname } from 'path';
 import type { LoopExecutor } from './convergence-loop.js';
@@ -170,6 +170,49 @@ function keywordSlices(
   }));
 }
 
+/**
+ * Linked git worktree roots (excluding projectRoot itself). Sessions that
+ * deliver on a worktree branch are the standard UAP flow (uap worktree
+ * create), yet the evidence walk deliberately never enters .worktrees (full
+ * repo copies would flood the candidate pool), so a spec's deliverable sat
+ * invisible to the judge while it existed the whole time one directory over
+ * (observed live, pay2u 2026-10-18: every prompt-lab requirement judged "not
+ * visible" with the entire deliverable in .worktrees/553-...). Spec-referenced
+ * paths that fail to resolve in the main root get one more chance in each
+ * linked worktree. Best-effort: no git / no worktrees → empty list.
+ */
+export function linkedWorktreeRoots(projectRoot: string): string[] {
+  try {
+    const out = execSync('git worktree list --porcelain', {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let self: string;
+    try {
+      self = realpathSync(projectRoot);
+    } catch {
+      self = projectRoot;
+    }
+    return out
+      .split('\n')
+      .filter((l) => l.startsWith('worktree '))
+      .map((l) => l.slice('worktree '.length).trim())
+      .filter(Boolean)
+      .filter((r) => {
+        try {
+          return realpathSync(r) !== self;
+        } catch {
+          return false;
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
 export function gatherEvidence(
   projectRoot: string,
   maxFiles = DEFAULT_MAX_FILES,
@@ -181,8 +224,8 @@ export function gatherEvidence(
   // maxFiles — so neither walk order nor a data-heavy directory can starve
   // the implementation out of the evidence.
   const candidateCap = maxFiles * 10;
-  const files: Array<{ abs: string; prio: number }> = [];
-  const walk = (dir: string, depth: number): void => {
+  const files: Array<{ abs: string; prio: number; label?: string }> = [];
+  const walk = (dir: string, depth: number, labelPrefix?: string): void => {
     if (depth > 8 || files.length >= candidateCap) return;
     let entries: string[];
     try {
@@ -203,9 +246,9 @@ export function gatherEvidence(
         continue;
       }
       if (st.isSymbolicLink()) continue;
-      if (st.isDirectory()) walk(abs, depth + 1);
+      if (st.isDirectory()) walk(abs, depth + 1, labelPrefix ? labelPrefix + '/' + e : undefined);
       else if (st.isFile() && SRC_EXT.test(e) && e !== 'package-lock.json' && !SECRET_FILE_RE.test(e) && st.size <= 200_000) {
-        files.push({ abs, prio: evidencePriority(e) });
+        files.push({ abs, prio: evidencePriority(e), ...(labelPrefix ? { label: labelPrefix + '/' + e } : {}) });
       }
     }
   };
@@ -217,8 +260,15 @@ export function gatherEvidence(
   // siblings of a named file are usually the rest of the deliverable —
   // observed live 2026-07-11: 8 tab files sat next to the spec-named
   // styles.css yet were judged "not present" (4/7 MET instead of 7/7).
+  // Linked git worktrees of this project (empty when not a git repo): the
+  // standard UAP flow delivers on a worktree branch, and a spec-referenced
+  // path that misses in the main root often exists there.
+  const worktrees = spec ? linkedWorktreeRoots(root) : [];
   if (spec) {
     const dirsToWalk = new Set<string>();
+    // Worktree dirs get a display prefix so their files are labeled
+    // "worktree:<name>/..." instead of a meaningless ../../ escape path.
+    const wtDirsToWalk = new Map<string, string>();
     for (const rel of specReferencedPaths(spec)) {
       if (rel.includes('..')) continue; // stay inside projectRoot
       const abs = join(root, rel);
@@ -226,8 +276,35 @@ export function gatherEvidence(
       try {
         st = lstatSync(abs);
       } catch {
-        // Token doesn't resolve (template form / not created yet) — its
-        // parent directory is still the best evidence lead.
+        // Token doesn't resolve in the main root (template form / not created
+        // yet / delivered in a worktree). Linked-worktree pass FIRST — the
+        // file the spec names may sit one directory over, on the delivery
+        // branch (observed live, pay2u 2026-10-18: every prompt-lab
+        // requirement judged "not visible" while the whole deliverable lived
+        // in .worktrees/553-ugc-prompt-lab-uplift).
+        let resolvedInWorktree = false;
+        for (const wt of worktrees) {
+          const wtAbs = join(wt, rel);
+          let wst;
+          try {
+            wst = lstatSync(wtAbs);
+          } catch {
+            continue;
+          }
+          if (wst.isFile() && SRC_EXT.test(wtAbs) && !SECRET_FILE_RE.test(wtAbs) && wst.size <= 200_000) {
+            files.push({ abs: wtAbs, prio: -1, label: `worktree:${basename(wt)}/${rel}` });
+            const wparent = dirname(wtAbs);
+            if (wparent.startsWith(wt) && wparent !== wt) wtDirsToWalk.set(wparent, `worktree:${basename(wt)}`);
+            resolvedInWorktree = true;
+          } else if (wst.isDirectory()) {
+            wtDirsToWalk.set(wtAbs, `worktree:${basename(wt)}`);
+            resolvedInWorktree = true;
+          }
+          if (resolvedInWorktree) break;
+        }
+        if (resolvedInWorktree) continue;
+        // Still unresolved — its parent directory in the main root is the
+        // best evidence lead.
         const parent = dirname(abs);
         if (parent.startsWith(root) && parent !== root) dirsToWalk.add(parent);
         continue;
@@ -245,6 +322,13 @@ export function gatherEvidence(
         if (lstatSync(d).isDirectory()) walk(d, 1);
       } catch {
         /* parent doesn't exist either — nothing to walk */
+      }
+    }
+    for (const [d, prefix] of wtDirsToWalk) {
+      try {
+        if (lstatSync(d).isDirectory()) walk(d, 1, prefix);
+      } catch {
+        /* worktree dir vanished mid-run — nothing to walk */
       }
     }
   }
@@ -324,7 +408,7 @@ export function gatherEvidence(
   }
   // Dedupe (a spec-referenced file can also be found by a walk) keeping the
   // best (lowest) priority per path.
-  const best = new Map<string, { abs: string; prio: number }>();
+  const best = new Map<string, { abs: string; prio: number; label?: string }>();
   for (const f of files) {
     const cur = best.get(f.abs);
     if (!cur || f.prio < cur.prio) best.set(f.abs, f);
@@ -376,7 +460,7 @@ export function gatherEvidence(
     const content = contents.get(f.abs);
     const take = granted.get(f.abs) ?? 0;
     if (content === undefined || take <= 0) continue;
-    const rel = relative(root, f.abs);
+    const rel = f.label ?? relative(root, f.abs);
     const marker =
       take < content.length
         ? `\n…[TRUNCATED by evidence budget: showing ${take} of ${content.length} chars — this file CONTINUES beyond this point]`
@@ -398,7 +482,7 @@ export function gatherEvidence(
       const take = granted.get(f.abs) ?? 0;
       if (content === undefined || take <= 0 || take >= content.length) continue;
       for (const slice of keywordSlices(content, take, keywords)) {
-        const block = `\n--- ${relative(root, f.abs)} @ line ${slice.startLine} (matched: ${slice.matched}) ---\n${slice.text}\n`;
+        const block = `\n--- ${f.label ?? relative(root, f.abs)} @ line ${slice.startLine} (matched: ${slice.matched}) ---\n${slice.text}\n`;
         if (block.length > sliceBudget) break;
         sliceOut += block;
         sliceBudget -= block.length;
@@ -407,6 +491,14 @@ export function gatherEvidence(
     if (sliceOut) {
       out += `\n=== RELEVANT SLICES — regions from BEYOND the truncation point of the files above, matched to the spec's own terms. These are part of the same files; use them before judging anything "not visible". ===\n${sliceOut}`;
     }
+  }
+  // Worktree-labeled evidence needs one line of orientation for the judge.
+  if (chosen.some((f) => f.label)) {
+    out +=
+      '\n=== WORKTREE EVIDENCE ===\n' +
+      'Files labeled "worktree:<name>/..." live in a linked git worktree of this project — ' +
+      'an in-progress delivery on its own branch (the standard `uap worktree` flow). ' +
+      'Judge them as project code, not as missing-from-the-root.\n';
   }
   return out.trim();
 }
