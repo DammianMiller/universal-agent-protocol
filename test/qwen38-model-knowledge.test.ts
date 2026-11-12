@@ -48,7 +48,7 @@ interface DroidModel {
 }
 interface DroidSettings {
   customModels?: DroidModel[];
-  model?: string;
+  sessionDefaultSettings?: { model?: string };
 }
 
 function readJson<T>(p: string): T {
@@ -154,7 +154,7 @@ describe('droid settings call the alias the profile pins', () => {
       expect(RETIRED, `retired id still pinned: ${String(m.model)}`).not.toContain(m.model);
     }
     // The session default (when set to a custom entry) must not dangle.
-    const def = d.model;
+    const def = d.sessionDefaultSettings?.model;
     if (typeof def === 'string' && def.startsWith('custom:')) {
       expect(
         (d.customModels ?? []).some((m) => m.id === def),
