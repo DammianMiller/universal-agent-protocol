@@ -154,12 +154,24 @@ describe('qwen38 profile — describes the engine that is actually running', () 
     expect(blob).not.toMatch(/serves no \/slots/i);
   });
 
-  it('records the strata MTP speculative path, not a separate draft model', () => {
+  it('records the MTP drafter the v31 arm runs, not a transcribed one', () => {
     const spec = profile.server_optimization.speculative_decoding;
     expect(spec.enabled).toBe(true);
     expect(spec.type).toBe('mtp');
-    // The DFlash2 draft model belonged to the retired llama.cpp backend; it
-    // may survive only as dated history inside documentation keys.
+    // 2026-11-11: the UD-IQ4_XS-v31 arm drafts with the model's own MTP
+    // layer, pinned by "drafting": "mtp" in the config after the DFlash2
+    // auto plan for this model class OOM-killed the engine at start twice
+    // (the 48 GiB budget era) and the serve wrapper's DIDNT_START fallback
+    // landed on MTP. sm_86 is also the card class where upstream measured
+    // DFlash2 SLOWER than MTP (strata_control/drafting.py _SLOWER) and this
+    // box's own 2026-10-28 A/B rejected the stock drafter (-5.5% mean
+    // decode). Live /metrics: spec window 12, mtp_max 4, spec_min_p 0.50,
+    // lookup 3 — pin those numbers. A DFlash2 retry is a follow-up behind a
+    // smaller budget and a fresh A/B; it stays documentation, never a live
+    // value (the stripDocs assertion below enforces exactly that).
+    expect(String(spec.draft_model)).toMatch(/strata-data\/mtp\//);
+    expect(spec.draft_max).toBe(12);
+    expect(spec.draft_conf).toBe(0.5);
     const stripDocs = (v: unknown): unknown => {
       if (Array.isArray(v)) return v.map(stripDocs);
       if (v && typeof v === 'object') {
@@ -171,7 +183,7 @@ describe('qwen38 profile — describes the engine that is actually running', () 
       }
       return v;
     };
-    expect(JSON.stringify(stripDocs(spec))).not.toMatch(/DFlash2/);
+    expect(JSON.stringify(stripDocs(spec))).not.toMatch(/dflash2/i);
   });
 
   it('routes through the guardrail proxy, not the inference port', () => {
