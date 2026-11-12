@@ -66,9 +66,10 @@ function runHook(opts: {
   strictAware?: boolean;
   hasCode?: boolean;
   env?: Record<string, string>;
+  dir?: string;
 }): number {
-  const dir = mkdtempSync(join(tmpdir(), 'stophook-'));
-  tmpDirs.push(dir);
+  const dir = opts.dir ?? mkdtempSync(join(tmpdir(), 'stophook-'));
+  if (!opts.dir) tmpDirs.push(dir);
   execFileSync('git', ['init', '-q'], { cwd: dir });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: dir });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: dir });
@@ -76,7 +77,7 @@ function runHook(opts: {
   if (opts.hasCode !== false) writeFileSync(join(dir, 'foo.js'), 'console.log(1)\n');
 
   const bin = join(dir, '.bin');
-  mkdirSync(bin);
+  mkdirSync(bin, { recursive: true }); // exists on repeat runs against one project
   writeStubUap(bin, { verifyRc: opts.verifyRc ?? 0, strictAware: opts.strictAware ?? false });
 
   try {
@@ -130,5 +131,41 @@ describe('stop.sh — fresh-install loop regression', () => {
     expect(
       runHook({ input: '{"stop_hook_active": false}', verifyRc: 1, env: { UAP_VERIFY_ON_STOP: '0' } })
     ).toBe(0);
+  });
+
+  it('relents after UAP_STOP_BLOCK_LIMIT consecutive RC-1 blocks when the harness sends no stop_hook_active payload', () => {
+    // Factory-style harnesses never set stop_hook_active, so the re-entrancy
+    // guard cannot relent for them; without this bound a persistently-red
+    // gate (observed: max-fidelity interaction fail-closed) loops forever.
+    const dir = mkdtempSync(join(tmpdir(), 'stophook-seq-'));
+    tmpDirs.push(dir);
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 't@t'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: dir });
+    writeFileSync(join(dir, 'foo.js'), 'console.log(1)\n');
+    // UAP_LP_DISABLED: loop-protection's 5s dedup suppresses back-to-back
+    // invocations; it is a separate relief, not the unit under test here.
+    const opts = { input: '{"stop_hook_active": false}', verifyRc: 1, dir, env: { UAP_STOP_BLOCK_LIMIT: '3', UAP_LP_DISABLED: '1' } };
+    expect(runHook(opts)).toBe(2);
+    expect(runHook(opts)).toBe(2);
+    expect(runHook(opts)).toBe(2);
+    expect(runHook(opts)).toBe(0); // at the bound: allow the stop, verdict on record
+  });
+
+  it('a green verify resets the consecutive-block counter', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stophook-reset-'));
+    tmpDirs.push(dir);
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 't@t'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: dir });
+    writeFileSync(join(dir, 'foo.js'), 'console.log(1)\n');
+    // UAP_LP_DISABLED on every run: the 5s dedup would suppress the rapid
+    // sequence and mask the counter behavior under test.
+    const env = { UAP_STOP_BLOCK_LIMIT: '2', UAP_LP_DISABLED: '1' };
+    expect(runHook({ input: '{"stop_hook_active": false}', verifyRc: 1, dir, env })).toBe(2); // block 1
+    expect(runHook({ input: '{"stop_hook_active": false}', verifyRc: 1, dir, env })).toBe(2); // block 2
+    expect(runHook({ input: '{"stop_hook_active": false}', verifyRc: 1, dir, env })).toBe(0); // bound reached: relent
+    expect(runHook({ input: '{"stop_hook_active": false}', verifyRc: 0, dir, env })).toBe(0); // green resets
+    expect(runHook({ input: '{"stop_hook_active": false}', verifyRc: 1, dir, env })).toBe(2); // fresh budget
   });
 });
