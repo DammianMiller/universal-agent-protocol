@@ -125,6 +125,8 @@ benchmarks/suites/swe-bench-pro-gen/
 
 # UAP runtime
 .uap/
+# deliver's per-run self-gate dir (same class of machine-local state)
+.uap-deliver/
 .uam/
 .agents/
 .policy-tools/
