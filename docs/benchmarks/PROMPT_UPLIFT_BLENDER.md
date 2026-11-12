@@ -1,6 +1,9 @@
 # Prompt Uplift Field Study: a 2-bit Model Passes a Pixel Gate (2026-11)
 
-**Date:** 2026-11-12 · **Subject:** Universal Agent Protocol v2.41.0 (`@miller-tech/uap`)
+**Date:** 2026-11-12 · **Subject:** `abliterated-iq2_xs` on a frozen Blender build
+contract, driven by bespoke harness tooling (the repo's UAP install is 2.39.1; UAP
+supplies the memory store and worktree workflow here, not the harness — there is no
+uplift subsystem to attribute a result to)
 **Scope:** one measured prompt-uplift run against a frozen multi-gate acceptance
 contract, and the four transferable lessons it produced. This is a dated study, not
 a feature doc: the harness lives in the experiment repo, not here. It is an
