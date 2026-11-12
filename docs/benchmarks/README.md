@@ -61,6 +61,7 @@ authoritative.
 | [Token Optimization](TOKEN_OPTIMIZATION.md) | Where the token savings come from |
 | [Accuracy Analysis](ACCURACY_ANALYSIS.md) | Success-rate and error analysis |
 | [Comprehensive Benchmarks](COMPREHENSIVE_BENCHMARKS.md) | Extended measurements |
+| [Prompt Uplift Field Study](PROMPT_UPLIFT_BLENDER.md) | Uncontrolled field run: prompt revisions only, one 2-bit model, frozen structural + pixel gates (0/3 → 4/6). Descriptive, no control arm |
 
 ## Task suites and raw runs
 
