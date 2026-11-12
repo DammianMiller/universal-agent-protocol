@@ -30,10 +30,35 @@ POOL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_o
   "$HERE/../config/model-profiles/qwen38.json") \
   || { echo "sandbox: cannot read the profile pool"; exit 1; }
 [ -n "$CTX" ] && [ -n "$POOL" ] || { echo "sandbox: profile cap/pool empty"; exit 1; }
-# Pin TMPDIR: it is honoured by mktemp, and a TMPDIR pointing inside the repo
-# would drop generated configs into the worktree.
+
+# The sandbox root MUST exist before anything derived from it (the lock path)
+# is exported — an earlier ordering exported $SANDBOX-based paths while
+# $SANDBOX was still empty, so every such assertion passed vacuously against
+# "/" paths.
 SANDBOX=$(TMPDIR=/tmp mktemp -d)
 trap 'rm -rf "$SANDBOX"' EXIT INT TERM
+
+# The shared Droid sync contract the installer sources. Sourcing it here (in
+# the sandbox's own shell, side-effect free) proves the contract file is
+# valid bash AND that the installer and these assertions read the same names.
+CONTRACT="$HERE/lib/droid-sync-contracts.sh"
+[ -r "$CONTRACT" ] || { echo "sandbox: missing shared contract $CONTRACT"; exit 1; }
+# Pre-setting a contract variable must win over the lib's default — that is
+# how the sandbox (and any hook) redirects the lock away from the operator's
+# box. Set AFTER $SANDBOX exists (see the ordering note above).
+export DROID_SYNC_LOCK="$SANDBOX/droid-sync.lock"
+# shellcheck source=lib/droid-sync-contracts.sh
+. "$CONTRACT" || { echo "sandbox: contract $CONTRACT is not sourceable"; exit 1; }
+BASE_MODEL="$DROID_ANTHROPIC_BASE_MODEL"
+# Sourcing is side-effect free — snapshot it HERE, before the installer
+# run below legitimately creates the (sandbox-redirected) lock file.
+CONTRACT_CLEAN=$([ ! -e "$DROID_SYNC_LOCK" ] && echo clean || echo dirty)
+
+# The repo-level project settings file the installer must also converge — a
+# sandbox fixture, so the run never touches this checkout's real (gitignored)
+# .factory/settings.json. Its env override rides the same contract rule.
+PSET="$SANDBOX/project-factory-settings.json"
+export PROJECT_FACTORY_SET="$PSET"
 
 FAKE_TOKEN="sk-sandbox-TOKEN-do-not-ship"
 CLOUD_KEY="sk-ant-SANDBOX-CLOUD-KEY"
@@ -69,25 +94,45 @@ PROXY_CONTEXT_WINDOW=229376
 PROXY_LOG_LEVEL=INFO
 EOF
 
-cat > "$SANDBOX/.factory/config.json" <<'EOF'
+# The legacy config.json (snake_case). Carries one entry per retired era PLUS
+# the current abliterated arm, so the migration tuple is exercised end to end.
+cat > "$SANDBOX/.factory/config.json" <<EOF
 { "custom_models": [
   { "model_display_name": "Qwen3.5", "model": "qwen35-a3b-iq4xs",
     "base_url": "http://localhost:8080/v1", "api_key": "**********", "provider": "openai" },
   { "model_display_name": "Qwen3.8-27B GSQ-RCO (local)", "model": "qwen38-gsq-rco-27b",
     "base_url": "http://127.0.0.1:4000/v1", "api_key": "stale", "provider": "openai" },
+  { "model_display_name": "Qwen3.8 IQ2_XS (local)", "model": "abliterated-iq2_xs",
+    "base_url": "http://127.0.0.1:4000/v1", "api_key": "stale", "provider": "openai" },
   { "model_display_name": "CC Opus", "model": "claude-opus-4-6",
     "base_url": "http://192.168.1.165:8317", "api_key": "local", "provider": "anthropic" }
 ] }
 EOF
-# settings.json uses the camelCase spelling AND has an entry with no `model`
-# key at all — the shape that used to raise TypeError mid-run.
-cat > "$SANDBOX/.factory/settings.json" <<'EOF'
+# settings.json uses the camelCase spelling and covers all three routes: the
+# anthropic Messages shape (baseUrl at the proxy ROOT, no /v1 — exactly the
+# real entry that shipped without baseModelId), :4000/v1 chat entries from two
+# retired eras, and an entry with no `model` key at all aimed at the retired
+# 8317 host — the shape that used to raise TypeError mid-run and must now take
+# ONLY the split-brain host fixup.
+cat > "$SANDBOX/.factory/settings.json" <<EOF
 { "customModels": [
   { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
-    "baseUrl": "http://localhost:4000", "apiKey": "not-needed", "noImageSupport": true },
+    "baseUrl": "http://localhost:4000", "apiKey": "not-needed", "provider": "anthropic",
+    "noImageSupport": true },
   { "displayName": "Qwen3.8-27B GSQ-RCO (local)", "model": "qwen38-gsq-rco-27b",
     "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale" },
+  { "displayName": "Qwen3.8 IQ2_XS (local)", "model": "abliterated-iq2_xs",
+    "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale" },
   { "displayName": "Odd entry", "baseUrl": "http://192.168.1.165:8317" }
+] }
+EOF
+# A project-level settings file with NO local entry at all: after the run it
+# must GAIN the canonical proxy entry (add-if-missing) — this is the box-state
+# where the user never configured a local model and the hook first lands.
+cat > "$PSET" <<'EOF'
+{ "customModels": [
+  { "displayName": "GPT-5.1 (router)", "model": "gpt-5.1",
+    "baseUrl": "http://localhost:8317/v1", "apiKey": "router-key", "id": "custom:GPT-5.1-0" }
 ] }
 EOF
 
@@ -117,6 +162,8 @@ echo "sandbox: $SANDBOX"
 echo "=========================== RUN ==========================="
 # SKIP_SERVICE_OPS: systemctl --user is per-USER, not per-$HOME, so a fake HOME
 # does NOT isolate it — without this the test restarts the operator's proxy.
+# DIRECT_URL/PROXY_URL defaults are the installer's own; nothing in a full-mode
+# run probes the network before section 6, which SKIP_SERVICE_OPS removes.
 SKIP_SERVICE_OPS=1 HOME="$SANDBOX" bash "$HERE/sync-local-agent-configs.sh" 2>&1 | sed 's/^/  | /'
 RUN_RC=${PIPESTATUS[0]}
 
@@ -127,6 +174,33 @@ ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=1; }
 
 [ "$RUN_RC" = "0" ] && ok "installer exited 0" || bad "installer exited $RUN_RC"
+
+# 0. shared Droid sync contract — names + installer structure
+bash -n "$CONTRACT" && ok "contract: valid bash" || bad "contract: bash -n failed"
+for V in MODELS_ONLY REPO_ROOT PROJECT_FACTORY_SET DROID_ANTHROPIC_BASE_MODEL DROID_SYNC_LOCK; do
+  [ -n "${!V:-}" ] && ok "contract: $V defined" || bad "contract: $V undefined"
+done
+# Sourcing must be side-effect free: no lock file, no repo config writes.
+[ "$CONTRACT_CLEAN" = "clean" ] && ok "contract: sourcing creates no lock file" || bad "contract: sourcing wrote $DROID_SYNC_LOCK"
+# REPO_ROOT must resolve to the checkout the script lives in, not $PWD.
+[ "$REPO_ROOT" = "$(cd "$HERE/.." && pwd)" ] \
+  && ok "contract: REPO_ROOT -> $REPO_ROOT" || bad "contract: REPO_ROOT is '$REPO_ROOT', expected $(cd "$HERE/.." && pwd)"
+[ "$PROJECT_FACTORY_SET" = "$PSET" ] \
+  && ok "contract: caller preset wins (PROJECT_FACTORY_SET)" || bad "contract: preset lost: '$PROJECT_FACTORY_SET'"
+# baseModelId must name a Factory BUILT-IN, never a local qwen id — a qwen id
+# there reproduces the 'does not map to a built-in model' warning it exists to
+# fix.
+case "$BASE_MODEL" in
+  qwen*|Qwen*) bad "contract: DROID_ANTHROPIC_BASE_MODEL is a local id ($BASE_MODEL)" ;;
+  *)          ok  "contract: DROID_ANTHROPIC_BASE_MODEL is a built-in ($BASE_MODEL)" ;;
+esac
+# The bodies live in the installer (the contract stays stub-free — no dead
+# code), so assert them textually against it.
+INSTALLER="$HERE/sync-local-agent-configs.sh"
+grep -q '^sync_droid_models()'  "$INSTALLER" && ok "installer: defines sync_droid_models()"  || bad "installer: sync_droid_models() missing"
+grep -q '^droid_sync_lock()'   "$INSTALLER" && ok "installer: defines droid_sync_lock()"       || bad "installer: droid_sync_lock() missing"
+grep -q 'flock -n'             "$INSTALLER" && ok "installer: locks before writing"            || bad "installer: no flock"
+grep -q 'os.replace'           "$INSTALLER" && ok "installer: atomic config writes"             || bad "installer: writes are not atomic"
 
 # 1. proxy env
 env_f="$SANDBOX/.config/uap/anthropic-proxy.env"
@@ -167,28 +241,93 @@ assert d["provider"]["llama.cpp-direct"]["models"][alias]["limit"]["context"]==p
 assert "llama.cpp" not in d["provider"]
 PY
 
-# 3. factory — including the entry with no `model` key
-for F in config.json settings.json; do
-  python3 - "$SANDBOX/.factory/$F" "$FAKE_TOKEN" "$ALIAS" <<'PY' && ok "factory/$F: repointed, no crash" || bad "factory/$F: assertions failed"
-import json,sys
-d=json.load(open(sys.argv[1])); tok=sys.argv[2]; alias=sys.argv[3]
-found=0
-for key in ("custom_models","customModels"):
-    for m in d.get(key,[]) or []:
-        assert m.get("model") not in ("qwen35-a3b-iq4xs","qwen38-gsq-rco-27b"), "retired model id still present"
-        if m.get("model")==alias:
-            found+=1
-            assert not m.get("noImageSupport"), "vision still disabled"
-            for bk in ("base_url","baseUrl"):
-                if bk in m: assert m[bk]=="http://127.0.0.1:4000/v1", m[bk]
-            for ak in ("api_key","apiKey"):
-                if ak in m: assert m[ak]==tok, m[ak]
-        for bk in ("base_url","baseUrl"):
-            v=m.get(bk)
-            assert not (isinstance(v,str) and "192.168.1.165:8317" in v), "LAN 8317 split-brain remains"
-assert found>=1, "no repointed local entry found"
+# 3. factory — every retired arm migrated, routed by shape, cloud untouched
+python3 - "$SANDBOX/.factory/config.json" legacy "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" <<PY && ok "factory/config.json: retired migrated, routes correct" || bad "factory/config.json: assertions failed"
+import json, sys
+d = json.load(open(sys.argv[1]))
+alias, tok, ctx, pool = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6])
+models = d["custom_models"]
+# every retired arm converged onto the alias
+for r in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b", "abliterated-iq2_xs"):
+    assert r not in [m.get("model") for m in models], f"retired id survived: {r}"
+entries = [m for m in models if m.get("model") == alias]
+assert entries, "no entry on the live alias"
+# the ex-qwen35 :8080 entry took the DIRECT route (pool-sized, keeps its key)
+direct = [m for m in entries if ":8080" in m["base_url"]]
+assert len(direct) == 1, f"expected one direct entry, got {len(direct)}"
+assert direct[0]["base_url"] == "http://127.0.0.1:8080/v1", direct[0]["base_url"]
+assert direct[0]["max_context_limit"] == pool, "direct entry not pool-sized"
+assert direct[0]["api_key"] == "**********", "direct entry lost its own api key"
+assert direct[0]["model_display_name"] == "Qwen3.8 Flash-Next (direct, no guardrails)"
+# the ex-gsq + ex-abliterated :4000/v1 entries took the PROXY CHAT route
+chat = [m for m in entries if ":4000" in m["base_url"]]
+assert len(chat) == 2, f"expected two proxy-chat entries, got {len(chat)}"
+for m in chat:
+    assert m["base_url"] == "http://127.0.0.1:4000/v1", m["base_url"]
+    assert m["api_key"] == tok, "proxy-chat entry not on the scoped token"
+    assert m["max_context_limit"] == ctx, "proxy entry not session-sized"
+    assert m["model_display_name"] == "Qwen3.8 Flash-Next (UAP local)"
+# the cloud entry survives untouched (except the split-brain host fixup)
+cloud = [m for m in models if m.get("model") == "claude-opus-4-6"]
+assert len(cloud) == 1, "cloud entry vanished"
+assert cloud[0]["base_url"] == "http://localhost:8317", "8317 host not fixed"
+assert cloud[0]["api_key"] == "local", "cloud entry key clobbered"
 PY
-done
+python3 - "$SANDBOX/.factory/settings.json" settings "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$BASE_MODEL" <<PY && ok "factory/settings.json: anthropic route + baseModelId + no force-add" || bad "factory/settings.json: assertions failed"
+import json, sys
+d = json.load(open(sys.argv[1]))
+alias, tok, ctx, pool, base_model = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7]
+models = d["customModels"]
+for m in models:
+    assert m.get("model") not in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b", "abliterated-iq2_xs"), \
+        f"retired id survived: {m.get('model')}"
+    for bk in ("base_url", "baseUrl"):
+        v = m.get(bk)
+        assert not (isinstance(v, str) and "192.168.1.165:8317" in v), "LAN 8317 split-brain remains"
+entries = [m for m in models if m.get("model") == alias]
+# the ex-qwen35 anthropic-shape entry keeps the Messages ROOT (no /v1), gains
+# baseModelId, keeps its own apiKey, and is session-sized
+anth = [m for m in entries if ":4000" in m.get("baseUrl", "") and not m.get("baseUrl", "").rstrip("/").endswith("/v1")]
+assert len(anth) == 1, f"expected one anthropic entry, got {len(anth)}"
+a = anth[0]
+assert a["baseUrl"] == "http://127.0.0.1:4000", a["baseUrl"]
+assert a["apiKey"] == "not-needed", "anthropic entry apiKey was overwritten"
+assert a.get("baseModelId") == base_model, f"baseModelId wrong: {a.get('baseModelId')}"
+assert a["maxContextLimit"] == ctx, "anthropic entry not session-sized"
+assert a["displayName"] == "Qwen3.8 Flash-Next (UAP proxy)"
+assert not a.get("noImageSupport"), "vision still disabled"
+# the two :4000/v1 chat entries converged on the scoped token
+chat = [m for m in entries if m.get("baseUrl", "").endswith("/v1")]
+assert len(chat) == 2, f"expected two proxy-chat entries, got {len(chat)}"
+for m in chat:
+    assert m["apiKey"] == tok, "chat entry not on the scoped token"
+    assert m["maxContextLimit"] == ctx, "chat entry not session-sized"
+# the model-less Odd entry took ONLY the split-brain fixup — no model forced on it
+odd = [m for m in models if m.get("displayName") == "Odd entry"]
+assert len(odd) == 1 and "model" not in odd[0], "model-less entry was force-migrated"
+assert odd[0]["baseUrl"] == "http://localhost:8317", "8317 host not fixed"
+# add-if-missing must NOT fire: a local entry already exists
+assert not any(str(m.get("id", "")).startswith("custom:Qwen3.8-UAP-local-") for m in models), \
+    "canonical entry added although local entries exist"
+PY
+# the project settings had NO local entry — it must have GAINED the canonical
+python3 - "$PSET" project "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" <<PY && ok "project settings: gained the canonical entry (add-if-missing)" || bad "project settings: add-if-missing failed"
+import json, sys
+d = json.load(open(sys.argv[1]))
+alias, tok, ctx, pool = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6])
+models = d["customModels"]
+# the cloud router entry is untouched
+assert models[0]["model"] == "gpt-5.1" and models[0]["apiKey"] == "router-key", "cloud entry clobbered"
+ours = [m for m in models if m.get("model") == alias]
+assert len(ours) == 1, f"expected exactly one canonical entry, got {len(ours)}"
+e = ours[0]
+assert e["id"] == "custom:Qwen3.8-UAP-local-1" and e["index"] == 1, (e.get("id"), e.get("index"))
+assert e["baseUrl"] == "http://127.0.0.1:4000/v1", e["baseUrl"]
+assert e["apiKey"] == tok, "canonical entry not on the scoped token"
+assert e["maxContextLimit"] == ctx, "canonical entry not session-sized"
+assert e["provider"] == "generic-chat-completion-api"
+assert e.get("noImageSupport") is False
+PY
 
 # 4. codex — additive, converging, loadable, idempotent
 c="$SANDBOX/.codex/config.toml"
@@ -211,10 +350,16 @@ grep -q "$FAKE_TOKEN" "$w" && bad "claude-local: TOKEN IS EMBEDDED in the wrappe
 grep -q 'ANTHROPIC_CUSTOM_HEADERS' "$w" && ok "claude-local: sends the profile header (cap applies)" || bad "claude-local: no profile header -> uncapped"
 grep -Fq "ANTHROPIC_MODEL=\"\${ANTHROPIC_MODEL:-$ALIAS}\"" "$w" && ok "claude-local: ANTHROPIC_MODEL is the served alias" || bad "claude-local: ANTHROPIC_MODEL is not the served alias"
 
-# 6. idempotence
+# 6. idempotence — a second run must leave all three droid files BYTE-identical
+cp "$SANDBOX/.factory/config.json"   "$SANDBOX/.sb-1.json"
+cp "$SANDBOX/.factory/settings.json" "$SANDBOX/.sb-2.json"
+cp "$PSET"                           "$SANDBOX/.sb-3.json"
 SKIP_SERVICE_OPS=1 HOME="$SANDBOX" bash "$HERE/sync-local-agent-configs.sh" >/dev/null 2>&1
 rc2=$?
 [ "$rc2" = "0" ] && ok "second run also exits 0" || bad "second run exited $rc2"
+cmp -s "$SANDBOX/.sb-1.json" "$SANDBOX/.factory/config.json"   && ok "droid: config.json byte-identical on re-run"    || bad "droid: config.json drifted on re-run"
+cmp -s "$SANDBOX/.sb-2.json" "$SANDBOX/.factory/settings.json" && ok "droid: settings.json byte-identical on re-run"  || bad "droid: settings.json drifted on re-run"
+cmp -s "$SANDBOX/.sb-3.json" "$PSET"                           && ok "droid: project settings byte-identical on re-run" || bad "droid: project settings drifted on re-run"
 [ "$(grep -c '^\[profiles.qwen38\]' "$c")" = "1" ] && ok "codex: idempotent (no duplicate append)" || bad "codex: duplicated on re-run"
 [ "$(grep -c '^PROXY_CONCURRENCY_LIMIT=' "$env_f")" = "1" ] && ok "proxy: idempotent" || bad "proxy: duplicated on re-run"
 tok2=$(python3 -c "
@@ -222,7 +367,49 @@ import json;d=json.load(open('$SANDBOX/.config/opencode/opencode.json'))
 print(d['provider']['qwen-proxy']['options']['apiKey'])")
 [ "$tok2" = "$FAKE_TOKEN" ] && ok "token stable across runs (no drift to a placeholder)" || bad "token drifted to '$tok2'"
 
-# 7. refuses to report success with no proxy env
+# 7. MODELS_ONLY — a session-start hook's exact environment: a fresh $HOME
+# with ONLY a settings.json (no proxy env, no opencode, no codex), a DEAD
+# direct port (the alias probe must fall back to the profile, keeping the run
+# hermetic), and a project settings file with no local entry.
+S3=$(TMPDIR=/tmp mktemp -d)
+mkdir -p "$S3/.factory"
+cat > "$S3/.factory/settings.json" <<EOF
+{ "customModels": [
+  { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
+    "baseUrl": "http://localhost:4000", "apiKey": "not-needed", "provider": "anthropic" }
+] }
+EOF
+PSET3="$S3/project-factory-settings.json"
+cat > "$PSET3" <<'EOF'
+{ "customModels": [] }
+EOF
+if MODELS_ONLY=1 DIRECT_URL=http://127.0.0.1:9 PROJECT_FACTORY_SET="$PSET3" \
+     DROID_SYNC_LOCK="$S3/droid-sync.lock" HOME="$S3" \
+     bash "$HERE/sync-local-agent-configs.sh" >/dev/null 2>&1; then
+  ok "MODELS_ONLY: exits 0 with no proxy env and a dead backend"
+else
+  rc3=$?
+  bad "MODELS_ONLY: run failed (rc $rc3)"
+fi
+python3 - "$S3/.factory/settings.json" "$PSET3" "$ALIAS" "$CTX" "$BASE_MODEL" <<PY && ok "MODELS_ONLY: converged user + project settings" || bad "MODELS_ONLY: assertions failed"
+import json, sys
+alias, ctx, base_model = sys.argv[3], int(sys.argv[4]), sys.argv[5]
+u = json.load(open(sys.argv[1]))["customModels"]
+assert any(m.get("model") == alias for m in u), "user settings not migrated"
+a = [m for m in u if m.get("model") == alias][0]
+assert a["baseUrl"] == "http://127.0.0.1:4000", a["baseUrl"]
+assert a.get("baseModelId") == base_model, "anthropic entry missing baseModelId"
+assert a["maxContextLimit"] == ctx, "not session-sized"
+p = json.load(open(sys.argv[2]))["customModels"]
+assert any(m.get("model") == alias for m in p), "project settings did not gain the canonical entry"
+assert len(p) == 1, f"canonical entry count wrong: {len(p)}"
+PY
+[ ! -e "$S3/.config/uap/anthropic-proxy.env" ] && ok "MODELS_ONLY: no proxy env created" || bad "MODELS_ONLY: created the proxy env"
+[ ! -e "$S3/.codex/config.toml" ]              && ok "MODELS_ONLY: no codex config created" || bad "MODELS_ONLY: wrote codex config"
+[ ! -e "$S3/.config/opencode" ]                && ok "MODELS_ONLY: no opencode config created" || bad "MODELS_ONLY: wrote opencode config"
+rm -rf "$S3"
+
+# 8. refuses to report success with no proxy env (FULL mode keeps the guard)
 S2=$(TMPDIR=/tmp mktemp -d); mkdir -p "$S2/.config/opencode"
 if SKIP_SERVICE_OPS=1 HOME="$S2" bash "$HERE/sync-local-agent-configs.sh" >/dev/null 2>&1; then
   bad "missing proxy env: exited 0 (would report success having skipped the whole point)"

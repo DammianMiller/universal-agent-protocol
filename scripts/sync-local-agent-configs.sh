@@ -2,11 +2,9 @@
 #
 # sync-local-agent-configs.sh — point every coding agent at the live local stack.
 #
-#   Server : uap-gsq-rco-server.service  (Qwen3.8-27B GSQ-RCO, buun-llama-cpp)
-#            -np 2 -c 229376, kv_unified=true  ->  ONE 229376-cell SHARED pool.
-#            -np does NOT divide the context: /slots reports n_ctx=229376 for
-#            BOTH slots and either rail may address all of it.
-#   Proxy  : uap-anthropic-proxy.service on :4000
+#   Server : uap-strata-server.service on :8080 (strata serve layer, engine
+#            0.1.59.1, unsloth UD-IQ4_XS v31 arm, ONE shared 131072 pool)
+#   Proxy  : uap-anthropic-proxy.service on :4000 (Anthropic Messages API)
 #   Profile: config/model-profiles/qwen38.json  (per-session window 114688)
 #
 # WHY A PER-SESSION CAP IS NEEDED
@@ -16,7 +14,8 @@
 # PROXY_CONTEXT_WINDOW is NOT a backstop — it is replaced within one recheck
 # interval. The only thing that pins a session below the pool is a model
 # profile's context_window, selected per request by the x-uap-model-profile
-# header. Every client configured here therefore sends that header.
+# header. Every client configured here therefore sends that header — or, for
+# Droid (no header field), carries maxContextLimit client-side.
 #
 # WHY THIS IS A SCRIPT AND NOT AGENT EDITS
 # ----------------------------------------
@@ -28,6 +27,10 @@
 #
 #   bash scripts/sync-local-agent-configs.sh            # apply
 #   DRY_RUN=1 bash scripts/sync-local-agent-configs.sh  # show, change nothing
+#   MODELS_ONLY=1 bash scripts/sync-local-agent-configs.sh
+#          # converge ONLY the Droid customModels (user + project) onto the
+#          # live alias; no proxy env requirement, no service ops, no other
+#          # agent configs. This is the mode a session-start hook runs.
 #   SKIP_SERVICE_OPS=1 ...                              # no systemctl/curl
 #
 set -euo pipefail
@@ -36,9 +39,20 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP_DIR="$HOME/.uap-backups/agent-config-sync-$STAMP"
 DRY_RUN="${DRY_RUN:-0}"
 
+# --- shared Droid (Factory) sync contract ---------------------------------
+# Sourced, never executed: the lib is side-effect free and every value it
+# defines is `:=`-defaulted, so a caller (this script, the sandbox test) may
+# pre-set MODELS_ONLY / REPO_ROOT / PROJECT_FACTORY_SET / DROID_* and its own
+# value wins. The installer and scripts/test-sync-sandbox.sh therefore assert
+# against ONE contract instead of two transcriptions of it.
+# shellcheck source=lib/droid-sync-contracts.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/droid-sync-contracts.sh"
+
 # --- the single source of truth for every client ---------------------------
-PROXY_URL="http://127.0.0.1:4000"
-DIRECT_URL="http://127.0.0.1:8080"
+# Env-overridable so the sandbox test can point the MODELS_ONLY alias probe at
+# a dead port and stay hermetic (no dependence on this machine's backend).
+PROXY_URL="${PROXY_URL:-http://127.0.0.1:4000}"
+DIRECT_URL="${DIRECT_URL:-http://127.0.0.1:8080}"
 PROFILE_NAME="qwen38"
 PROFILE_HEADER="x-uap-model-profile"
 MAX_OUTPUT=32768         # matches the proxy tool-turn cap (proxy env, not profile geometry)
@@ -94,6 +108,195 @@ backup() { # <file>
   note "backed up $1"
 }
 
+# --- Droid (Factory) customModels convergence ------------------------------
+# One lock across every target: the session hook, a manual run and a second
+# Droid window all read-modify-write the same JSON; without the lock one
+# writer's customModels silently loses the other's. Returns 1 when another
+# sync holds the lock (callers skip, never wait — a session start must not
+# hang behind a manual run).
+droid_sync_lock() {
+  mkdir -p "$(dirname "$DROID_SYNC_LOCK")" 2>/dev/null || true
+  exec 9>>"$DROID_SYNC_LOCK" 2>/dev/null || return 1
+  flock -n 9 2>/dev/null || return 1
+  return 0
+}
+
+# sync_droid_models <file> <create-if-absent: 0|1> — converge ONE Droid config
+# file onto the live alias. Route by the entry's existing shape (:8080 ->
+# direct Responses, :4000 without /v1 -> Anthropic Messages root, anything
+# else local -> proxy chat). Cloud entries are never repointed. Writes are
+# atomic, idempotent (no change => byte-identical), and add the canonical
+# proxy entry to a settings.json that has no local entry at all. A per-file
+# failure prints WARN and returns 0 — one unreadable file must not abort the
+# other targets.
+sync_droid_models() { # <file> <create: 0|1>
+  local f="$1" create="${2:-0}"
+  if [ "$create" = "1" ]; then
+    mkdir -p "$(dirname "$f")"
+  fi
+  [ -f "$f" ] || [ "$create" = "1" ] || { note "absent: $f"; return 0; }
+  backup "$f"
+  UAP_SYNC_TOKEN="$PROXY_TOKEN" DRY_RUN="$DRY_RUN" \
+    python3 - "$f" "$PROXY_URL" "$DIRECT_URL" "$MODEL_ALIAS" \
+              "$DROID_ANTHROPIC_BASE_MODEL" "$CTX_SESSION" "$CTX_POOL" \
+              "$MAX_OUTPUT" "$create" <<'PY' || { note "WARN: $f could not be synced"; return 0; }
+import json, os, re, sys, tempfile
+
+path, proxy, direct, alias, base_model, ctx_s, ctx_p, out, create = sys.argv[1:10]
+token = os.environ.get("UAP_SYNC_TOKEN", "not-needed")
+dry = os.environ.get("DRY_RUN", "0") == "1"
+ctx_s, ctx_p, out = int(ctx_s), int(ctx_p), int(out)
+
+# Retired local ids: every arm this box has served since 2026-09. A client
+# still pinned to one is the exact drift this sync exists to converge. New
+# retired ids are appended here and ONLY here (never as the alias — the
+# alias comes from the profile read above).
+RETIRED = (
+    "qwen35-a3b-iq4xs",         # pre-2026-10 qwen35 era
+    "qwen38-gsq-rco-27b",       # this script's own pre-2026-10-07 hardcode
+    "abliterated-iq2_xs",       # default arm 2026-10-28 -> 2026-11-11
+    "qwen3.8-flash-next-iq3_s",
+    "swift-1.5-iq3_s",          # Swift-1.5 A/B trial arm, 2026-10-17
+)
+
+def spell(camel):
+    if camel:
+        return ("baseUrl", "apiKey", "displayName", "maxContextLimit", "maxOutputTokens")
+    return ("base_url", "api_key", "model_display_name", "max_context_limit", "max_output_tokens")
+
+def setf(m, k, v, label, what, changed):
+    if m.get(k) != v:
+        m[k] = v
+        changed.append(f"{label} [{what}]")
+
+d = {}
+exists = os.path.exists(path)
+if exists:
+    try:
+        d = json.load(open(path))
+    except Exception as e:
+        print(f"   {path}: unreadable ({e}) — left untouched")
+        sys.exit(1)
+
+keys = [k for k in ("custom_models", "customModels") if k in d]
+if not keys:
+    if create == "1":
+        keys = ["customModels"]     # a settings.json we create is camelCase
+    elif exists:
+        print(f"   {path}: no custom models key (left untouched)")
+        sys.exit(0)
+    else:
+        print(f"   {path}: absent (left absent)")
+        sys.exit(0)
+
+changed = []
+for key in keys:
+    camel = key == "customModels"
+    BK, AK, DK, CK, OK = spell(camel)
+    models = d.setdefault(key, [])
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        label = str(m.get("id") or m.get("model") or m.get(DK) or "<unnamed>")
+        base = m.get(BK)
+        base = base if isinstance(base, str) else ""
+        # Split-brain: one 8317 entry pointed at a LAN IP, the rest localhost.
+        if "192.168.1.165:8317" in base:
+            setf(m, BK, base.replace("192.168.1.165:8317", "localhost:8317"),
+                 label, "8317 host", changed)
+            base = m[BK]
+        model = m.get("model")
+        # Ours to converge: retired ids, the live alias itself, or a model-less
+        # entry already pointed at the local stack. Everything else — cloud
+        # models, the :8317 cloud-router entries, other LAN servers — is a
+        # deliberate user choice and must survive this script untouched.
+        ours = model in RETIRED or model == alias or (
+            model is None and (":4000" in base or ":8080" in base)
+        )
+        if not ours:
+            continue
+        if model != alias:
+            setf(m, "model", alias, label, "model", changed)
+        if ":8080" in base:
+            # Direct strata route (Responses API, no guardrails) — pool-sized.
+            setf(m, BK, f"{direct}/v1", label, "-> direct", changed)
+            setf(m, DK, "Qwen3.8 Flash-Next (direct, no guardrails)", label, "name", changed)
+            setf(m, CK, ctx_p, label, f"ctx={ctx_p}", changed)
+            setf(m, OK, out, label, "output", changed)
+            # keeps its own api key
+        elif ":4000" in base and not base.rstrip("/").endswith("/v1"):
+            # Anthropic Messages shape: baseUrl is the proxy ROOT, no /v1.
+            setf(m, BK, proxy, label, "-> proxy root", changed)
+            setf(m, DK, "Qwen3.8 Flash-Next (UAP proxy)", label, "name", changed)
+            setf(m, CK, ctx_s, label, f"ctx={ctx_s}", changed)
+            setf(m, OK, out, label, "output", changed)
+            if AK not in m:
+                m[AK] = token
+                changed.append(f"{label} [apiKey set]")
+            if camel and not m.get("baseModelId"):
+                # Without a Factory built-in here Droid warns the entry "does
+                # not map to a built-in model" and drops tool-call inheritance.
+                m["baseModelId"] = base_model
+                changed.append(f"{label} [baseModelId={base_model}]")
+        else:
+            # Everything else converges on the proxy chat-completions route.
+            setf(m, BK, f"{proxy}/v1", label, "-> proxy", changed)
+            setf(m, DK, "Qwen3.8 Flash-Next (UAP local)", label, "name", changed)
+            setf(m, CK, ctx_s, label, f"ctx={ctx_s}", changed)
+            setf(m, OK, out, label, "output", changed)
+            setf(m, AK, token, label, "apiKey", changed)
+        if m.get("noImageSupport"):
+            setf(m, "noImageSupport", False, label, "vision on", changed)  # mmproj is loaded
+    # add-if-missing (camelCase settings only): a Droid instance with no local
+    # entry gains the canonical proxy entry, so every instance can call it.
+    if camel and create == "1" and not any(
+        isinstance(m, dict) and m.get("model") == alias for m in models
+    ):
+        nums = []
+        for m in models:
+            if isinstance(m, dict) and isinstance(m.get("id"), str):
+                mt = re.search(r"(\d+)$", m["id"])
+                if mt:
+                    nums.append(int(mt.group(1)))
+        idx = (max(nums) + 1) if nums else 0
+        entry = {
+            "model": alias, "id": f"custom:Qwen3.8-UAP-local-{idx}", "index": idx,
+            "baseUrl": f"{proxy}/v1", "apiKey": token,
+            "displayName": "Qwen3.8 Flash-Next (UAP local)",
+            "noImageSupport": False, "provider": "generic-chat-completion-api",
+            "maxOutputTokens": out, "maxContextLimit": ctx_s,
+        }
+        models.append(entry)
+        changed.append(f"{entry['id']} [canonical entry added]")
+
+if not changed:
+    print(f"   {path}: nothing to change (left byte-identical)")
+    sys.exit(0)
+if dry:
+    print(f"   {path}: DRY RUN — {len(changed)} pending change(s)")
+    for c in changed:
+        print(f"     - {c}")
+    sys.exit(0)
+# Atomic write: a Droid session starting right now must never see a
+# half-written settings file.
+text = json.dumps(d, indent=2) + "\n"
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".uap-droid-")
+try:
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+print(f"   {path}: {len(changed)} change(s)")
+for c in changed:
+    print(f"     - {c}")
+PY
+}
+
 # --- the proxy token, read from what opencode already uses -----------------
 # Scoped to the 'qwen-proxy' provider ONLY. Taking "the first provider with an
 # apiKey" would silently capture a CLOUD key the moment one is added ahead of
@@ -123,13 +326,52 @@ cat <<BANNER
    rails    : $RAILS  sharing ONE pool of $CTX_POOL
    per-sess : $CTX_SESSION   max output: $MAX_OUTPUT
    token    : $([ "$PROXY_TOKEN" = "not-needed" ] && echo "(none set; proxy has no PROXY_AUTH_TOKEN)" || echo "(read from $OC_GLOBAL)")
-   mode     : $([ "$DRY_RUN" = "1" ] && echo "DRY RUN" || echo "APPLY")
+   mode     : $([ "$DRY_RUN" = "1" ] && echo "DRY RUN" || echo "APPLY")$([ "$MODELS_ONLY" = "1" ] && echo "  [MODELS ONLY]")
    backups  : $BACKUP_DIR
 ────────────────────────────────────────────────────────────────────
  NOTE: agents in the global opencode config that point at a CLOUD
  provider are left alone. Only local/qwen ones are repointed.
 ────────────────────────────────────────────────────────────────────
 BANNER
+
+# ===========================================================================
+# MODELS_ONLY=1 — converge ONLY the Droid customModels, then leave.
+# This is the mode a session-start hook runs: no proxy env requirement, no
+# service operations, no other agent configs. The alias probe prefers what
+# the backend is ACTUALLY serving (/props on the direct engine) over the
+# profile, so a swap that has not reached the profile yet still converges the
+# Droid list onto reality — the note names the source either way.
+if [ "$MODELS_ONLY" = "1" ]; then
+  if _props=$(curl -fsS -m 3 "$DIRECT_URL/props" 2>/dev/null); then
+    _live=$(printf '%s' "$_props" | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("model_alias", ""))
+except Exception:
+    pass' 2>/dev/null || true)
+    if [ -n "$_live" ] && [[ "$_live" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+      if [ "$_live" != "$MODEL_ALIAS" ]; then
+        note "live backend serves: $_live (profile pins $MODEL_ALIAS — PROFILE IS STALE, update it)"
+        MODEL_ALIAS="$_live"
+      else
+        note "live backend confirms the profile alias: $MODEL_ALIAS"
+      fi
+    else
+      note "/props returned no plain alias — keeping the profile alias"
+    fi
+  else
+    note "backend probe unreachable ($DIRECT_URL/props) — keeping the profile alias"
+  fi
+  if droid_sync_lock; then
+    sync_droid_models "$FACTORY_CFG" 0
+    sync_droid_models "$FACTORY_SET" 1
+    sync_droid_models "$PROJECT_FACTORY_SET" 1
+  else
+    note "another droid model sync holds $DROID_SYNC_LOCK — nothing done"
+  fi
+  note "MODELS_ONLY done — droid customModels converged; no service ops"
+  exit 0
+fi
 
 # ===========================================================================
 say "1/6  Proxy env — use both rails"
@@ -265,60 +507,20 @@ fi
 
 # ===========================================================================
 say "3/6  factory / droid"
-for F in "$FACTORY_CFG" "$FACTORY_SET"; do
-  [ -f "$F" ] || { note "absent: $F"; continue; }
-  backup "$F"
-  if [ "$DRY_RUN" != "1" ]; then
-    UAP_SYNC_TOKEN="$PROXY_TOKEN" python3 - "$F" "$PROXY_URL" "$MODEL_ALIAS" <<'PY'
-import json, os, sys
-token = os.environ["UAP_SYNC_TOKEN"]
-path, proxy, alias = sys.argv[1:4]
-d = json.load(open(path))
-changed = []
-for key in ("custom_models", "customModels"):
-    for m in d.get(key, []) or []:
-        label = m.get("id") or m.get("model") or m.get("displayName") or "<unnamed>"
-        # Retired local ids: the qwen35-era migration AND the id this very
-        # script hardcoded as MODEL_ALIAS before 2026-10-07 — boxes this
-        # script has already rewritten once carry qwen38-gsq-rco-27b, and
-        # skipping them would leave the exact stale-entry class this run
-        # exists to converge.
-        if m.get("model") in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b"):
-            m["model"] = alias
-            for bk in ("base_url", "baseUrl"):
-                if bk in m:
-                    m[bk] = f"{proxy}/v1"
-            for ak in ("api_key", "apiKey"):
-                if ak in m:
-                    m[ak] = token
-            if m.get("noImageSupport"):
-                m["noImageSupport"] = False   # mmproj is loaded
-            for dk in ("model_display_name", "displayName"):
-                if dk in m:
-                    m[dk] = "Qwen3.8 local (UAP)"
-            changed.append(str(label))
-        # Split-brain: one 8317 entry pointed at a LAN IP, the rest localhost.
-        for bk in ("base_url", "baseUrl"):
-            v = m.get(bk)
-            if isinstance(v, str) and "192.168.1.165:8317" in v:
-                m[bk] = v.replace("192.168.1.165:8317", "localhost:8317")
-                changed.append(f"{label} [8317 host]")
-if not changed:
-    print(f"   {path}: nothing to change (left byte-identical)")
-else:
-    json.dump(d, open(path, "w"), indent=2)
-    open(path, "a").write("\n")
-    print(f"   {path}: updated {len(changed)} entr{'y' if len(changed)==1 else 'ies'}")
-    for c in changed:
-        print(f"     - {c}")
-PY
-  else
-    note "DRY: would patch $F"
-  fi
-done
+# Three Droid targets: the legacy config.json, the user settings.json, and the
+# repo-level .factory/settings.json (every Droid instance opened on this
+# checkout reads that one too). All converge under the shared lock.
+if droid_sync_lock; then
+  sync_droid_models "$FACTORY_CFG" 0
+  sync_droid_models "$FACTORY_SET" 1
+  sync_droid_models "$PROJECT_FACTORY_SET" 1
+else
+  note "another droid model sync holds $DROID_SYNC_LOCK — section 3 skipped"
+fi
 note "NOTE: factory custom models carry no per-request header field, so they"
-note "      cannot send $PROFILE_HEADER and will size to the FULL pool."
-note "      Keep factory to one local session at a time."
+note "      cannot send $PROFILE_HEADER; maxContextLimit carries the per-"
+note "      session cap client-side instead. Keep factory to one local"
+note "      session at a time."
 
 # ===========================================================================
 say "4/6  codex — local profile (cloud default untouched)"
