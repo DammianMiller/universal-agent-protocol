@@ -256,7 +256,12 @@ jobs:
         env:
           VERSION: ${{ steps.get_version.outputs.VERSION }}
         run: |
-          if git rev-parse "v${{ env.VERSION }}" >/dev/null 2>&1; then
+          # Ask the REMOTE, not the shallow checkout: actions/checkout fetches
+          # with --no-tags, but its rev-parse can still mis-resolve a bare
+          # version string and silently take the exists=true branch — observed
+          # on the v2.41.0 master push, which shipped no tag and no release
+          # until it was published by hand. ls-remote is authoritative.
+          if [ -n "$(git ls-remote --tags origin "refs/tags/v${{ env.VERSION }}")" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "Tag v$VERSION already exists"
           else
