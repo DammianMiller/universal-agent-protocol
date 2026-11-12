@@ -63,6 +63,11 @@ jobs/
 benchmark-results/
 results/
 benchmark-env/
+# curated LCB-Droid smoke evidence (records, verdicts, solutions) is
+# tracked despite the blanket results/ rule — it is the benchmark's
+# durable evidence set, not an ephemeral run output
+!benchmarks/lcb-droid/results/
+!benchmarks/lcb-droid/results/**
 
 # UAP file backups (per-session, local only)
 .uap-backups/
@@ -120,6 +125,8 @@ benchmarks/suites/swe-bench-pro-gen/
 
 # UAP runtime
 .uap/
+# deliver's per-run self-gate dir (same class of machine-local state)
+.uap-deliver/
 .uam/
 .agents/
 .policy-tools/

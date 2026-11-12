@@ -55,6 +55,20 @@ WORKTREE_STATUS = (
 SHELL_SOURCE_READ = "die() { printf 'fatal: %s\\n' \"$*\" >&2; exit 1; }\n"
 
 
+# 2026-10-26, cognition-engine fdc94474: state-check output that QUOTES the
+# session's own in-flight source (a numbered read of the metrics region,
+# a git diff of the wedge fix) plus the harness's zero-exit footer. Six
+# flag-absent results of this shape manufactured both ERROR-LOOP hard stops.
+DIFF_QUOTING_SOURCE = (
+    " M src/rust-pg-ext/Cargo.toml\n"
+    " M src/rust-pg-ext/src/bin/pg-server.rs\n"
+    "2784→            eprintln!(\"pg-server: metrics: failed to bind {addr}: {e}"
+    " — metrics endpoint disabled\");\n"
+    "+            return None;\n"
+    "\n[Process exited with code 0]"
+)
+
+
 class TracebackAnchoringTests(unittest.TestCase):
     def test_decisive_line_anchors_not_the_header(self):
         sig = proxy._error_signature(TRACEBACK_FULL)
@@ -223,6 +237,43 @@ class ReadOnlyContentTests(unittest.TestCase):
         proxy._maybe_inject_error_loop_break(body, m)
         self.assertEqual(m.error_loop_fires, 0)
         self.assertEqual(len(body["messages"]), 1)
+
+
+class ZeroExitEnvelopeTests(unittest.TestCase):
+    """A flag-ABSENT Execute result carrying the harness's zero-exit
+    envelope is a SUCCESS, whatever failure-shaped text its output QUOTES
+    (ledger 2026-10-26: two ERROR-LOOP hard stops served on six clean
+    state-checks whose output quoted an in-flight eprintln! source line)."""
+
+    def test_quoted_source_with_exit_zero_forms_no_signature(self):
+        m = proxy.SessionMonitor()
+        for _ in range(6):
+            m.note_tool_result_error(DIFF_QUOTING_SOURCE, None, tool_names=["execute"])
+        self.assertEqual(m.error_signature_streak, 0)
+        self.assertEqual(m.last_error_signature, "")
+
+    def test_exit_zero_streak_never_arms_the_guard(self):
+        m = proxy.SessionMonitor()
+        for _ in range(6):
+            m.note_tool_result_error(DIFF_QUOTING_SOURCE, None, tool_names=["execute"])
+        body = {"messages": [{"role": "user", "content": "go"}], "tool_choice": "auto"}
+        proxy._maybe_inject_error_loop_break(body, m)
+        self.assertEqual(m.error_loop_fires, 0)
+        self.assertEqual(len(body["messages"]), 1)
+
+    def test_nonzero_exit_still_keeps_heuristics(self):
+        payload = DIFF_QUOTING_SOURCE.replace(
+            "exited with code 0", "exited with code 1"
+        )
+        m = proxy.SessionMonitor()
+        m.note_tool_result_error(payload, None, tool_names=["execute"])
+        self.assertEqual(m.error_signature_streak, 1)
+        self.assertNotEqual(m.last_error_signature, "")
+
+    def test_declared_error_flag_beats_the_zero_exit_envelope(self):
+        m = proxy.SessionMonitor()
+        m.note_tool_result_error(DIFF_QUOTING_SOURCE, True, tool_names=["execute"])
+        self.assertEqual(m.error_signature_streak, 1)
 
 
 class KnownFixCoverageTests(unittest.TestCase):

@@ -13,8 +13,26 @@ if [[ ! -x "$LLAMA_BIN" ]]; then
 fi
 
 if [[ ! -f "$LLAMA_MODEL" ]]; then
-  echo "ERROR: LLAMA_MODEL not found: $LLAMA_MODEL" >&2
-  exit 1
+  # 2026-10-30: a deleted or truncated model file no longer kills the unit
+  # outright. The registry (config/model-registry.json, files manifest)
+  # records source + size (+ sha256), so `uap models ensure-by-path` can
+  # re-download it before the server start fails. huggingface-cli is broken
+  # on this box (deprecated shim + typer/click TypeError); the ensure path
+  # is curl, resumable against the .part file. Exit 1 only when recovery is
+  # impossible: no manifest entry, no recorded source, or the download
+  # itself failed (the .part is kept so a re-run resumes it).
+  if [[ -f "${ROOT_DIR}/dist/bin/cli.js" ]]; then
+    echo "LLAMA_MODEL not found: ${LLAMA_MODEL} — attempting registry recovery" >&2
+    if node "${ROOT_DIR}/dist/bin/cli.js" models ensure-by-path "$LLAMA_MODEL"; then
+      echo "recovered: ${LLAMA_MODEL}" >&2
+    else
+      echo "ERROR: registry recovery failed for LLAMA_MODEL: ${LLAMA_MODEL}" >&2
+      exit 1
+    fi
+  else
+    echo "ERROR: LLAMA_MODEL not found: ${LLAMA_MODEL} (no dist CLI to recover it; build the repo or add a registry files manifest)" >&2
+    exit 1
+  fi
 fi
 
 export LLAMA_HOST="${LLAMA_HOST:-0.0.0.0}"
