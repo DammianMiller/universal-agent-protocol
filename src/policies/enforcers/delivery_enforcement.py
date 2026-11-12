@@ -193,16 +193,32 @@ def _trivial_edit_chars() -> int:
 
 def _changed_chars(args: dict) -> int | None:
     """Total changed characters for an Edit/MultiEdit, or None when it can't be
-    measured (e.g. a whole-file Write) — None means 'not trivially small'."""
+    measured (e.g. a whole-file Write) — None means 'not trivially small'.
+
+    Harnesses spell the anchor fields three ways: Claude Code sends
+    old_string/new_string, some SDKs oldString/newString, and Droid (Factory)
+    old_str/new_str. An unrecognized spelling measured as None — read as a
+    whole-file rewrite — which force-escalated every Droid Edit as complex
+    regardless of size (observed live 2026-11-12: a 4-line comment insert was
+    refused as 'a whole-file rewrite that replaces most of a substantial
+    file'). grab() recognizes all three spellings at both call sites."""
+    def grab(d: dict) -> tuple[object, object]:
+        old = d.get("old_string") or d.get("oldString") or d.get("old_str")
+        new = d.get("new_string") or d.get("newString") or d.get("new_str")
+        return old, new
     def pair(o: object, n: object) -> int:
         return len(str(o or "")) + len(str(n or ""))
     if "edits" in args and isinstance(args["edits"], list):
-        return sum(
-            pair(e.get("old_string") or e.get("oldString"), e.get("new_string") or e.get("newString"))
-            for e in args["edits"] if isinstance(e, dict)
-        )
-    old = args.get("old_string") or args.get("oldString")
-    new = args.get("new_string") or args.get("newString")
+        total, measured = 0, False
+        for e in args["edits"]:
+            if not isinstance(e, dict):
+                continue
+            old, new = grab(e)
+            if old is not None or new is not None:
+                measured = True
+                total += pair(old, new)
+        return total if measured else None
+    old, new = grab(args)
     if old is not None or new is not None:
         return pair(old, new)
     return None  # Write (full content) — not a trivial edit
@@ -232,7 +248,7 @@ def _write_cost(args: dict, root: Path) -> int | None:
     """
     content = args.get("content")
     if content is None:
-        content = args.get("new_string") or args.get("newString")
+        content = args.get("new_string") or args.get("newString") or args.get("new_str")
     if content is None:
         return None
     new_len = len(str(content))
@@ -460,8 +476,11 @@ def _escalation_block(rel: str, kind: str, detail: str, args: dict) -> None:
         intent = {
             k: v
             for k, v in (
-                ("old_string", args.get("old_string", args.get("oldString"))),
-                ("new_string", args.get("new_string", args.get("newString"))),
+                # Same three spellings as _changed_chars/_write_cost — an
+                # escalated Droid edit (old_str/new_str) must be recorded as a
+                # replayable intent, not silently dropped to None.
+                ("old_string", args.get("old_string") or args.get("oldString") or args.get("old_str")),
+                ("new_string", args.get("new_string") or args.get("newString") or args.get("new_str")),
                 ("content", args.get("content")),
             )
             if isinstance(v, str)
@@ -868,8 +887,11 @@ def main() -> None:
         intent_payload = {
             k: v
             for k, v in (
-                ("old_string", args.get("old_string", args.get("oldString"))),
-                ("new_string", args.get("new_string", args.get("newString"))),
+                # Same three spellings as _changed_chars/_write_cost — an
+                # escalated Droid edit (old_str/new_str) must be recorded as a
+                # replayable intent, not silently dropped to None.
+                ("old_string", args.get("old_string") or args.get("oldString") or args.get("old_str")),
+                ("new_string", args.get("new_string") or args.get("newString") or args.get("new_str")),
                 ("content", args.get("content")),
             )
             if isinstance(v, str)
