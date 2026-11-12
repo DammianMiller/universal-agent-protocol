@@ -70,7 +70,12 @@ export function manifestRepoFile(entry: ModelFileManifest): string {
 export function hfResolveUrl(entry: ModelFileManifest): string {
   if (!entry.repo) throw new Error(`no repo recorded for ${entry.path}`);
   const rev = entry.rev ?? 'main';
-  return `https://huggingface.co/${entry.repo}/resolve/${rev}/${encodeURIComponent(manifestRepoFile(entry))}`;
+  // `file` can name a repo SUBFOLDER (unsloth publishes the Flash-Next
+  // shards under "UD-IQ4_XS/"). Encode each path segment on its own:
+  // encoding the whole string would turn the "/" separators into %2F and
+  // the resolve URL would 404, defeating the manifest's repair purpose.
+  const segments = manifestRepoFile(entry).split('/').map(encodeURIComponent);
+  return `https://huggingface.co/${entry.repo}/resolve/${rev}/${segments.join('/')}`;
 }
 
 /** sha256 of a file, streamed — the only full-read check we ever do. */
