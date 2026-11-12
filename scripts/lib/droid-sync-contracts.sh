@@ -72,7 +72,14 @@ _UAP_DROID_SYNC_CONTRACTS_LOADED=1
 # customModels silently loses the other's update. Defaults under
 # $XDG_RUNTIME_DIR so it is per-user and per-boot; /tmp is the fallback for
 # environments without XDG_RUNTIME_DIR (containers, CI sandboxes).
-: "${DROID_SYNC_LOCK:=${XDG_RUNTIME_DIR:-/tmp}/uap-droid-sync.lock}"
+# $XDG_RUNTIME_DIR is per-user (0700 tmpfs); the /tmp fallback is
+# world-writable, so key it per-uid there or any local user could hold the
+# lock forever and silently disable convergence.
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  : "${DROID_SYNC_LOCK:=$XDG_RUNTIME_DIR/uap-droid-sync.lock}"
+else
+  : "${DROID_SYNC_LOCK:=/tmp/uap-droid-sync-$UID.lock}"
+fi
 
 # ===========================================================================
 # FUNCTION CONTRACT (bodies live in sync-local-agent-configs.sh)

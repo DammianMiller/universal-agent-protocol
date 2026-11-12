@@ -68,6 +68,15 @@ say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
 die()  { printf '\n\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# PROXY_URL/DIRECT_URL are env-overridable (the sandbox points the MODELS_ONLY
+# probe at a dead port), and they are interpolated into credential-bearing
+# baseUrl fields and the generated claude-local wrapper — so a tunable value
+# must still be a plain http(s) URL, same doctrine as the alias guard.
+for _u in "$PROXY_URL" "$DIRECT_URL"; do
+  [[ "$_u" =~ ^https?://[A-Za-z0-9.:/_-]+$ ]] \
+    || die "PROXY_URL/DIRECT_URL must be a plain http(s) URL (got: $_u)"
+done
+
 # --- model id + geometry: READ FROM THE PROFILE ----------------------------
 # Never transcribed here. The profile is the one place a backend swap updates
 # (test/model-profiles-qwen38-rails.test.ts already pins profile.model and the
