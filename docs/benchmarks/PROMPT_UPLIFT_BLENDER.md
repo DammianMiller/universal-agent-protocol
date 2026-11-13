@@ -14,7 +14,7 @@ causal claims. For the evergreen mechanism the study informs, see
 [guides/DELIVER.md](../guides/DELIVER.md) (iterate against real completion gates) and
 [guides/LOCAL_MODELS.md](../guides/LOCAL_MODELS.md).
 
-The revision quarantines 15 of the 100 scored attempts: the `B-visual-v4` and
+The revision quarantines 15 of the 106 scored attempts: the `B-visual-v4` and
 `B-visual-v5` window was served by a different model than the study recorded. See
 "An arm switch went unnoticed for two stages".
 
@@ -39,8 +39,8 @@ Model: `abliterated-iq2_xs` (a ~2-bit quantized small model), temp 0, **first at
 only, no repair turns**. Each stage is one prompt revision, scored by `prompt_sha`, so
 a score is attributable to an exact prompt.
 
-`n` counts scored attempts — every row in `.uap/uplift/results.jsonl` except the five
-`--dry-prompt` rows, which print the prompt and record no score. A build that crashes
+`n` counts scored attempts — 106 of the 111 rows in `.uap/uplift/results.jsonl`; the
+five `--dry-prompt` rows print the prompt and record no score. A build that crashes
 is scored 0, not excluded. `12/12` is the structural gate; `both gates` means 12/12
 *and* 8/8 on the same first attempt. The `arm` column is the model that actually
 served the attempt, established after the fact (see the quarantine section); the
@@ -59,11 +59,13 @@ runner now records `served_model` and scores 0 on `arm_mismatch`.
 | B-visual-v5 | *same prompt*, re-run on IQ2_XS | 6 | IQ2_XS | 5 | 2 | 0 |
 | B-visual-v6 | read back the keyed fcurves before saving | 9 | IQ2_XS | 0 (all nine died in the build) | 0 | 0 |
 | B-visual-v6 | `channelbag(create=)` → positional `ensure` | 3 | IQ2_XS | 0 (all three died on that kwarg) | 0 | 0 |
-| **B-visual-v6** | pose tables keyed to the 19 `bone_defs` names, appended self-check block at column 0, animation-amplitude rungs | 6 | IQ2_XS | **5** | **5 (83%)** | 0 |
+| B-visual-v6 | pose tables keyed to the 19 `bone_defs` names, appended self-check block at column 0, animation-amplitude rungs | 6 | IQ2_XS | 5 | 5 (83%) | 0 |
+| **B-visual-v6** | *same prompt*, plus one rule: every pose-table row has exactly three elements | 6 | IQ2_XS | **5** | **5 (83%)** | 0 |
 
 First-attempt rate at *both* gates, measured on IQ2_XS alone, went 0/3 → 3/9 → 2/6 →
-5/6 across the prompt revisions that survive the quarantine. v4's nine IQ4-arm runs
-split four ways: 4 `sys` crashes, 3 reasoning truncations, 1 built-but-incomplete
+5/6 across the prompt revisions that survive the quarantine, and that 5/6 held across
+two consecutive prompt revisions instead of resting on one window. v4's nine IQ4-arm
+runs split four ways: 4 `sys` crashes, 3 reasoning truncations, 1 built-but-incomplete
 (11/12, 6/8), 1 clean pass.
 
 ## An arm switch went unnoticed for two stages
@@ -90,12 +92,16 @@ other at all.
 | B-visual-v4 reruns (n=9) | 13868 | 7311, 6741, 6830, 7126, 6163, 7482, 7471, 6927, 7085 | 9 | 0 |
 | B-visual-v5 originals (n=6) | 14828 | 6597, 6585, 6472, 5225, 5189, 6211 | 0 | 6 |
 | B-visual-v5 reruns (n=6) | 14828 | 6858, 5932, 7096, 6064, 6102, 6490 | 6 | 0 |
-| B-visual-v6 (n=18, three prompt revisions) | 15962 ×9, 16140 ×3, 16517 ×6 | 6496, 6208, 5844, 6397, 6791, 6385 (final prompt) | 9, 3, 7\* | 0 |
+| B-visual-v6 (n=24, four prompt revisions) | 15962 ×9, 16140 ×3, 16517 ×6, 16762 ×6 | 6496, 6208, 5844, 6397, 6791, 6385 (pose-table prompt); 7194, 6738, 6460, 6589, 6764, 6664 (pose-table + row-arity prompt) | 9, 3, 6\*, 6 | 0 |
 
 \* Two `13868` lines and one `16517` line in the IQ2_XS log belong to unrelated work:
 they generated 634, 178 and 110 tokens rather than any of the attempt counts above,
 and one of them reused 16,512 of 16,517 tokens. Excluding them, every prompt-token
-line in the window belongs to the arm the completion-token column says it does.
+line in the window belongs to the arm the completion-token column says it does. The
+last window's six completion counts appear only in the IQ2_XS log, in attempt order at
+lines 272807–272924, every one of them at `prompt 16762 tokens`; its `6738` also shows
+up once in that log at an unrelated 42,964-token prompt, and in the IQ4_XS log not at
+all.
 
 The same log lines carry generation speed, which corroborates: ~150–170 tok/s on
 IQ2_XS against ~80 tok/s on IQ4_XS v31, and the reruns' recorded `gen_elapsed`
@@ -111,7 +117,8 @@ Consequences:
   17 px walk-cycle failure. Those are not 2-bit-model behaviour.
 - Re-running the same two prompts on the restored IQ2_XS arm still clears the pixel
   gate: 3/9 at v4 and 2/6 at v5, so the claim survives — at a lower rate, and with
-  the improvement continuing to 5/6 at v6's final prompt.
+  the improvement continuing to 5/6 at v6's last two prompts, each of which cleared
+  both gates five of six attempts.
 - The mechanism is lesson 1 with the verifier swapped for the model: integrity
   established after the fact instead of enforced at run time. One line in the
   runner — compare `served_model` to `MODEL` before scoring — would have caught the
@@ -129,8 +136,8 @@ out of the way, but nothing enforces the header's sentence at runtime: the model
 script runs as ordinary Blender Python with write access to its workspace, and the
 workspace sits inside the same repo as the originals. Integrity was therefore
 established *after* the fact: pinned hash matches live, and every workspace carried
-byte-identical gate copies — one distinct hash across all 93 validator copies, all 54
-visual-gate copies and all 93 `gates.md` copies, covering the 100 scored runs.
+byte-identical gate copies — one distinct hash across all 99 validator copies, all 60
+visual-gate copies and all 99 `gates.md` copies, covering the 106 scored runs.
 
 Be precise about the strength of that. The runner copies the gates but does not
 re-verify the hashes *inside* the run, and the workspace copy is writable, so the
@@ -167,12 +174,14 @@ reasoning truncations, both of which the quarantine section shows were IQ4-side.
 The same attribution is what made the arm switch recoverable rather than fatal: the
 rerun rows carry the identical `prompt_sha` as the originals and differ only by
 `--tag`, so the two arms can be separated attempt by attempt instead of discarded.
-It also paid for itself forward: v6's final prompt is a demonstrable uplift step, not
-a lucky streak. The three rungs that failed in the v4 and v5 IQ2_XS reruns — the
+It also paid for itself forward: v6's last two prompts are a demonstrable uplift step,
+not a lucky streak. The three rungs that failed in the v4 and v5 IQ2_XS reruns — the
 attack clip losing all its weapon pixels (`gap 999`, four times at v4, twice at v5),
 a walk cycle lifting feet past the limit, and jump endpoints leaving the root off the
 floor — each got a named rule, and the next six attempts cleared all eight rungs five
-times.
+times. The revision after that, which added one rule and changed the prompt hash,
+cleared them five times again in a second six-attempt window, so the step does not
+rest on one prompt's luck.
 
 ### 3. A regression can be a missing word, not a wrong idea
 
@@ -201,11 +210,14 @@ understand. Small models rewrite headers; they do not reliably infer them.
 
 The same shape showed up twice more in v6, both as prompt-text defects rather than
 model defects. The appended post-save self-check block sits indented 4 spaces in the
-prompt file for display, and two runs pasted it verbatim into a top-level script and
+prompt file for display, and one v6 run pasted it verbatim into a top-level script and
 died on `IndentationError: unexpected indent` — fixed by a rule that says to paste it
-at column 0. And `Action.fcurves` does not exist in Blender 5.2: nine v6 runs died on
-that `AttributeError` *after* printing correct self-check values and *after* saving
-the file, so the build exited 0 while the attempt scored 0 — which is why the prompt
+at column 0; an `IndentationError` also ended one v5 IQ2_XS rerun. And `Action.fcurves`
+does not exist in Blender 5.2: seven v6 runs died on that `AttributeError` — four in
+the original window, three in the arm probe — *after* printing correct self-check
+values and *after* saving the file, so the build exited 0 while the attempt scored 0.
+Every scored row in the log reports `build_rc` 0; a crash is caught from the build
+tail, never from the return code. That is why the prompt
 now ships a measured, verified read path (`act.layers → strips → channelbags → fcurves`)
 and an explicit ban list instead of letting the model invent one.
 
@@ -216,8 +228,8 @@ writing any code and hit `finish_reason=length` mid-table, at both 8k and 12k ma
 tokens, producing an unterminated tuple and a `SyntaxError`. All three scored 0. Those
 three were IQ4_XS runs.
 
-The pattern holds across the whole log, not just v4. Of 100 scored runs, 15 had
-reasoning on and 85 had it off. Every one of the 85 reasoning-off runs finished with
+The pattern holds across the whole log, not just v4. Of 106 scored runs, 15 had
+reasoning on and 91 had it off. Every one of the 91 reasoning-off runs finished with
 `finish=stop` — none truncated. All 8 truncated runs in the log had reasoning on, and
 all 8 scored 0. Reasoning on did not become safe at a bigger budget either: the 7
 reasoning-on runs that were given 32k–64k tokens did finish, and their best score was
@@ -225,7 +237,8 @@ reasoning-on runs that were given 32k–64k tokens did finish, and their best sc
 reasoning-on runs are IQ2_XS-served, and the conclusion is unchanged on that subset
 alone: 5 truncated, best score 11/12, no 12/12. Meanwhile v5, run with
 `--reasoning-effort none --max-tokens 12000`, scored 12/12 six of six on the IQ4 arm
-and five of six on IQ2_XS, and v6's final prompt scored 12/12 five of six on IQ2_XS.
+and five of six on IQ2_XS, and v6's last two prompts each scored 12/12 five of six on
+IQ2_XS.
 A truncated run is a budget misconfiguration, not a model failure, and the budget
 must be pinned in the invocation for scores to stay comparable across stages.
 
@@ -249,15 +262,16 @@ that never exercises the animated state, is the argument for the visual gate exi
 at all.
 
 For scale, the logged margins say the improvement was in headroom, not only in the
-pass rate. All 26 runs that cleared the island rung measured 0.083–0.089 of the bbox
-diagonal against a 0.30 limit, while the five runs that failed it measured 3.142–3.338
+pass rate. All 31 runs that cleared the island rung measured 0.083–0.089 of the bbox
+diagonal against a 0.30 limit except `rule-f` attempt 16 at 0.113, still well under the
+limit, while the five runs that failed it measured 3.142–3.338
 at `B-visual` and 4.504 and 6.393 at `B-visual-v3`. On the floor rung, eight of the
 eleven IQ2_XS runs that cleared it at v4 or v5 reported a max lift of exactly 12 px —
 the limit itself, at `jump.start` — so "cleared" there was a coin flip against the
-next frame. v6's five clearing runs reported 2–5 px (2 px at `jump.end`, 5 px at
-`walk.start`), none at the limit. The rules moved the margin.
+next frame. v6's ten clearing runs reported 1–9 px, none at the limit. The rules
+moved the margin.
 
-v6's final prompt is what closed the two rungs: the attack clip keys `upper_arm_R`
+v6's pose-table prompt is what closed the two rungs: the attack clip keys `upper_arm_R`
 only (0 → −70° → 0, forearm and hand never keyed, so the blade stays face-on to the
 camera), the walk cycle keys both thighs ±20° with shins capped at ±12°, and the jump
 holds root-z 0 at both endpoints with endpoint thigh keys at 0. Its one remaining
@@ -265,7 +279,12 @@ failure is a new mode, not one of these: attempt 10 wrote a pose-table row with 
 tuple elements where `build_clip` unpacked three
 (`ValueError: not enough values to unpack (expected 3, got 2)`), and the prompt's
 existing "one tuple shape for every row" rule covers the *parts* table, not the pose
-tables. That is the next revision's target.
+tables. That rule shipped in the revision after it, which scored 5/6 again. Its one
+failure is a third new mode: attempt 19 put a walrus target that is not a name inside a
+pose-table row (`SyntaxError: cannot use assignment expressions with expression`, at
+`(-d30 := math.radians(-30.0), d0, d0)`), so the arity rule fixed the shape of the row
+without constraining the expressions inside it. The open target is a rule that pose
+tables contain no assignment expressions.
 
 ## Reproduce
 
