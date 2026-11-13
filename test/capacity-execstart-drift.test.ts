@@ -115,3 +115,45 @@ describe('the shipped policy declares the flags it talks about in prose', () => 
     expect(note).not.toMatch(/-np 1\b/);
   });
 });
+
+describe('the shipped policy declares the Edge0 145B flags it talks about in prose', () => {
+  const policy = parsePolicy(
+    readFileSync(resolve(__dirname, '..', 'config/capacity-policy.json'), 'utf8'),
+    'capacity-policy.json',
+  );
+  const edge0 = policy.services.find((s) => s.name === 'edge0-145b-server');
+
+  it('has the edge0-145b service under its fleet unit', () => {
+    expect(edge0).toBeDefined();
+    expect(edge0!.systemd).toEqual({ unit: 'uap-edge0-145b-server.service', scope: 'user' });
+  });
+
+  it('pins the delegated serve command as checkable words', () => {
+    // The full command lives inline in the unit's ExecStart (edge0-infer
+    // serve --model ... --port 8080 --alias edge0_145b --strata-arg
+    // --vram-reserve-mib --strata-arg 1200), so every load-bearing word is
+    // a substring the doctor can demand of `systemctl --user show`. The
+    // reserve flag and its value are pinned separately: in ExecStart they
+    // are separated by the repeating --strata-arg word.
+    expect(edge0!.budget?.execStartMustContain).toEqual(
+      expect.arrayContaining([
+        '--model /home/cogtek/models/Edge0-145B-q3k',
+        '--port 8080',
+        '--alias edge0_145b',
+        '--vram-reserve-mib',
+        '1200',
+      ]),
+    );
+  });
+
+  it('keeps the prose note consistent with the checkable flags', () => {
+    const note = edge0!.budget?.note ?? '';
+    for (const flag of edge0!.budget?.execStartMustContain ?? []) {
+      expect(note).toContain(flag.replace(/^--?/, '').split(' ')[0]);
+    }
+    expect(note).toMatch(/--vram-reserve-mib 1200/);
+    // Same engine-managed-reserve doctrine as strata-server, so the same
+    // 200 MiB floor — a 600 floor would hold the doctor permanently RED.
+    expect(edge0!.headroom).toEqual({ gpuMinFreeMiB: 200 });
+  });
+});
