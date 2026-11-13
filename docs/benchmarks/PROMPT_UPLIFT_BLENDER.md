@@ -263,8 +263,8 @@ reasoning-on runs that were given 32k–64k tokens did finish, and their best sc
 reasoning-on runs are IQ2_XS-served, and the conclusion is unchanged on that subset
 alone: 5 truncated, best score 11/12, no 12/12. Meanwhile v5, run with
 `--reasoning-effort none --max-tokens 12000`, scored 12/12 six of six on the IQ4 arm
-and five of six on IQ2_XS, and v6's two pose-table revisions each scored 12/12 five of
-six on IQ2_XS.
+and five of six on IQ2_XS, and v6's three pose-table revisions scored 12/12 five, five
+and four of six on IQ2_XS.
 A truncated run is a budget misconfiguration, not a model failure, and the budget
 must be pinned in the invocation for scores to stay comparable across stages.
 
