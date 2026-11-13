@@ -213,6 +213,15 @@ function resolveMeasureTarget(registry: ModelRegistry, liveModel: string | undef
   fail(`ambiguous: ${matches.map((m) => `${m.modelKey}/${m.configKey}`).join(', ')} all advertise '${liveModel}' — pass --model and --config`);
 }
 
+/** Resolve the resident-KV reading for a measurement. A present-but-zero
+ * kv_resident means the engine accounts no resident subset separately — the
+ * whole context pool stays resident — so the pool size is the truthful
+ * reading, and a bare zero would only trip the registry schema's
+ * positive-number validation. A positive reading is used as-is. */
+export function resolveKvResidentCells(kvResident: number, poolCells: number): number {
+  return kvResident > 0 ? kvResident : poolCells;
+}
+
 export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Promise<number> {
   const projectDir = opts.projectDir ?? process.cwd();
   const loaded = loadModelRegistry(projectDir, { repoPath: opts.repoPath, localPath: opts.localPath });
@@ -226,6 +235,7 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
   if (engine.maxContext === undefined) fail('/metrics engine.max_context missing — refusing to guess the context pool');
   if (engine.kvResident === undefined) fail('/metrics engine.kv_resident missing — refusing to guess the resident KV pool');
   if (engine.model === undefined) fail('/metrics engine.model missing — cannot attribute the measurement');
+  const kvResidentCells = resolveKvResidentCells(engine.kvResident, engine.maxContext);
 
   const target = resolveMeasureTarget(loaded.registry, engine.model, opts.model, opts.config);
   const model = loaded.registry.models[target.modelKey];
@@ -260,7 +270,7 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
     resident_gpu_mib: residentGpu,
     host_rss_mib: rss,
     context_pool_cells: engine.maxContext,
-    kv_resident_cells: engine.kvResident,
+    kv_resident_cells: kvResidentCells,
     kv_kind: engine.kv,
     measured_at: new Date().toISOString(),
     measured_on: device,
@@ -269,7 +279,7 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
   console.log(`${target.modelKey}/${target.configKey} (${pids.join(', ')}${unit ? `, unit ${unit}` : ''}):`);
   console.log(`  resident_gpu_mib: ${residentGpu}`);
   console.log(`  host_rss_mib:     ${rss}`);
-  console.log(`  context_pool:     ${engine.maxContext} cells, kv ${engine.kv ?? '?'} resident ${engine.kvResident}`);
+  console.log(`  context_pool:     ${engine.maxContext} cells, kv ${engine.kv ?? '?'} resident ${kvResidentCells}`);
 
   // Device facts (spec §4.1.1): the gpu reserve is DERIVED — capacity minus
   // free minus the backend's own compute apps — so unattributed graphics
