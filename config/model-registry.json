@@ -12,7 +12,6 @@
   "retired_local_aliases": [
     "qwen35-a3b-iq4xs",
     "qwen38-gsq-rco-27b",
-    "abliterated-iq2_xs",
     "qwen3.8-flash-next-iq3_s",
     "swift-1.5-iq3_s"
   ],
@@ -76,7 +75,7 @@
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-abliterated-server",
-          "note": "The :8080 default arm 2026-10-28 -> 2026-11-11 (DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; engine 0.1.52, config strata-abliterated-iq2_xs.json); SUPERSEDED by strata-unsloth-ud-iq4_xs-v31 on 2026-11-11, kept switchable via ~/.config/uap/model-switch.sh strata-abliterated. Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28).",
+          "note": "The :8080 default arm 2026-10-28 -> 2026-11-11, then AGAIN since 2026-11-13 (the operator switched the fleet back from the v31 default; DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; config strata-abliterated-iq2_xs.json, unit uap-strata-abliterated-server.service, spec 12 / spec-min-p 0.7 / mtp_max 8 MTP per live /metrics 2026-11-13; switch away: ~/.config/uap/model-switch.sh strata|strata-swift). Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28).",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
@@ -98,7 +97,7 @@
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-server",
-          "note": "The LIVE :8080 default arm since 2026-11-11 (the PRISTINE base-model quant: Unsloth Dynamic v3.1 UD-IQ4_XS Qwen3.8-Flash-Next, 4 shards; engine 0.1.59.1, config strata-unsloth-ud-iq4_xs-v31.json, spec 12 / spec-min-p 0.5 / mtp_max 4 MTP (live /metrics), 40 GiB resident expert budget + SSD streaming, int8 KV resident 32768, mmproj vision, 131k pool; revert: ~/.config/uap/model-switch.sh strata-abliterated). Raw GGUF shards declared here: the pack (strata-data/packs/unsloth-ud-iq4_xs-v31) is derived from them by tools/iq_pack.py (see its conversions.json) and rebuilds from these files. Provenance is pinned (repo + repo-subfolder `file` + `rev`, from feature/376): bytes + sha256 below are the download-time .done markers, verified against shard 1 on 2026-11-12, so `uap models ensure` can re-fetch and verify from this pin.",
+          "note": "The :8080 default arm 2026-11-11 -> 2026-11-13 (the PRISTINE base-model quant: Unsloth Dynamic v3.1 UD-IQ4_XS Qwen3.8-Flash-Next, 4 shards; config strata-unsloth-ud-iq4_xs-v31.json, spec 12 / spec-min-p 0.5 / mtp_max 4 MTP, 40 GiB resident expert budget + SSD streaming, int8 KV resident 32768, mmproj vision, 131k pool); the fleet switched back to strata-abliterated-iq2_xs on 2026-11-13, kept switchable via ~/.config/uap/model-switch.sh strata. Raw GGUF shards declared here: the pack (strata-data/packs/unsloth-ud-iq4_xs-v31) is derived from them by tools/iq_pack.py (see its conversions.json) and rebuilds from these files. Provenance is pinned (repo + repo-subfolder `file` + `rev`, from feature/376): bytes + sha256 below are the download-time .done markers, verified against shard 1 on 2026-11-12, so `uap models ensure` can re-fetch and verify from this pin.",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
@@ -270,6 +269,580 @@
           ]
         }
       }
+    },
+    "edge0-145b": {
+      "display": "Edge0 145B",
+      "engine": "edge0-strata",
+      "unit": "uap-edge0-145b-server.service",
+      "service": "edge0-145b-server",
+      "launch": "/home/cogtek/dev/Edge0/edge0-infer/build/cpu/bin/edge0-infer serve --model /home/cogtek/models/Edge0-145B-q3k --port 8080 --alias edge0_145b --strata-arg --vram-reserve-mib --strata-arg 1200",
+      "endpoint": "http://127.0.0.1:8080",
+      "task_affinity": [
+        "code",
+        "general"
+      ],
+      "affinity": {
+        "device": [
+          "gpu0"
+        ]
+      },
+      "configs": {
+        "edge0-145b-q3k": {
+          "status": "unmeasured",
+          "engine": "edge0-strata",
+          "unit": "uap-edge0-145b-server.service",
+          "note": "Edge0 145B (latent-MoE derived from Qwen3.8-Flash-Next; Q3_K gate/up + IQ4_NL down, 48 layers x 512 experts) on the edge0-strata engine — the Edge0 stack's fork of Strata with latent-MoE kernels. Serves :8080 via edge0-infer serve (OpenAI + Anthropic endpoints), which delegates to edge0-strata build/strata + .venv python; the launch template (edge0-strata/edge0/models/edge0-145b.json) sets expert cache auto, prefill auto, spec 4 / min-p 0.5, MTP, int8 KV and 131k context, and the unit adds only --vram-reserve-mib 1200 for desktop co-tenancy on the 24 GiB 3090. Weights: HF Edge0/Edge0-145B-q3k at the pinned rev (d7de835cfce7): ~103 GiB folder — 40.1 GiB experts SSD-streamed with hot experts in VRAM, 51.2 GiB PLE table read direct from disk (ple-io=direct), du=q8 default (q4 file pinned too), MTP draft in mtp/. The manifest pins every serving file (both du variants, all 48 scales, tokenizer, MTP) so `uap models ensure` can restore any of them; LFS digests are the repo's own LFS oids (verified by huggingface_hub at download time), non-LFS digests computed locally 2026-11-13. inference-panel id edge0-145b (unit uap-edge0-145b-server.service); revert: panel switch or ~/.config/uap/model-switch.sh strata-abliterated. Upstream measured agent decode 121 tok/s (RTX 5090D) / 91.7 tok/s (4090) at Q3_K — expect 4090-class or lower on the 3090; quality above Qwen3.8-Flash-Next on DeepSWE/Terminal-Bench upstream. Run `uap models measure` to record this machine's footprint before it can load (fail-closed).",
+          "files": [
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/model.json",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "model.json",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 1531,
+              "sha256": "95b8280bf5151e11cf7b0622688172c9572dd8fd13558bb64d7e8edfc8c32ed4"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/index.txt",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "index.txt",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 117464,
+              "sha256": "980366930f95ae1b8138652256c3b9be8925b02395d4f093b72410797675a349"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/native_experts.txt",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "native_experts.txt",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 1463,
+              "sha256": "0de7b81744e89f722374842a73b8b26a8a6145c645493471a9c10a4f5f566e70"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/experts.bin",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "experts.bin",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 40076574720,
+              "sha256": "947d15f3d69ecdb45d602a62bc84803451da779a22294e1db5b3568290b42879"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/labels.bin",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "labels.bin",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 98304,
+              "sha256": "ce9b4a20b92c5c866e65d84a3884c104986522471cf11cc5f797a153affbcc06"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/dense.bin",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "dense.bin",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 1538625024,
+              "sha256": "f9bcc7f36eac4e59a7b1cb1962e038ba12dc831a41fb193761f1d1e72657fb62"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/profile.bin",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "profile.bin",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 196632,
+              "sha256": "543f8a364c8dbfef909ecd1a1d7adbc177d3db18ceecdca1fc568f3eaeb8c655"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/latent_dense_q8.bin",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "latent_dense_q8.bin",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 3743416320,
+              "sha256": "fbb25caaa0dcf45ef62f1a4945dcf98a53a166934a3b461b166fbafa831d87ca"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/latent_dense_q4.bin",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "latent_dense_q4.bin",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 1981808640,
+              "sha256": "e31e11f36c7e5a23c82550b524fd44fb28cfa821ef59fd688b8d2339137ab287"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/model-skeleton.gguf",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "model-skeleton.gguf",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 5991569248,
+              "sha256": "ab49fbe7590cdcda45d7a2bcae4be0bd42c6a70b951d594a00eb158d7df0b72f"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/ple-fp8.gguf",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "ple-fp8.gguf",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 51200246112,
+              "sha256": "c7615c59b060277ddf6f84729fa8f7469cfc82c7fb983d6e7eab5a2f7446f170"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/mtp/dense.bin",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "mtp/dense.bin",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 116099072,
+              "sha256": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/mtp/dense.txt",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "mtp/dense.txt",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 1851,
+              "sha256": "991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/mtp/experts.bin",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "mtp/experts.bin",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 707788800,
+              "sha256": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/mtp/draft_vocab.bin",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "mtp/draft_vocab.bin",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 425196,
+              "sha256": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l0.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l0.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "ccfb45da4cb91bf0cc19d867472ddfb5c2175640046f6bfc754aa4e344855972"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l1.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l1.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "73a4a4964c59fe2ae6eebd994f099fde0389ddf7c49fe5994ea372d7f826a5c6"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l2.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l2.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "1e2ad898903d58779bddef0708f6b9b605376f451da7d4a3e092c75921abee0e"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l3.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l3.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "5b4b1994bcb00a0e78150152ed4d3eba1c90203f3772fc9d3b01bb133661949a"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l4.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l4.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "223b5a8a9fef3fb289915b985f0492db776be6ee4bc794af6bd6b40bc73f5951"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l5.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l5.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "2b54008e9681de98a3590ab2d87eccda2f0ce4cfb6a99c91ddea2bfaf7ee9103"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l6.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l6.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "7c0475b18ff380f4fc900ef308226b0a98ef855e793add4c1d149a3620a18f30"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l7.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l7.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "ffb91ee9d1abf5ce63a07c1cc6f8182849700c9701705c3a386398fde797771b"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l8.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l8.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "2ef5f3fdea5a3bc49e8b7cd93a41a793460da3685ed9d0ea10e9aae053c85477"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l9.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l9.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "788cb1c638605ac71728913ce4fcb14c008dbbf46982c4c9c9d1f7af90e03ba5"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l10.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l10.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "30d4046e0efc59b0ff81d74d1da05f41661d12f3cdc3cade317d646b15aef135"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l11.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l11.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "d41bc1a5fc130916cea24416da58d6c3edac68c6a27f24719c885083aef13d8f"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l12.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l12.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "877b3eaac39446fe23023a06a643a0783f6604e4a722dcd5ed40e6976cb68408"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l13.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l13.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "b62631e02ddf5ae3be123d4385ae1d147a13253e250a4d645a4e5f77673aeaa7"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l14.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l14.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "547f5bd37f52a0e913532c90fb7ad11658ac4fabc6b2a28be159c4e07b1e286b"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l15.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l15.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "374222a8750c7aa5e72f5a2b05229521931be61f99778b841d571ca1b19ae4d4"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l16.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l16.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "de4aaf5ddc41a6b961db1e786929aad539da114495867cc3ee2283f77cb10a0a"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l17.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l17.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "c29c3976ce49f137147213a84dece24c4221dae5326f1a0cf45717b03624368b"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l18.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l18.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "aaf7450624f01bb074bae633f17432841a3794c8efaa76202f3d259046d2f679"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l19.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l19.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "81625f559d0218685104a168d32ac8cabfb271531a8e8e9c8282df25f2754884"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l20.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l20.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "0effc90ca93708fc835a5fee3a51a9e4e8e28139e7d289e618bb160fbacc6de4"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l21.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l21.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "4643ac0076f9df916418a8ea58ff70dfb5cd3ce8f8220686698dd1011ed70c48"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l22.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l22.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "8c15e401e96b52144fab43ca05e312d9cd12a6ced369aff85b55bb4e8233e45d"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l23.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l23.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "c737877b64bb32eb444eb497db2b1661c5f92bd35716a2b5ed57fa27c9c5bedc"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l24.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l24.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "e708f5923e499b338c1e95b633eef61e75034ec68d8ea1a9579c159cdc372b5b"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l25.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l25.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "f0ac87f861b8c85065e09fdef886f957f73e6ef7d42ef86d6bc6e4abe2daafd3"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l26.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l26.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "14adbeb9d6dcb10dafe0912d897eb02e2aa6abdb9e0a56f377945697bee02630"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l27.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l27.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "1003f7dbacce30b7d2e1d758cfb7057a742bdf648472fcbd63333234f076e515"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l28.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l28.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "e912c6d85335fc9ec83635064e523b0efe19fd5ef4de4f299bddfd1203c33693"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l29.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l29.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "8c186910f9afcecd23abdbaf2eee52f48360b114f4e47543a41922414db1fd5b"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l30.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l30.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "b5cd2e55d0baeed12a8479feb5df830817821a1d00ff24050c451ecdf4913404"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l31.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l31.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "b65fc3a4d56ca8ec2bd59b41ca63e0946ce30f27e4380477a79e7bcb868bef34"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l32.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l32.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "4590579308a3973129592ced56ff24ed38f3bfe3ef4a8412c9dc2dbd40d170a7"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l33.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l33.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "b8e28a6a3a4e68b935d8779bc43f0cca8a7c87e43cfe0cdcb9ce757631c5bd79"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l34.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l34.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "bad3b4908fecfd92429cdc1b16c0b00314a8f843f9510b8a87afdd297a348c65"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l35.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l35.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "2bc0b3d52dbc8ff6079cf978307698aede8a7ebb0084ba746f6164ce020c4fb1"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l36.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l36.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "d6627bdbf25218a3dd429fa752a1ef882fd610eb23b66871b42b078713059356"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l37.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l37.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "8afc17ed3b68756be8e5590ecbebb3e36179fabafb71901faf63e67ffe02f244"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l38.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l38.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "445fbb2f2365079f06569460e6a905dad3e7f475d23af5ac2b967ab548e27c27"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l39.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l39.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "020697f9289610c49dea1b47b72dd7f0f3746352c52b02f7d9d05db9011ddb07"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l40.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l40.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "64b0d2d16992197dc7e2f0986f3d71ab0b744b4df0bdbab15bf08450c0919b00"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l41.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l41.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "a75175bdc03d571f557d59aede6de9a0e734c61b03cfacc4ceb74c19b3787b7d"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l42.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l42.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "e6596c611be63531fbf46fc73c1d1fcf86d38b09cfb27f97ee63571eea4be9cd"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l43.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l43.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "e6e2227612938fac5320a81970215dac65bbee6e555573a5a3da7632adfe6087"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l44.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l44.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "4187577ae6c484c700dfbf003a698aef48ce27fff9035ba40781abec05b58bf7"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l45.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l45.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "270938e5d001b88e23a01d7c0f967ca165f1ac35adeff23f6401365d4d381430"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l46.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l46.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "e3c18301cbfdf48eaa11cbb657f0696d3582aad5f68e2c9c27bafa3481b5a4e2"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l47.f32",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "scales/l47.f32",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 7168,
+              "sha256": "552e22ee2bf8dbce16b68ac95a1146a141443a42e3326f7115d47dbe0ec9b845"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/chat_template.jinja",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "tokenizer/chat_template.jinja",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 8952,
+              "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/merges.txt",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "tokenizer/merges.txt",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 3353258,
+              "sha256": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/token_type.json",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "tokenizer/token_type.json",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 744960,
+              "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/tokenizer.json",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "tokenizer/tokenizer.json",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 541,
+              "sha256": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf"
+            },
+            {
+              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/vocab.json",
+              "repo": "Edge0/Edge0-145B-q3k",
+              "file": "tokenizer/vocab.json",
+              "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
+              "bytes": 5737005,
+              "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4"
+            }
+          ]
+        }
+      },
+      "advertises": [
+        "edge0_145b"
+      ]
     }
   }
 }
