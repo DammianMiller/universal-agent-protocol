@@ -14,7 +14,7 @@ causal claims. For the evergreen mechanism the study informs, see
 [guides/DELIVER.md](../guides/DELIVER.md) (iterate against real completion gates) and
 [guides/LOCAL_MODELS.md](../guides/LOCAL_MODELS.md).
 
-The revision quarantines 15 of the 106 scored attempts: the `B-visual-v4` and
+The revision quarantines 15 of the 112 scored attempts: the `B-visual-v4` and
 `B-visual-v5` window was served by a different model than the study recorded. See
 "An arm switch went unnoticed for two stages".
 
@@ -39,7 +39,7 @@ Model: `abliterated-iq2_xs` (a ~2-bit quantized small model), temp 0, **first at
 only, no repair turns**. Each stage is one prompt revision, scored by `prompt_sha`, so
 a score is attributable to an exact prompt.
 
-`n` counts scored attempts — 106 of the 111 rows in `.uap/uplift/results.jsonl`; the
+`n` counts scored attempts — 112 of the 117 rows in `.uap/uplift/results.jsonl`; the
 five `--dry-prompt` rows print the prompt and record no score. A build that crashes
 is scored 0, not excluded. `12/12` is the structural gate; `both gates` means 12/12
 *and* 8/8 on the same first attempt. The `arm` column is the model that actually
@@ -61,12 +61,14 @@ runner now records `served_model` and scores 0 on `arm_mismatch`.
 | B-visual-v6 | `channelbag(create=)` → positional `ensure` | 3 | IQ2_XS | 0 (all three died on that kwarg) | 0 | 0 |
 | B-visual-v6 | pose tables keyed to the 19 `bone_defs` names, appended self-check block at column 0, animation-amplitude rungs | 6 | IQ2_XS | 5 | 5 (83%) | 0 |
 | **B-visual-v6** | *same prompt*, plus one rule: every pose-table row has exactly three elements | 6 | IQ2_XS | **5** | **5 (83%)** | 0 |
+| **B-visual-v6** | *same prompt*, plus a rule banning assignment expressions inside pose tables | 6 | IQ2_XS | **4** | **4 (67%)** | 0 |
 
 First-attempt rate at *both* gates, measured on IQ2_XS alone, went 0/3 → 3/9 → 2/6 →
-5/6 across the prompt revisions that survive the quarantine, and that 5/6 held across
-two consecutive prompt revisions instead of resting on one window. v4's nine IQ4-arm
-runs split four ways: 4 `sys` crashes, 3 reasoning truncations, 1 built-but-incomplete
-(11/12, 6/8), 1 clean pass.
+5/6 → 5/6 → 4/6 across the prompt revisions that survive the quarantine. The 5/6 rate
+held across two consecutive prompt revisions; the revision after them regressed to 4/6
+with two failure modes that neither of its predecessors had shown, so the last revision
+is not yet an improvement. v4's nine IQ4-arm runs split four ways: 4 `sys` crashes, 3
+reasoning truncations, 1 built-but-incomplete (11/12, 6/8), 1 clean pass.
 
 ## An arm switch went unnoticed for two stages
 
@@ -92,14 +94,18 @@ other at all.
 | B-visual-v4 reruns (n=9) | 13868 | 7311, 6741, 6830, 7126, 6163, 7482, 7471, 6927, 7085 | 9 | 0 |
 | B-visual-v5 originals (n=6) | 14828 | 6597, 6585, 6472, 5225, 5189, 6211 | 0 | 6 |
 | B-visual-v5 reruns (n=6) | 14828 | 6858, 5932, 7096, 6064, 6102, 6490 | 6 | 0 |
-| B-visual-v6 (n=24, four prompt revisions) | 15962 ×9, 16140 ×3, 16517 ×6, 16762 ×6 | 6496, 6208, 5844, 6397, 6791, 6385 (pose-table prompt); 7194, 6738, 6460, 6589, 6764, 6664 (pose-table + row-arity prompt) | 9, 3, 6\*, 6 | 0 |
+| B-visual-v6 (n=30, five prompt revisions) | 15962 ×9, 16140 ×3, 16517 ×6, 16762 ×6, 16961 ×6 | 6496, 6208, 5844, 6397, 6791, 6385 (pose-table prompt); 7194, 6738, 6460, 6589, 6764, 6664 (pose-table + row-arity prompt); 6814, 6566, 5774, 6420, 6430, 6316 (pose-table + no-assignment-expression prompt) | 9, 3, 6\*, 6, 6 | 0 |
 
 \* Two `13868` lines and one `16517` line in the IQ2_XS log belong to unrelated work:
 they generated 634, 178 and 110 tokens rather than any of the attempt counts above,
 and one of them reused 16,512 of 16,517 tokens. Excluding them, every prompt-token
 line in the window belongs to the arm the completion-token column says it does. The
-last window's six completion counts appear only in the IQ2_XS log, in attempt order at
-lines 272807–272924, every one of them at `prompt 16762 tokens`; its `6738` also shows
+last two windows' twelve completion counts each appear only in the IQ2_XS log, in
+attempt order: the `16762` window at lines 272807–272924, the `16961` window at lines
+276731–276971, every one of them at its window's prompt-token count. The `16961`
+window has exactly seven such lines in the IQ2_XS log — the six attempts plus one
+unrelated 19-token generation at line 104791 — and one line in the IQ4_XS log at an
+unrelated 1,378-token generation. The `16762` window's `6738` also shows
 up once in that log at an unrelated 42,964-token prompt, and in the IQ4_XS log not at
 all.
 
@@ -117,8 +123,9 @@ Consequences:
   17 px walk-cycle failure. Those are not 2-bit-model behaviour.
 - Re-running the same two prompts on the restored IQ2_XS arm still clears the pixel
   gate: 3/9 at v4 and 2/6 at v5, so the claim survives — at a lower rate, and with
-  the improvement continuing to 5/6 at v6's last two prompts, each of which cleared
-  both gates five of six attempts.
+  the improvement continuing to 5/6 at v6 for two consecutive prompt revisions, each
+  of which cleared both gates five of six attempts. The third revision in that series
+  regressed to 4/6, so the step is real but the last revision is not the one to keep.
 - The mechanism is lesson 1 with the verifier swapped for the model: integrity
   established after the fact instead of enforced at run time. One line in the
   runner — compare `served_model` to `MODEL` before scoring — would have caught the
@@ -136,8 +143,23 @@ out of the way, but nothing enforces the header's sentence at runtime: the model
 script runs as ordinary Blender Python with write access to its workspace, and the
 workspace sits inside the same repo as the originals. Integrity was therefore
 established *after* the fact: pinned hash matches live, and every workspace carried
-byte-identical gate copies — one distinct hash across all 99 validator copies, all 60
-visual-gate copies and all 99 `gates.md` copies, covering the 106 scored runs.
+byte-identical gate copies — one distinct hash across all 105 validator copies, all 66
+visual-gate copies and all 105 `gates.md` copies, covering the 112 scored runs.
+
+That audit has one weakness worth naming. `make_workspace` builds
+`runs/<stage>/attempt-N` and `--tag` is **not** in the path, so a rerun `rmtree`s and
+rewrites the directory its predecessor used. The 112 scored attempts land in 90 attempt
+directories, 19 of which were written more than once — 18 pairs (the nine
+`B-visual-v4` and six `B-visual-v5` originals plus their `arm-rerun` twins, and the
+first three `B-visual-v6` attempts plus their `arm-probe` twins) and `bare` attempt 1
+five times — and the hash audit can only see the **last writer** of each. The 15
+IQ4-arm workspaces survive only because the quarantine copied them to
+`runs/B-visual-v{4,5}-arm-iq4_xs-v31/` before the rerun; those 15 archived directories
+have no rows in `results.jsonl`, so the 105 directories on disk outnumber the 90 that
+carry scores. So "no tampering was found" is a statement about the surviving directory
+contents, not about every attempt that ever ran: the same-hash-per-copy result holds
+for every directory on disk, and the attempt that matters for a pass claim is the one
+whose score row and workspace agree on the same writer.
 
 Be precise about the strength of that. The runner copies the gates but does not
 re-verify the hashes *inside* the run, and the workspace copy is writable, so the
@@ -174,14 +196,18 @@ reasoning truncations, both of which the quarantine section shows were IQ4-side.
 The same attribution is what made the arm switch recoverable rather than fatal: the
 rerun rows carry the identical `prompt_sha` as the originals and differ only by
 `--tag`, so the two arms can be separated attempt by attempt instead of discarded.
-It also paid for itself forward: v6's last two prompts are a demonstrable uplift step,
-not a lucky streak. The three rungs that failed in the v4 and v5 IQ2_XS reruns — the
-attack clip losing all its weapon pixels (`gap 999`, four times at v4, twice at v5),
-a walk cycle lifting feet past the limit, and jump endpoints leaving the root off the
-floor — each got a named rule, and the next six attempts cleared all eight rungs five
-times. The revision after that, which added one rule and changed the prompt hash,
-cleared them five times again in a second six-attempt window, so the step does not
-rest on one prompt's luck.
+It also paid for itself forward: v6's two pose-table revisions are a demonstrable
+uplift step, not a lucky streak. The three rungs that failed in the v4 and v5 IQ2_XS
+reruns — the attack clip losing all its weapon pixels (`gap 999`, four times at v4,
+twice at v5), a walk cycle lifting feet past the limit, and jump endpoints leaving the
+root off the floor — each got a named rule, and the next six attempts cleared all eight
+rungs five times. The revision after that, which added one rule and changed the prompt
+hash, cleared them five times again in a second six-attempt window, so the step did not
+rest on one prompt's luck. A third revision, banning assignment expressions inside pose
+tables, cleared them only four times in its own six-attempt window and introduced two
+failure modes its predecessors had not seen — which is why the honest headline is
+5/6 twice, not 5/6 and rising, and why the improvement claim belongs to the two
+5/6 prompts rather than to the series of edits.
 
 ### 3. A regression can be a missing word, not a wrong idea
 
@@ -228,8 +254,8 @@ writing any code and hit `finish_reason=length` mid-table, at both 8k and 12k ma
 tokens, producing an unterminated tuple and a `SyntaxError`. All three scored 0. Those
 three were IQ4_XS runs.
 
-The pattern holds across the whole log, not just v4. Of 106 scored runs, 15 had
-reasoning on and 91 had it off. Every one of the 91 reasoning-off runs finished with
+The pattern holds across the whole log, not just v4. Of 112 scored runs, 15 had
+reasoning on and 97 had it off. Every one of the 97 reasoning-off runs finished with
 `finish=stop` — none truncated. All 8 truncated runs in the log had reasoning on, and
 all 8 scored 0. Reasoning on did not become safe at a bigger budget either: the 7
 reasoning-on runs that were given 32k–64k tokens did finish, and their best score was
@@ -237,8 +263,8 @@ reasoning-on runs that were given 32k–64k tokens did finish, and their best sc
 reasoning-on runs are IQ2_XS-served, and the conclusion is unchanged on that subset
 alone: 5 truncated, best score 11/12, no 12/12. Meanwhile v5, run with
 `--reasoning-effort none --max-tokens 12000`, scored 12/12 six of six on the IQ4 arm
-and five of six on IQ2_XS, and v6's last two prompts each scored 12/12 five of six on
-IQ2_XS.
+and five of six on IQ2_XS, and v6's two pose-table revisions each scored 12/12 five of
+six on IQ2_XS.
 A truncated run is a budget misconfiguration, not a model failure, and the budget
 must be pinned in the invocation for scores to stay comparable across stages.
 
@@ -262,29 +288,45 @@ that never exercises the animated state, is the argument for the visual gate exi
 at all.
 
 For scale, the logged margins say the improvement was in headroom, not only in the
-pass rate. All 31 runs that cleared the island rung measured 0.083–0.089 of the bbox
+pass rate. All 35 runs that cleared the island rung measured 0.083–0.089 of the bbox
 diagonal against a 0.30 limit except `rule-f` attempt 16 at 0.113, still well under the
 limit, while the five runs that failed it measured 3.142–3.338
 at `B-visual` and 4.504 and 6.393 at `B-visual-v3`. On the floor rung, eight of the
 eleven IQ2_XS runs that cleared it at v4 or v5 reported a max lift of exactly 12 px —
 the limit itself, at `jump.start` — so "cleared" there was a coin flip against the
-next frame. v6's ten clearing runs reported 1–9 px, none at the limit. The rules
+next frame. v6's fourteen clearing runs reported 1–9 px, none at the limit. The rules
 moved the margin.
 
 v6's pose-table prompt is what closed the two rungs: the attack clip keys `upper_arm_R`
 only (0 → −70° → 0, forearm and hand never keyed, so the blade stays face-on to the
 camera), the walk cycle keys both thighs ±20° with shins capped at ±12°, and the jump
-holds root-z 0 at both endpoints with endpoint thigh keys at 0. Its one remaining
-failure is a new mode, not one of these: attempt 10 wrote a pose-table row with two
-tuple elements where `build_clip` unpacked three
-(`ValueError: not enough values to unpack (expected 3, got 2)`), and the prompt's
-existing "one tuple shape for every row" rule covers the *parts* table, not the pose
-tables. That rule shipped in the revision after it, which scored 5/6 again. Its one
-failure is a third new mode: attempt 19 put a walrus target that is not a name inside a
-pose-table row (`SyntaxError: cannot use assignment expressions with expression`, at
-`(-d30 := math.radians(-30.0), d0, d0)`), so the arity rule fixed the shape of the row
-without constraining the expressions inside it. The open target is a rule that pose
-tables contain no assignment expressions.
+holds root-z 0 at both endpoints with endpoint thigh keys at 0. Its remaining failures
+are all in one family — names and expressions written inside pose-table rows — and each
+revision closed one member of it while the model found another:
+
+- attempt 10 wrote a pose-table row with two tuple elements where `build_clip`
+  unpacked three (`ValueError: not enough values to unpack (expected 3, got 2)`), and
+  the prompt's existing "one tuple shape for every row" rule covers the *parts* table,
+  not the pose tables.
+- That rule shipped in the revision after it, which scored 5/6 again. Its one failure
+  was a second member: attempt 19 put a walrus target that is not a name inside a
+  pose-table row (`SyntaxError: cannot use assignment expressions with expression`, at
+  `(-d30 := math.radians(-30.0), d0, d0)`), so the arity rule fixed the shape of the
+  row without constraining the expressions inside it.
+- The revision after that banned assignment expressions inside pose tables outright.
+  It scored 4/6, and its two failures were two more members of the same family rather
+  than a repeat of either: attempt 24 still left a walrus *value* in a row
+  (`(d0, dm30 := math.radians(-30.0), d0)`) and `Euler()` received a scalar where it
+  wanted a triple, dying with the bare message `TypeError: mathutils.Euler()`; attempt
+  25 referenced `dm30` in a row without ever assigning it (`NameError: name 'dm30' is
+  not defined. Did you mean: 'dm10'?`) — it obeyed the ban on `:=` and the arity rule,
+  then used a name the prompt's own crib sheet does not define.
+
+Banning one syntax did not make the rows plain. The open target is a stronger rule:
+every element of a pose-table row must be either a numeric literal or a name assigned
+in a line above the tables, and the angle names available are exactly the ones the
+prompt lists. That is checkable by the appended self-check block, which already runs
+before the gates.
 
 ## Reproduce
 
@@ -295,10 +337,17 @@ Harness, prompts, findings, and per-attempt workspaces live in the experiment re
 
 ```
 python3 tooling/uplift_runner.py --stage B-visual-v6 --attempt N \
-    --reasoning-effort none --max-tokens 12000 --tag arm-rerun
+    --reasoning-effort none --max-tokens 12000 --tag rule-g-rerun
 ```
 
 Pin `--reasoning-effort none` and `--max-tokens 12000` (lesson 4), keep `--tag` so an
 attempt served by a different arm stays separable in `results.jsonl` (the quarantine
-section), and confirm the endpoint before scoring: `GET /v1/models` on port 8080 must
-return `abliterated-iq2_xs`.
+section) — the six-window reruns used `--tag arm-rerun`, `api-fix-rerun`,
+`prompt-fix-rerun`, `rule-f-rerun` and `rule-g-rerun`, and `.uap/uplift/rerun-arm.sh`
+and `.uap/uplift/rerun-rule-g.sh` drive whole windows — and confirm the endpoint before
+scoring: `GET /v1/models` on port 8080 must return `abliterated-iq2_xs`. Note that
+`--tag` does **not** change the workspace path, so a rerun overwrites the attempt
+directory of any earlier run with the same `--stage` and `--attempt`; archive the
+directory first if the original run's artifacts still matter, as the quarantine did.
+`tooling/uplift_runner.py` also now hard-fails on a fifth chained `#extends` link or a
+cycle (`EXTENDS_MAX_DEPTH`), where it used to silently truncate the composition.
