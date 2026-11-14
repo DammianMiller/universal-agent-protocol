@@ -6752,6 +6752,38 @@ def _extract_images(content) -> list[dict]:
     return images
 
 
+# O-D — the terse-prompt shim for arms that cannot take a serve-time template
+# (harness plan docs/plans/droid-client-performance-options.md). The strata
+# engine has no --chat-template override: its template is GGUF-embedded, so the
+# Sharp-template round (inference-panel PR #4) skipped every strata arm. What
+# the proxy CAN do is what the template's own terseness block does at render
+# time: prepend the terse directive to the system prompt. Upstream measured the
+# full template at 2.7x faster medians at the same solve rate; this shim is
+# the approximation, weaker by construction (no thinking-retention/tool-format
+# changes), and cheap to A/B by env.
+#   UAP_PROXY_TERSE_SYSTEM=0   — disable (the A/B off-arm)
+# The directive text is the Sharp template's terse block verbatim (its lead +
+# core), so the shim and the template say the same thing.
+_TERSE_SYSTEM_DIRECTIVE = (
+    "Answer directly and concisely. Give the answer with only what it needs to be "
+    "correct and usable.\n"
+    "Never: open with preamble or pleasantries; restate the question; add filler "
+    "transitions; hedge with niceties; or repeat a point you've already made.\n"
+    "Always: keep essential steps, caveats, uncertainties, and specifics — never "
+    "drop correctness or a needed warning for brevity. Keep the final answer lean. "
+    "Use the least structure that conveys it (plain prose when short; lists or code "
+    "only when they earn their place). If genuinely uncertain, say so and explain "
+    "why — never omit uncertainty for the sake of brevity.\n"
+    "If a user request is genuinely ambiguous, ask a sharp question, don't guess."
+)
+
+
+def _terse_system_enabled() -> bool:
+    """Default ON, opt-out by env — mirrors the Sharp template's own
+    default-on `terse` kwarg (opt out per request there, per machine here)."""
+    return os.environ.get("UAP_PROXY_TERSE_SYSTEM", "1") != "0"
+
+
 def anthropic_to_openai_messages(anthropic_body: dict) -> list[dict]:
     """Convert Anthropic message format to OpenAI message format.
 
@@ -6763,17 +6795,32 @@ def anthropic_to_openai_messages(anthropic_body: dict) -> list[dict]:
     """
     messages = []
 
-    # Anthropic has system as a top-level param
+    # Anthropic has system as a top-level param (string or content blocks).
+    # O-D: when the terse shim is on, the directive is PREPENDED to the
+    # caller's system text — matching the Sharp template's own behaviour of
+    # merging the terse block into the caller's system prompt rather than
+    # replacing it (a caller's system prompt is never overridden, only led).
     system = anthropic_body.get("system")
-    if system:
-        if isinstance(system, str):
-            messages.append({"role": "system", "content": system})
-        elif isinstance(system, list):
-            text = "\n".join(
-                b.get("text", "") for b in system if b.get("type") == "text"
-            )
-            if text:
-                messages.append({"role": "system", "content": text})
+    system_text = ""
+    if isinstance(system, str):
+        system_text = system
+    elif isinstance(system, list):
+        system_text = "\n".join(
+            b.get("text", "") for b in system if b.get("type") == "text"
+        )
+    if system_text and _terse_system_enabled():
+        messages.append(
+            {
+                "role": "system",
+                "content": _TERSE_SYSTEM_DIRECTIVE + "\n\n" + system_text,
+            }
+        )
+    elif system_text:
+        messages.append({"role": "system", "content": system_text})
+    elif _terse_system_enabled():
+        # No caller system prompt at all — the directive stands alone, same as
+        # the template's `_sc` fallback (`{% if not _sc %} set _sc = _terse`).
+        messages.append({"role": "system", "content": _TERSE_SYSTEM_DIRECTIVE})
 
     for msg in anthropic_body.get("messages", []):
         role = msg["role"]
