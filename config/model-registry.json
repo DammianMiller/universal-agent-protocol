@@ -95,6 +95,30 @@
             }
           ]
         },
+        "strata-abliterated-iq3_s": {
+          "status": "unmeasured",
+          "engine": "strata",
+          "unit": "uap-strata-abliterated-iq3_s-server",
+          "note": "The DavidAU abliterated Flash-Next IQ3_S tier — the :8080 default 2026-10-23 -> 2026-10-28 (adopted over the Swift 1.5 arm on the same-day A/B), moved to the IQ2_XS tier in the 2026-10-28 kernel-OOM fix (full-pin 53.7 GB anon RSS; the low-RAM --resident-budget-gib 20 posture ships in strata-abliterated-iq3_s.json, and engine 0.1.59.1 supports the flag), re-staged 2026-11-14 as a switchable panel arm. Config strata-abliterated-iq3_s.json, unit uap-strata-abliterated-iq3_s-server.service, pack strata-data/packs/abliterated-iq3_s; advertises abliterated-iq3_s at /v1/models; switch: ~/.config/uap/model-switch.sh strata-abliterated-iq3_s (revert: strata | strata-abliterated). Run `uap models measure` against it before placement loads it (fail-closed). Raw GGUF shards declared here: the pack is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the release's tiers (the tier-shared digest also pinned in strata-abliterated-iq2_xs). Provenance is pinned (repo + rev, from feature/386): bytes + sha256 are the HF LFS oids, verified against the local pair at the 2026-10-23 adoption and re-verified against the repo digests 2026-11-14, so `uap models ensure` can re-fetch and verify from this pin.",
+          "files": [
+            {
+              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
+              "repo": "DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF",
+              "rev": "623b419bd443e6e76ec51ca4b95d951da93c6969",
+              "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
+              "bytes": 55063664928,
+              "sha256": "78706315c2fe912777c006b4ae18be1024c9f4353bd25d33b8a306c9c55f9e34"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf",
+              "repo": "DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF",
+              "rev": "623b419bd443e6e76ec51ca4b95d951da93c6969",
+              "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf",
+              "bytes": 28800138432,
+              "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+            }
+          ]
+        },
         "strata-unsloth-ud-iq4_xs-v31": {
           "status": "unmeasured",
           "engine": "strata",
@@ -139,6 +163,7 @@
       "advertises": [
         "qwen3.8-flash-next-unsloth-ud-iq4_xs-v31",
         "abliterated-iq2_xs",
+        "abliterated-iq3_s",
         "qwen3.8-flash-next-iq3_s",
         "swift-1.5-iq3_s",
         "gpt-5.1-codex"

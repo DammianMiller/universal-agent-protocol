@@ -467,15 +467,89 @@ describe('repo registry: unsloth UD-IQ4_XS-v31 arm wiring', () => {
       const entry = loaded.registry.models['qwen3.8-flash-next'];
       expect(entry.configs['strata-iq3_s']).toBeUndefined();
       // What remains: the v31 default, the switchable abliterated IQ2_XS and
-      // the Swift 1.5 A/B arm — each naming the unit that actually serves it.
+      // IQ3_S arms, and the Swift 1.5 A/B arm — each naming the unit that
+      // actually serves it.
       expect(Object.keys(entry.configs).sort()).toEqual([
         'strata-abliterated-iq2_xs',
+        'strata-abliterated-iq3_s',
         'strata-swift-iq3_s',
         'strata-unsloth-ud-iq4_xs-v31',
       ]);
       expect(entry.configs['strata-abliterated-iq2_xs'].unit).toBe('uap-strata-abliterated-server');
+      expect(entry.configs['strata-abliterated-iq3_s'].unit).toBe('uap-strata-abliterated-iq3_s-server');
       expect(entry.configs['strata-swift-iq3_s'].unit).toBe('uap-strata-swift-server');
       expect(entry.configs['strata-unsloth-ud-iq4_xs-v31'].unit).toBe('uap-strata-server');
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-11-14: the DavidAU abliterated Flash-Next IQ3_S tier — the arm that
+// served as the :8080 default 2026-10-23 -> 2026-10-28 (moved to the IQ2_XS
+// tier in the 10-28 kernel-OOM fix), re-staged as a switchable inference-
+// panel arm (unit uap-strata-abliterated-iq3_s-server.service, switch
+// model-switch.sh strata-abliterated-iq3_s; weights on disk since the 10-23
+// adoption, re-verified against the HF LFS digests at the 11-14 re-staging).
+// ---------------------------------------------------------------------------
+
+describe('repo registry: strata-abliterated-iq3_s arm wiring', () => {
+  it('ships the iq3_s config with the pinned 2-shard manifest and fails closed until measured', () => {
+    const own = mkdtempSync(join(tmpdir(), 'iq3s-abliterated-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['qwen3.8-flash-next'];
+      // The registration id this arm advertises at /v1/models (cfg model_name).
+      expect(entry.advertises).toContain('abliterated-iq3_s');
+      const cfg = entry.configs['strata-abliterated-iq3_s'];
+      expect(cfg, 'config/model-registry.json must keep the iq3_s arm').toBeTruthy();
+      expect(cfg.engine).toBe('strata');
+      expect(cfg.unit).toBe('uap-strata-abliterated-iq3_s-server');
+      // Shape only until `uap models measure` records this machine (spec §4.1).
+      expect(isPlaceable(cfg)).toBe(false);
+      // Head-pinned like every shipped manifest — `uap models ensure` must be
+      // able to re-fetch and verify from this pin (the openjet lesson).
+      expect(cfg.files).toHaveLength(2);
+      expect(
+        cfg.files?.every(
+          (f) =>
+            f.repo ===
+              'DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF' &&
+            f.rev === '623b419bd443e6e76ec51ca4b95d951da93c6969',
+        ),
+      ).toBe(true);
+      expect(cfg.files?.map((f) => f.file)).toEqual([
+        'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf',
+        'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf',
+      ]);
+      expect(cfg.files?.[0]).toMatchObject({
+        bytes: 55063664928,
+        sha256: '78706315c2fe912777c006b4ae18be1024c9f4353bd25d33b8a306c9c55f9e34',
+      });
+      expect(cfg.files?.[1]).toMatchObject({
+        bytes: 28800138432,
+        sha256: '316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113',
+      });
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+
+  it('cross-links the tier-shared shard 2 with the IQ2_XS arm entry', () => {
+    // Shard 2 (the PLE/expert shard) is byte-identical across the release's
+    // tiers — both shipped arm entries must pin the SAME digest, or the
+    // tier-sharing invariant silently broke in one of them.
+    const own = mkdtempSync(join(tmpdir(), 'iq3s-tier-shared-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const configs = loaded.registry.models['qwen3.8-flash-next'].configs;
+      const iq2xs = configs['strata-abliterated-iq2_xs'];
+      const iq3s = configs['strata-abliterated-iq3_s'];
+      expect(iq3s.files?.[1].sha256).toBe(iq2xs.files?.[1].sha256);
+      expect(iq3s.files?.[1].bytes).toBe(iq2xs.files?.[1].bytes);
     } finally {
       rmSync(own, { recursive: true, force: true });
     }
