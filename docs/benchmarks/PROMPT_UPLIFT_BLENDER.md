@@ -124,8 +124,9 @@ appear in that log at all.
 
 The same log lines carry generation speed, which corroborates: ~150–170 tok/s on
 IQ2_XS against ~80 tok/s on IQ4_XS v31, and the reruns' recorded `gen_elapsed`
-implies IQ2_XS speed. Port 8080 now declares `abliterated-iq2_xs`
-(`GET /v1/models`), and every `B-visual-v6` row carries
+implies IQ2_XS speed. Port 8080 declared `abliterated-iq2_xs` (`GET /v1/models`)
+throughout the rerun windows — it has since been restored to the fleet default
+`strata` — and every `B-visual-v6` row carries
 `served_model=abliterated-iq2_xs` with no `arm_mismatch`.
 
 Consequences:
