@@ -148,3 +148,105 @@ O-A today (panel switch, zero risk) → O-C.1 (edit-miss auto-context — the
 single best fix) in the next proxy round → O-B when the frontier route is
 restored → O-C.2/3/4 + O-E as the following PR → O-D last (weakest
 expected value per hour).
+
+---
+
+## O-B MEASURED — the frontier baseline via Droid + GLM-5.3 (2026-11-14)
+
+The frontier route landed differently than planned: not Claude Code through
+the `:8317` CLIProxyAPI OAuth (its refresh token is expired; re-login is
+user-interactive), but **Droid itself on `glm-5.3` (Max plan)** — the user
+switched the session default to glm-5.3 and directed the baseline there. This
+is the same client shape the monitored local baseline used (a Droid session
+doing real tool work), which makes it the honest pair.
+
+**Method (paired discipline): same tasks, same seeds, same driver, same
+gates — only the model route toggled.**
+
+- **Driver:** `droid exec --auto high -o json`, identical flags and 8-minute
+  per-task ceiling for both arms.
+- **Frontier arm:** `-m glm-5.3` (Droid's own provider auth — no local key
+  material involved).
+- **Local arm:** `-m qwen3.8-flash-next-unsloth-ud-iq4_xs-v31` through the
+  UAP proxy (`:4000`) → the fleet. During the run the fleet was serving
+  **abliterated-iq2_xs** (a peer's live deliver run owned the box, so no arm
+  switch was made) — the local arm is therefore labeled iq2_xs, the fleet's
+  floor tier, NOT v31.
+- **Suite:** 6 fresh-dir tasks exercising the monitored failure classes —
+  create+verify (t1), precise-edit of a seeded bug (t2), path near-miss
+  `.yaml` vs `.yml` (t3), add-to-existing without gutting (t4), multi-file
+  rename (t5), ambiguous-match edit-one-of-two (t6). 16 deterministic gates
+  evaluated identically for both arms.
+- **Anatomy:** from each run's droid session transcript (per-tool-call
+  results, same failure classes as the monitoring round, adapted to
+  Droid-native result text).
+
+### Results (2026-11-14, 19:34–20:22 AEDT)
+
+**Gate outcomes — TIED 13/13.** On small, well-specified, gate-verifiable
+tasks the floor-tier arm produces correct results too. The paired gap is
+**not outcome quality on this suite — it is cost**:
+
+| Arm | Gates | Exec completes | Tool calls | Turns (mean) | Wall time (total) |
+|---|---:|---:|---:|---:|---:|
+| **glm-5.3** (frontier, Max) | 13/13 | 6/6 | **59** | 7.3 | **4.7 min** |
+| **abliterated-iq2_xs** (local fleet, floor tier, via shimmed UAP proxy) | 13/13 | 1/6 (5 hit the 480s ceiling after finishing the file work) | **1,394** | 45 on the one completed task | **47 min** |
+
+The local arm needed **~24x the tool-call volume** and **~10x the wall
+time** for identical gate outcomes, and it burned its ceiling on 5 of 6
+tasks (the substantive file work was done when the ceiling killed the
+session — the gates scored the artifacts, which is why the tie is real).
+One completed local task (t6: a 3-line edit) took **45 turns**; the
+frontier took 4 for the same task. The local arm also spawned 20 subagent
+Task calls + 5 Skill calls where the frontier used none.
+
+**Failure anatomy (per Droid-native tool results, both arms):**
+
+| Tool | glm-5.3 (calls / fail / rate) | iq2_xs (calls / fail / rate) |
+|---|---|---|
+| Edit | 7 / **0** / 0.0% | 66 / **0** / 0.0% |
+| Create (write) | 7 / **0** / 0.0% | 21 / **0** / 0.0% |
+| Read | 19 / 2 / 10.5% | 270 / 5 / 1.9% |
+| Execute (bash) | 14 / 2 / 14.3% | 866 / 16 / 1.8% |
+| TaskOutput (bg polls) | — | 65 / 55 / 84.6% |
+| Overall | 59 / 4 / **6.8%** | 1,394 / 76 / 5.5% (1.6% excl. killed-bg-polls) |
+
+Classes: frontier = 2 bash-failures (both its own runs of the
+resolver-broken t5 fixture — reproduced identically on the pristine
+template, corrected in the gate), 1 path-not-found (the deliberate t3
+`.yaml`→`.yml` near-miss — recovered within the task), 1 other. Local = 16
+bash, 5 path-not-found, 55 killed-background-poll errors from the
+ceiling kills.
+
+### What the baseline actually establishes
+
+1. **The frontier "levels" number on this stack, for this suite, is: same
+   gates, 1/24th the tool activity, 1/10th the wall time, zero edit/write
+   misses.** On well-scoped tasks the floor arm eventually converges too —
+   frontier value here is throughput and turn economy, not correctness.
+2. **The blind-write failure class did not fire on this suite** — neither
+   arm missed an edit or gutted a file (all 73 edit/create calls across
+   both arms succeeded). These are small tasks whose files fit in one
+   read; the monitored corpus's 42%-edit-miss anatomy lives in long,
+   context-heavy sessions where the model edits from memory. The suite
+   bounds the claim: frontier ≠ better edit *accuracy* here; it is faster
+   at the same accuracy. The 20.6% live-corpus failure anatomy remains
+   the measure of the long-session problem — O-C's fixes target that
+   instrument, not this one.
+3. **The instrument caveat is load-bearing**: these anatomy numbers are
+   Droid-native tool results; the monitoring corpus's 20.6% is the UAP
+   tool layer. Same failure classes, different instruments — rates are not
+   comparable across them, only within this paired table.
+
+Raw artifacts: `benchmark-results/ob-paired-droid-exec-2026-11-14/`
+(report.json in the corpus schema + the full run suite), regenerated by
+the archived scripts in `artifacts/`. The O-E corpus aggregator picks the
+report up as a paired row on its next run.
+
+**Caveats (labeled, not hidden):** n=6 tasks per arm is directional, not
+powered — treat per-task deltas as single observations and the aggregate as
+descriptive. The local arm ran under concurrent fleet load (the live peer
+deliver run), which inflates its latency but not its gate outcomes. The
+frontier anatomy counts Droid-native tool results, not the UAP tool layer the
+monitoring round measured — the classes are aligned but the instruments
+differ; cross-comparison of rates between the two instruments is qualitative.
