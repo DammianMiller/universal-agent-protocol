@@ -196,7 +196,16 @@ describe('placement admit (proxy gate controller)', () => {
 
   it('parks with reason not_resident (measured but not loaded) and writes a pending entry', () => {
     const ledgerPath = freshLedger();
-    const answer = getPlacementAdmit(process.cwd(), { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code', session: 's1' }, { loaded: loaded(), ledgerPath });
+    // Auto-policy injected (the test seam): without it this test read the
+    // LIVE ~/.uap/placement-auto.json, and with auto-placement enabled on
+    // the machine the reason came back `auto_loading` — the same measured
+    // model, different controller mode. The not_resident contract is only
+    // testable with the policy pinned off.
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'qwen3.8-flash-next-iq3_s', client: 'claude-code', session: 's1' },
+      { loaded: loaded(), ledgerPath, auto: { policy: { enabled: false, allow_displace: [] } } },
+    );
     expect(answer.decision).toBe('park');
     expect(answer.reason).toBe('not_resident');
     expect(answer.placement_id).toMatch(/^plc-[0-9a-f]{6}$/);
