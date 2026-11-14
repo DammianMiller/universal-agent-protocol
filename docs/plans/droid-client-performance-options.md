@@ -250,3 +250,59 @@ deliver run), which inflates its latency but not its gate outcomes. The
 frontier anatomy counts Droid-native tool results, not the UAP tool layer the
 monitoring round measured — the classes are aligned but the instruments
 differ; cross-comparison of rates between the two instruments is qualitative.
+
+---
+
+## Monitoring round 2 (2026-11-14 evening) — post-O-C/O-D/O-B state
+
+Re-mined the live corpus after the day's merges (v2.46.0 O-C hints+readGate,
+v2.47.0 O-D shim+O-E corpus, v2.48.0 turnpack ports; master `6dd4fc90`),
+with the O-B GLM-5.3 baseline now available as the frontier reference.
+
+### Finding 1 — THE CLIENT IS STALE (the round's headline)
+
+The running Droid qwen3.8 UAP client executes the **globally-installed
+`@miller-tech/uap` = v2.45.0** (NVM path, verified: the global dist lacks
+`delivery/path-hints.js`; the npm registry's `latest` is also 2.45.0 while
+master is 2.48.0). Every deliver/client session today therefore runs
+**pre-fix code** — none of O-C's hints, the readGate, or the turnpack
+listing-anchor ports are in any live client. The only fix that reached the
+client is O-D's proxy-side shim (the proxy serves from the repo tree and was
+restarted 19:14 and again 20:50 for v2.48.0). The npm-publish workflow
+(manual-trigger) was fired 09:58 UTC; until it lands and the global install
+is updated, **every measured "post-fix" window is actually shim-only.**
+
+### Finding 2 — the shim-only window (era B, n=209, directional)
+
+| Class | Era A (pre-shim, n=19,794) | Era B (shim live, n=209) |
+|---|---:|---:|
+| ok | 75.7% | **81.8%** |
+| stub-refusal | 5.4% | 7.2% |
+| edit-miss | 3.2% | **0** |
+| path-not-found | 2.6% | **0** |
+| no-op | 3.8% | 1.9% |
+
+Zero edit-miss and zero path-not-found in era B is encouraging but
+underpowered (one deliver run's task mix, n=209) — directional, not a
+finding. stub-refusal persists at 7.2% (all write_file gutting re-sends) —
+exactly the class the not-yet-client-live readGate targets, consistent with
+Finding 1.
+
+### The ranked levers now (against the measured O-B frontier reference)
+
+- **R2-A — Update the global client (free, minutes, the biggest immediate
+  lever):** once the npm publish lands, `npm i -g @miller-tech/uap@latest`
+  puts O-C + turnpack in every new client session. The next monitoring
+  window after that is the first true post-fix read; watch stub-refusal
+  (readGate) and edit-miss (turnpack) first.
+- **R2-B — Serve v31 for client sessions (free):** iq2_xs (floor tier) is
+  STILL serving all client work. The O-B suite measured what that tier
+  costs on identical tasks: same gates at ~24x tool volume and ~10x wall
+  time. This is the original O-A, still unexecuted.
+- **R2-C — Route frontier-class client sessions to glm-5.3 (one flag, now
+  measured):** `droid -m glm-5.3` / the session default (already set).
+  The O-B baseline quantifies the buy: same gates, 1/24 the tool activity,
+  1/10 the wall time, zero edit/write misses. This is the concrete
+  "Opus 5.5 / Fable 5.2 levels" lever on this box today.
+- **R2-D — Re-measure after R2-A:** the post-client-update window is the
+  honest post-fix read; era B's zeros become testable at population scale.
