@@ -72,6 +72,31 @@
         "gpuMinFreeMiB": 200,
         "_headroom_comment": "200, not the 600 the llama.cpp-era entries use: strata deliberately fills the card (--vram-reserve-mib 1200 is its OWN internal headroom, reported reserve-aware at /metrics), and the measured steady state with the desktop sharing the GPU is ~245 MiB free. A 600 floor would hold the doctor permanently RED at the operator's chosen operating point and train everyone to ignore it. 200 still alerts when something NEW eats the card or strata loses its reserve."
       }
+    },
+    {
+      "name": "edge0-145b-server",
+      "systemd": {
+        "unit": "uap-edge0-145b-server.service",
+        "scope": "user"
+      },
+      "budget": {
+        "vramMiB": 23376,
+        "note": "Edge0 145B latent-MoE on the edge0-strata engine since 2026-11-13: uap-edge0-145b-server.service runs edge0-infer serve, which delegates to edge0-strata (build/strata + .venv python) and proxies :8080 (--port 8080, registered as --alias edge0_145b). The engine launch template (edge0-strata/edge0/models/edge0-145b.json) sets expert cache auto, prefill auto, spec 4 / min-p 0.5, MTP, int8 KV and 131k context; the unit adds only --vram-reserve-mib 1200, the same desktop-co-tenancy reserve as the strata-server stack, so vramMiB is the card minus that reserve (24576 - 1200). The 51.2 GiB PLE table is ple-io=direct (read from disk, not resident); 40.1 GiB experts SSD-streamed with hot experts in VRAM. execStartMustContain pins the load-bearing words of the note against the unit's own ExecStart — the command lives inline in the unit, not in a wrapper script, exactly so this check has something to check. Dormant (inactive) reads DARK like every switched-away :8080 backend.",
+        "execStartMustContain": [
+          "--model /home/cogtek/models/Edge0-145B-q3k",
+          "--port 8080",
+          "--alias edge0_145b",
+          "--vram-reserve-mib",
+          "1200"
+        ]
+      },
+      "headroom": {
+        "gpuMinFreeMiB": 200
+      },
+      "restartBudget": {
+        "knownRestarts": 0,
+        "allowedNew": 0
+      }
     }
   ]
 }
