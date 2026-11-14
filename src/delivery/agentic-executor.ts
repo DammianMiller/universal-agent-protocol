@@ -21,6 +21,7 @@ import { resolveWireModel } from '../models/local-model.js';
 import { spawnSync } from 'child_process';
 import { createRequire } from 'node:module';
 import { normalizeToolPath } from './path-normalize.js';
+import { nearestPathHint } from './path-hints.js';
 import { generationHeartbeatMs, startGenerationTicker } from './heartbeat.js';
 import { withModelSlot, recordModelSuccess, recordModelExhaustion, isExhaustionError } from '../utils/model-slot-lease.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'fs';
@@ -1343,6 +1344,27 @@ export const FORCED_GROUNDING_MAX_BYTES = 24_000;
  */
 export const FORCED_GROUNDING_MIN_WINDOW_BYTES = 400;
 
+/**
+ * Forced-read gate after a substance refusal (harness plan O-C.3, from the
+ * tool-calls corpus: 1,097 stub/gutting refusals and the refusal text — which
+ * already names edit_file — does not stop re-sends; the model re-sends
+ * different guessed content instead). After a gutting/stub refusal on a
+ * path, the next write_file to it is refused until the file has been READ
+ * since the refusal (the run's ReadCache seq is the clock). This makes the
+ * correct route — read, then edit_file — cheaper than another blind write.
+ * UAP_DELIVER_ALLOW_GUTTING=1 keeps its deliberate full-replacement override:
+ * it bypasses the gutting guard entirely, so no refusal is stamped and the
+ * gate never engages for that path.
+ */
+export interface ReadGate {
+  /** Project-relative path -> seq of the last substance refusal on it. */
+  refusals: Map<string, number>;
+  /** The run's latest read seq for `rel` (0 = never read this run). */
+  readSeq: (rel: string) => number;
+  /** Allocate the next seq from the run's shared read clock. */
+  nextSeq: () => number;
+}
+
 /** Recency order for read-cache entries — see ReadCache.nextSeq. */
 function readEntryRank(m: { round: number; seq?: number }): [number, number] {
   return [m.seq ?? 0, m.round];
@@ -1833,7 +1855,10 @@ export function runTool(
   // passes its value here at call time. An allowlisted path is EXEMPT from
   // the gate-config block (the sanctioned gate-repair turn) but never from
   // protectedFiles/contractFiles.
-  writeAllowlist?: ReadonlySet<string>
+  writeAllowlist?: ReadonlySet<string>,
+  // Forced-read gate state (see ReadGate). Optional — callers that omit it
+  // (tests, one-off dispatches) get the ungated behaviour, exactly as before.
+  readGate?: ReadGate
 ): string {
   let pathNote = '';
   // Contain/repair garbled tool-call paths against the known project root before
@@ -1864,7 +1889,9 @@ export function runTool(
       const abs = safePath(projectRoot, String(args.path));
       const internal = agentInternalReason(projectRoot, abs);
       if (internal) return internal;
-      if (!existsSync(abs)) return `ERROR: file not found: ${args.path}`;
+      if (!existsSync(abs)) {
+        return `ERROR: file not found: ${args.path}${nearestPathHint(projectRoot, String(args.path)) ?? ''}`;
+      }
       // read_file on a DIRECTORY threw a raw `EISDIR: illegal operation on a
       // directory` — an error the model cannot act on, so it retried and the
       // proxy's ERROR-LOOP guard fired. But its intent is obvious: it wants to
@@ -1923,7 +1950,9 @@ export function runTool(
       const abs = safePath(projectRoot, String(args.path ?? '.'));
       const internal = agentInternalReason(projectRoot, abs);
       if (internal) return internal;
-      if (!existsSync(abs)) return `ERROR: not found: ${args.path}`;
+      if (!existsSync(abs)) {
+        return `ERROR: not found: ${args.path}${nearestPathHint(projectRoot, String(args.path ?? '.')) ?? ''}`;
+      }
       return listingWindow(
         readdirSync(abs)
           // Also HIDE the internal dirs from any listing (e.g. the project root), so
@@ -2007,6 +2036,23 @@ export function runTool(
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
+      // Forced-read gate (O-C.3): a write to a path whose last write was
+      // refused for gutting/stubbing is refused until the file has been READ
+      // since. Ordered after the protected/blocklist guards (those refusals
+      // never stamp the gate) and before the content guards — the gate is the
+      // reason this write is happening at all, so it speaks first.
+      if (readGate) {
+        const refusedSeq = readGate.refusals.get(rel);
+        if (refusedSeq !== undefined && readGate.readSeq(rel) < refusedSeq) {
+          return (
+            `ERROR: refusing to write ${String(args.path)} — your last write to this file was refused as a ` +
+            `stub/gutting write, and re-sending other guessed content repeats the mistake. read_file ${rel} ` +
+            `FIRST (the CURRENT content), then change the part you are targeting with edit_file. Writes here ` +
+            `stay refused until the file has been read since the refusal. Deliberate full replacement: ` +
+            `UAP_DELIVER_ALLOW_GUTTING=1.`
+          );
+        }
+      }
       // Byte-identical re-write: report a NO-OP, not success.
       //
       // `OK: wrote <path> (N bytes)` reads as progress, so a model that rewrites
@@ -2042,6 +2088,7 @@ export function runTool(
           const prevLen = statSync(abs).size; // bytes, no full read
           const newLen = Buffer.byteLength(String(args.content ?? ''), 'utf-8');
           if (isSuspectedGutting(prevLen, newLen)) {
+            readGate?.refusals.set(rel, readGate.nextSeq());
             return (
               `ERROR: refusing to write ${String(args.path)} — it would shrink an existing ` +
               `${prevLen}-byte file to ${newLen} bytes (${Math.round((newLen / prevLen) * 100)}%), the ` +
@@ -2074,7 +2121,10 @@ export function runTool(
           if (existsSync(abs)) prior = readFileSync(abs, 'utf-8');
         } catch { /* unreadable — judge the snapshot alone */ }
         const stub = detectStub(rel, String(args.content ?? ''), prior);
-        if (stub.isStub) return stubRefusal(String(args.path), stub);
+        if (stub.isStub) {
+          readGate?.refusals.set(rel, readGate.nextSeq());
+          return stubRefusal(String(args.path), stub);
+        }
       }
       // Growth by repetition. Ordered LAST among the write guards: it is the
       // only one that reads the whole prior file for structure, so it never
@@ -2115,6 +2165,7 @@ export function runTool(
       // Feedback only — the write itself always lands. UAP_DELIVER_RUST_WRITE_CHECK=0 disables.
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
+      readGate?.refusals.delete(rel);
       return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)${pathNote}${rustCheckNote}${jsCheckNote}`;
     }
     if (name === 'edit_file') {
@@ -2150,7 +2201,7 @@ export function runTool(
       const internalEdit = gateScriptEdit ? null : agentInternalReason(projectRoot, abs, true);
       if (internalEdit) return internalEdit;
       if (!existsSync(abs)) {
-        return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.`;
+        return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.${nearestPathHint(projectRoot, String(args.path)) ?? ''}`;
       }
       const current = readFileSync(abs, 'utf-8');
 
@@ -2301,7 +2352,7 @@ export function runTool(
       const internal = gateScriptRange ? null : agentInternalReason(projectRoot, abs, true);
       if (internal) return internal;
       if (!existsSync(abs)) {
-        return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.`;
+        return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.${nearestPathHint(projectRoot, String(args.path)) ?? ''}`;
       }
       const current = readFileSync(abs, 'utf-8');
       const ranged = applyRangeEdit(
@@ -2665,6 +2716,9 @@ export function createAgenticExecutor(
   // at each turn open — see stateHashReference for why the two have different
   // lifetimes. Incremented once per turn by the wrapper below.
   const stateHashStore = newStateHashStore();
+  // Run-scoped substance-refusal ledger for the forced-read gate — survives
+  // turn boundaries (a refusal in turn k must gate the re-send in turn k+2).
+  const gutRefusals = new Map<string, number>();
   let stateHashTurn = 0;
   const allowBash =
     opts.allowBash === true ||
@@ -2701,6 +2755,22 @@ export function createAgenticExecutor(
     const summaries: string[] = [];
     // Per-session: what this agent has already read, and at what mtime.
     const readCache = newReadCache();
+    // The forced-read gate: same seq clock as the read cache, run-scoped ledger.
+    const readGate: ReadGate = {
+      refusals: gutRefusals,
+      readSeq: (relP) => {
+        let latest = 0;
+        for (const meta of readCache.seen.values()) {
+          if (meta.path === relP && (meta.seq ?? 0) > latest) latest = meta.seq ?? 0;
+        }
+        return latest;
+      },
+      nextSeq: () => {
+        const seq = readCache.nextSeq ?? 1;
+        readCache.nextSeq = seq + 1;
+        return seq;
+      },
+    };
     // A turn is a fresh conversation (messages rebuilt above), so no content
     // from a previous turn is in context: clear the served set, and the first
     // read of anything this turn pays full content again. Without this the
@@ -2917,7 +2987,8 @@ export function createAgenticExecutor(
               // Recovered writes mutate files too — the store must hear about
               // them or the next read could collapse to a stale reference.
               { store: stateHashStore, round, turn },
-              opts.writeAllowlistRef?.current
+              opts.writeAllowlistRef?.current,
+              readGate
             );
             opts.onEvent?.({
               round,
@@ -3076,7 +3147,8 @@ export function createAgenticExecutor(
           protectIac,
           opts.writeLedger,
           { store: stateHashStore, round, turn },
-          opts.writeAllowlistRef?.current
+          opts.writeAllowlistRef?.current,
+          readGate
         );
         // #2a: per-tool-call progress — refresh the deliver heartbeat now, not
         // just at turn end, so wedge-detection tracks real intra-turn activity.
