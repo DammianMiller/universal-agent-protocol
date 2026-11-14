@@ -4,9 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g., 1.7.0)'
+        # No default ON PURPOSE (2026-11-14): the stale '1.7.0' default was
+        # published-by-accident when a trigger accepted it — npm then refused
+        # ("cannot publish over 1.7.0"). An explicit version is now required.
+        description: 'Version to publish (e.g., 2.48.0 — no default; must pass explicitly)'
         required: true
-        default: '1.7.0'
       force:
         description: 'Force publish even if version exists'
         required: false
