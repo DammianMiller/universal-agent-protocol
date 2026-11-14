@@ -3,10 +3,11 @@
  * unmeasured handling, cost math, and the capacity-policy cross-check
  * (spec: docs/specs/operator-model-placement.md §4.1, §7).
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { parsePolicy } from '../../src/capacity/policy.js';
 import {
   configCostMiB,
   isPlaceable,
@@ -478,5 +479,109 @@ describe('repo registry: unsloth UD-IQ4_XS-v31 arm wiring', () => {
     } finally {
       rmSync(own, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-11-13: the Edge0 145B latent-MoE arm — the first edge0-strata engine
+// backend in the fleet (HF Edge0/Edge0-145B-q3k, derived from Qwen3.8-Flash-
+// Next; served by edge0-infer serve delegating to the edge0-strata fork,
+// inference-panel id edge0-145b, unit uap-edge0-145b-server.service).
+// ---------------------------------------------------------------------------
+
+describe('repo registry: edge0-145b latent-MoE arm wiring', () => {
+  it('ships the edge0 config with the full pinned manifest and fails closed until measured', () => {
+    const own = mkdtempSync(join(tmpdir(), 'edge0-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['edge0-145b'];
+      expect(entry, 'config/model-registry.json must carry the edge0-145b model').toBeTruthy();
+      expect(entry.engine).toBe('edge0-strata');
+      // Full unit name: the model is systemd-probed by its policy service,
+      // and the validator requires model.unit to equal the policy's unit.
+      expect(entry.unit).toBe('uap-edge0-145b-server.service');
+      expect(entry.endpoint).toBe('http://127.0.0.1:8080');
+      // The registration id edge0-infer serve advertises (--alias edge0_145b).
+      expect(entry.advertises).toContain('edge0_145b');
+      const cfg = entry.configs['edge0-145b-q3k'];
+      expect(cfg, 'config/model-registry.json must keep the edge0-145b-q3k arm').toBeTruthy();
+      expect(cfg.engine).toBe('edge0-strata');
+      expect(cfg.unit).toBe('uap-edge0-145b-server.service');
+      // Shape only until `uap models measure` records this machine (spec §4.1).
+      expect(isPlaceable(cfg)).toBe(false);
+      // The whole serving folder is pinned at one revision — 68 files: the
+      // big LFS blobs (experts, PLE, skeleton, both du variants, dense,
+      // labels, profile, MTP), all 48 Q3_K scales, the tokenizer and the
+      // pack metadata. Any one of them missing or corrupt stops serve, so
+      // `uap models ensure` must be able to restore any one of them.
+      expect(cfg.files).toHaveLength(68);
+      const REV = 'd7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74';
+      expect(cfg.files?.every((f) => f.repo === 'Edge0/Edge0-145B-q3k' && f.rev === REV)).toBe(true);
+      expect(
+        cfg.files?.every((f) => f.path.startsWith('/home/cogtek/models/Edge0-145B-q3k/')),
+      ).toBe(true);
+      const byName = new Map(cfg.files?.map((f) => [f.file, f]));
+      // The three giants: LFS oids are sha256 of content, verified by
+      // huggingface_hub at download time.
+      expect(byName.get('experts.bin')).toMatchObject({
+        bytes: 40076574720,
+        sha256: '947d15f3d69ecdb45d602a62bc84803451da779a22294e1db5b3568290b42879',
+      });
+      expect(byName.get('ple-fp8.gguf')).toMatchObject({
+        bytes: 51200246112,
+        sha256: 'c7615c59b060277ddf6f84729fa8f7469cfc82c7fb983d6e7eab5a2f7446f170',
+      });
+      expect(byName.get('model-skeleton.gguf')).toMatchObject({
+        bytes: 5991569248,
+        sha256: 'ab49fbe7590cdcda45d7a2bcae4be0bd42c6a70b951d594a00eb158d7df0b72f',
+      });
+      // Both D/U variants pinned, so the q4 choice is restorable too.
+      expect(byName.get('latent_dense_q8.bin')).toBeDefined();
+      expect(byName.get('latent_dense_q4.bin')).toBeDefined();
+      // The Q3_K scales (48 files, one per layer) and the MTP draft layer.
+      expect(cfg.files?.filter((f) => f.file.startsWith('scales/l')).length).toBe(48);
+      expect(byName.get('scales/l47.f32')).toMatchObject({ bytes: 7168 });
+      expect(byName.get('mtp/experts.bin')).toBeDefined();
+      expect(byName.get('mtp/draft_vocab.bin')).toBeDefined();
+      expect(byName.get('tokenizer/vocab.json')).toBeDefined();
+      expect(byName.get('model.json')).toBeDefined();
+      // Repo furniture (README, LICENSE, assets, start.sh, bench metadata)
+      // is not part of serving — it must not masquerade as one.
+      expect(byName.get('README.md')).toBeUndefined();
+      expect(byName.get('start.sh')).toBeUndefined();
+      expect(byName.get('model-bench.json')).toBeUndefined();
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+
+  it('cross-links the edge0-145b-server capacity service the registry declares', () => {
+    // The registry `service` field names a capacity-policy service — the
+    // validator errors when it does not exist — and the policy's unit must
+    // be the one the panel fleet starts (uap-edge0-145b-server.service).
+    const policy = parsePolicy(
+      readFileSync(join(repoRoot, 'config/capacity-policy.json'), 'utf8'),
+      'capacity-policy.json',
+    );
+    const svc = policy.services.find((s) => s.name === 'edge0-145b-server');
+    expect(svc).toBeDefined();
+    expect(svc?.systemd).toEqual({ unit: 'uap-edge0-145b-server.service', scope: 'user' });
+    // The ExecStart drift pins mirror the unit's actual command line
+    // (verified against the `systemctl --user show` rendering, 2026-11-13;
+    // --vram-reserve-mib and 1200 are separate words there, separated by
+    // the repeating --strata-arg, so they are pinned separately).
+    expect(svc?.budget?.execStartMustContain).toEqual(
+      expect.arrayContaining([
+        '--model /home/cogtek/models/Edge0-145B-q3k',
+        '--port 8080',
+        '--alias edge0_145b',
+        '--vram-reserve-mib',
+        '1200',
+      ]),
+    );
+    // Same engine-manages-its-own-reserve doctrine as strata-server.
+    expect(svc?.headroom).toEqual({ gpuMinFreeMiB: 200 });
+    expect(svc?.restartBudget).toEqual({ knownRestarts: 0, allowedNew: 0 });
   });
 });
