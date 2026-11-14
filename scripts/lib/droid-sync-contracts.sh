@@ -66,6 +66,20 @@ _UAP_DROID_SYNC_CONTRACTS_LOADED=1
 # local model id — it must never carry a qwen id.
 : "${DROID_ANTHROPIC_BASE_MODEL:=claude-sonnet-4-6}"
 
+# DROID_CHAT_BASE_MODEL — the Factory BUILT-IN catalog id written into
+# `baseModelId` of the OpenAI-shaped local entries (the proxy chat /v1 route
+# and the direct Responses :8080 route). qwen3.8-max is the choice because the
+# served stack IS the Qwen3.8 family (Flash-Next 125B arms and its Edge0-145B
+# latent-MoE derivative): the entry inherits the built-in's Qwen3.8-class
+# prompts, tool-call conventions, reasoning levels, and Script-mode
+# eligibility instead of tripping the "does not map to a built-in model"
+# warning. Same family, same catalog — this is a BUILT-IN id, never a local
+# wire id: it must never be the served alias, a retired arm, or anything the
+# registry's advertises lists carry. (The prefix-era guard "never a qwen id"
+# predates the Factory catalog gaining Qwen3.8 built-ins; the exact local-id
+# check lives in the sandbox suite.)
+: "${DROID_CHAT_BASE_MODEL:=qwen3.8-max}"
+
 # DROID_SYNC_LOCK — lock file serialising concurrent Droid config writes
 # (session-start hook + manual installer run + a second Droid window).
 # Without it two writers read-modify-write the same JSON and one set of
@@ -95,15 +109,23 @@ fi
 #            in place or left alone. "0" = patch only when present.
 #   Reads from the caller's scope: MODEL_ALIAS, PROXY_URL, DIRECT_URL,
 #   CTX_SESSION, CTX_POOL, MAX_OUTPUT, DROID_ANTHROPIC_BASE_MODEL,
-#   PROXY_TOKEN (via UAP_SYNC_TOKEN env), DRY_RUN.
+#   DROID_CHAT_BASE_MODEL, PROXY_TOKEN (via UAP_SYNC_TOKEN env), DRY_RUN.
 #   Migration rules (idempotent; no change => file left byte-identical):
-#     * entries whose model is a RETIRED local id — or already the live
-#       alias, or model-less but pointed at :4000/:8080 — converge onto
-#       MODEL_ALIAS;
+#     * entries whose model is a RETIRED local id — already the live alias,
+#       a FLEET wire id (any registry advertises entry) pointed at this
+#       box's :4000/:8080, or model-less but pointed at :4000/:8080 —
+#       converge onto MODEL_ALIAS (fleet ids are gated on a local base:
+#       the compat names collide with real cloud ids, so a cloud-router
+#       entry carrying one survives untouched);
 #     * route by existing shape: baseUrl with :8080 -> direct strata route
 #       (pool-sized); :4000 WITHOUT /v1 -> Anthropic Messages root (proxy
-#       root + baseModelId + apiKey only if absent, session-sized); anything
-#       else local -> proxy chat route ($PROXY_URL/v1 + token);
+#       root + baseModelId=DROID_ANTHROPIC_BASE_MODEL + apiKey only if
+#       absent, session-sized); anything else local -> proxy chat route
+#       ($PROXY_URL/v1 + token); every camelCase local route also gains
+#       baseModelId (anthropic shape -> DROID_ANTHROPIC_BASE_MODEL, OpenAI
+#       shapes -> DROID_CHAT_BASE_MODEL) when absent, so Droid inherits the
+#       built-in's prompts/tools/reasoning instead of warning the entry
+#       "does not map to a built-in model";
 #     * cloud models (anything else, including the :8317 router entries) are
 #       deliberate user choices and are never repointed;
 #     * a settings.json with NO local entry after migration gains the

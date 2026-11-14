@@ -17,7 +17,11 @@ import { resolve } from 'node:path';
  * skipIf absent — CI has no .factory) must call it. The sync-tooling
  * assertions are textual contracts, same doctrine as the rails 'client sync
  * tooling' block: the script must derive ids from the profile and migrate
- * every retired arm alias, never transcribe them.
+ * every retired arm alias, never transcribe them. Since 2026-11-14 the
+ * chain also carries the baseModelId link: every local route must name a
+ * Factory BUILT-IN (qwen3.8-max for the OpenAI shapes) so Droid inherits
+ * the model's prompts/tools/reasoning instead of warning the entry "does
+ * not map to a built-in model".
  */
 
 const ROOT = resolve(__dirname, '..');
@@ -65,6 +69,22 @@ const arm = registry.models['qwen3.8-flash-next'];
 // transcribes them either.
 const RETIRED = registry.retired_local_aliases ?? [];
 
+// Fleet wire ids: every id any family advertises — the set the installer's
+// ours-rule matches (at local ports), derived here the same way the script
+// derives it, never transcribed.
+const FLEET = new Set(
+  Object.values(registry.models).flatMap((m) => m.advertises ?? []),
+);
+
+// The Factory BUILT-IN written into baseModelId of the OpenAI-shaped local
+// routes. Parsed out of the shared contract (the one source of the default),
+// then guarded below: a built-in id can never be the served alias, a
+// retired arm, or a fleet wire id — those are the LOCAL ids that reproduce
+// the "does not map to a built-in model" warning this link exists to close.
+const CONTRACTS = readFileSync(resolve(ROOT, 'scripts/lib/droid-sync-contracts.sh'), 'utf8');
+const CHAT_BASE_MATCH = /DROID_CHAT_BASE_MODEL:=([^}"\s]+)/.exec(CONTRACTS);
+const CHAT_BASE = CHAT_BASE_MATCH?.[1] ?? '';
+
 describe('qwen38 model knowledge — registry follows the profile', () => {
   it('advertises the alias the profile pins, so placement can match the served id', () => {
     expect(arm.advertises).toContain(profile.model);
@@ -111,9 +131,40 @@ describe('qwen38 client sync tooling — droid list follows the profile', () => 
     expect(script).toMatch(/\/props/);
   });
 
+  it('derives the fleet wire ids from the registry advertises, never transcribed', () => {
+    // The ours-rule must match LIVE arm pins (edge0_145b, the abliterated
+    // tiers) that left retired_local_aliases when they went live again —
+    // the drift that left the sandbox suite red on master — while the
+    // compat ids (gpt-5.1-codex) stay gated on a local base.
+    expect(script).toContain('advertises');
+    expect(script).toContain('FLEET');
+    // the ours rule gates fleet pins on this box's ports (compat ids are
+    // ambiguous by name: they collide with real cloud model ids)
+    expect(script).toMatch(/if not ours and model in FLEET:/);
+  });
+
+  it('names a Factory built-in in baseModelId for every local route shape', () => {
+    expect(script).toContain('DROID_CHAT_BASE_MODEL');
+    expect(script).toContain('DROID_ANTHROPIC_BASE_MODEL');
+    // both shapes set-if-absent (a user's explicit baseModelId choice wins)
+    expect(script).toMatch(/if camel and not m\.get\("baseModelId"\)/);
+  });
+
   it('exercises add-if-missing and the models-only isolation in the sandbox test', () => {
     expect(sandbox).toContain('PROJECT_FACTORY_SET');
     expect(sandbox).toContain('MODELS_ONLY=1');
+  });
+});
+
+describe('chat baseModelId names a Factory built-in, never a local id', () => {
+  it('is defined in the shared contract', () => {
+    expect(CHAT_BASE, 'DROID_CHAT_BASE_MODEL default is unparsable or absent').not.toBe('');
+  });
+
+  it('is not the served alias, a retired arm, or a fleet wire id', () => {
+    expect(CHAT_BASE).not.toBe(profile.model);
+    expect(RETIRED, 'chat base is a retired local id').not.toContain(CHAT_BASE);
+    expect(FLEET, 'chat base is a fleet-advertised local wire id').not.toContain(CHAT_BASE);
   });
 });
 
@@ -122,9 +173,9 @@ const USER_SET = resolve(homedir(), '.factory/settings.json');
 
 /**
  * Route invariants for any entry pinned to the live alias: the direct route
- * is pool-sized, both proxy routes are session-sized, and the anthropic
- * Messages entry must name a Factory built-in in baseModelId (or Droid warns
- * it "does not map to a built-in model" and drops tool-call inheritance).
+ * is pool-sized, both proxy routes are session-sized, and every route names
+ * a Factory built-in in baseModelId (or Droid warns it "does not map to a
+ * built-in model" and drops prompts/tools/reasoning inheritance).
  */
 function expectRoutesConverged(entries: DroidModel[]): void {
   expect(entries.length, 'no entry pinned to the profile alias').toBeGreaterThan(0);
@@ -135,10 +186,18 @@ function expectRoutesConverged(entries: DroidModel[]): void {
       expect(m.maxContextLimit, 'direct route is pool-sized').toBe(
         profile.server_optimization.kv_capacity,
       );
+      expect(
+        m.baseModelId,
+        'direct entry lacks baseModelId (no prompts/tools inheritance)',
+      ).toBeTruthy();
     } else if (base.includes(':4000')) {
       expect(m.maxContextLimit, 'proxy route is session-sized').toBe(profile.context_window);
       if (base.endsWith('/v1')) {
         expect(base, 'chat route').toBe('http://127.0.0.1:4000/v1');
+        expect(
+          m.baseModelId,
+          'chat entry lacks baseModelId (no prompts/tools inheritance)',
+        ).toBeTruthy();
       } else {
         expect(base, 'anthropic route is the proxy ROOT (no /v1)').toBe('http://127.0.0.1:4000');
         expect(
@@ -152,11 +211,55 @@ function expectRoutesConverged(entries: DroidModel[]): void {
   }
 }
 
+/**
+ * Fleet wire ids pinned at THIS box's ports are drift the sync converges
+ * onto the ONE alias the backend serves (the engine serves one arm at a
+ * time; the pin never routes). The MODELS_ONLY hook converges onto the LIVE
+ * alias when the profile is stale (its own contract: live reality over a
+ * stale profile), so the machine-local invariant is uniformity — every
+ * local fleet pin shares ONE non-retired arm id — not the profile alias
+ * specifically. Scattered per-arm pins are the drift class.
+ */
+function expectFleetPinsConverged(models: DroidModel[]): void {
+  const localFleetPins = models.filter((m) => {
+    const base = String(m.baseUrl ?? '');
+    const localPort = base.includes(':4000') || base.includes(':8080');
+    return localPort && !!m.model && FLEET.has(m.model);
+  });
+  if (localFleetPins.length === 0) return;
+  const ids = new Set(localFleetPins.map((m) => m.model));
+  expect(
+    ids.size,
+    `local fleet pins did not converge onto one served alias: ${[...ids].join(', ')}`,
+  ).toBe(1);
+  const pinned = [...ids][0] as string;
+  expect(RETIRED, `local entries pinned to a RETIRED arm: ${pinned}`).not.toContain(pinned);
+}
+
+/**
+ * The alias the settings actually carry: the profile pin when the profile
+ * is fresh, else the non-retired fleet id the MODELS_ONLY hook converged
+ * onto (the stale-profile case above). Fleet ids are ambiguous BY NAME
+ * (the compat list collides with real cloud ids like gpt-5.1-codex), so
+ * the fallback gates on this box's ports exactly like the sync's ours-rule.
+ * Route invariants apply to either.
+ */
+function liveAliasEntries(models: DroidModel[]): DroidModel[] {
+  const pinned = models.filter((m) => m.model === profile.model);
+  if (pinned.length > 0) return pinned;
+  return models.filter((m) => {
+    const base = String(m.baseUrl ?? '');
+    const localPort = base.includes(':4000') || base.includes(':8080');
+    return localPort && !!m.model && FLEET.has(m.model) && !RETIRED.includes(m.model);
+  });
+}
+
 describe('droid settings call the alias the profile pins', () => {
   it.skipIf(!existsSync(PROJECT_SET))('project customModels carry the live alias on all routes', () => {
     const d = readJson<DroidSettings>(PROJECT_SET);
-    const entries = (d.customModels ?? []).filter((m) => m.model === profile.model);
+    const entries = liveAliasEntries(d.customModels ?? []);
     expectRoutesConverged(entries);
+    expectFleetPinsConverged(d.customModels ?? []);
     for (const m of d.customModels ?? []) {
       expect(RETIRED, `retired id still pinned: ${String(m.model)}`).not.toContain(m.model);
     }
@@ -172,8 +275,9 @@ describe('droid settings call the alias the profile pins', () => {
 
   it.skipIf(!existsSync(USER_SET))('user settings carry the live alias too (every Droid instance)', () => {
     const d = readJson<DroidSettings>(USER_SET);
-    const entries = (d.customModels ?? []).filter((m) => m.model === profile.model);
+    const entries = liveAliasEntries(d.customModels ?? []);
     expectRoutesConverged(entries);
+    expectFleetPinsConverged(d.customModels ?? []);
     for (const m of d.customModels ?? []) {
       expect(RETIRED, `retired id still pinned: ${String(m.model)}`).not.toContain(m.model);
     }
