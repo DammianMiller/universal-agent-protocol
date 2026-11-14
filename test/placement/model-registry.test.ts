@@ -467,18 +467,23 @@ describe('repo registry: unsloth UD-IQ4_XS-v31 arm wiring', () => {
       const entry = loaded.registry.models['qwen3.8-flash-next'];
       expect(entry.configs['strata-iq3_s']).toBeUndefined();
       // What remains: the v31 default, the switchable abliterated IQ2_XS and
-      // IQ3_S arms, and the Swift 1.5 A/B arm — each naming the unit that
+      // IQ3_S arms, the Swift 1.5 A/B arm, and the unsloth UD-Q3_K_XL arm
+      // (the IQ3_S-class tier staged 2026-11-14) — each naming the unit that
       // actually serves it.
       expect(Object.keys(entry.configs).sort()).toEqual([
         'strata-abliterated-iq2_xs',
         'strata-abliterated-iq3_s',
         'strata-swift-iq3_s',
         'strata-unsloth-ud-iq4_xs-v31',
+        'strata-unsloth-ud-q3_k_xl',
       ]);
       expect(entry.configs['strata-abliterated-iq2_xs'].unit).toBe('uap-strata-abliterated-server');
       expect(entry.configs['strata-abliterated-iq3_s'].unit).toBe('uap-strata-abliterated-iq3_s-server');
       expect(entry.configs['strata-swift-iq3_s'].unit).toBe('uap-strata-swift-server');
       expect(entry.configs['strata-unsloth-ud-iq4_xs-v31'].unit).toBe('uap-strata-server');
+      expect(entry.configs['strata-unsloth-ud-q3_k_xl'].unit).toBe(
+        'uap-strata-unsloth-q3_k_xl-server',
+      );
     } finally {
       rmSync(own, { recursive: true, force: true });
     }
@@ -657,5 +662,78 @@ describe('repo registry: edge0-145b latent-MoE arm wiring', () => {
     // Same engine-manages-its-own-reserve doctrine as strata-server.
     expect(svc?.headroom).toEqual({ gpuMinFreeMiB: 200 });
     expect(svc?.restartBudget).toEqual({ knownRestarts: 0, allowedNew: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-11-14: the unsloth UD-Q3_K_XL arm — the IQ3_S-CLASS tier of
+// unsloth/Qwen3.8-Flash-Next-GGUF (the repo ships no IQ3_S; its 3-bit ladder
+// tops out at UD-Q3_K_XL 3.5 bpw, the same class as the fleet's IQ3_S arms),
+// staged as the switchable inference-panel arm ABOVE the v31 UD-IQ4_XS
+// default (panel id strata-unsloth-q3_k_xl, unit
+// uap-strata-unsloth-q3_k_xl-server.service).
+// ---------------------------------------------------------------------------
+
+describe('repo registry: strata-unsloth-ud-q3_k_xl arm wiring', () => {
+  it('ships the q3_k_xl config with the pinned 4-shard manifest and fails closed until measured', () => {
+    const own = mkdtempSync(join(tmpdir(), 'q3kxl-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['qwen3.8-flash-next'];
+      // The registration id this arm advertises at /v1/models (cfg model_name).
+      expect(entry.advertises).toContain('qwen3.8-flash-next-unsloth-ud-q3_k_xl');
+      const cfg = entry.configs['strata-unsloth-ud-q3_k_xl'];
+      expect(cfg, 'config/model-registry.json must keep the q3_k_xl arm').toBeTruthy();
+      expect(cfg.engine).toBe('strata');
+      expect(cfg.unit).toBe('uap-strata-unsloth-q3_k_xl-server');
+      // Shape only until `uap models measure` records this machine (spec §4.1).
+      expect(isPlaceable(cfg)).toBe(false);
+      // Head-pinned like every shipped manifest — `uap models ensure` must be
+      // able to re-fetch and verify from this pin (the openjet lesson).
+      expect(cfg.files).toHaveLength(4);
+      const REV = '39e6e4a86cc6517a6f39ef37adce5e9f3a81280c';
+      expect(
+        cfg.files?.every((f) => f.repo === 'unsloth/Qwen3.8-Flash-Next-GGUF' && f.rev === REV),
+      ).toBe(true);
+      expect(
+        cfg.files?.every((f) =>
+          f.path.startsWith('/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/'),
+        ),
+      ).toBe(true);
+      expect(cfg.files?.map((f) => f.file)).toEqual([
+        'UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00004.gguf',
+        'UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00004.gguf',
+        'UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00004.gguf',
+        'engram/Qwen3.8-Flash-Next-engram-Q8_0.gguf_file',
+      ]);
+      // Shards 1-3: the release's own files, pinned to the HF LFS oids
+      // (verified against the downloaded bytes 2026-11-14).
+      expect(cfg.files?.[0]).toMatchObject({
+        bytes: 10946618,
+        sha256: '7666000ba91eb5527f8e12e0414de36766dc82a082876337f7827c2caa859143',
+      });
+      expect(cfg.files?.[1]).toMatchObject({
+        bytes: 49742117248,
+        sha256: 'e954cb3044ae087a003ce8cc1631c9d40fe15ae64a8befcf4aa06457848c647c',
+      });
+      expect(cfg.files?.[2]).toMatchObject({
+        bytes: 10911746208,
+        sha256: 'fcce26b1e5e6e54559a7e7c2f8d6e37067ec695ff1f14bce662810bde78abe1f',
+      });
+      // Shard 4: NOT the set's native 28.8 GB IQ4_NL engram but the Q8_0
+      // engram table, restamped via set_split.py and HARDLINKED from the v31
+      // set's shard 4 — zero extra disk, the measured-best table (+19-22%
+      // long-prompt decode, the 11-13 swap round). The pinned sha256 is the
+      // LOCAL post-restamp hash (what the .done marker verifies), the same
+      // convention as the v31 set's marker.
+      expect(cfg.files?.[3]).toMatchObject({
+        file: 'engram/Qwen3.8-Flash-Next-engram-Q8_0.gguf_file',
+        bytes: 54400261312,
+        sha256: '4375b925a3abfb3859f6b634dafaab3343d9e2cdf9b3452253be465a12361426',
+      });
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
   });
 });
