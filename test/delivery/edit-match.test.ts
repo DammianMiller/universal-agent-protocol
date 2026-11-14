@@ -215,3 +215,82 @@ describe('isIndentSensitive', () => {
     }
   });
 });
+
+describe('rung 1.5 — listing-prefixed needle (Turnpack idea, attribution in edit-match.ts)', () => {
+  it('strips numbered-listing prefixes copied from read output and applies the edit', () => {
+    // read_file hands listings as "   12| code" — a model copying that anchor
+    // verbatim must not lose the turn.
+    const needle = '    2|     const msg = `hello ${name}`;\n    3|     return msg;';
+    const m = resolveEditMatch(FILE, needle);
+    expect(m.kind).toBe('tolerant');
+    expect(m.note).toContain('listing prefixes');
+    const out = applyEditMatch(FILE, m, '    const msg = `hi ${name}`;\n    return msg;');
+    expect(out).toContain('`hi ${name}`');
+    expect(out).not.toContain('2|');
+  });
+
+  it('accepts a single-line listing anchor when the code beneath is unique', () => {
+    const m = resolveEditMatch(FILE, '3: return msg;');
+    expect(m.kind).toBe('tolerant');
+    expect(applyEditMatch(FILE, m, 'return msg.trim();')).toContain('return msg.trim();');
+  });
+
+  it('accepts arrow-prefixed (Droid-style 12→code) anchors', () => {
+    const m = resolveEditMatch(FILE, '2→    return msg;');
+    expect(m.kind).toBe('tolerant');
+    expect(applyEditMatch(FILE, m, '    return msg.trim();')).toContain('return msg.trim();');
+  });
+
+  it('refuses a listing anchor whose code matches several places', () => {
+    const doubled = 'let a = 1;\nlet b = 2;\nlet a = 1;\n';
+    const m = resolveEditMatch(doubled, '1| let a = 1;');
+    expect(m.kind).toBe('ambiguous');
+    expect(m.note).toContain('ambiguous');
+  });
+
+  it('does NOT treat ordinary numbered code as a listing (non-consecutive numbers refused)', () => {
+    // A switch-cascade-like block: numbers are the code, and scattered.
+    const code = 'case 1| x: break;\ncase 5| x: break;\ncase 9| x: break;\n';
+    const m = resolveEditMatch(code, 'case 1| x: break;\ncase 5| x: break;');
+    expect(m.kind).not.toBe('tolerant');
+  });
+
+  it('falls through to whitespace tolerance on the STRIPPED text, not the prefixes', () => {
+    // Listing copy with wrong indentation under the prefix: rung 1.5 must strip,
+    // then the tolerant search on the code text must still land uniquely.
+    const needle = '    2|   const msg = `hello ${name}`;';
+    const m = resolveEditMatch(FILE, needle);
+    expect(m.kind).toBe('tolerant');
+    expect(applyEditMatch(FILE, m, '    const msg = `yo ${name}`;')).toContain('`yo ${name}`');
+  });
+
+  it('a genuine miss under a listing carries the listing note plus the nearest region', () => {
+    const m = resolveEditMatch(FILE, '2|     const msg = `goodbye ${name}`;');
+    expect(m.kind).toBe('miss');
+    expect(m.note).toContain('listing prefixes were stripped');
+    expect(m.note).toContain('Nearest region');
+  });
+
+  it('blank lines inside a listing copy are tolerated', () => {
+    const file = 'alpha();\n\nbeta();\n';
+    const m = resolveEditMatch(file, '1| alpha();\n\n2| beta();');
+    expect(m.kind).toBe('tolerant');
+    expect(applyEditMatch(file, m, 'alpha2();\n\nbeta();')).toContain('alpha2()');
+  });
+});
+
+describe('miss diagnostics — first differing line (Turnpack miss-reply shape)', () => {
+  it('names the first differing search/file line pair when the region is close', () => {
+    const report = nearestMatchReport(FILE, '    const msg = `hello ${name}!`;\n    return msg;');
+    expect(report).toContain('First difference');
+    expect(report).toContain('search has:');
+    expect(report).toContain('file has:');
+    expect(report).toMatch(/search has:.*\$\{name\}!/);
+    expect(report).toContain('file has:   const msg = `hello ${name}`;');
+  });
+
+  it('stays a plain nearest-region report when nothing aligns', () => {
+    const report = nearestMatchReport(FILE, 'zzz totally unrelated qqq');
+    expect(report).not.toContain('First difference');
+  });
+});

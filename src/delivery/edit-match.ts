@@ -14,12 +14,17 @@
  *
  *   1. EXACT      — byte-identical substring. Unchanged, always tried first, so
  *                   a model that gets it right sees identical behaviour.
+ *   1.5 LISTING   — the needle is a copy of a numbered listing (`12| code`);
+ *                   strip the prefixes and match the code text. Uniqueness
+ *                   required. (Idea from Turnpack, github.com/OnlyTerp/turnpack,
+ *                   Apache-2.0 — see `stripListingPrefixes`.)
  *   2. TOLERANT   — line-aligned match after per-line whitespace normalisation
  *                   (leading/trailing trimmed, internal runs collapsed). Catches
  *                   the dominant real miss: right code, wrong indentation.
  *   3. NEAREST    — no match at all, so instead of "not found" we return the
  *                   closest region of the file with line numbers, turning a dead
- *                   turn into a corrective one.
+ *                   turn into a corrective one — plus the first differing line
+ *                   pair, when the region is close (Turnpack's miss-reply shape).
  *
  * Everything here is PURE (string in, decision out) so the ladder is unit
  * testable without a model, a file system, or a delivery run.
@@ -205,6 +210,59 @@ function tolerantSpans(
 }
 
 /**
+ * Strip a uniform line-number listing prefix from an edit anchor.
+ *
+ * WHY: `read_file` hands the model numbered listings (`   12| code`, and other
+ * harnesses use `12:code` or `12→code`), and the measured failure anatomy
+ * (docs/plans/droid-client-performance-options.md, class edit-miss, 642 calls)
+ * shows models copying the anchor straight out of that listing — prefix and
+ * all — which then misses on every rung of this ladder because the file itself
+ * carries no line numbers. The idea of tolerating copied line numbers in an
+ * edit search is taken from Turnpack (github.com/OnlyTerp/turnpack, Apache-2.0,
+ * `ship`'s "line numbers copied from a listing" rung); this is an independent
+ * implementation with UAP's stricter guards.
+ *
+ * Accepted ONLY when the needle is unmistakably a listing copy:
+ *  - EVERY non-empty line carries the same `\d+<sep>` shape (separator one of
+ *    `|`, `:`, `→`, `=>` followed by optional space), and
+ *  - when there is more than one numbered line, the numbers are consecutive
+ *    (a contiguous copy of a listing is what a real model paste looks like;
+ *    scattered numbers are far more likely to be the code itself, e.g. a
+ *    table or a switch cascade — refuse rather than edit the wrong block).
+ *
+ * Returns the anchor with prefixes removed (original indentation after the
+ * separator is kept), or null when the needle is not a listing copy. Blank
+ * lines within the needle are allowed and pass through untouched.
+ */
+const LISTING_PREFIX = /^[ \t]*(\d{1,6})[ \t]*(?:=>|\||→|:)[ \t]?/;
+
+export function stripListingPrefixes(needle: string): string | null {
+  const lines = needle.split('\n');
+  const numbered: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === '') continue;
+    const m = LISTING_PREFIX.exec(lines[i]);
+    if (!m) return null;
+    numbered.push(i);
+  }
+  if (numbered.length === 0) return null;
+  // Consecutive numbers across the non-blank lines: step of 1 between each
+  // numbered line that follows another (blank lines in the needle are rare in
+  // a copy but tolerated; the FILE may hold blank lines between them, which
+  // the line-window search below does not see — that is fine, this only needs
+  // to prove the needle is a listing, not to match it).
+  for (let k = 1; k < numbered.length; k++) {
+    const prev = Number(LISTING_PREFIX.exec(lines[numbered[k - 1]])?.[1] ?? NaN);
+    const cur = Number(LISTING_PREFIX.exec(lines[numbered[k]])?.[1] ?? NaN);
+    if (!Number.isFinite(prev) || !Number.isFinite(cur) || cur !== prev + 1) return null;
+  }
+  // A single numbered line is accepted: it cannot be a coincidence of code
+  // that ALSO needs the prefix gone, and the uniqueness requirement downstream
+  // keeps it safe.
+  return lines.map((l) => l.replace(LISTING_PREFIX, '')).join('\n');
+}
+
+/**
  * Build the nearest-match report shown when nothing matched.
  *
  * The model's failure is almost always "my memory of the file is stale", so the
@@ -240,11 +298,96 @@ export function nearestMatchReport(haystack: string, needle: string, maxLines = 
     .slice(from, to + 1)
     .map((l, i) => `${String(from + i + 1).padStart(5)}| ${l}`)
     .join('\n');
+  // FIRST DIFFERING LINE (idea from Turnpack's `ship` miss reply, Apache-2.0):
+  // when the needle aligns at the anchor but a line differs, name the pair so
+  // the fix needs no extra round to spot it. Compared on the SAME normalised
+  // form the tolerant rung uses; the excerpt above carries the raw text the
+  // model should copy next.
+  let diffNote = '';
+  const wanted = needle
+    .split('\n')
+    .map((l) => normalizeLine(l))
+    .filter((l) => l !== '');
+  for (let k = 0; k < wanted.length && bestLine + k < hayLines.length; k++) {
+    const fileLine = normalizeLine(hayLines[bestLine + k]);
+    if (fileLine !== wanted[k]) {
+      diffNote =
+        `\nFirst difference, at line ${bestLine + k + 1}:\n` +
+        `  search has: ${truncateForReport(wanted[k])}\n` +
+        `  file has:   ${truncateForReport(fileLine)}`;
+      break;
+    }
+  }
   return (
     `Nearest region in the CURRENT file (lines ${from + 1}-${to + 1}, ` +
-    `best anchor line ${bestLine + 1}):\n${excerpt}\n` +
+    `best anchor line ${bestLine + 1}):\n${excerpt}${diffNote}\n` +
     `Copy the exact text above, or use edit_range with start_line/end_line.`
   );
+}
+
+/** Cap one reported line so a pathological long line cannot flood context. */
+function truncateForReport(line: string, max = 200): string {
+  return line.length > max ? line.slice(0, max) + '…' : line;
+}
+
+/**
+ * Continuation of rung 1.5 for a listing-stripped needle with no exact hit:
+ * the whitespace-tolerant search runs against the STRIPPED code text (the
+ * prefixes themselves can never match a file), then the miss rung reports
+ * against it too. Shares the tolerant rung's uniqueness requirement and the
+ * miss rung's nearest-region diagnostics; only the `note` differs, so the
+ * model learns its anchor came from a listing.
+ */
+function resolveListingStrippedMiss(
+  current: string,
+  strippedNeedle: string,
+  tolerant: boolean,
+  diagnostics: boolean,
+  indentSensitive: boolean,
+): EditMatch {
+  const LISTING_NOTE =
+    'old_string carried line-number listing prefixes (e.g. "12| ") — they were stripped; ';
+  if (tolerant) {
+    const spans = tolerantSpans(current, strippedNeedle, indentSensitive);
+    if (spans.length === 1) {
+      const span = spans[0];
+      return {
+        kind: 'tolerant',
+        index: span.index,
+        length: span.length,
+        count: 1,
+        targetIndent: span.indent,
+        needleIndent: indentOf(strippedNeedle.split('\n')[0] ?? ''),
+        lineAligned: true,
+        note:
+          LISTING_NOTE +
+          'the edit was applied after also normalising whitespace. ' +
+          'Re-read the file before the next edit; anchors must be the file content, not the listing.',
+      };
+    }
+    if (spans.length > 1) {
+      return {
+        kind: 'ambiguous',
+        index: -1,
+        length: 0,
+        count: spans.length,
+        note:
+          LISTING_NOTE +
+          `it matches ${spans.length} places once whitespace is normalised — too ambiguous to ` +
+          `guess at. Re-read the file and copy the exact text, or use edit_range.`,
+      };
+    }
+  }
+  const report = diagnostics ? nearestMatchReport(current, strippedNeedle) : '';
+  return {
+    kind: 'miss',
+    index: -1,
+    length: 0,
+    count: 0,
+    note: report
+      ? `old_string not found (line-number listing prefixes were stripped).\n${report}`
+      : 'old_string not found — re-read the file and match the CURRENT content (not the numbered listing).',
+  };
 }
 
 /**
@@ -291,6 +434,49 @@ export function resolveEditMatch(
     let idx = -1;
     for (let i = 0; i < which; i++) idx = current.indexOf(oldStr, idx + 1);
     return { kind: 'exact', index: idx, length: oldStr.length, count: exactCount };
+  }
+
+  // --- Rung 1.5: listing-prefixed needle (Turnpack idea, see stripListingPrefixes) --
+  // Tried BEFORE the whitespace-tolerant rung: a listing copy usually holds the
+  // file's exact bytes after the prefix, so this can match byte-exactly and the
+  // whitespace rung stays reserved for genuine indentation drift. Uniqueness is
+  // required like the tolerant rung; `occurrence` is ignored for the same
+  // reason (it counts a different candidate list).
+  const strippedNeedle = stripListingPrefixes(oldStr);
+  if (strippedNeedle !== null && strippedNeedle.trim() !== '') {
+    const strippedCount = current.split(strippedNeedle).length - 1;
+    if (strippedCount === 1) {
+      const idx = current.indexOf(strippedNeedle);
+      return {
+        kind: 'tolerant',
+        index: idx,
+        length: strippedNeedle.length,
+        count: 1,
+        targetIndent: indentOf(current.slice(idx).split('\n')[0] ?? ''),
+        needleIndent: indentOf(strippedNeedle.split('\n')[0] ?? ''),
+        lineAligned: true,
+        note:
+          'old_string carried line-number listing prefixes (e.g. "12| ") — they were stripped and ' +
+          'the edit was applied to the code text. Re-read the file before the next edit; anchors ' +
+          'must be the file content, not the listing.',
+      };
+    }
+    if (strippedCount > 1) {
+      return {
+        kind: 'ambiguous',
+        index: -1,
+        length: 0,
+        count: strippedCount,
+        note:
+          `old_string carried line-number listing prefixes, and the code beneath them matches ` +
+          `${strippedCount} places — too ambiguous to guess at. Re-read the file and copy the exact ` +
+          `text without the line numbers, or use edit_range with explicit line numbers.`,
+      };
+    }
+    // 0 stripped-exact hits: fall through with the stripped needle, so the
+    // whitespace-tolerant rung also works on the code text rather than the
+    // listing prefixes (which can never match).
+    return resolveListingStrippedMiss(current, strippedNeedle, tolerant, diagnostics, indentSensitive);
   }
 
   // --- Rung 2: whitespace-tolerant ----------------------------------------
