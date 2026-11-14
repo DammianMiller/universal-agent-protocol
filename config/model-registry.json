@@ -119,6 +119,46 @@
             }
           ]
         },
+        "strata-unsloth-ud-q3_k_xl": {
+          "status": "unmeasured",
+          "engine": "strata",
+          "unit": "uap-strata-unsloth-q3_k_xl-server",
+          "note": "The unsloth IQ3_S-CLASS arm — user-directed 2026-11-14: unsloth/Qwen3.8-Flash-Next-GGUF ships NO IQ3_S tier; its 3-bit ladder is UD-IQ3_XXS (3.0 bpw, 83.6 GB) and UD-Q3_K_XL (3.5 bpw, 89.5 GB), and UD-Q3_K_XL is the same bpw class as the fleet's IQ3_S arms — the tier staged here. Set: the 4-shard UD-Q3_K_XL release at rev 39e6e4a8 (Better UD 3.1 quants); shards 1-3 downloaded (10.9 MB + 49.7 GB + 10.9 GB, sha256 = the HF LFS oids); shard 4 is NOT the set's native 28.8 GB IQ4_NL engram but the Q8_0 engram (engram/Qwen3.8-Flash-Next-engram-Q8_0.gguf_file, 54.4 GB, upstream oid e3d76a27...) restamped split.no=3/count=4 via unsloth's set_split.py and HARDLINKED from the v31 set's shard 4 — zero extra disk, the measured-best table (+19-22% long-prompt decode vs IQ4_NL, the 11-13 swap round); the sha256 below is the LOCAL post-restamp hash (what the .done marker verifies), same as the v31 set's shard-4 marker. Config strata-unsloth-ud-q3_k_xl.json — the v31 posture flag-for-flag (spec 4 window auto-negotiates 12/4, spec-min-p 0.5, --mtp mtp/rt, int8 KV resident 32768, 131k ctx, --vision shared mmproj, vram-reserve 3072) with --resident-budget-gib 40 (the Q3_K_XL expert set is smaller than v31's — more headroom; never full-pin, see the 10-28 OOM doctrine in uap-strata-abliterated-server.service). Pack packs/unsloth-ud-q3_k_xl (tools/iq_pack.py, from the set). Unit uap-strata-unsloth-q3_k_xl-server.service (OOMPolicy=continue doctrine), advertises qwen3.8-flash-next-unsloth-ud-q3_k_xl at /v1/models. Switch: model-switch.sh strata-unsloth-q3_k_xl (revert: strata or any arm). Run `uap models measure` against it before placement loads it (fail-closed).",
+          "files": [
+            {
+              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00004.gguf",
+              "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+              "rev": "39e6e4a86cc6517a6f39ef37adce5e9f3a81280c",
+              "file": "UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00004.gguf",
+              "bytes": 10946618,
+              "sha256": "7666000ba91eb5527f8e12e0414de36766dc82a082876337f7827c2caa859143"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00004.gguf",
+              "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+              "rev": "39e6e4a86cc6517a6f39ef37adce5e9f3a81280c",
+              "file": "UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00004.gguf",
+              "bytes": 49742117248,
+              "sha256": "e954cb3044ae087a003ce8cc1631c9d40fe15ae64a8befcf4aa06457848c647c"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00004.gguf",
+              "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+              "rev": "39e6e4a86cc6517a6f39ef37adce5e9f3a81280c",
+              "file": "UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00004.gguf",
+              "bytes": 10911746208,
+              "sha256": "fcce26b1e5e6e54559a7e7c2f8d6e37067ec695ff1f14bce662810bde78abe1f"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00004-of-00004.gguf",
+              "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+              "rev": "39e6e4a86cc6517a6f39ef37adce5e9f3a81280c",
+              "file": "engram/Qwen3.8-Flash-Next-engram-Q8_0.gguf_file",
+              "bytes": 54400261312,
+              "sha256": "4375b925a3abfb3859f6b634dafaab3343d9e2cdf9b3452253be465a12361426"
+            }
+          ]
+      },
         "strata-unsloth-ud-iq4_xs-v31": {
           "status": "unmeasured",
           "engine": "strata",
