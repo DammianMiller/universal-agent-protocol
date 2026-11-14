@@ -152,11 +152,11 @@ sync_droid_models() { # <file> <create: 0|1>
   UAP_SYNC_TOKEN="$PROXY_TOKEN" DRY_RUN="$DRY_RUN" \
     UAP_SYNC_BACKUP="$BACKUP_DIR" UAP_SYNC_REPO_ROOT="$REPO_ROOT" \
     python3 - "$f" "$PROXY_URL" "$DIRECT_URL" "$MODEL_ALIAS" \
-              "$DROID_ANTHROPIC_BASE_MODEL" "$CTX_SESSION" "$CTX_POOL" \
-              "$MAX_OUTPUT" "$create" <<'PY' || { note "WARN: $f could not be synced"; return 0; }
+              "$DROID_ANTHROPIC_BASE_MODEL" "$DROID_CHAT_BASE_MODEL" \
+              "$CTX_SESSION" "$CTX_POOL" "$MAX_OUTPUT" "$create" <<'PY' || { note "WARN: $f could not be synced"; return 0; }
 import json, os, re, shutil, sys, tempfile
 
-path, proxy, direct, alias, base_model, ctx_s, ctx_p, out, create = sys.argv[1:10]
+path, proxy, direct, alias, base_model, chat_base, ctx_s, ctx_p, out, create = sys.argv[1:11]
 token = os.environ.get("UAP_SYNC_TOKEN", "not-needed")
 dry = os.environ.get("DRY_RUN", "0") == "1"
 ctx_s, ctx_p, out = int(ctx_s), int(ctx_p), int(out)
@@ -168,7 +168,17 @@ ctx_s, ctx_p, out = int(ctx_s), int(ctx_p), int(out)
 # edit, never a tuple transcription here. Fail closed: a registry that
 # cannot be read is a migration this script refuses to run blind.
 reg = os.path.join(os.environ["UAP_SYNC_REPO_ROOT"], "config", "model-registry.json")
-RETIRED = tuple(json.load(open(reg))["retired_local_aliases"])
+_reg = json.load(open(reg))
+RETIRED = tuple(_reg["retired_local_aliases"])
+# Fleet wire ids: every id any family's advertises list carries, live arms
+# AND router-compat names (gpt-5.1-codex etc.). A client entry pinned to one
+# of these IS this box's served model when it points at this box's ports —
+# the engine tolerates any requested id, so the pin never routes; the
+# canonical picker line is the live alias. By NAME alone these ids are
+# ambiguous (the compat names collide with real cloud ids), so the ours-rule
+# below additionally requires a local base for them.
+FLEET = {a for _fam in (_reg.get("models") or {}).values()
+         for a in (_fam.get("advertises") or []) if isinstance(a, str)}
 
 def spell(camel):
     if camel:
@@ -229,17 +239,23 @@ for key in keys:
                  label, "8317 host", changed)
             base = m[BK]
         model = m.get("model")
-        # Ours to converge: retired ids, the live alias itself, or a model-less
-        # entry already pointed at THIS box's ports. Everything else — cloud
-        # models, the :8317 cloud-router entries, other LAN servers (ports
-        # alone don't identify this host) — is a deliberate user choice and
-        # must survive this script untouched.
+        # Ours to converge: retired ids, the live alias itself, a fleet wire id
+        # pointed at THIS box, or a model-less entry already pointed at THIS
+        # box's ports. Everything else — cloud models, the :8317 cloud-router
+        # entries, other LAN servers (ports alone don't identify this host) —
+        # is a deliberate user choice and must survive this script untouched.
+        hlocal = any(t in base for t in ("://127.0.0.1:", "://localhost:", "://[::1]:")) \
+            or base.startswith(("127.0.0.1:", "localhost:"))
         if model is None:
-            hlocal = any(t in base for t in ("://127.0.0.1:", "://localhost:", "://[::1]:")) \
-                or base.startswith(("127.0.0.1:", "localhost:"))
             ours = hlocal and (":4000" in base or ":8080" in base)
         else:
             ours = model in RETIRED or model == alias
+            if not ours and model in FLEET:
+                # Fleet ids are ambiguous BY NAME (the compat list also
+                # carries cloud ids like gpt-5.1-codex), so a fleet pin is
+                # only ours when the entry points at this box's ports — a
+                # cloud-router entry with the same model id survives.
+                ours = hlocal and (":4000" in base or ":8080" in base)
         if not ours:
             continue
         if model != alias:
@@ -251,6 +267,12 @@ for key in keys:
             setf(m, CK, ctx_p, label, f"ctx={ctx_p}", changed)
             setf(m, OK, out, label, "output", changed)
             # keeps its own api key
+            if camel and not m.get("baseModelId"):
+                # Same Qwen3.8 family on the Responses route: inherit the
+                # built-in's prompts/tools/reasoning instead of tripping the
+                # "does not map to a built-in model" warning.
+                m["baseModelId"] = chat_base
+                changed.append(f"{label} [baseModelId={chat_base}]")
         elif ":4000" in base and not base.rstrip("/").endswith("/v1"):
             # Anthropic Messages shape: baseUrl is the proxy ROOT, no /v1.
             setf(m, BK, proxy, label, "-> proxy root", changed)
@@ -272,6 +294,12 @@ for key in keys:
             setf(m, CK, ctx_s, label, f"ctx={ctx_s}", changed)
             setf(m, OK, out, label, "output", changed)
             setf(m, AK, token, label, "apiKey", changed)
+            if camel and not m.get("baseModelId"):
+                # The chat route serves the same Qwen3.8 family: without a
+                # Factory built-in here Droid warns the entry "does not map
+                # to a built-in model" and drops prompt/tool inheritance.
+                m["baseModelId"] = chat_base
+                changed.append(f"{label} [baseModelId={chat_base}]")
         if m.get("noImageSupport"):
             setf(m, "noImageSupport", False, label, "vision on", changed)  # mmproj is loaded
     # Dedupe the picker list. Droid copies every legacy config.json entry into
@@ -325,6 +353,7 @@ for key in keys:
             "baseUrl": f"{proxy}/v1", "apiKey": token,
             "displayName": "Qwen3.8 Flash-Next (UAP local)",
             "noImageSupport": False, "provider": "generic-chat-completion-api",
+            "baseModelId": chat_base,
             "maxOutputTokens": out, "maxContextLimit": ctx_s,
         }
         models.append(entry)

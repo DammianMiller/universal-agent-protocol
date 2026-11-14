@@ -50,6 +50,7 @@ export DROID_SYNC_LOCK="$SANDBOX/droid-sync.lock"
 # shellcheck source=lib/droid-sync-contracts.sh
 . "$CONTRACT" || { echo "sandbox: contract $CONTRACT is not sourceable"; exit 1; }
 BASE_MODEL="$DROID_ANTHROPIC_BASE_MODEL"
+CHAT_BASE_MODEL="$DROID_CHAT_BASE_MODEL"
 # Sourcing is side-effect free — snapshot it HERE, before the installer
 # run below legitimately creates the (sandbox-redirected) lock file.
 CONTRACT_CLEAN=$([ ! -e "$DROID_SYNC_LOCK" ] && echo clean || echo dirty)
@@ -117,15 +118,20 @@ EOF
 # anthropic Messages shape (baseUrl at the proxy ROOT, no /v1 — exactly the
 # real entry that shipped without baseModelId), :4000/v1 chat entries from
 # two retired eras plus the 27B-EXL3-era pin (the drift the operator's own
-# settings carried), a model-less trio: one aimed at the retired 8317 host
-# (the shape that used to raise TypeError mid-run and must now take ONLY the
-# split-brain host fixup), one LOCAL on :8080 (must converge onto the direct
-# route), one on ANOTHER LAN host (must survive untouched — ports alone
-# don't identify this box) — and, for the dedupe/favorites/default contract,
-# a duplicate CLOUD pair (two copy eras, the earlier key rotated), TWO dead
-# modelFavorites pins from retired qwen eras, and a sessionDefaultSettings
-# pin on the FIRST chat member (dedupe must keep THAT member, not the
-# newest, or the session default dangles).
+# settings carried) and a LIVE fleet arm pin (edge0_145b — a registry
+# advertises id on this box's port, so it converges like a retired pin; the
+# arms left retired_local_aliases when they went live again, which is the
+# exact drift that left master's sandbox red), a model-less trio: one aimed
+# at the retired 8317 host (the shape that used to raise TypeError mid-run
+# and must now take ONLY the split-brain host fixup), one LOCAL on :8080
+# (must converge onto the direct route), one on ANOTHER LAN host (must
+# survive untouched — ports alone don't identify this box), a compat-id
+# cloud entry (gpt-5.1-codex — also a FLEET wire id by name, so the
+# fleet-id rule must NOT claim it at a cloud base) — and, for the
+# dedupe/favorites/default contract, a duplicate CLOUD pair (two copy eras,
+# the earlier key rotated), TWO dead modelFavorites pins from retired qwen
+# eras, and a sessionDefaultSettings pin on the FIRST chat member (dedupe
+# must keep THAT member, not the newest, or the session default dangles).
 cat > "$SANDBOX/.factory/settings.json" <<EOF
 { "customModels": [
   { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
@@ -139,6 +145,12 @@ cat > "$SANDBOX/.factory/settings.json" <<EOF
   { "displayName": "Qwen3.8-27B EXL3 (UAP local)", "model": "Qwen3.8-27B",
     "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale",
     "id": "custom:Qwen3.8-27B-EXL3-(UAP-local)-0", "index": 26 },
+  { "displayName": "Edge0 145B (UAP local)", "model": "edge0_145b",
+    "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale",
+    "id": "custom:Edge0-145B-UAP-local-0", "index": 30 },
+  { "displayName": "GPT-5.1 Codex (router)", "model": "gpt-5.1-codex",
+    "baseUrl": "http://localhost:8317/v1", "apiKey": "router-key",
+    "id": "custom:GPT-5.1-Codex-0" },
   { "displayName": "Odd entry", "baseUrl": "http://192.168.1.165:8317" },
   { "displayName": "LAN bare 8080", "baseUrl": "http://192.168.1.5:8080/v1", "apiKey": "lan" },
   { "displayName": "Local bare 8080", "baseUrl": "http://127.0.0.1:8080/v1", "apiKey": "bare" },
@@ -202,7 +214,7 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=1; }
 
 # 0. shared Droid sync contract — names + installer structure
 bash -n "$CONTRACT" && ok "contract: valid bash" || bad "contract: bash -n failed"
-for V in MODELS_ONLY REPO_ROOT PROJECT_FACTORY_SET DROID_ANTHROPIC_BASE_MODEL DROID_SYNC_LOCK; do
+for V in MODELS_ONLY REPO_ROOT PROJECT_FACTORY_SET DROID_ANTHROPIC_BASE_MODEL DROID_CHAT_BASE_MODEL DROID_SYNC_LOCK; do
   [ -n "${!V:-}" ] && ok "contract: $V defined" || bad "contract: $V undefined"
 done
 # Sourcing must be side-effect free: no lock file, no repo config writes.
@@ -219,6 +231,23 @@ case "$BASE_MODEL" in
   qwen*|Qwen*) bad "contract: DROID_ANTHROPIC_BASE_MODEL is a local id ($BASE_MODEL)" ;;
   *)          ok  "contract: DROID_ANTHROPIC_BASE_MODEL is a built-in ($BASE_MODEL)" ;;
 esac
+# The chat base IS a Qwen-family BUILT-IN (qwen3.8-max — the Factory catalog
+# gained Qwen3.8 built-ins after the prefix guard above was written), so a
+# prefix ban would false-positive it. The exact local-id check: not the
+# served alias, not a retired arm, not any wire id the fleet ADVERTISES.
+[ "$CHAT_BASE_MODEL" != "$ALIAS" ] \
+  && ok "contract: DROID_CHAT_BASE_MODEL is not the served alias ($CHAT_BASE_MODEL)" \
+  || bad "contract: DROID_CHAT_BASE_MODEL is the served alias — a LOCAL id"
+python3 - "$REPO_ROOT/config/model-registry.json" "$CHAT_BASE_MODEL" <<'PY' \
+  && ok "contract: DROID_CHAT_BASE_MODEL is not a local wire id (retired/fleet)" \
+  || bad "contract: DROID_CHAT_BASE_MODEL is a local wire id (retired or fleet-advertised)"
+import json, sys
+reg = json.load(open(sys.argv[1])); v = sys.argv[2]
+assert v not in (reg.get("retired_local_aliases") or []), f"retired id: {v}"
+advertised = {a for fam in (reg.get("models") or {}).values()
+              for a in (fam.get("advertises") or [])}
+assert v not in advertised, f"fleet-advertised id: {v}"
+PY
 # The bodies live in the installer (the contract stays stub-free — no dead
 # code), so assert them textually against it.
 INSTALLER="$HERE/sync-local-agent-configs.sh"
@@ -304,15 +333,15 @@ assert len(cloud) == 1, "cloud entry vanished"
 assert cloud[0]["base_url"] == "http://localhost:8317", "8317 host not fixed"
 assert cloud[0]["api_key"] == "local", "cloud entry key clobbered"
 PY
-python3 - "$SANDBOX/.factory/settings.json" settings "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$BASE_MODEL" <<PY && ok "factory/settings.json: anthropic route + baseModelId + no force-add" || bad "factory/settings.json: assertions failed"
+python3 - "$SANDBOX/.factory/settings.json" settings "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$BASE_MODEL" "$CHAT_BASE_MODEL" <<PY && ok "factory/settings.json: anthropic route + baseModelId + no force-add" || bad "factory/settings.json: assertions failed"
 import json, sys
 d = json.load(open(sys.argv[1]))
-alias, tok, ctx, pool, base_model = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7]
+alias, tok, ctx, pool, base_model, chat_base = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7], sys.argv[8]
 models = d["customModels"]
 for m in models:
     assert m.get("model") not in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b", "abliterated-iq2_xs",
-                                  "Qwen3.8-27B"), \
-        f"retired id survived: {m.get('model')}"
+                                  "Qwen3.8-27B", "edge0_145b"), \
+        f"retired or unconverged local id survived: {m.get('model')}"
     for bk in ("base_url", "baseUrl"):
         v = m.get(bk)
         assert not (isinstance(v, str) and "192.168.1.165:8317" in v), "LAN 8317 split-brain remains"
@@ -338,6 +367,11 @@ assert len(chat) == 1, f"expected ONE proxy-chat entry after dedupe, got {len(ch
 assert chat[0]["id"] == "custom:Qwen3.8-27B-GSQ-(UAP-local)-0", chat[0].get("id")
 assert chat[0]["apiKey"] == tok, "chat entry not on the scoped token"
 assert chat[0]["maxContextLimit"] == ctx, "chat entry not session-sized"
+assert chat[0].get("baseModelId") == chat_base, \
+    f"chat entry baseModelId wrong: {chat[0].get('baseModelId')}"
+# the LIVE fleet arm pin (edge0_145b) joined the group and collapsed with it:
+# one alias picker line, no per-arm residue
+assert not any(m.get("model") == "edge0_145b" for m in models), "fleet arm pin survived"
 sd = (d.get("sessionDefaultSettings") or {}).get("model")
 ids = {m.get("id") for m in models}
 assert sd == "custom:Qwen3.8-27B-GSQ-(UAP-local)-0" and sd in ids, \
@@ -350,6 +384,15 @@ assert odd[0]["baseUrl"] == "http://localhost:8317", "8317 host not fixed"
 dire = [m for m in entries if ":8080" in m.get("baseUrl", "")]
 assert len(dire) == 1, f"expected the model-less local entry on direct, got {len(dire)}"
 assert dire[0]["maxContextLimit"] == pool, "direct entry not pool-sized"
+assert dire[0].get("baseModelId") == chat_base, \
+    f"direct entry baseModelId wrong: {dire[0].get('baseModelId')}"
+# the compat-id cloud entry (gpt-5.1-codex IS a fleet wire id by name) must
+# SURVIVE untouched at its cloud base: the fleet rule is gated on local ports
+compat = [m for m in models if m.get("model") == "gpt-5.1-codex"]
+assert len(compat) == 1, f"compat cloud entry count wrong: {len(compat)}"
+assert compat[0]["baseUrl"] == "http://localhost:8317/v1", "compat cloud entry repointed"
+assert compat[0]["apiKey"] == "router-key", "compat cloud entry key clobbered"
+assert "baseModelId" not in compat[0], "compat cloud entry gained a baseModelId"
 # the model-less entry on ANOTHER LAN host survived untouched
 lan = [m for m in models if m.get("displayName") == "LAN bare 8080"]
 assert len(lan) == 1, "LAN model-less entry vanished"
@@ -376,10 +419,10 @@ assert not any(str(m.get("id", "")).startswith("custom:Qwen3.8-UAP-local-") for 
     "canonical entry added although local entries exist"
 PY
 # the project settings had NO local entry — it must have GAINED the canonical
-python3 - "$PSET" project "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" <<PY && ok "project settings: gained the canonical entry (add-if-missing)" || bad "project settings: add-if-missing failed"
+python3 - "$PSET" project "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$CHAT_BASE_MODEL" <<PY && ok "project settings: gained the canonical entry (add-if-missing)" || bad "project settings: add-if-missing failed"
 import json, sys
 d = json.load(open(sys.argv[1]))
-alias, tok, ctx, pool = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6])
+alias, tok, ctx, pool, chat_base = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7]
 models = d["customModels"]
 # the cloud router entry is untouched
 assert models[0]["model"] == "gpt-5.1" and models[0]["apiKey"] == "router-key", "cloud entry clobbered"
@@ -391,6 +434,8 @@ assert e["baseUrl"] == "http://127.0.0.1:4000/v1", e["baseUrl"]
 assert e["apiKey"] == tok, "canonical entry not on the scoped token"
 assert e["maxContextLimit"] == ctx, "canonical entry not session-sized"
 assert e["provider"] == "generic-chat-completion-api"
+assert e.get("baseModelId") == chat_base, \
+    f"canonical entry baseModelId wrong: {e.get('baseModelId')}"
 assert e.get("noImageSupport") is False
 PY
 
