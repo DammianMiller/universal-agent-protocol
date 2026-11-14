@@ -6798,8 +6798,11 @@ def anthropic_to_openai_messages(anthropic_body: dict) -> list[dict]:
     # Anthropic has system as a top-level param (string or content blocks).
     # O-D: when the terse shim is on, the directive is PREPENDED to the
     # caller's system text — matching the Sharp template's own behaviour of
-    # merging the terse block into the caller's system prompt rather than
-    # replacing it (a caller's system prompt is never overridden, only led).
+    # merging the terse block into the caller's system prompt. A caller's
+    # system prompt is never replaced, only led. When the client sent NO
+    # system prompt, NOTHING is injected: the proxy's standing doctrine
+    # (test_no_tools_does_not_inject_agentic_system_message) forbids
+    # inventing a system message the caller did not send, terse or otherwise.
     system = anthropic_body.get("system")
     system_text = ""
     if isinstance(system, str):
@@ -6808,19 +6811,16 @@ def anthropic_to_openai_messages(anthropic_body: dict) -> list[dict]:
         system_text = "\n".join(
             b.get("text", "") for b in system if b.get("type") == "text"
         )
-    if system_text and _terse_system_enabled():
-        messages.append(
-            {
-                "role": "system",
-                "content": _TERSE_SYSTEM_DIRECTIVE + "\n\n" + system_text,
-            }
-        )
-    elif system_text:
-        messages.append({"role": "system", "content": system_text})
-    elif _terse_system_enabled():
-        # No caller system prompt at all — the directive stands alone, same as
-        # the template's `_sc` fallback (`{% if not _sc %} set _sc = _terse`).
-        messages.append({"role": "system", "content": _TERSE_SYSTEM_DIRECTIVE})
+    if system_text:
+        if _terse_system_enabled():
+            messages.append(
+                {
+                    "role": "system",
+                    "content": _TERSE_SYSTEM_DIRECTIVE + "\n\n" + system_text,
+                }
+            )
+        else:
+            messages.append({"role": "system", "content": system_text})
 
     for msg in anthropic_body.get("messages", []):
         role = msg["role"]

@@ -85,13 +85,17 @@ print('OK')
   );
 
   it.skipIf(!havePython)(
-    'serves the directive standalone when the client sent no system prompt at all',
+    'does NOT invent a system message when the client sent none (proxy doctrine)',
     () => {
+      // The proxy's standing doctrine (python test
+      // test_no_tools_does_not_inject_agentic_system_message): no caller
+      // system prompt means no injected system message, terse or otherwise.
+      // The shim leads a caller's system prompt; it never fabricates one.
       const out = runScenario('1', `
-systems = check({'messages': [{'role': 'user', 'content': 'hi'}]})
-assert len(systems) == 1, f"expected exactly one system message, got {len(systems)}"
-assert systems[0].startswith('Answer directly and concisely.'), "standalone directive missing"
-assert 'CALLER' not in systems[0], "unexpected caller text"
+msgs = m.anthropic_to_openai_messages({'messages': [{'role': 'user', 'content': 'hi'}]})
+assert msgs[0]['role'] == 'user', f"first message must stay the user turn, got {msgs[0]['role']}"
+systems = [mm for mm in msgs if mm.get('role') == 'system']
+assert systems == [], f"no system message may be invented, got {systems!r}"
 print('OK')
 `);
       expect(out).toContain('OK');
