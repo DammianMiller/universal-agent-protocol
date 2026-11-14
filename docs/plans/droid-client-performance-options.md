@@ -383,3 +383,87 @@ Arm + arm-tier remains the dominant cost factor.
   whether read-after-refusal recovery got FASTER (429 successful reads in
   era C vs the era-A re-send loops). Needs a live-session segment large
   enough to read.
+
+---
+
+## Monitoring round 4 (2026-11-15 early) — the per-turn budget is the wall-clock bottleneck the arm ladder alone can't fix
+
+Post-state: client 2.48.2 global (O-C + turnpack live in every new
+session), proxy 2.48.x with the O-D shim, baseModelId live, and the GPU
+operating point shipped by the infra round (bf16 unlocked on the fleet
+binaries, 370 W power limit, SM clock locked at 1800 MHz — idle-verified
+188 W/1800 MHz/65 °C; boot-default confirmation pending the next reboot).
+
+### Finding 1 — the live client's real-path calls went 34/34 ok (first clean live run)
+
+The kubectl deliver (floor arm, `--max-turns 20`) ended at ~2h45m with
+**every real-path tool call ok** — 34/34 kubectl/doctl-pathed calls, max
+turn 12, and its final 14 calls (11:42–11:46 UTC) all ok (8 read_file,
+4 list_dir, 1 edit_file, 1 write_file). The fixed tool layer's first
+complete live run shows zero failures on real paths; the failure classes
+still visible in the corpus (round 3) are the guards' own fixtures. The
+deliver exited without writing its `[deliver]` lesson (no memory entry, no
+task record, no OOM, no reboot — cause unknown; the telemetry DB is its
+only record).
+
+### Finding 2 — the per-turn generation budget, now measured
+
+A live session on the floor arm was streaming with the engine capping
+`thinking limited to 24576 of max_tokens 32768` — 21 capped generations
+in ~17 minutes, i.e. routine thinking-heavy turns near the 32k budget.
+At the measured deep-context decode rate (126 tok/s) a full-budget turn
+is a ~4.3-minute floor **before tool volume even starts**. The O-B suite
+hit the 480 s ceiling on 5/6 local tasks after the file work was done,
+and the kubectl deliver had a 45-minute stretch with zero tool calls
+(one long turn). Tool volume (O-B's ~24x) and per-turn budget multiply
+into the ~10x wall gap.
+
+### Finding 3 — the GPU operating point is measurable on the serving arm
+
+Inference health on the live arm post-operating-point: decode
+113 → 126 tok/s in the >30k-depth bucket (n=6/6), speculative drafts
+accepted 67%, prompt-cache reuse 56% (~17,560 tok re-read per turn),
+vram 3,046 MiB free. The arm tier (R3-B) and the operating point stack.
+The box is otherwise loaded (100/121 GB used, load 13–22), so idle-window
+reruns will read cleaner than this sample.
+
+### The levers now (R4)
+
+- **R4-A — Thinking-budget discipline (new, the biggest untried
+  wall-clock lever):** routine tool turns do not need 24.5k thinking
+  tokens. The engine reserves 8k for the answer at max_tokens 32768
+  (the serve log names the knob: `"answer_room": false` turns the cap
+  off); a lower thinking budget — or a lower client max_tokens for
+  tool-heavy turns — cuts the per-turn floor from ~4.3 min toward
+  ~1.5–2 min (12k thinking ≈ 95 s at 126 tok/s). Verify gate parity on
+  the R4-B rerun. Knobs: the strata engine config (operator) or request
+  shaping at the proxy (UAP, a tools-round change).
+- **R4-B — Arm tier + operating point, measured together (R3-B + the
+  GPU round):** rerun the archived O-B paired suite on v31 under the
+  new operating point against the archived iq2_xs baseline — one
+  repeatable run quantifies the stacked local-arm gain (tier + 11%
+  decode + bf16). Still gated on the operator arm switch (the strata
+  unit's latch-state recovery).
+- **R4-C — Draft acceptance 67% → higher:** each acceptance point is
+  free decode; the speculative drafter's spec config (topK/epsilon) is
+  tunable on the strata engine.
+- **R4-D — Cache reuse 56%:** 17.5k tok/turn re-read at depth; the
+  health tool found no prefill bucket with enough samples to split, so
+  measure prefill in the R4-B rerun (the Sharp template + turnpack
+  context discipline target this).
+- **R4-E — Deliver-lesson gap:** abnormal deliver termination writes no
+  `[deliver]` lesson, so the kubectl run's outcome exists only in
+  telemetry. Write the lesson on every exit path — small harness change,
+  next tools round.
+
+Routing unchanged from R3-A: frontier-class sessions route by tier
+(glm-5.3 measured default; opus-5-5 / fable-5.2 for the hardest tier).
+Outcome equivalence is already demonstrated (O-B gates TIED 13/13);
+R4 is about closing the wall-clock gap on the local arm.
+
+**Caveats (labeled):** the decode 113→126 comparison is bucket-vs-bucket
+in the engine's ring log (no timestamps; `--since` could not be applied),
+n=6/6 directional. The live-cadence count (21 caps/~17 min) is journal
+grep on the serve log, one session. The 34/34 ok count covers real-path
+calls only; the deliver's gate outcome is unknown (Finding 1's lesson
+gap).
