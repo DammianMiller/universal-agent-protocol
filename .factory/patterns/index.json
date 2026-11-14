@@ -9,7 +9,13 @@
       "title": "Output Existence Verification",
       "abbreviation": "OE-Verify",
       "category": "Verification",
-      "keywords": ["create file", "output", "existence", "verification", "done"]
+      "keywords": [
+        "create file",
+        "output",
+        "existence",
+        "verification",
+        "done"
+      ]
     },
     {
       "id": 13,
@@ -17,7 +23,14 @@
       "title": "Iterative Refinement Loop",
       "abbreviation": "Iter-Ref",
       "category": "Testing",
-      "keywords": ["test", "pytest", "iterate", "fix", "refinement", "pass"]
+      "keywords": [
+        "test",
+        "pytest",
+        "iterate",
+        "fix",
+        "refinement",
+        "pass"
+      ]
     },
     {
       "id": 14,
@@ -25,7 +38,14 @@
       "title": "Output Format Validation",
       "abbreviation": "Format-Check",
       "category": "Verification",
-      "keywords": ["format", "json", "yaml", "csv", "validation", "output"]
+      "keywords": [
+        "format",
+        "json",
+        "yaml",
+        "csv",
+        "validation",
+        "output"
+      ]
     },
     {
       "id": 16,
@@ -33,7 +53,13 @@
       "title": "Task-First Execution",
       "abbreviation": "Task-First",
       "category": "Execution",
-      "keywords": ["execute", "directly", "task", "clear", "ambiguous"]
+      "keywords": [
+        "execute",
+        "directly",
+        "task",
+        "clear",
+        "ambiguous"
+      ]
     },
     {
       "id": 17,
@@ -41,7 +67,13 @@
       "title": "Constraint Extraction",
       "abbreviation": "Extract-Constraints",
       "category": "Planning",
-      "keywords": ["constraint", "exactly", "only", "must be", "no more than"]
+      "keywords": [
+        "constraint",
+        "exactly",
+        "only",
+        "must be",
+        "no more than"
+      ]
     },
     {
       "id": 19,
@@ -49,7 +81,12 @@
       "title": "Impossible Task Refusal",
       "abbreviation": "Refuse-Impossible",
       "category": "Safety",
-      "keywords": ["impossible", "refuse", "cannot", "fundamentally"]
+      "keywords": [
+        "impossible",
+        "refuse",
+        "cannot",
+        "fundamentally"
+      ]
     },
     {
       "id": 20,
@@ -57,7 +94,15 @@
       "title": "Adversarial Thinking",
       "abbreviation": "Adversarial",
       "category": "Security",
-      "keywords": ["bypass", "exploit", "break", "circumvent", "evade", "filter", "security"]
+      "keywords": [
+        "bypass",
+        "exploit",
+        "break",
+        "circumvent",
+        "evade",
+        "filter",
+        "security"
+      ]
     },
     {
       "id": 21,
@@ -65,7 +110,13 @@
       "title": "Chess Engine Integration",
       "abbreviation": "Chess-Engine",
       "category": "Domain-Specific",
-      "keywords": ["chess", "FEN", "best move", "checkmate", "stockfish"]
+      "keywords": [
+        "chess",
+        "FEN",
+        "best move",
+        "checkmate",
+        "stockfish"
+      ]
     },
     {
       "id": 22,
@@ -73,7 +124,13 @@
       "title": "Git Recovery Forensics",
       "abbreviation": "Git-Recovery",
       "category": "Recovery",
-      "keywords": ["recover", "git", "reflog", "lost commit", "corrupted"]
+      "keywords": [
+        "recover",
+        "git",
+        "reflog",
+        "lost commit",
+        "corrupted"
+      ]
     },
     {
       "id": 23,
@@ -81,7 +138,12 @@
       "title": "Compression Impossibility Detection",
       "abbreviation": "Compress-Check",
       "category": "Verification",
-      "keywords": ["compress", "zip", "already compressed", "format"]
+      "keywords": [
+        "compress",
+        "zip",
+        "already compressed",
+        "format"
+      ]
     },
     {
       "id": 24,
@@ -89,7 +151,12 @@
       "title": "Polyglot Code Construction",
       "abbreviation": "Polyglot",
       "category": "Code-Golf",
-      "keywords": ["polyglot", "works in both", "compile as", "multiple languages"]
+      "keywords": [
+        "polyglot",
+        "works in both",
+        "compile as",
+        "multiple languages"
+      ]
     },
     {
       "id": 25,
@@ -97,7 +164,14 @@
       "title": "Service Configuration Pipeline",
       "abbreviation": "Service-Config",
       "category": "DevOps",
-      "keywords": ["configure", "service", "daemon", "server", "reload", "validate"]
+      "keywords": [
+        "configure",
+        "service",
+        "daemon",
+        "server",
+        "reload",
+        "validate"
+      ]
     },
     {
       "id": 26,
@@ -105,7 +179,13 @@
       "title": "Near-Miss Iteration",
       "abbreviation": "Near-Miss",
       "category": "Testing",
-      "keywords": ["test", "near miss", "small gap", "tweak", "adjustment"]
+      "keywords": [
+        "test",
+        "near miss",
+        "small gap",
+        "tweak",
+        "adjustment"
+      ]
     },
     {
       "id": 28,
@@ -113,7 +193,13 @@
       "title": "Service Smoke Test",
       "abbreviation": "Smoke-Test",
       "category": "Verification",
-      "keywords": ["start service", "deploy", "smoke test", "health check", "verify"]
+      "keywords": [
+        "start service",
+        "deploy",
+        "smoke test",
+        "health check",
+        "verify"
+      ]
     },
     {
       "id": 30,
@@ -121,7 +207,13 @@
       "title": "Performance Threshold Tuning",
       "abbreviation": "Perf-Threshold",
       "category": "Optimization",
-      "keywords": ["optimize", "performance", "threshold", "percentage", "measure"]
+      "keywords": [
+        "optimize",
+        "performance",
+        "threshold",
+        "percentage",
+        "measure"
+      ]
     },
     {
       "id": 31,
@@ -129,7 +221,13 @@
       "title": "Round-Trip Verification",
       "abbreviation": "Round-Trip",
       "category": "Verification",
-      "keywords": ["encode", "decode", "compress", "round trip", "verify"]
+      "keywords": [
+        "encode",
+        "decode",
+        "compress",
+        "round trip",
+        "verify"
+      ]
     },
     {
       "id": 32,
@@ -137,7 +235,13 @@
       "title": "CLI Execution Verification",
       "abbreviation": "CLI-Verify",
       "category": "Verification",
-      "keywords": ["CLI", "command line", "executable", "binary", "run"]
+      "keywords": [
+        "CLI",
+        "command line",
+        "executable",
+        "binary",
+        "run"
+      ]
     },
     {
       "id": 33,
@@ -145,7 +249,13 @@
       "title": "Numerical Stability Testing",
       "abbreviation": "Num-Stable",
       "category": "Testing",
-      "keywords": ["numerical", "floating point", "optimization", "precision", "stability"]
+      "keywords": [
+        "numerical",
+        "floating point",
+        "optimization",
+        "precision",
+        "stability"
+      ]
     },
     {
       "id": 34,
@@ -153,7 +263,13 @@
       "title": "Image-to-Structured Pipeline",
       "abbreviation": "Image-Structured",
       "category": "Domain-Specific",
-      "keywords": ["image", "OCR", "diagram", "chess board", "structured"]
+      "keywords": [
+        "image",
+        "OCR",
+        "diagram",
+        "chess board",
+        "structured"
+      ]
     },
     {
       "id": 35,
@@ -161,7 +277,12 @@
       "title": "Decoder-First Analysis",
       "abbreviation": "Decoder-First",
       "category": "Analysis",
-      "keywords": ["decode", "parser", "format", "reverse engineer"]
+      "keywords": [
+        "decode",
+        "parser",
+        "format",
+        "reverse engineer"
+      ]
     },
     {
       "id": 36,
@@ -169,7 +290,13 @@
       "title": "Competition Domain Research",
       "abbreviation": "Competition-Research",
       "category": "Research",
-      "keywords": ["win rate", "beat", "tournament", "competition", "leaderboard"]
+      "keywords": [
+        "win rate",
+        "beat",
+        "tournament",
+        "competition",
+        "leaderboard"
+      ]
     },
     {
       "id": 37,
@@ -193,7 +320,14 @@
       "title": "Infrastructure as Code Parity",
       "abbreviation": "IaC-Parity",
       "category": "Infrastructure",
-      "keywords": ["terraform", "kubernetes", "kubectl", "infrastructure", "deploy", "pipeline"]
+      "keywords": [
+        "terraform",
+        "kubernetes",
+        "kubectl",
+        "infrastructure",
+        "deploy",
+        "pipeline"
+      ]
     },
     {
       "id": 38,
@@ -201,7 +335,41 @@
       "title": "Prior Art First",
       "abbreviation": "PriorArt",
       "category": "Planning",
-      "keywords": ["design", "approach", "from scratch", "new feature", "library", "convention", "prior art", "reimplement", "invent"]
+      "keywords": [
+        "design",
+        "approach",
+        "from scratch",
+        "new feature",
+        "library",
+        "convention",
+        "prior art",
+        "reimplement",
+        "invent"
+      ]
+    },
+    {
+      "id": 39,
+      "file": "P39_fable_threejs.md",
+      "title": "The Fable Three.js Production Loop",
+      "abbreviation": "Fable-3D",
+      "category": "Creative Production",
+      "keywords": [
+        "three.js",
+        "3d",
+        "webgl",
+        "game",
+        "motion video",
+        "product demo",
+        "walkable space",
+        "camera",
+        "lighting",
+        "shader",
+        "render",
+        "critic",
+        "scene",
+        "threejs",
+        "glsl"
+      ]
     }
   ]
 }
