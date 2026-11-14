@@ -314,4 +314,22 @@ describe('policy catalog wiring', () => {
     // The router matches on these keywords — an entry without them never fires.
     expect(p38.keywords.length).toBeGreaterThan(0);
   });
+
+  it('registers the fable three.js pattern the router can actually match', () => {
+    // The operator-supplied Fable three.js prompt (threeJS-prompt.jpeg, 2026-11-14)
+    // must stay router-reachable: file present, indexed, keywords that a 3D task
+    // description actually contains.
+    const index = JSON.parse(readFileSync(join(ROOT, '.factory/patterns/index.json'), 'utf-8'));
+    const p39 = index.patterns.find((p: { id: number }) => p.id === 39);
+    expect(p39?.file).toBe('P39_fable_threejs.md');
+    expect(p39?.title).toBe('The Fable Three.js Production Loop');
+    expect(existsSync(join(ROOT, '.factory/patterns', p39.file))).toBe(true);
+    expect(p39.keywords).toContain('three.js');
+    expect(p39.keywords).toContain('3d');
+    // The pattern's own body carries the loop's non-negotiables, so retrieval
+    // hands the model the full doctrine, not just the summary.
+    const md = readFileSync(join(ROOT, '.factory/patterns', p39.file), 'utf-8');
+    expect(md).toContain('never grade your own work');
+    expect(md).toContain('Critic loop');
+  });
 });
