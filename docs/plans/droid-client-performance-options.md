@@ -306,3 +306,80 @@ Finding 1.
   "Opus 5.5 / Fable 5.2 levels" lever on this box today.
 - **R2-D — Re-measure after R2-A:** the post-client-update window is the
   honest post-fix read; era B's zeros become testable at population scale.
+
+---
+
+## Monitoring round 3 (2026-11-14 late) — the post-fix read at scale, and what the instrument was actually measuring
+
+Post-state: client 2.48.2 global (O-C hints + readGate + turnpack live),
+proxy 2.48.x with the O-D shim, baseModelId shipped (Droid treats the local
+arm as the qwen3.8-max built-in class). The first window with BOTH layers
+fixed: 916 calls, 09:50–11:15 UTC, 13 runs.
+
+### The fixes hold at scale — the first true post-fix read
+
+| Class | Era A (pre, n=19,794) | Era C (post, n=916) |
+|---|---:|---:|
+| ok | 75.5% | **80.2%** |
+| edit-miss | 3.2% | **0** |
+| path-not-found | 2.6% | **0** |
+| stub-refusal | 5.4% | 7.6% (all write_file) |
+| refused | 2.2% | 3.3% (all run_bash) |
+
+**edit-miss and path-not-found — the two classes O-C and turnpack were
+built for — are zero at n=916**, including adversarial fixtures designed
+to trigger them. ok-rate +4.7 points. The lever that remains un-shrunk is
+stub-refusal.
+
+### The instrument finding: era B and era C are both mostly TEST traffic
+
+The era-C stub-refusals all carry fixture paths (`src/big.ts`, `big.js`,
+`js/player.js` — deliberate gutting attempts at turn=1 in deliver-gate
+test tasks, i.e. the guard PASSING). Top era-C paths are fixtures
+(`a.js` 380, `b.js`/`big.js` 70 each); the real-path remainder is small.
+Era B's round-2 samples were the same fixtures. **The tool-calls DB pools
+benchmark-harness traffic with live-client traffic**, so corpus-level
+"class rates" blend a guard's self-tests with real client behavior —
+future monitoring must segment first (the working recipe: filter on the
+fixture path set + `.uap-deliver/verify.sh`, or segment by `task_id`).
+Era-C's honest split: fixture traffic shows the fixed layer passing its
+own adversarial tests; the live-client signal is thin (the kubectl
+deliver contributed 24 kubectl/doctl-pathed calls).
+
+### The live client cost evidence
+
+The kubectl deliver (the live interactive client, floor arm via
+local-auto, `--max-turns 20`) is **2h29m in** on a credential-permission
+ops task. The O-B reference: 6 gate-verified tasks in 4.7 min on glm-5.3.
+Arm + arm-tier remains the dominant cost factor.
+
+### The levers now (R3)
+
+- **R3-A — Frontier-class sessions route by tier (the literal ask):** the
+  Factory catalog now carries `claude-opus-5-5` (1.6x) and
+  `claude-fable-5.2` (3.2x) as built-ins — "Opus 5.5 / Fable 5.2 levels"
+  is a MODEL ROUTING choice, one flag per session. Measured reference
+  (glm-5.3 on the O-B suite): identical gates at 1/24 the tool volume and
+  1/10 the wall time. Suggested split: glm-5.3 default (measured, cheap),
+  opus-5-5/fable-5.2 for the hardest tier, local arm for
+  cost-insensitive/background work.
+- **R3-B — v31 arm switch (was O-A/R2-B, still unexecuted):** iq2_xs
+  still serves all client work; the strata unit additionally sits in the
+  panel-race latch state (failed+disabled with a live engine process
+  holding :8080). Recovery + switch is the documented one-liner
+  (`systemctl --user reset-failed` + `model-switch.sh strata`) — operator
+  action (infra-protect).
+- **R3-C — baseModelId seam (shipped, unmeasured):** local-arm Droid
+  sessions now inherit qwen3.8-max-class prompts, tool conventions,
+  reasoning levels, and Script-mode eligibility. The first local-arm
+  Droid sessions post-change (a live three.js client was streaming
+  through the proxy at 22:31) are the watch window.
+- **R3-D — telemetry run-kind tagging:** the era-B/C misread argues for a
+  `run_kind` tag (test vs live) at the classifier, or at minimum the
+  fixture-path segmentation recipe documented here. Small change, next
+  tools round.
+- **R3-E — stub-refusal remains the top live class:** in live traffic it
+  is the gutting guard + readGate doing their jobs; the open question is
+  whether read-after-refusal recovery got FASTER (429 successful reads in
+  era C vs the era-A re-send loops). Needs a live-session segment large
+  enough to read.
