@@ -194,7 +194,15 @@ truth the rails suite drift-checks against the live `/props` on :8080), then:
 - pins `baseModelId` on Anthropic-protocol entries (default
   `claude-sonnet-4-6`, override `DROID_ANTHROPIC_BASE_MODEL`) so the entry
   inherits model-specific prompts, tools, and Script-mode eligibility instead
-  of the "custom model does not map to a built-in" fallback behavior.
+  of the "custom model does not map to a built-in" fallback behavior;
+- collapses duplicate picker lines: entries sharing `(model, baseUrl,
+  displayName)` are one line rendered twice — Droid re-copies legacy
+  `config.json` entries into `settings.json` under fresh ids each copy era,
+  so each era leaves a full extra set; a group keeps the canonical entry,
+  else its newest member;
+- repoints dead `modelFavorites` pins from the local-entry id family onto the
+  surviving local entry, so the favorites bar keeps selecting the local stack
+  across arm swaps instead of rendering a dead line.
 
 For "at any given time" freshness, run it with `MODELS_ONLY=1`: that mode
 converges **only** the `.factory` custom-model lists, takes the alias from the

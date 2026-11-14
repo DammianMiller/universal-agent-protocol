@@ -201,9 +201,21 @@ if not keys:
         sys.exit(0)
 
 changed = []
+# The id this sync stamps on its canonical entry (add-if-missing below) — and
+# the survivor preference when a duplicate group collapses (dedupe below).
+canon = re.compile(r"^custom:Qwen[\d.]+-UAP-local-\d+$")
+# A group member pinned by the session default outranks even the canonical
+# entry: dropping it would leave sessionDefaultSettings.model dangling — the
+# exact class of stale pin this sync exists to converge, not one to create.
+_sd = d.get("sessionDefaultSettings")
+default_model = _sd.get("model") if isinstance(_sd, dict) else None
 for key in keys:
     camel = key == "customModels"
     BK, AK, DK, CK, OK = spell(camel)
+
+    def _label(m):
+        return str(m.get("id") or m.get("model") or m.get(DK) or "<unnamed>")
+
     models = d.setdefault(key, [])
     for m in models:
         if not isinstance(m, dict):
@@ -262,6 +274,40 @@ for key in keys:
             setf(m, AK, token, label, "apiKey", changed)
         if m.get("noImageSupport"):
             setf(m, "noImageSupport", False, label, "vision on", changed)  # mmproj is loaded
+    # Dedupe the picker list. Droid copies every legacy config.json entry into
+    # settings.json under a fresh id each time its copy era changes, so each
+    # era leaves a full extra set of identical lines (the operator box carried
+    # 54 entries for 28 models: every cloud line twice, the local model three
+    # times). The picker renders displayName, so entries sharing (model,
+    # baseUrl, displayName) ARE one line twice — collapse each group onto the
+    # entry the session default pins when one is present (dropping it would
+    # leave sessionDefaultSettings.model dangling), else the canonical entry
+    # when one is present, else the LAST member — the newest copy era,
+    # ASSUMING append order is era order (observed Droid behavior, not a
+    # documented contract; on the operator box the later duplicate is the one
+    # carrying the current router key, the earlier one a stale rotation).
+    # Anything else — different model, route, or name — is a different line
+    # and survives untouched.
+    groups = {}
+    for i, m in enumerate(models):
+        if isinstance(m, dict):
+            groups.setdefault((m.get("model"), m.get(BK), m.get(DK)), []).append(i)
+    drop = set()
+    for idxs in groups.values():
+        if len(idxs) < 2:
+            continue
+        keep = next((i for i in idxs if isinstance(models[i].get("id"), str)
+                     and models[i]["id"] == default_model), None)
+        if keep is None:
+            keep = next((i for i in idxs
+                         if isinstance(models[i].get("id"), str) and canon.match(models[i]["id"])),
+                        idxs[-1])
+        for i in idxs:
+            if i != keep:
+                drop.add(i)
+                changed.append(f"{_label(models[i])} [duplicate of {_label(models[keep])} dropped]")
+    if drop:
+        models[:] = [m for i, m in enumerate(models) if i not in drop]
     # add-if-missing (camelCase settings only): a Droid instance with no local
     # entry gains the canonical proxy entry, so every instance can call it.
     if camel and create == "1" and not any(
@@ -283,6 +329,44 @@ for key in keys:
         }
         models.append(entry)
         changed.append(f"{entry['id']} [canonical entry added]")
+
+# Dead favorites: a modelFavorites pin on a UAP-local custom id that no
+# longer exists (qwen35-era ids whose entries the migration above converged
+# or collapsed) renders a dead line in the favorites bar — the same drift
+# this sync exists to converge. Repoint it at the surviving local entry: the
+# canonical one when present, else the first proxy-chat entry with an id.
+# Scoped to the historical local-entry id family (^custom:Qwen… carrying
+# UAP/Proxy/local/direct): a favorite for a deleted CLOUD model is the user's
+# choice to re-make, not this script's to redirect.
+favs = d.get("modelFavorites")
+if isinstance(favs, list):
+    live = {m["id"] for key in keys for m in (d.get(key) or [])
+            if isinstance(m, dict) and isinstance(m.get("id"), str)}
+    local = [m for key in keys for m in (d.get(key) or [])
+             if isinstance(m, dict) and m.get("model") == alias]
+
+    def _base(m):
+        return m.get("baseUrl") if isinstance(m.get("baseUrl"), str) else m.get("base_url")
+
+    def _rank(m):
+        mid = m.get("id")
+        if not isinstance(mid, str):
+            return (2, 2)
+        return (0 if canon.match(mid) else 1, 0 if _base(m) == f"{proxy}/v1" else 1)
+
+    fam = re.compile(r"^custom:Qwen.*?(UAP|Proxy|local|direct)", re.I)
+    target = min(local, key=_rank) if local else None
+    repointed = 0
+    for i, f in enumerate(favs):
+        if (isinstance(f, str) and isinstance(target, dict)
+                and isinstance(target.get("id"), str) and f not in live and fam.match(f)):
+            favs[i] = target["id"]
+            changed.append(f"modelFavorites: {f} -> {target['id']} [dead favorite repointed]")
+            repointed += 1
+    if repointed and len(favs) != len(set(favs)):
+        # two dead pins repointing at the same survivor must not leave the
+        # favorites bar showing it twice
+        favs[:] = list(dict.fromkeys(favs))
 
 if not changed:
     print(f"   {path}: nothing to change (left byte-identical)")

@@ -95,7 +95,10 @@ PROXY_LOG_LEVEL=INFO
 EOF
 
 # The legacy config.json (snake_case). Carries one entry per retired era PLUS
-# the current abliterated arm, so the migration tuple is exercised end to end.
+# the current abliterated arm and the 27B-EXL3-era pin, so the migration tuple
+# is exercised end to end (the EXL3 pin is the exact drift the operator's own
+# config.json carried: a retired arm's id never added to retired_local_aliases,
+# so it survived every sync run and re-seeded a dead picker line).
 cat > "$SANDBOX/.factory/config.json" <<EOF
 { "custom_models": [
   { "model_display_name": "Qwen3.5", "model": "qwen35-a3b-iq4xs",
@@ -104,31 +107,49 @@ cat > "$SANDBOX/.factory/config.json" <<EOF
     "base_url": "http://127.0.0.1:4000/v1", "api_key": "stale", "provider": "openai" },
   { "model_display_name": "Qwen3.8 IQ2_XS (local)", "model": "abliterated-iq2_xs",
     "base_url": "http://127.0.0.1:4000/v1", "api_key": "stale", "provider": "openai" },
+  { "model_display_name": "Qwen3.8-27B EXL3 (UAP local)", "model": "Qwen3.8-27B-EXL3-3.5bpw",
+    "base_url": "http://127.0.0.1:4000/v1", "api_key": "stale", "provider": "openai" },
   { "model_display_name": "CC Opus", "model": "claude-opus-4-6",
     "base_url": "http://192.168.1.165:8317", "api_key": "local", "provider": "anthropic" }
 ] }
 EOF
 # settings.json uses the camelCase spelling and covers all three routes: the
 # anthropic Messages shape (baseUrl at the proxy ROOT, no /v1 — exactly the
-# real entry that shipped without baseModelId), :4000/v1 chat entries from two
-# retired eras, and a model-less trio: one aimed at the retired 8317 host
+# real entry that shipped without baseModelId), :4000/v1 chat entries from
+# two retired eras plus the 27B-EXL3-era pin (the drift the operator's own
+# settings carried), a model-less trio: one aimed at the retired 8317 host
 # (the shape that used to raise TypeError mid-run and must now take ONLY the
 # split-brain host fixup), one LOCAL on :8080 (must converge onto the direct
-# route), and one on ANOTHER LAN host (must survive untouched — ports alone
-# don't identify this box).
+# route), one on ANOTHER LAN host (must survive untouched — ports alone
+# don't identify this box) — and, for the dedupe/favorites/default contract,
+# a duplicate CLOUD pair (two copy eras, the earlier key rotated), TWO dead
+# modelFavorites pins from retired qwen eras, and a sessionDefaultSettings
+# pin on the FIRST chat member (dedupe must keep THAT member, not the
+# newest, or the session default dangles).
 cat > "$SANDBOX/.factory/settings.json" <<EOF
 { "customModels": [
   { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
     "baseUrl": "http://localhost:4000", "apiKey": "not-needed", "provider": "anthropic",
     "noImageSupport": true },
   { "displayName": "Qwen3.8-27B GSQ-RCO (local)", "model": "qwen38-gsq-rco-27b",
-    "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale" },
+    "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale",
+    "id": "custom:Qwen3.8-27B-GSQ-(UAP-local)-0", "index": 25 },
   { "displayName": "Qwen3.8 IQ2_XS (local)", "model": "abliterated-iq2_xs",
     "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale" },
+  { "displayName": "Qwen3.8-27B EXL3 (UAP local)", "model": "Qwen3.8-27B",
+    "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale",
+    "id": "custom:Qwen3.8-27B-EXL3-(UAP-local)-0", "index": 26 },
   { "displayName": "Odd entry", "baseUrl": "http://192.168.1.165:8317" },
   { "displayName": "LAN bare 8080", "baseUrl": "http://192.168.1.5:8080/v1", "apiKey": "lan" },
-  { "displayName": "Local bare 8080", "baseUrl": "http://127.0.0.1:8080/v1", "apiKey": "bare" }
-] }
+  { "displayName": "Local bare 8080", "baseUrl": "http://127.0.0.1:8080/v1", "apiKey": "bare" },
+  { "displayName": "GPT-5.4", "model": "gpt-5.4", "baseUrl": "http://localhost:8317/v1",
+    "apiKey": "router-old", "id": "custom:GPT-5.4-28", "index": 28 },
+  { "displayName": "GPT-5.4", "model": "gpt-5.4", "baseUrl": "http://localhost:8317/v1",
+    "apiKey": "router-new", "id": "custom:GPT-5.4-0", "index": 28 }
+],
+  "sessionDefaultSettings": { "model": "custom:Qwen3.8-27B-GSQ-(UAP-local)-0" },
+  "modelFavorites": ["claude-opus-5", "custom:Qwen3.5-Proxy-27",
+                      "custom:Qwen3.8-IQ3_S-(UAP-local)-0", "custom:GPT-5.4-0"] }
 EOF
 # A project-level settings file with NO local entry at all: after the run it
 # must GAIN the canonical proxy entry (add-if-missing) — this is the box-state
@@ -251,8 +272,9 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 alias, tok, ctx, pool = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6])
 models = d["custom_models"]
-# every retired arm converged onto the alias
-for r in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b", "abliterated-iq2_xs"):
+# every retired arm converged onto the alias (incl. the 27B-EXL3-era pin)
+for r in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b", "abliterated-iq2_xs",
+          "Qwen3.8-27B-EXL3-3.5bpw"):
     assert r not in [m.get("model") for m in models], f"retired id survived: {r}"
 entries = [m for m in models if m.get("model") == alias]
 assert entries, "no entry on the live alias"
@@ -263,14 +285,19 @@ assert direct[0]["base_url"] == "http://127.0.0.1:8080/v1", direct[0]["base_url"
 assert direct[0]["max_context_limit"] == pool, "direct entry not pool-sized"
 assert direct[0]["api_key"] == "**********", "direct entry lost its own api key"
 assert direct[0]["model_display_name"] == "Qwen3.8 Flash-Next (direct, no guardrails)"
-# the ex-gsq + ex-abliterated :4000/v1 entries took the PROXY CHAT route
+# the ex-gsq + ex-abliterated + ex-EXL3 :4000/v1 entries converge onto ONE
+# picker line: same model+base_url+display name collapses (Droid's copy eras
+# are duplicates, not choices)
 chat = [m for m in entries if ":4000" in m["base_url"]]
-assert len(chat) == 2, f"expected two proxy-chat entries, got {len(chat)}"
+assert len(chat) == 1, f"expected ONE proxy-chat entry after dedupe, got {len(chat)}"
 for m in chat:
     assert m["base_url"] == "http://127.0.0.1:4000/v1", m["base_url"]
     assert m["api_key"] == tok, "proxy-chat entry not on the scoped token"
     assert m["max_context_limit"] == ctx, "proxy entry not session-sized"
     assert m["model_display_name"] == "Qwen3.8 Flash-Next (UAP local)"
+# no duplicate picker line survives anywhere in the file
+sigs = [(m.get("model"), m.get("base_url"), m.get("model_display_name")) for m in models]
+assert len(sigs) == len(set(sigs)), "duplicate picker line survived dedupe"
 # the cloud entry survives untouched (except the split-brain host fixup)
 cloud = [m for m in models if m.get("model") == "claude-opus-4-6"]
 assert len(cloud) == 1, "cloud entry vanished"
@@ -283,7 +310,8 @@ d = json.load(open(sys.argv[1]))
 alias, tok, ctx, pool, base_model = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7]
 models = d["customModels"]
 for m in models:
-    assert m.get("model") not in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b", "abliterated-iq2_xs"), \
+    assert m.get("model") not in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b", "abliterated-iq2_xs",
+                                  "Qwen3.8-27B"), \
         f"retired id survived: {m.get('model')}"
     for bk in ("base_url", "baseUrl"):
         v = m.get(bk)
@@ -300,13 +328,20 @@ assert a.get("baseModelId") == base_model, f"baseModelId wrong: {a.get('baseMode
 assert a["maxContextLimit"] == ctx, "anthropic entry not session-sized"
 assert a["displayName"] == "Qwen3.8 Flash-Next (UAP proxy)"
 assert not a.get("noImageSupport"), "vision still disabled"
-# the two :4000/v1 chat entries converged on the scoped token (the direct
-# :8080/v1 entry also ends in /v1 — filter on the port, not the suffix)
+# the three :4000/v1 chat entries (two retired eras + the 27B-EXL3 pin)
+# converge onto ONE picker line: the member the SESSION DEFAULT pins wins the
+# group (outranking even the newest copy era — otherwise the default
+# dangles), and the default stays live (the direct :8080/v1 entry also ends
+# in /v1 — filter on the port, not the suffix)
 chat = [m for m in entries if ":4000" in m.get("baseUrl", "") and m.get("baseUrl", "").endswith("/v1")]
-assert len(chat) == 2, f"expected two proxy-chat entries, got {len(chat)}"
-for m in chat:
-    assert m["apiKey"] == tok, "chat entry not on the scoped token"
-    assert m["maxContextLimit"] == ctx, "chat entry not session-sized"
+assert len(chat) == 1, f"expected ONE proxy-chat entry after dedupe, got {len(chat)}"
+assert chat[0]["id"] == "custom:Qwen3.8-27B-GSQ-(UAP-local)-0", chat[0].get("id")
+assert chat[0]["apiKey"] == tok, "chat entry not on the scoped token"
+assert chat[0]["maxContextLimit"] == ctx, "chat entry not session-sized"
+sd = (d.get("sessionDefaultSettings") or {}).get("model")
+ids = {m.get("id") for m in models}
+assert sd == "custom:Qwen3.8-27B-GSQ-(UAP-local)-0" and sd in ids, \
+    f"session default dangling after dedupe: {sd}"
 # the model-less Odd entry took ONLY the split-brain fixup — no model forced on it
 odd = [m for m in models if m.get("displayName") == "Odd entry"]
 assert len(odd) == 1 and "model" not in odd[0], "model-less entry was force-migrated"
@@ -321,6 +356,21 @@ assert len(lan) == 1, "LAN model-less entry vanished"
 assert "model" not in lan[0], "LAN model-less entry was force-migrated"
 assert lan[0]["baseUrl"] == "http://192.168.1.5:8080/v1", "LAN model-less entry was repointed"
 assert lan[0]["apiKey"] == "lan", "LAN entry key clobbered"
+# the duplicate cloud pair (two copy eras of GPT-5.4, earlier key rotated)
+# collapses onto the LAST member — the era carrying the current key
+g = [m for m in models if m.get("model") == "gpt-5.4"]
+assert len(g) == 1, f"expected the duplicate cloud pair collapsed, got {len(g)}"
+assert g[0]["id"] == "custom:GPT-5.4-0" and g[0]["apiKey"] == "router-new", g[0]
+# no duplicate picker line survives anywhere in the file
+sigs = [(m.get("model"), m.get("baseUrl"), m.get("displayName")) for m in models]
+assert len(sigs) == len(set(sigs)), "duplicate picker line survived dedupe"
+# dead favorites: BOTH qwen-era pins repoint onto the surviving local entry
+# (here the session-default-pinned chat survivor, the only proxy-route entry
+# with an id) and the duplicate the double repoint produces collapses; the
+# live cloud favorite and the built-in favorite are untouched
+assert d.get("modelFavorites") == [
+    "claude-opus-5", "custom:Qwen3.8-27B-GSQ-(UAP-local)-0", "custom:GPT-5.4-0"
+], d.get("modelFavorites")
 # add-if-missing must NOT fire: a local entry already exists
 assert not any(str(m.get("id", "")).startswith("custom:Qwen3.8-UAP-local-") for m in models), \
     "canonical entry added although local entries exist"

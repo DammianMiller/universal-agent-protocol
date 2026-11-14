@@ -14,7 +14,9 @@
     "qwen38-gsq-rco-27b",
     "abliterated-iq2_xs",
     "qwen3.8-flash-next-iq3_s",
-    "swift-1.5-iq3_s"
+    "swift-1.5-iq3_s",
+    "Qwen3.8-27B",
+    "Qwen3.8-27B-EXL3-3.5bpw"
   ],
   "models": {
     "qwen3.6-27b": {
