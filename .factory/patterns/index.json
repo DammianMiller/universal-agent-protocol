@@ -502,20 +502,20 @@
       "abbreviation": "Superpowers",
       "category": "Programming",
       "keywords": [
-        "superpowers",
+        "implement",
+        "debug",
+        "refactor",
+        "code review",
         "tdd",
         "test-driven",
         "systematic debugging",
-        "code review",
         "brainstorming",
         "writing plans",
         "executing plans",
         "subagent-driven",
         "verification-before-completion",
         "methodology",
-        "refactor",
-        "debug",
-        "implement"
+        "superpowers"
       ]
     }
   ]
