@@ -153,10 +153,11 @@ sync_droid_models() { # <file> <create: 0|1>
     UAP_SYNC_BACKUP="$BACKUP_DIR" UAP_SYNC_REPO_ROOT="$REPO_ROOT" \
     python3 - "$f" "$PROXY_URL" "$DIRECT_URL" "$MODEL_ALIAS" \
               "$DROID_ANTHROPIC_BASE_MODEL" "$DROID_CHAT_BASE_MODEL" \
-              "$CTX_SESSION" "$CTX_POOL" "$MAX_OUTPUT" "$create" <<'PY' || { note "WARN: $f could not be synced"; return 0; }
+              "$CTX_SESSION" "$CTX_POOL" "$MAX_OUTPUT" "$create" \
+              "$DROID_LOCAL_27B_PIN" "$DROID_LOCAL_27B_DISPLAY" <<'PY' || { note "WARN: $f could not be synced"; return 0; }
 import json, os, re, shutil, sys, tempfile
 
-path, proxy, direct, alias, base_model, chat_base, ctx_s, ctx_p, out, create = sys.argv[1:11]
+path, proxy, direct, alias, base_model, chat_base, ctx_s, ctx_p, out, create, pin27, name27 = sys.argv[1:13]
 token = os.environ.get("UAP_SYNC_TOKEN", "not-needed")
 dry = os.environ.get("DRY_RUN", "0") == "1"
 ctx_s, ctx_p, out = int(ctx_s), int(ctx_p), int(out)
@@ -179,6 +180,17 @@ RETIRED = tuple(_reg["retired_local_aliases"])
 # below additionally requires a local base for them.
 FLEET = {a for _fam in (_reg.get("models") or {}).values()
          for a in (_fam.get("advertises") or []) if isinstance(a, str)}
+# The SECOND local family the pickers list alongside the live alias: the
+# registry's qwen3.8-27b family. Derived from the registry, never
+# transcribed — the pin must be an id that family advertises (fail-closed:
+# a registry whose 27B family does not carry the pin simply stops ADDING
+# the entry; the marker rule below still protects any existing one).
+fam27 = (_reg.get("models") or {}).get("qwen3.8-27b") or {}
+ADV27 = [a for a in (fam27.get("advertises") or []) if isinstance(a, str)]
+# The marker id the sync stamps on its 27B family listing — the stake that
+# distinguishes a DELIBERATE listing (never converged) from a stale pin
+# (always converged), the same job the canon regex does for the alias entry.
+marker27 = re.compile(r"^custom:Qwen[\d.]+-27B-UAP-local-\d+$")
 
 def spell(camel):
     if camel:
@@ -231,6 +243,21 @@ for key in keys:
         if not isinstance(m, dict):
             continue
         label = str(m.get("id") or m.get("model") or m.get(DK) or "<unnamed>")
+        # Deliberate 27B family listing: the marker id is this sync's own
+        # stake, so it is exempt from convergence — repointing it would
+        # erase the second family from the picker. Maintain, never migrate:
+        # the entry keeps the current token and gains baseModelId when
+        # absent; everything else about it is already correct by
+        # construction (the add-if-missing below wrote it, or a dedupe
+        # pass kept the marker member).
+        mid = m.get("id")
+        if isinstance(mid, str) and marker27.match(mid):
+            if m.get(AK) != token:
+                setf(m, AK, token, label, "apiKey", changed)
+            if camel and not m.get("baseModelId"):
+                m["baseModelId"] = chat_base
+                changed.append(f"{label} [baseModelId={chat_base}]")
+            continue
         base = m.get(BK)
         base = base if isinstance(base, str) else ""
         # Split-brain: one 8317 entry pointed at a LAN IP, the rest localhost.
@@ -328,8 +355,15 @@ for key in keys:
                      and models[i]["id"] == default_model), None)
         if keep is None:
             keep = next((i for i in idxs
-                         if isinstance(models[i].get("id"), str) and canon.match(models[i]["id"])),
-                        idxs[-1])
+                         if isinstance(models[i].get("id"), str) and canon.match(models[i]["id"])), None)
+        if keep is None:
+            # A 27B-marker member is this sync's stake in the group — the
+            # same preference the canon id gets in alias groups.
+            keep = next((i for i in idxs
+                         if isinstance(models[i].get("id"), str) and marker27.match(models[i]["id"])),
+                        None)
+        if keep is None:
+            keep = idxs[-1]
         for i in idxs:
             if i != keep:
                 drop.add(i)
@@ -358,6 +392,35 @@ for key in keys:
         }
         models.append(entry)
         changed.append(f"{entry['id']} [canonical entry added]")
+
+    # The 27B family listing rides alongside the canonical entry: a Droid
+    # instance with no entry pinned to the 27B family gains it, so both
+    # local families appear in every picker. Same chat route, same token,
+    # same session-sized cap (conservative under every 27B arm's window);
+    # baseModelId inherits the Qwen3.8-family built-in like the alias entry.
+    # Fail-closed on the registry: the pin must be an id the qwen3.8-27b
+    # family advertises, else the listing is silently not added (the
+    # registry, not this script, owns the family's ids).
+    if (camel and create == "1" and pin27 in ADV27 and not any(
+        isinstance(m, dict) and m.get("model") == pin27 for m in models
+    )):
+        nums27 = []
+        for m in models:
+            if isinstance(m, dict) and isinstance(m.get("id"), str):
+                mt = re.search(r"(\d+)$", m["id"])
+                if mt:
+                    nums27.append(int(mt.group(1)))
+        i27 = (max(nums27) + 1) if nums27 else 0
+        entry27 = {
+            "model": pin27, "id": f"custom:{pin27}-UAP-local-{i27}", "index": i27,
+            "baseUrl": f"{proxy}/v1", "apiKey": token,
+            "displayName": name27,
+            "noImageSupport": False, "provider": "generic-chat-completion-api",
+            "baseModelId": chat_base,
+            "maxOutputTokens": out, "maxContextLimit": ctx_s,
+        }
+        models.append(entry27)
+        changed.append(f"{entry27['id']} [27B family entry added]")
 
 # Dead favorites: a modelFavorites pin on a UAP-local custom id that no
 # longer exists (qwen35-era ids whose entries the migration above converged
@@ -582,13 +645,28 @@ prov["qwen-proxy"] = {
         "headers": {"x-uap-proxy-token": token, hdr: profile},
     },
     "models": {
-        "Qwen3.8-27B": {
-            "name": "Qwen3.8 (UAP guardrail proxy)",
+        # The local menu lists BOTH families. The Flash-Next key is the
+        # DEFAULT (d["model"] + the repoint target below); the 27B key is
+        # the registry family id — deliberately NOT the old default string
+        # "Qwen3.8-27B", which every pre-listing pin was created under to
+        # mean "the local default". Using the family key lets this sync
+        # repoint those legacy pins to the Flash-Next default (the semantic
+        # they were set under) exactly once, while any NEW pin to the 27B
+        # family survives as a deliberate choice.
+        "Qwen3.8-Flash-Next": {
+            "name": "Qwen3.8 Flash-Next (UAP guardrail proxy)",
             "reasoning": True,     # server runs --reasoning-format auto
             "tool_call": True,
             "attachment": True,    # mmproj loaded: vision + video
             "limit": {"context": ctx, "output": out},
-        }
+        },
+        "qwen3.8-27b": {
+            "name": "Qwen3.8 27B (UAP guardrail proxy)",
+            "reasoning": True,
+            "tool_call": True,
+            "attachment": True,
+            "limit": {"context": ctx, "output": out},
+        },
     },
 }
 # Guardrail-free escape hatch, kept for probing only.
@@ -604,15 +682,20 @@ prov["llama.cpp-direct"] = {
     },
 }
 
-LOCAL_MODEL = "qwen-proxy/Qwen3.8-27B"
+LOCAL_MODEL = "qwen-proxy/Qwen3.8-Flash-Next"
+# Current local listings — deliberate pins that must survive now that the
+# local menu carries two families (the legacy "qwen-proxy/Qwen3.8-27B"
+# default-era pins are NOT in this set on purpose: see the models map above).
+VALID_LOCAL = {LOCAL_MODEL, "qwen-proxy/qwen3.8-27b"}
 # Old provider key; anything still referencing it would dangle.
 stale_prefixes = ("llama.cpp/", "qwen-proxy/")
 removed = prov.pop("llama.cpp", None)
 
 def is_local_ref(v):
-    return isinstance(v, str) and (
-        v.startswith(stale_prefixes) or "qwen35-a3b-iq4xs" in v or "qwen38" in v.lower()
-    )
+    # A pin on a CURRENT listing is a deliberate choice, never stale drift.
+    if not isinstance(v, str) or v in VALID_LOCAL:
+        return False
+    return v.startswith(stale_prefixes) or "qwen35-a3b-iq4xs" in v or "qwen38" in v.lower()
 
 d["model"] = LOCAL_MODEL
 

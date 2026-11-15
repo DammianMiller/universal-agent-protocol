@@ -51,6 +51,8 @@ export DROID_SYNC_LOCK="$SANDBOX/droid-sync.lock"
 . "$CONTRACT" || { echo "sandbox: contract $CONTRACT is not sourceable"; exit 1; }
 BASE_MODEL="$DROID_ANTHROPIC_BASE_MODEL"
 CHAT_BASE_MODEL="$DROID_CHAT_BASE_MODEL"
+PIN27="$DROID_LOCAL_27B_PIN"
+NAME27="$DROID_LOCAL_27B_DISPLAY"
 # Sourcing is side-effect free — snapshot it HERE, before the installer
 # run below legitimately creates the (sandbox-redirected) lock file.
 CONTRACT_CLEAN=$([ ! -e "$DROID_SYNC_LOCK" ] && echo clean || echo dirty)
@@ -131,7 +133,13 @@ EOF
 # dedupe/favorites/default contract, a duplicate CLOUD pair (two copy eras,
 # the earlier key rotated), TWO dead modelFavorites pins from retired qwen
 # eras, and a sessionDefaultSettings pin on the FIRST chat member (dedupe
-# must keep THAT member, not the newest, or the session default dangles).
+# must keep THAT member, not the newest, or the session default dangles) —
+# plus a 27B-family MARKER entry (the deliberate second local listing: a
+# stale token and no baseModelId, so the sync must MAINTAIN it without
+# converging it away) beside the NON-marker Qwen3.8-27B pin above (the
+# pre-listing drift, which converges onto the alias via the FLEET rule now
+# that the plain id left retired_local_aliases — the regression guard for
+# both halves of that registry change).
 cat > "$SANDBOX/.factory/settings.json" <<EOF
 { "customModels": [
   { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
@@ -148,6 +156,10 @@ cat > "$SANDBOX/.factory/settings.json" <<EOF
   { "displayName": "Edge0 145B (UAP local)", "model": "edge0_145b",
     "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale",
     "id": "custom:Edge0-145B-UAP-local-0", "index": 30 },
+  { "displayName": "Qwen3.8 27B (UAP local)", "model": "Qwen3.8-27B",
+    "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale",
+    "id": "custom:Qwen3.8-27B-UAP-local-31", "index": 31,
+    "provider": "generic-chat-completion-api" },
   { "displayName": "GPT-5.1 Codex (router)", "model": "gpt-5.1-codex",
     "baseUrl": "http://localhost:8317/v1", "apiKey": "router-key",
     "id": "custom:GPT-5.1-Codex-0" },
@@ -214,7 +226,7 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=1; }
 
 # 0. shared Droid sync contract — names + installer structure
 bash -n "$CONTRACT" && ok "contract: valid bash" || bad "contract: bash -n failed"
-for V in MODELS_ONLY REPO_ROOT PROJECT_FACTORY_SET DROID_ANTHROPIC_BASE_MODEL DROID_CHAT_BASE_MODEL DROID_SYNC_LOCK; do
+for V in MODELS_ONLY REPO_ROOT PROJECT_FACTORY_SET DROID_ANTHROPIC_BASE_MODEL DROID_CHAT_BASE_MODEL DROID_LOCAL_27B_PIN DROID_LOCAL_27B_DISPLAY DROID_SYNC_LOCK; do
   [ -n "${!V:-}" ] && ok "contract: $V defined" || bad "contract: $V undefined"
 done
 # Sourcing must be side-effect free: no lock file, no repo config writes.
@@ -248,6 +260,21 @@ advertised = {a for fam in (reg.get("models") or {}).values()
               for a in (fam.get("advertises") or [])}
 assert v not in advertised, f"fleet-advertised id: {v}"
 PY
+# The 27B listing pin must be an id the registry's qwen3.8-27b family
+# advertises — the listing is derived from the registry, and the pin left
+# retired_local_aliases when the family became a first-class listing (the
+# FLEET rule, not the retired list, now converges stale plain-id pins).
+python3 - "$REPO_ROOT/config/model-registry.json" "$PIN27" <<'PY' \
+  && ok "contract: DROID_LOCAL_27B_PIN is advertised by the qwen3.8-27b family" \
+  || bad "contract: DROID_LOCAL_27B_PIN is not a qwen3.8-27b advertises id"
+import json, sys
+reg = json.load(open(sys.argv[1])); pin = sys.argv[2]
+fam = (reg.get("models") or {}).get("qwen3.8-27b") or {}
+adv = [a for a in (fam.get("advertises") or []) if isinstance(a, str)]
+assert pin in adv, f"pin {pin} not in the 27B family's advertises: {adv}"
+assert pin not in (reg.get("retired_local_aliases") or []), \
+    f"pin {pin} is still retired — a listed family id must not be drift"
+PY
 # The bodies live in the installer (the contract stays stub-free — no dead
 # code), so assert them textually against it.
 INSTALLER="$HERE/sync-local-agent-configs.sh"
@@ -270,11 +297,19 @@ python3 - "$SANDBOX/.config/opencode/opencode.json" "$FAKE_TOKEN" "$CLOUD_KEY" "
 import json,sys
 d=json.load(open(sys.argv[1])); tok, cloud, alias, ctx, pool = sys.argv[2:7]
 ctx, pool = int(ctx), int(pool)
-p=d["provider"]["qwen-proxy"]; m=p["models"]["Qwen3.8-27B"]
+p=d["provider"]["qwen-proxy"]
+# BOTH local families are listed: the Flash-Next default and the 27B family
+# (keyed by the registry family id, not the old default string — that
+# collision is what lets legacy pins repoint to the default exactly once)
+assert set(p["models"]) == {"Qwen3.8-Flash-Next", "qwen3.8-27b"}, set(p["models"])
+fl = p["models"]["Qwen3.8-Flash-Next"]; m27 = p["models"]["qwen3.8-27b"]
 assert p["options"]["baseURL"]=="http://127.0.0.1:4000/v1"
 assert p["options"]["headers"]["x-uap-model-profile"]=="qwen38"
-assert m["limit"]=={"context":ctx,"output":32768}, m["limit"]
-assert m["reasoning"] is True
+for m in (fl, m27):
+    assert m["limit"]=={"context":ctx,"output":32768}, m["limit"]
+    assert m["reasoning"] is True and m["tool_call"] is True and m["attachment"] is True
+assert fl["name"]=="Qwen3.8 Flash-Next (UAP guardrail proxy)", fl.get("name")
+assert m27["name"]=="Qwen3.8 27B (UAP guardrail proxy)", m27.get("name")
 # The token must come from qwen-proxy, NOT the cloud provider listed first.
 assert p["options"]["apiKey"]==tok, f"expected scoped token, got {p['options']['apiKey']!r}"
 assert p["options"]["headers"]["x-uap-proxy-token"]==tok
@@ -283,11 +318,14 @@ assert p["options"]["headers"]["x-uap-proxy-token"]==tok
 assert d["provider"]["anthropic"]["options"]["apiKey"]==cloud, "clobbered the cloud provider's own key"
 assert cloud not in json.dumps(p), "CLOUD KEY copied into the qwen-proxy provider"
 assert cloud not in json.dumps(d["provider"]["llama.cpp-direct"]), "CLOUD KEY copied into the direct provider"
-# cloud-pinned agent must survive; local one must be repointed
+# cloud-pinned agent must survive; local one must be repointed to the DEFAULT
+# (the legacy "qwen-proxy/Qwen3.8-27B" pin predates the two-family menu — it
+# meant "the local default", so it follows the default, not the 27B listing)
 assert d["agent"]["reviewer"]["model"]=="anthropic/claude-opus-4-5", "clobbered a cloud-pinned agent"
-assert d["agent"]["build"]["model"]=="qwen-proxy/Qwen3.8-27B"
+assert d["agent"]["build"]["model"]=="qwen-proxy/Qwen3.8-Flash-Next", d["agent"]["build"]["model"]
 # dangling reference to the removed provider must be repaired
-assert d["small_model"]=="qwen-proxy/Qwen3.8-27B", d["small_model"]
+assert d["small_model"]=="qwen-proxy/Qwen3.8-Flash-Next", d["small_model"]
+assert d.get("model")=="qwen-proxy/Qwen3.8-Flash-Next", d.get("model")
 assert d.get("theme")=="keep-me", "unrelated settings lost"
 # the direct escape hatch is keyed by the id actually served
 assert d["provider"]["llama.cpp-direct"]["models"][alias]["limit"]["context"]==pool, \
@@ -338,13 +376,27 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 alias, tok, ctx, pool, base_model, chat_base = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7], sys.argv[8]
 models = d["customModels"]
-for m in models:
+import re as _re
+M27 = _re.compile(r"^custom:Qwen[\d.]+-27B-UAP-local-\d+$")
+marker = [m for m in models if isinstance(m.get("id"), str) and M27.match(m["id"])]
+nonmarker = [m for m in models if not (isinstance(m.get("id"), str) and M27.match(m["id"]))]
+for m in nonmarker:
     assert m.get("model") not in ("qwen35-a3b-iq4xs", "qwen38-gsq-rco-27b", "abliterated-iq2_xs",
                                   "Qwen3.8-27B", "edge0_145b"), \
         f"retired or unconverged local id survived: {m.get('model')}"
     for bk in ("base_url", "baseUrl"):
         v = m.get(bk)
         assert not (isinstance(v, str) and "192.168.1.165:8317" in v), "LAN 8317 split-brain remains"
+# the 27B MARKER entry: maintained, never converged — model and display
+# survive, the stale token is refreshed, baseModelId is stamped
+assert len(marker) == 1, f"expected the one marker entry, got {len(marker)}"
+k = marker[0]
+assert k["model"] == "Qwen3.8-27B", f"marker entry converged away: {k.get('model')}"
+assert k["displayName"] == "Qwen3.8 27B (UAP local)", k.get("displayName")
+assert k["baseUrl"] == "http://127.0.0.1:4000/v1", k.get("baseUrl")
+assert k["apiKey"] == tok, "marker entry left on the stale token"
+assert k.get("baseModelId") == chat_base, \
+    f"marker entry baseModelId wrong: {k.get('baseModelId')}"
 entries = [m for m in models if m.get("model") == alias]
 # the ex-qwen35 anthropic-shape entry keeps the Messages ROOT (no /v1), gains
 # baseModelId, keeps its own apiKey, and is session-sized
@@ -419,10 +471,10 @@ assert not any(str(m.get("id", "")).startswith("custom:Qwen3.8-UAP-local-") for 
     "canonical entry added although local entries exist"
 PY
 # the project settings had NO local entry — it must have GAINED the canonical
-python3 - "$PSET" project "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$CHAT_BASE_MODEL" <<PY && ok "project settings: gained the canonical entry (add-if-missing)" || bad "project settings: add-if-missing failed"
+python3 - "$PSET" project "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$CHAT_BASE_MODEL" "$PIN27" <<PY && ok "project settings: gained the canonical entry (add-if-missing)" || bad "project settings: add-if-missing failed"
 import json, sys
 d = json.load(open(sys.argv[1]))
-alias, tok, ctx, pool, chat_base = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7]
+alias, tok, ctx, pool, chat_base, pin27 = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7], sys.argv[8]
 models = d["customModels"]
 # the cloud router entry is untouched
 assert models[0]["model"] == "gpt-5.1" and models[0]["apiKey"] == "router-key", "cloud entry clobbered"
@@ -437,6 +489,19 @@ assert e["provider"] == "generic-chat-completion-api"
 assert e.get("baseModelId") == chat_base, \
     f"canonical entry baseModelId wrong: {e.get('baseModelId')}"
 assert e.get("noImageSupport") is False
+# the 27B family listing rides along (both local families in every picker)
+import re as _re
+f27 = [m for m in models if m.get("model") == pin27]
+assert len(f27) == 1, f"expected exactly one 27B family entry, got {len(f27)}"
+f = f27[0]
+assert f["id"] == "custom:Qwen3.8-27B-UAP-local-2" and f["index"] == 2, (f.get("id"), f.get("index"))
+assert _re.match(r"^custom:Qwen[\d.]+-27B-UAP-local-\d+$", f["id"]), f["id"]
+assert f["baseUrl"] == "http://127.0.0.1:4000/v1", f["baseUrl"]
+assert f["apiKey"] == tok, "27B entry not on the scoped token"
+assert f["maxContextLimit"] == ctx, "27B entry not session-sized"
+assert f.get("baseModelId") == chat_base, \
+    f"27B entry baseModelId wrong: {f.get('baseModelId')}"
+assert f["displayName"] == "Qwen3.8 27B (UAP local)", f.get("displayName")
 PY
 
 # 4. codex — additive, converging, loadable, idempotent
@@ -501,18 +566,25 @@ else
   rc3=$?
   bad "MODELS_ONLY: run failed (rc $rc3)"
 fi
-python3 - "$S3/.factory/settings.json" "$PSET3" "$ALIAS" "$CTX" "$BASE_MODEL" <<PY && ok "MODELS_ONLY: converged user + project settings" || bad "MODELS_ONLY: assertions failed"
+python3 - "$S3/.factory/settings.json" "$PSET3" "$ALIAS" "$CTX" "$BASE_MODEL" "$CHAT_BASE_MODEL" "$PIN27" <<PY && ok "MODELS_ONLY: converged user + project settings" || bad "MODELS_ONLY: assertions failed"
 import json, sys
-alias, ctx, base_model = sys.argv[3], int(sys.argv[4]), sys.argv[5]
+alias, ctx, base_model, chat_base, pin27 = sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6], sys.argv[7]
 u = json.load(open(sys.argv[1]))["customModels"]
 assert any(m.get("model") == alias for m in u), "user settings not migrated"
 a = [m for m in u if m.get("model") == alias][0]
 assert a["baseUrl"] == "http://127.0.0.1:4000", a["baseUrl"]
 assert a.get("baseModelId") == base_model, "anthropic entry missing baseModelId"
 assert a["maxContextLimit"] == ctx, "not session-sized"
+# the two-family listing holds in MODELS_ONLY too (the hook's exact mode)
+u27 = [m for m in u if m.get("model") == pin27]
+assert len(u27) == 1, f"user settings missing the 27B listing: {len(u27)}"
+assert u27[0].get("baseModelId") == chat_base, "27B listing missing baseModelId"
+assert u27[0]["maxContextLimit"] == ctx, "27B listing not session-sized"
 p = json.load(open(sys.argv[2]))["customModels"]
 assert any(m.get("model") == alias for m in p), "project settings did not gain the canonical entry"
-assert len(p) == 1, f"canonical entry count wrong: {len(p)}"
+p27 = [m for m in p if m.get("model") == pin27]
+assert len(p) == 2 and len(p27) == 1, \
+    f"project settings expected canonical + 27B, got {len(p)} entries ({len(p27)} x 27B)"
 PY
 [ ! -e "$S3/.config/uap/anthropic-proxy.env" ] && ok "MODELS_ONLY: no proxy env created" || bad "MODELS_ONLY: created the proxy env"
 [ ! -e "$S3/.codex/config.toml" ]              && ok "MODELS_ONLY: no codex config created" || bad "MODELS_ONLY: wrote codex config"

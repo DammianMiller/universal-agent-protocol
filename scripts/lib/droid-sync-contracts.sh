@@ -80,6 +80,19 @@ _UAP_DROID_SYNC_CONTRACTS_LOADED=1
 # check lives in the sandbox suite.)
 : "${DROID_CHAT_BASE_MODEL:=qwen3.8-max}"
 
+# DROID_LOCAL_27B_PIN / DROID_LOCAL_27B_DISPLAY — the SECOND local family the
+# Droid pickers list alongside the live Flash-Next alias: the registry's
+# qwen3.8-27b family (the llama.cpp / yskn / vLLM 27B arms — same :4000/:8080
+# endpoints, the engine serves whichever arm is switched live, so the entry
+# is a FAMILY LISTING, not a route switch; when placement turns on, the pin
+# is registry-matchable). The pin must be an id that family advertises —
+# checked against config/model-registry.json at sync time, fail-closed to
+# skip-adding. A camelCase entry carrying the 27B marker id
+# (custom:Qwen…-27B-UAP-local-N) is a DELIBERATE listing: the convergence
+# loop never repoints or renames it, it only stamps baseModelId when absent.
+: "${DROID_LOCAL_27B_PIN:=Qwen3.8-27B}"
+: "${DROID_LOCAL_27B_DISPLAY:=Qwen3.8 27B (UAP local)}"
+
 # DROID_SYNC_LOCK — lock file serialising concurrent Droid config writes
 # (session-start hook + manual installer run + a second Droid window).
 # Without it two writers read-modify-write the same JSON and one set of
@@ -109,7 +122,8 @@ fi
 #            in place or left alone. "0" = patch only when present.
 #   Reads from the caller's scope: MODEL_ALIAS, PROXY_URL, DIRECT_URL,
 #   CTX_SESSION, CTX_POOL, MAX_OUTPUT, DROID_ANTHROPIC_BASE_MODEL,
-#   DROID_CHAT_BASE_MODEL, PROXY_TOKEN (via UAP_SYNC_TOKEN env), DRY_RUN.
+#   DROID_CHAT_BASE_MODEL, DROID_LOCAL_27B_PIN, DROID_LOCAL_27B_DISPLAY,
+#   PROXY_TOKEN (via UAP_SYNC_TOKEN env), DRY_RUN.
 #   Migration rules (idempotent; no change => file left byte-identical):
 #     * entries whose model is a RETIRED local id — already the live alias,
 #       a FLEET wire id (any registry advertises entry) pointed at this
@@ -117,6 +131,11 @@ fi
 #       converge onto MODEL_ALIAS (fleet ids are gated on a local base:
 #       the compat names collide with real cloud ids, so a cloud-router
 #       entry carrying one survives untouched);
+#     * a camelCase entry whose id carries the 27B marker
+#       (custom:Qwen…-27B-UAP-local-N) is a DELIBERATE family listing:
+#       it is skipped by the convergence loop (only baseModelId is
+#       stamped when absent) and is preferred over non-marker members
+#       in its dedupe group;
 #     * route by existing shape: baseUrl with :8080 -> direct strata route
 #       (pool-sized); :4000 WITHOUT /v1 -> Anthropic Messages root (proxy
 #       root + baseModelId=DROID_ANTHROPIC_BASE_MODEL + apiKey only if
@@ -129,7 +148,11 @@ fi
 #     * cloud models (anything else, including the :8317 router entries) are
 #       deliberate user choices and are never repointed;
 #     * a settings.json with NO local entry after migration gains the
-#       canonical proxy entry (add-if-missing);
+#       canonical proxy entry (add-if-missing), and gains the 27B family
+#       entry (model=DROID_LOCAL_27B_PIN on the proxy chat route, marker
+#       id, baseModelId) when the pin is an id the registry's qwen3.8-27b
+#       family advertises — the two-family listing: Flash-Next live alias
+#       + the 27B family, side by side in every picker;
 #     * the 192.168.1.165:8317 split-brain host is fixed everywhere;
 #     * writes are atomic (tmp file in the same directory + os.replace),
 #       under the flock, with backups taken by the caller's backup().
