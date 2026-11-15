@@ -792,3 +792,50 @@ describe('repo registry: speedy-unsloth-ud-iq4_xs-v31 arm wiring', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 2026-11-15: the Gemma 4 31B arm — the operator's speed-optimal Gemma arm on
+// llama.cpp (the fleet's FIRST llama.cpp-arm; the Strata family has no
+// gemma-4 arch support, upstream included, so the engine builds fresh).
+// ---------------------------------------------------------------------------
+
+describe('repo registry: gemma-4-31b arm wiring', () => {
+  it('ships the gemma config with the pinned QAT+MTP 2-file manifest and fails closed until measured', () => {
+    const own = mkdtempSync(join(tmpdir(), 'gemma-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['gemma-4-31b'];
+      expect(entry, 'config/model-registry.json must keep the gemma family').toBeTruthy();
+      // The registration id this arm advertises at /v1/models (the --alias).
+      expect(entry.advertises).toContain('gemma-4-31b-qat-ud-q4_k-xl-mtp');
+      const cfg = entry.configs['gemma-4-31b-it-qat-ud-q4_k-xl-mtp'];
+      expect(cfg, 'the gemma-4-31b family must keep its one config').toBeTruthy();
+      // The FIRST llama.cpp arm: its own engine + unit, weights are the
+      // Google-QAT pair (main GGUF + trained MTP head), not a family reuse.
+      expect(cfg.engine).toBe('llama.cpp');
+      expect(cfg.unit).toBe('uap-gemma-server.service');
+      // Shape only until `uap models measure` records this machine (spec §4.1).
+      expect(isPlaceable(cfg)).toBe(false);
+      // The pinned pair: QAT UD-Q4_K_XL main + the QAT-derived MTP head from
+      // the SAME repo rev, so `uap models ensure` restores them together.
+      expect(cfg.files).toHaveLength(2);
+      expect(
+        cfg.files?.every((f) => f.rev === '43cc1aeb31adf47ec06a854507ce552cd9862e6f'),
+      ).toBe(true);
+      expect(cfg.files?.every((f) => f.repo === 'unsloth/gemma-4-31B-it-qat-GGUF')).toBe(true);
+      expect(
+        cfg.files?.every((f) => f.path.startsWith('/home/cogtek/models/gemma-4-31B-it-qat/')),
+      ).toBe(true);
+      const [main, draft] = cfg.files ?? [];
+      expect(main.bytes).toBe(17287670048); // QAT UD-Q4_K_XL 17.3 GB
+      expect(draft.bytes).toBe(279955968); // trained MTP head 280 MB
+      expect(main.sha256).toBe('00b5a7c497f0c8934033088c10a7fa9a4c015e46ee6d89e9c6890650ba5d0e71');
+      expect(draft.sha256).toBe('3a5e99fd8d0b23afb1fccd1ee0c9ebd1f571d00399c2dae2292d217feeec0f6b');
+      // The MTP-head digest is the HF LFS oid AND the locally computed
+      // sha256 of the completed download (cross-validated 2026-11-15).
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+});
