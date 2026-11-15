@@ -772,9 +772,12 @@ describe('repo registry: speedy-unsloth-ud-iq4_xs-v31 arm wiring', () => {
       // arm from one pin and the A/B has exactly one variable.
       const v31 = entry.configs['strata-unsloth-ud-iq4_xs-v31'];
       expect(cfg.files).toHaveLength(4);
-      expect(cfg.files?.map((f) => f.path)).toEqual(v31.files?.map((f) => f.path));
-      expect(cfg.files?.map((f) => f.bytes)).toEqual(v31.files?.map((f) => f.bytes));
-      expect(cfg.files?.map((f) => f.sha256)).toEqual(v31.files?.map((f) => f.sha256));
+      // Full deep-equality against the v31 manifest — path, bytes, sha256,
+      // repo, file (the repo-relative path `uap models ensure` actually
+      // fetches) and order, one assertion that self-maintains against the
+      // v31 arm (the 2026-11-15 review catch: a speedy-only `file` corruption
+      // would otherwise stay green until a disk-loss repair 404s).
+      expect(cfg.files).toEqual(v31.files);
       expect(
         cfg.files?.every((f) => f.rev === 'd96201194f103c906994f283f504209dc8d2a10c'),
       ).toBe(true);
