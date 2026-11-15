@@ -84,6 +84,14 @@ const FLEET = new Set(
 const CONTRACTS = readFileSync(resolve(ROOT, 'scripts/lib/droid-sync-contracts.sh'), 'utf8');
 const CHAT_BASE_MATCH = /DROID_CHAT_BASE_MODEL:=([^}"\s]+)/.exec(CONTRACTS);
 const CHAT_BASE = CHAT_BASE_MATCH?.[1] ?? '';
+// The second local family the pickers list alongside the live alias. The
+// pin comes from the same shared contract the installer reads; the marker
+// id shape is the sync's stake that distinguishes the DELIBERATE 27B
+// listing (never converged) from a stale pin (always converged).
+const PIN27_MATCH = /DROID_LOCAL_27B_PIN:=([^}"\s]+)/.exec(CONTRACTS);
+const PIN27 = PIN27_MATCH?.[1] ?? '';
+const MARKER27 = /^custom:Qwen[\d.]+-27B-UAP-local-\d+$/;
+const FAM27 = registry.models['qwen3.8-27b'];
 
 describe('qwen38 model knowledge — registry follows the profile', () => {
   it('advertises the alias the profile pins, so placement can match the served id', () => {
@@ -168,6 +176,37 @@ describe('chat baseModelId names a Factory built-in, never a local id', () => {
   });
 });
 
+describe('the 27B family is a first-class picker listing, not drift', () => {
+  it('is pinned by a contract id the registry family advertises', () => {
+    expect(PIN27, 'DROID_LOCAL_27B_PIN default is unparsable or absent').not.toBe('');
+    expect(FAM27, 'registry.models["qwen3.8-27b"] is missing').toBeTruthy();
+    expect(
+      FAM27?.advertises,
+      'the 27B pin is not an id the qwen3.8-27b family advertises',
+    ).toContain(PIN27);
+    // A listed family id is live, not drift: the FLEET rule (not the
+    // retired list) converges any stale plain-id pin.
+    expect(RETIRED, 'a listed family id must not sit in retired_local_aliases').not.toContain(
+      PIN27,
+    );
+  });
+
+  it('is carried by the sync tooling (Droid marker listing + opencode menu)', () => {
+    const script = readFileSync(resolve(ROOT, 'scripts/sync-local-agent-configs.sh'), 'utf8');
+    const sandbox = readFileSync(resolve(ROOT, 'scripts/test-sync-sandbox.sh'), 'utf8');
+    expect(script).toContain('DROID_LOCAL_27B_PIN');
+    // the marker exemption + the add-if-missing listing
+    expect(script).toMatch(/marker27/);
+    expect(script).toContain('27B family entry added');
+    // the sandbox exercises BOTH halves: protection and addition
+    expect(sandbox).toContain('DROID_LOCAL_27B_PIN');
+    expect(sandbox).toMatch(/27B-UAP-local/);
+    // opencode lists both families, keyed apart from the legacy default
+    expect(script).toContain('"Qwen3.8-Flash-Next"');
+    expect(script).toContain('"qwen3.8-27b"');
+  });
+});
+
 const PROJECT_SET = resolve(ROOT, '.factory/settings.json');
 const USER_SET = resolve(homedir(), '.factory/settings.json');
 
@@ -222,6 +261,10 @@ function expectRoutesConverged(entries: DroidModel[]): void {
  */
 function expectFleetPinsConverged(models: DroidModel[]): void {
   const localFleetPins = models.filter((m) => {
+    // The deliberate 27B family listing is a second PICKER LINE, not drift:
+    // its marker id is the sync's stake. Everything else the fleet
+    // advertises, pinned at this box's ports, must share the one served id.
+    if (typeof m.id === 'string' && MARKER27.test(m.id)) return false;
     const base = String(m.baseUrl ?? '');
     const localPort = base.includes(':4000') || base.includes(':8080');
     return localPort && !!m.model && FLEET.has(m.model);
@@ -254,12 +297,33 @@ function liveAliasEntries(models: DroidModel[]): DroidModel[] {
   });
 }
 
+/**
+ * The 27B family listing rides in every settings file the sync touches:
+ * exactly one marker entry, on the proxy chat route, session-sized, with
+ * the Qwen3.8-family built-in in baseModelId (same inheritance as the
+ * alias entries).
+ */
+function expect27BListed(models: DroidModel[]): void {
+  const listed = models.filter(
+    (m) => typeof m.id === 'string' && MARKER27.test(m.id) && m.model === PIN27,
+  );
+  expect(listed, 'the 27B family listing is missing from the picker').toHaveLength(1);
+  const m = listed[0] as DroidModel;
+  expect(m.baseUrl, '27B listing is not on the proxy chat route').toBe(
+    'http://127.0.0.1:4000/v1',
+  );
+  expect(m.maxContextLimit, '27B listing is not session-sized').toBe(profile.context_window);
+  expect(m.baseModelId, '27B listing lacks baseModelId (no prompts/tools inheritance)')
+    .toBeTruthy();
+}
+
 describe('droid settings call the alias the profile pins', () => {
   it.skipIf(!existsSync(PROJECT_SET))('project customModels carry the live alias on all routes', () => {
     const d = readJson<DroidSettings>(PROJECT_SET);
     const entries = liveAliasEntries(d.customModels ?? []);
     expectRoutesConverged(entries);
     expectFleetPinsConverged(d.customModels ?? []);
+    expect27BListed(d.customModels ?? []);
     for (const m of d.customModels ?? []) {
       expect(RETIRED, `retired id still pinned: ${String(m.model)}`).not.toContain(m.model);
     }
@@ -278,8 +342,29 @@ describe('droid settings call the alias the profile pins', () => {
     const entries = liveAliasEntries(d.customModels ?? []);
     expectRoutesConverged(entries);
     expectFleetPinsConverged(d.customModels ?? []);
+    expect27BListed(d.customModels ?? []);
     for (const m of d.customModels ?? []) {
       expect(RETIRED, `retired id still pinned: ${String(m.model)}`).not.toContain(m.model);
     }
+  });
+});
+
+const OC_GLOBAL = resolve(homedir(), '.config/opencode/opencode.json');
+
+describe('opencode lists both local families', () => {
+  it.skipIf(!existsSync(OC_GLOBAL))('the qwen-proxy menu carries Flash-Next (default) + the 27B family', () => {
+    const d = readJson<{
+      model?: string;
+      provider?: Record<string, { models?: Record<string, { name?: string }> }>;
+    }>(OC_GLOBAL);
+    const qp = d.provider?.['qwen-proxy'];
+    expect(qp, 'the qwen-proxy provider is missing').toBeTruthy();
+    const keys = new Set(Object.keys(qp?.models ?? {}));
+    expect(keys, `expected both local families, got ${[...keys].join(', ')}`).toEqual(
+      new Set(['Qwen3.8-Flash-Next', 'qwen3.8-27b']),
+    );
+    expect(d.model, 'the opencode default is not the Flash-Next listing').toBe(
+      'qwen-proxy/Qwen3.8-Flash-Next',
+    );
   });
 });
