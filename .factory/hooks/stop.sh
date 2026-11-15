@@ -233,10 +233,49 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
     fi
   fi
   set -e
+  # A green verify (or a gate that never ran) resets the consecutive-block
+  # counter below — a fresh red streak starts from zero.
+  if [ "$VERIFY_RC" = "0" ]; then
+    rm -f "${PROJECT_DIR}/.uap/stop-gate/blocks" 2>/dev/null || true
+  fi
   # RC 1 = a REAL gate failure (code is broken) → block. Everything else fails
   # OPEN: RC 3 = infra (gate timed out / couldn't spawn), 124 = outer timeout,
   # 127 = missing, any other = internal — none should ever wedge a session.
   if [ "$VERIFY_RC" = "1" ]; then
+    # Bounded consecutive-block relief. The re-entrancy guard at the top
+    # relents only when the harness sends stop_hook_active:true (the Claude
+    # Code contract). Harnesses that send no Stop payload (observed: Factory
+    # Droid on pay2u, 2026-10-18) never trip that guard, so a persistently-red
+    # gate — e.g. max-fidelity interaction fail-closed on a repo with entry
+    # pages but no manifest — became an unbounded Stop→continue→Stop loop:
+    # exactly the wedge this hook's fail-open design promises cannot happen.
+    # Count consecutive RC-1 blocks per project; relent (allow the stop, with
+    # the red verdict still on record) after UAP_STOP_BLOCK_LIMIT (default 3).
+    # A block older than an hour starts a fresh count: the counter tracks a
+    # LOOP, not history — a new session gets a fresh budget.
+    mkdir -p "${PROJECT_DIR}/.uap/stop-gate" 2>/dev/null || true
+    BLOCK_FILE="${PROJECT_DIR}/.uap/stop-gate/blocks"
+    BLOCK_COUNT=0
+    BLOCK_TS=0
+    if [ -f "$BLOCK_FILE" ]; then
+      BLOCK_COUNT="$(head -1 "$BLOCK_FILE" 2>/dev/null || echo 0)"
+      BLOCK_TS="$(tail -1 "$BLOCK_FILE" 2>/dev/null || echo 0)"
+    fi
+    case "$BLOCK_COUNT" in ''|*[!0-9]*) BLOCK_COUNT=0 ;; esac
+    case "$BLOCK_TS" in ''|*[!0-9]*) BLOCK_TS=0 ;; esac
+    NOW="$(date +%s 2>/dev/null || echo 0)"
+    case "$NOW" in ''|*[!0-9]*) NOW=0 ;; esac
+    if [ "$NOW" -gt 0 ] && [ "$((NOW - BLOCK_TS))" -gt 3600 ]; then
+      BLOCK_COUNT=0
+    fi
+    BLOCK_LIMIT="${UAP_STOP_BLOCK_LIMIT:-3}"
+    case "$BLOCK_LIMIT" in ''|*[!0-9]*) BLOCK_LIMIT=3 ;; esac
+    if [ "$BLOCK_COUNT" -ge "$BLOCK_LIMIT" ]; then
+      echo ""
+      echo "## RUNTIME/USER-PATH GATE still red after $BLOCK_COUNT consecutive blocks — allowing stop so the session cannot wedge. The verdict above stays on record; fix the failure in a follow-up session. (Bound: UAP_STOP_BLOCK_LIMIT=$BLOCK_LIMIT; full bypass: UAP_VERIFY_ON_STOP=0.)"
+      exit 0
+    fi
+    printf '%s\n%s\n' "$((BLOCK_COUNT + 1))" "$NOW" > "$BLOCK_FILE" 2>/dev/null || true
     echo ""
     echo "## RUNTIME/USER-PATH GATE FAILED — the code does not run or does not work for a real user"
     echo "$VERIFY_OUT"
