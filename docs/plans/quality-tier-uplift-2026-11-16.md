@@ -239,10 +239,16 @@ plus bloom tuning for glow; hemisphere lift and black lightening for dark;
 mid-ground props, foreground silhouettes, and the hero three-quarter camera
 preset for edge; one exposure and tone-map pass for contrast.
 
-**0.5 Deliver tier gate.** First-class gate, shadow mode first, promotion to
-blocking after the measured false-positive budget. Acceptance: a seeded
-below-tier artifact is refused DONE with the gap report attached; a
-tier-passing artifact is unaffected; the escape hatch is tested.
+**0.5 Deliver tier gate — SHIPPED (PR #901, v2.56.0).** First-class gate,
+shadow mode first, promotion to blocking after the measured false-positive
+budget (`src/quality/tier-gate.ts`; rides the acceptance turn in every mode,
+measuring the visual gate's captures against the derived tiers before the
+judge call). Acceptance met: a seeded below-tier artifact is refused DONE
+with the gap report attached — the judge turn is never spent; a tier-passing
+artifact is unaffected; the escape hatch (`UAP_TIER_GATE=off`) and the
+shadow default are both tested, as is the stale-extractor refusal. 13 tests.
+v1 limitation (documented in the module): the gate observes judged
+deliveries; ladder-only runs join at promotion.
 
 ### Wave 1, generalization to all outcome classes
 
