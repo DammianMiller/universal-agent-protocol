@@ -92,6 +92,16 @@ const PIN27_MATCH = /DROID_LOCAL_27B_PIN:=([^}"\s]+)/.exec(CONTRACTS);
 const PIN27 = PIN27_MATCH?.[1] ?? '';
 const MARKER27 = /^custom:Qwen[\d.]+-27B-UAP-local-\d+$/;
 const FAM27 = registry.models['qwen3.8-27b'];
+// The THIRD local family (gemma-4-31b, PR #896): same deliberate-picker-line
+// doctrine as the 27B. The pin comes from the same shared contract; the
+// marker id shape (derived from the pin, never transcribed) is the sync's
+// stake that distinguishes the DELIBERATE listing (never converged) from a
+// stale pin (always converged).
+const PIN_GEMMA_MATCH = /DROID_LOCAL_GEMMA_PIN:=([^}"\s]+)/.exec(CONTRACTS);
+const PIN_GEMMA = PIN_GEMMA_MATCH?.[1] ?? '';
+const MARKER_GEMMA = PIN_GEMMA
+  ? new RegExp(`^custom:${PIN_GEMMA}-UAP-local-\\d+$`)
+  : /$^/;
 
 describe('qwen38 model knowledge — registry follows the profile', () => {
   it('advertises the alias the profile pins, so placement can match the served id', () => {
@@ -261,10 +271,12 @@ function expectRoutesConverged(entries: DroidModel[]): void {
  */
 function expectFleetPinsConverged(models: DroidModel[]): void {
   const localFleetPins = models.filter((m) => {
-    // The deliberate 27B family listing is a second PICKER LINE, not drift:
-    // its marker id is the sync's stake. Everything else the fleet
-    // advertises, pinned at this box's ports, must share the one served id.
+    // The deliberate 27B and gemma family listings are extra PICKER LINES,
+    // not drift: their marker ids are the sync's stake. Everything else
+    // the fleet advertises, pinned at this box's ports, must share the one
+    // served id.
     if (typeof m.id === 'string' && MARKER27.test(m.id)) return false;
+    if (typeof m.id === 'string' && MARKER_GEMMA.test(m.id)) return false;
     const base = String(m.baseUrl ?? '');
     const localPort = base.includes(':4000') || base.includes(':8080');
     return localPort && !!m.model && FLEET.has(m.model);
