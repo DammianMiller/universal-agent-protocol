@@ -294,9 +294,19 @@ guard. Shipped classes:
 - **bench-score** (`src/quality/bench-score.ts`): a bench results file.
   Axes: passRate (min), errorRate (max); unknown status words count as fail
   but never as error.
-- **doc-style: recorded seam, not yet harvested.** The registry makes it a
-  registration away, but the v2.51.1 rewrite corpus is not yet in
-  anchor-ready form; deferred rather than blocking the shipped classes.
+- **doc-style: SHIPPED (PR #906, v2.60.0) — harvested from the v2.51.1
+  rewrite corpus.** `src/quality/doc-style.ts` measures documentation prose
+  (code fences, tables, and link syntax stripped): emDashPer1k, sentenceLenMean,
+  wordLenMean, dupSentenceFrac, with a stub-document degenerate guard (under
+  200 prose chars is not evidence) and sampling temperature 0.4. Live on the
+  REAL corpus (git e3fbc295^ vs master): six post-rewrite docs anchor the
+  tier (emDashPer1k <= 0 — the rewrite's signature is a hard floor at zero);
+  every pre-rewrite version fails it (em-dash density 3.5–4.1 plus the
+  normalization directive). Documented characteristic: a median tier over a
+  heterogeneous corpus gates the register it anchors — terse command prose
+  and long explanatory prose fail the sentence band only; anchor a coherent
+  corpus for the register you want. The registry now covers all four classes:
+  visual-scene, api-behavior, bench-score, doc-style.
 
 Generalized with it: derive/gap compile against the class's own axis table
 (pre-1.1 visual stores derive and gap byte-identically — the voxel 0.4 tier
@@ -352,7 +362,12 @@ sampling switches by class). 12 tests; suite 6575 green.
 arm, placement follows the existing switch doctrine; this item makes the need
 explicit and scheduled rather than ad hoc. Owner: the fleet operator (the
 switch windows are an operator decision; the ladder's `onEscalate` firing is
-the recorded signal for it).
+the recorded signal for it). Repo-side half SHIPPED (PR #906, v2.60.0): every
+fired escalation appends one JSON line to .uap/quality/escalations.jsonl
+(tier, round, timestamp, plateau summary naming the worst axis) — the
+operator's durable placement queue, explicit and scheduled rather than ad
+hoc. The switch decision itself is the operator's; the queue gives it the
+evidence.
 
 ### Wave 2, measured fleet economics (recorded, not yet approved)
 
@@ -379,8 +394,10 @@ the recorded signal for it).
 6c. Wave 1.2 tier ladder (best-of-N, plateau escalation, honest cut) —
    **#904 (v2.58.0)**.
 6d. Wave 1.3 tier contract + per-class sampling profiles — **#905 (v2.59.0)**.
-7. Wave 1 remaining: 1.4 with the operator (the `onEscalate` signal is
-   recorded; the placement decision is the operator's).
+6e. doc-style class (the v2.51.1 corpus) + durable escalation records
+   (1.4's repo-side half) — **#906 (v2.60.0)**.
+7. Wave 1: 1.1–1.3 shipped (6b–6d); 1.4's repo-side half shipped (6e) —
+   remaining: the operator's placement decision over the escalation queue.
 8. Wave 2 once Wave 0 and Wave 1 measurements exist.
 
 ## 7. Risks and open questions
