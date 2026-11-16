@@ -839,7 +839,7 @@ program
 program
   .command('quality')
   .description('Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types')
-  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile | derive | gap')
+  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile | derive | gap | ladder')
   .argument('[target]', 'Positional target file (check), anchor class (anchor), or tier class (derive)')
   .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
   .option('--json', 'Emit machine-readable JSON')
@@ -852,6 +852,10 @@ program
   .option('--name <name>', 'Tier name (derive subcommand, default: default)')
   .option('--tolerance <n>', 'Multiplicative tolerance floor (derive subcommand, default: 0.75)')
   .option('--class <cls>', 'Outcome class for profile (visual-scene | api-behavior | bench-score)')
+  .option('--rounds-dir <dir>', 'Rounds directory for ladder (roundNN/ subdirectories of candidate artifacts)')
+  .option('--max-rounds <n>', 'Round ceiling for ladder (default: number of roundNN dirs)')
+  .option('--candidates <n>', 'Candidates per ladder round (default: 3)')
+  .option('--plateau-rounds <n>', 'Rounds without improvement before the ladder escalates (default: 2)')
   .action(async (subcommand, target, options) => {
     if ((subcommand === 'anchor' || subcommand === 'derive') && target) options.target = target;
     else if (target && !options.file) options.file = target;
