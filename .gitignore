@@ -175,3 +175,6 @@ dist
 # paths at install time). Not committed: tracked continuity scripts are the
 # upstream pair; this one embeds this machine's nvm paths.
 scripts/run-orch-poll-continuity.sh
+
+# Operator scratch notes (local, never shipped)
+docs/scratch/

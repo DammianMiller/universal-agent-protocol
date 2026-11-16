@@ -49,7 +49,7 @@ The `workdir-scope` and `worktree_required` `PreToolUse` enforcers return an exi
 block an out-of-bounds edit, but a harness run with `--dangerously-skip-permissions`
 **does not consult PreToolUse hooks at all**, so those denials never fire. The sandbox is
 the answer: the kernel doesn't care what flags the harness was launched with. This is the
-one boundary that survives skip-permissions (see also `documentation/permissions.md`, which
+one boundary that survives skip-permissions (see also `system/permissions.md`, which
 maps every enforcement plane and where each one holds or fails).
 
 ## Browser MCP tool stripping (why it's here)
@@ -180,7 +180,7 @@ the model should never be able to set them for itself.
 
 ## Related
 
-- `documentation/permissions.md`, all enforcement planes, the resource matrix, and the
+- [System permissions](../system/permissions.md), all enforcement planes, the resource matrix, and the
   findings (including why the hook plane doesn't survive skip-permissions)
 - [Worktree Workflow](WORKTREE_WORKFLOW.md), the everyday (hook-based) isolation boundary
 - [Policies](POLICIES.md), the PreToolUse gate the sandbox backstops
