@@ -400,6 +400,22 @@ evidence.
    remaining: the operator's placement decision over the escalation queue.
 8. Wave 2 once Wave 0 and Wave 1 measurements exist.
 
+**Live small-model climb — the plan's thesis, demonstrated (2026-11-16,
+on the v2.60.0 stack tip, pre-merge).** A real quantized small model
+(qwen3.8-flash-next IQ4_XS, the local Flash-Next v31 arm) climbed a REAL
+degraded artifact to an operator-approved tier in one round through the
+shipped machinery: task = rewrite the project's own pre-v2.51.1 README
+section (git e3fbc295^, em-dash-heavy); tier = doc-style/v2-51-1 (derived
+from the six shipped corpus docs); mechanism = `runTierLadder` with the
+tier contract in the executor prompt, the class sampling profile
+(temperature 0.4), gap-directive feedback, deterministic ranking. Measured
+vector before → after: emDashPer1k 2.51 → 0, sentenceLenMean 23.5 → 15.4
+(into the 11.49..20.43 band), wordLenMean 5.23 → 5.24, dupSentenceFrac 0
+→ 0; official gap verdict **0 of 4 axes below tier, exit 0** (the start
+was 2/4 below tier). The smaller model reached the digitized bar because
+the bar rode in its prompt — the failed-round discovery loop the 0.4 run
+went through manually is now the machinery's first move.
+
 ## 7. Risks and open questions
 
 - **Goodhart.** Any single metric saturates without real quality. Mitigation:
