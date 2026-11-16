@@ -1,10 +1,15 @@
 # Quickstart
 
-> **🏭 The big idea:** UAP is the discipline layer for your AI delivery line — memory so agents remember, isolation so they don't clobber your repo, real verification so "done" means it actually runs, and coordination so many agents don't collide. See the [delivery pipeline](../guides/DELIVERY_PIPELINE.md) for the full station-by-station tour.
+> **🏭 The big idea:** UAP is the discipline layer for your AI delivery line, memory so agents remember, isolation so they don't clobber your repo, real verification so "done" means it actually runs, and coordination so many agents don't collide. See the [delivery pipeline](../guides/DELIVERY_PIPELINE.md) for the full station-by-station tour.
 
 Let's get you from a clean checkout to your first delivered task in about five
-minutes. This assumes you've already installed the CLI — head to
+minutes. This assumes you've already installed the CLI, head to
 [Installation](./INSTALLATION.md) first if not.
+
+Two ways to use UAP, and this quickstart exercises both:
+
+- **With a coding agent connected, the normal path: UAP runs automatically.** Setup installs hooks into your agent harness. From then on the hooks fire on the agent's own tool calls: memory recall and writes, worktree isolation, policy enforcement, output compression, verification gates. You don't run anything; UAP enforces underneath the agent.
+- **From your own terminal: the CLI.** The commands below are the manual surface of the same machinery. Use them to see each station work with your own eyes, and for the operator tools (dashboard, deliver, model fleet) that stay yours.
 
 ## 1. Set up your project (~1 min)
 
@@ -20,7 +25,7 @@ available), wires the MCP Router, and installs the harness hooks. It also writes
 a `.uap/proxy.env` that the proxy auto-loads, so your model wiring is ready to
 go. It finishes with a summary showing which steps succeeded.
 
-Confirm memory — the station that lets your agent remember — is healthy:
+Confirm memory, the station that lets your agent remember, is healthy:
 
 ```bash
 uap memory status
@@ -41,7 +46,7 @@ uap memory store "API keys are loaded from the QDRANT_API_KEY env var" -t config
 `-t` adds comma-separated tags and `-i` sets the importance score (1-10). The
 store applies a quality write gate by default; pass `-f` to bypass it.
 
-Now query it back semantically — you don't need the exact words, just the idea:
+Now query it back semantically, you don't need the exact words, just the idea:
 
 ```bash
 uap memory query "where do api keys come from"
@@ -78,7 +83,7 @@ A few things worth knowing:
 
 - The default model preset is `qwen35-a3b` (override with `-m <preset>` or the
   `UAP_DELIVER_MODEL` env var).
-- Task-aware auto-optimization is on by default — deliver classifies the task and
+- Task-aware auto-optimization is on by default, deliver classifies the task and
   enables matching convergence aids automatically. Disable with `--no-auto`.
 - Loop-until-delivered is on by default: deliver keeps iterating past
   `--max-turns` up to a ceiling (default 30, set with `--ceiling`), stopping
@@ -98,7 +103,7 @@ the full system overview:
 uap dashboard overview
 ```
 
-Other views are available as subcommands — for example:
+Other views are available as subcommands, for example:
 
 ```bash
 uap dashboard memory     # memory health, capacity, and layer architecture
@@ -115,7 +120,7 @@ uap dashboard serve -p 4000    # custom port
 
 ## Where to go next
 
-- [Configuration](./CONFIGURATION.md) — `.uap.json`, environment variables,
+- [Configuration](./CONFIGURATION.md), `.uap.json`, environment variables,
   Qdrant, and model profiles.
-- [Installation](./INSTALLATION.md) — per-harness hook installation and
+- [Installation](./INSTALLATION.md), per-harness hook installation and
   prerequisites.

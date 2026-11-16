@@ -8,7 +8,7 @@ UAP development guidelines.
 
 ```bash
 # Testing
-npm test              # Run all tests (518 vitest test files)
+npm test              # Run all tests (548 vitest test files)
 npm run test:coverage # Coverage report
 
 # Linting & Type Checking
@@ -446,7 +446,7 @@ OpenAI shape (Forge, OpenCode, some `@ai-sdk/openai-compatible` setups) can
 POST to `/v1/chat/completions`. That route converts the request to Anthropic,
 runs the same guarded pipeline (loop detection, tool narrowing,
 malformed-payload retry, context pruning), then re-shapes the final response
-back to OpenAI. No separate proxy mode is needed — both shapes share one
+back to OpenAI. No separate proxy mode is needed; both shapes share one
 process.
 
 For running against local models (llama.cpp / Qwen), env vars, and endpoints, see

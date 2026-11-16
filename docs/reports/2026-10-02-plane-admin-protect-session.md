@@ -1,4 +1,4 @@
-# Session summary — Plane Admin Protect enforcer (hardened + shipped to force)
+# Session summary, Plane Admin Protect enforcer (hardened + shipped to force)
 
 Date: 2026-10-02. Repo: `universal-agent-protocol` (UAP). Consuming project: `pay2u`.
 
@@ -7,13 +7,13 @@ Date: 2026-10-02. Repo: `universal-agent-protocol` (UAP). Consuming project: `pa
 The Plane admin account `admin@pay2u.com.au` (droplet `134.199.173.65`,
 `/opt/plane/plane-app`) had its credentials mutated by an agent command
 (`docker exec plane-app-api-1 python manage.py changepassword …`). A guard
-policy — `plane-admin-protect` — existed but was weak: no expiry on its waiver,
+policy, `plane-admin-protect`, existed but was weak: no expiry on its waiver,
 no fail-closed behaviour, no tests, and the copy the gate actually executes had
 drifted from the source.
 
 ## What was built
 
-### 1. Hardened enforcer — `src/policies/enforcers/plane_admin_protect.py` (132 lines)
+### 1. Hardened enforcer, `src/policies/enforcers/plane_admin_protect.py` (132 lines)
 
 - Shell ops only (`bash`/`run_bash`/`shell`/`execute_command`/`terminal`); everything
   else allows.
@@ -25,17 +25,17 @@ drifted from the source.
 - Owner waiver `policies/waivers/plane-admin-reset` must carry `expires: YYYY-MM-DD`:
   - valid → allow, with `waiver valid until <date>`
   - expired / missing expiry / **unreadable** → **fails CLOSED** (`allowed:false`,
-    exit 2, `route:"owner-waiver"`, `waiverHint`) — never a crash (exit 1), never a
+    exit 2, `route:"owner-waiver"`, `waiverHint`), never a crash (exit 1), never a
     silent allow.
 - Documents its own limit: text scan raises cost, it is not a boundary (see below).
 
-### 2. Policy schema doc — `src/policies/schemas/policies/plane-admin-protect.md`
+### 2. Policy schema doc, `src/policies/schemas/policies/plane-admin-protect.md`
 
 Category `safety`, level `REQUIRED`, stage `pre-exec`, default `on`, tags
 `plane, credentials, admin, safety, droplet, owner-waiver`. States the rule, the
 target/verb lists, and the allowed read-only cases.
 
-### 3. Tests — `tools/agents/tests/test_plane_admin_protect.py` (10 tests, all green)
+### 3. Tests, `tools/agents/tests/test_plane_admin_protect.py` (10 tests, all green)
 
 Observed incident spelling blocked · `bash -c` wrapper blocked · non-shell op
 allowed · read-only Plane command allowed · **prose** naming a verb NOT blocked
@@ -52,9 +52,9 @@ Registered in `package.json` → `test:enforcers` (the suite-coverage guard
 - `python3 -m unittest …test_plane_admin_protect` → 10/10 OK.
 - `npm run test:enforcers` → **Ran 1348 tests, OK (skipped=1)**.
 - `npm run build` (tsc) → clean.
-- Indirection matrix (15 real commands, temp repo root): blocked — heredoc that
+- Indirection matrix (15 real commands, temp repo root): blocked, heredoc that
   writes the mutation script, `T=…; V=…` variable indirection, `printf … | sh`,
-  `docker compose exec`, `kubectl exec`, `ansible plane-app`. Allowed —
+  `docker compose exec`, `kubectl exec`, `ansible plane-app`. Allowed,
   `bash r.sh` (script contents invisible), base64 payload, `ssh host '…'` with no
   shell-exec token, `ansible all -m shell -a …` (no target token), read-only
   Plane commands, prose in commit messages / memory stores, target-only, verb-only.
@@ -92,7 +92,7 @@ Protect`) is inactive. Both materialized copies are identical to source.
    `plane-admin-reset`. That is correct default posture (owner approval required);
    create it only with explicit owner instruction and a real `expires:` date.
 2. **UAP changes are uncommitted** (`package.json` modified; enforcer, schema doc
-   and test untracked). Commit + push not performed — needs an explicit go-ahead.
+   and test untracked). Commit + push not performed, needs an explicit go-ahead.
 3. **Gate fail-open for this enforcer**: `must_fail_closed()` in
    `.claude/hooks/uap-policy-gate.sh` fail-closes only for
    `enforcement_self_protect` (when sensitive) and `schema_diff_gate` (on
@@ -112,5 +112,5 @@ Protect`) is inactive. Both materialized copies are identical to source.
   is the single active row; `7c26d0f7-…` is inactive. No double verdict.
 - Stale `rtk_wrap` manifest entry: no longer present in
   `pay2u/.policy-tools/.integrity.sha256`, no `rtk_wrap.py` in `.policy-tools/`,
-  and the last `restored: …rtk_wrap.py` log line is ~6 days old — the per-call
+  and the last `restored: …rtk_wrap.py` log line is ~6 days old, the per-call
   restore churn has stopped.

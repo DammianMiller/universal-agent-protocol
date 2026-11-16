@@ -1,4 +1,4 @@
-# UAP Auto-Apply ("Reactor") — Design & Contract
+# UAP Auto-Apply ("Reactor"), Design & Contract
 
 Status: in implementation (feature/227-uap-auto-apply-reactor)
 Goal: every UAP capability that is appropriate to apply automatically fires
@@ -6,23 +6,23 @@ automatically and *dynamically* (context-aware) across all supported coding
 agents, instead of requiring manual invocation.
 
 > **🏭 Where this fits:** Intake & Prep/routing stations (with a cross-cutting
-> enforce arm) — a capability nobody remembers to invoke never fires, so your
+> enforce arm), a capability nobody remembers to invoke never fires, so your
 > agent walks into the work without the right memory, expert, skill, or model
 > and skips the gates it should have hit. **What it delivers:** per-prompt,
-> context-aware auto-application — the right context is injected at intake and
-> routing without you asking, and the hard gates fire on their own — so the
+> context-aware auto-application, the right context is injected at intake and
+> routing without you asking, and the hard gates fire on their own, so the
 > [delivery pipeline](../guides/DELIVERY_PIPELINE.md)'s stations run themselves
 > instead of relying on the agent's memory.
 
 ## 1. Two modes (never conflated)
 
-- **Enforce** — deterministic, hard gates that must always fire (worktree,
+- **Enforce**, deterministic, hard gates that must always fire (worktree,
   policy/compliance, delivery, schema-diff, completion). These *block*
   (exit 2 / throw). Already largely wired; this feature fills the gaps. (These
   are the station gates across isolation, build, QC, and shipping.)
-- **Assist** — capabilities that *should* fire when contextually appropriate
+- **Assist**, capabilities that *should* fire when contextually appropriate
   (memory recall, pattern RAG, expert-route, skill surfacing, model routing,
-  task linking). These *inject context* the model sees — raising the odds it
+  task linking). These *inject context* the model sees, raising the odds it
   uses the right tool without removing judgement. Optionally **auto-spawn**
   an expert above a confidence threshold for whitelisted task types. (This is
   the intake/routing work: getting the right context and approach onto the belt
@@ -99,7 +99,7 @@ export function resolve(
 ): ReactorResult;
 ```
 
-### Behaviour (the oracle — see `test/reactor.test.ts`)
+### Behaviour (the oracle, see `test/reactor.test.ts`)
 
 1. `user-prompt` with a substantive coding prompt → builds a `Task` from
    `promptText`/`changedFiles`, runs `routeTask` + `matchPatterns`, returns a
@@ -147,7 +147,7 @@ mode (Assist = intake/routing context; Enforce = a station gate):
 | Cursor | `userPromptSubmit` (mirrors Claude) | |
 | OpenCode | `experimental.chat.system.transform` | generalise existing uap-pattern-rag.ts/uap-skills.ts |
 | Factory | `UserPromptSubmit` (pattern-rag-prompt.sh) | also **fix empty SessionStart** |
-| Forge | **none available** | shell-plugin model has no per-prompt event — per-prompt routing not possible; limitation documented |
+| Forge | **none available** | shell-plugin model has no per-prompt event, per-prompt routing not possible; limitation documented |
 | Codex | MCP `react` tool + AGENTS.md | degraded mode (no hooks): agent calls `react` each task |
 
 `uap hooks install <target>` writes the correct per-harness wiring so a fresh
@@ -160,7 +160,7 @@ mode (Assist = intake/routing context; Enforce = a station gate):
 - Inject token budget (hard cap, truncate lowest-confidence first).
 - Enforce stays hard; assist can never block.
 
-## 7. Rollout status — all phases landed
+## 7. Rollout status, all phases landed
 
 1. ✅ **Resolver core** (`src/coordination/reactor.ts`) + 8 contract tests.
 2. ✅ **CLI** `uap react` (JSON in/out, `--prompt`/`--surfaced`) + 4 tests.
@@ -175,10 +175,10 @@ mode (Assist = intake/routing context; Enforce = a station gate):
 6. ✅ **Enforce gap-fill**: PostToolUse schema-change reminder
    (`templates/hooks/uap-schema-post.sh`, wired across installers, 3 tests).
    completion-gate-on-stop was already wired everywhere (`stop.sh`);
-   deploy-on-deliver is available via `uap deliver --deploy` (left opt-in —
+   deploy-on-deliver is available via `uap deliver --deploy` (left opt-in,
    defaulting it is a behavior change out of scope).
 
 Per-prompt dynamic auto-apply: Claude / Cursor / VSCode / OpenCode (and Factory
 once its empty `SessionStart` is re-installed). Codex via the MCP `react` tool.
 Forge is session/enforce-only by its own model. Source units were scaffolded via
-`uap deliver` and hand-corrected (the local model cheats gates — see PR notes).
+`uap deliver` and hand-corrected (the local model cheats gates, see PR notes).

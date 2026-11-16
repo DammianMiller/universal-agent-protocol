@@ -1,10 +1,10 @@
 # Platform & Harness Reference
 
-> Universal Agent Protocol (UAP) v2.29.0
+> Universal Agent Protocol (UAP) v2.51.0
 
-> **🏭 Where this fits:** Cross-cutting — the same line, whichever floor you work
+> **🏭 Where this fits:** Cross-cutting, the same line, whichever floor you work
 > on. **What it delivers:** every station of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
-> — the guards, the policy gate, the lean-context router — shows up in whichever
+>, the guards, the policy gate, the lean-context router, shows up in whichever
 > agent harness you already use, so your rules travel with you instead of living
 > in one tool.
 
@@ -13,6 +13,11 @@ integrates with 9 agent harnesses so the same enforcement layer follows you
 across all of them. The canonical list is `ALL_TARGETS` in `src/cli/hooks.ts`.
 Every platform receives the UAP enforcement layer: lifecycle hooks, the
 DB-driven policy gate, and (where supported) the hierarchical MCP router.
+
+Once those hooks are installed, UAP runs automatically in that harness: it
+mediates the agent's tool calls, memory recall and writes, worktree isolation,
+policy blocks, output compression, with nothing invoked by hand. Agent use is
+hands-off; the CLI stays the operator surface for direct work.
 
 ## Supported platforms
 
@@ -55,11 +60,11 @@ DB-driven policy gate, and (where supported) the hierarchical MCP router.
 > (`~/.hermes/shell-hooks-allowlist.json`) unless `hooks_auto_accept: true`.
 
 > **OpenCode seam notes.** OpenCode never runs the shared `.sh` lifecycle
-> scripts — the plugin (`uap-session-hooks.ts`) IS the seam, so two steering
+> scripts, the plugin (`uap-session-hooks.ts`) IS the seam, so two steering
 > surfaces live there: the `session.created` handler injects the
 > `uap loops --steer` digest (recurring loop classes across sessions) beside
 > the memory context, and `session.idle` runs the runtime gate then applies a
-> **bounded auto-continue** when the gate fails — opencode cannot hard-block a
+> **bounded auto-continue** when the gate fails, opencode cannot hard-block a
 > stop, so a premature stop with a failing gate is resumed through
 > `client.session.prompt` instead of left wedged. Bounds: never after a proxy
 > hard stop (ERROR-LOOP / LOOP-ESCALATE deliberately ended the session), never
@@ -75,11 +80,11 @@ platform's lifecycle events:
 | Script | Event | Purpose |
 |--------|-------|---------|
 | `session-start.sh` | SessionStart | Injects recent memory context. |
-| `pre-tool-use-edit-write.sh` | PreToolUse (Edit/Write/MultiEdit) | Worktree file guard — **blocks** edits outside worktree dirs. |
-| `pre-tool-use-bash.sh` | PreToolUse (Bash) | Dangerous-command guard — **blocks** force push, `terraform apply`, etc. |
+| `pre-tool-use-edit-write.sh` | PreToolUse (Edit/Write/MultiEdit) | Worktree file guard, **blocks** edits outside worktree dirs. |
+| `pre-tool-use-bash.sh` | PreToolUse (Bash) | Dangerous-command guard, **blocks** force push, `terraform apply`, etc. |
 | `uap-policy-gate.sh` | PreToolUse | DB-driven policy gate (`policies.db` + `.policy-tools/*.py`). |
 | `post-tool-use-edit-write.sh` | PostToolUse (Edit/Write) | Build gate + backup reminder after edits. |
-| `post-tool-use-read.sh` | PostToolUse (Read/Grep/Glob) | Writes `.uap/read_log.state` — the evidence `codebase-read-before-plan` gates on. |
+| `post-tool-use-read.sh` | PostToolUse (Read/Grep/Glob) | Writes `.uap/read_log.state`, the evidence `codebase-read-before-plan` gates on. |
 | `pre-compact.sh` | PreCompact | Flushes a compaction marker to memory. |
 | `post-compact.sh` | PostCompact | Re-injects policy awareness after compaction. |
 | `stop.sh` | Stop | Completion-gate checklist + session cleanup. |

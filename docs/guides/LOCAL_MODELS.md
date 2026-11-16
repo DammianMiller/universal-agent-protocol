@@ -1,22 +1,22 @@
 # Running UAP Against Local Models
 
-> UAP v2.29.0
+> UAP v2.51.0
 
-> **🏭 Where this fits:** BUILD — this is the station where a cheap local model
+> **🏭 Where this fits:** BUILD, this is the station where a cheap local model
 > flails: plausible-but-wrong code, empty output, or a loop that never lands a
 > real change. **What it delivers:** the proxy and the convergence loop keep a
 > small, zero-per-token model on the rails so it produces *verified* code
-> instead of stubs — real results on a GPU you already own.
+> instead of stubs, real results on a GPU you already own.
 
-Here's the pain: you *want* to run your agent on a local model — inference on
-your own hardware, zero per-token cost — but on its own a small quantized model
+Here's the pain: you *want* to run your agent on a local model, inference on
+your own hardware, zero per-token cost, but on its own a small quantized model
 rarely nails a non-trivial change. It one-shots something that looks right and
 doesn't compile.
 
 Here's the fix: UAP drives its coding/convergence loop against **local models**
 served by [llama.cpp](https://github.com/ggml-org/llama.cpp) instead of a hosted
 API. The loop iterates the model against your real gates until the change is
-verified — that's what turns a modest open-weight model such as Qwen 3.x into a
+verified, that's what turns a modest open-weight model such as Qwen 3.x into a
 productive station on your [delivery pipeline](./DELIVERY_PIPELINE.md).
 
 > **Just want the recommended local setup?** See
@@ -24,17 +24,17 @@ productive station on your [delivery pipeline](./DELIVERY_PIPELINE.md).
 > copy-paste launch commands for 8 / 12 / 16 / 24 / 32 GB GPUs, and how
 > `uap deliver` uplifts a small local model to *verified* results.
 >
-> **Production note (2026-09-04):** the reference box now serves Qwen3.8-27B
-> via **exllamav3/EXL3** (~1.5x faster decode at the same 131k context) —
-> see [Qwen3.8-27B on exllamav3 (EXL3)](QWEN38_EXL3.md). The llama.cpp path
-> below remains fully supported and is the rollback stack there.
+> **Production note (2026-11-15):** the reference box serves the llama.cpp
+> Flash-Next arm below (UD-IQ4_XS on the speedy v31 line, port 8080). An EXL3
+> serving experiment ran during 2026-09 and was retired; the llama.cpp path is
+> the production stack.
 
 There are two endpoint shapes involved, and it matters which client speaks
 which protocol:
 
 - **`uap deliver`** talks the **OpenAI-compatible** Chat Completions API
   (`POST /v1/chat/completions`). It points directly at llama.cpp's OpenAI
-  endpoint (commonly `:8080/v1`) — no translation proxy is needed for UAP's own
+  endpoint (commonly `:8080/v1`), no translation proxy is needed for UAP's own
   loop. See
   [`src/models/openai-compat-client.ts`](../../src/models/openai-compat-client.ts).
 - **Anthropic-protocol clients** (e.g. Claude Code) speak the **Anthropic
@@ -80,15 +80,15 @@ the correct template applied.
 UAP ships several helpers around local serving (registered as bins in
 `package.json`):
 
-- **`llama-optimize`** — generates optimal `llama.cpp` startup parameters
+- **`llama-optimize`**, generates optimal `llama.cpp` startup parameters
   (quantization profile, KV-cache quant, flash attention, speculative
   decoding, etc.) for Qwen 3.x-class models on 16GB/24GB VRAM. Source:
   [`src/bin/llama-server-optimize.ts`](../../src/bin/llama-server-optimize.ts).
-- **`uap-template-verify`** — model-agnostic chat-template finder/verifier;
+- **`uap-template-verify`**, model-agnostic chat-template finder/verifier;
   validates Jinja2 syntax, renders test data, and checks tool-call format
   support. Source:
   [`tools/agents/scripts/chat_template_verifier.py`](../../tools/agents/scripts/chat_template_verifier.py).
-- **`uap-anthropic-proxy`** — Anthropic→OpenAI translation proxy for clients
+- **`uap-anthropic-proxy`**, Anthropic→OpenAI translation proxy for clients
   that only speak the Anthropic Messages API. Source:
   [`tools/agents/scripts/anthropic_proxy.py`](../../tools/agents/scripts/anthropic_proxy.py).
   It reads `LLAMA_CPP_BASE` (upstream OpenAI endpoint) and `PROXY_PORT` from the
@@ -142,7 +142,7 @@ to `http://localhost:4000/v1`.
 
 A common local pattern is a cheap local executor that escalates to a **stronger,
 distinct** model only when it stalls. This distinction matters: a same-model
-judge (a local model grading its own output) was measured to add no lift —
+judge (a local model grading its own output) was measured to add no lift,
 escalation only pays off when the model you escalate *to* is genuinely more
 capable than the one that stalled.
 
@@ -155,7 +155,7 @@ uap deliver "implement the retry logic" \
 ## Connecting Claude Code (or other Anthropic clients)
 
 If your llama.cpp server exposes the Anthropic Messages API natively, point the
-Anthropic client at that local port directly — this is the preferred path.
+Anthropic client at that local port directly, this is the preferred path.
 
 Otherwise, run the translation proxy in front of llama.cpp:
 
@@ -167,15 +167,15 @@ The client then talks the Anthropic protocol to the proxy, which forwards
 OpenAI requests to llama.cpp. The proxy supports streaming and tool-call
 translation.
 
-For the full picture — the `uap proxy` lifecycle, the reliability guardrails
-that keep a small model from wedging, security, and serving recipes — see the
+For the full picture, the `uap proxy` lifecycle, the reliability guardrails
+that keep a small model from wedging, security, and serving recipes, see the
 **[Inference Proxy guide](PROXY.md)**.
 
-## Droid (Factory) custom models — auto-populated from the live arm
+## Droid (Factory) custom models, auto-populated from the live arm
 
 Droid reads its model list from `customModels` in `~/.factory/settings.json`
 (user) and `<project>/.factory/settings.json` (project). Those entries are
-static per file — Droid does not discover local servers — so a backend swap
+static per file, Droid does not discover local servers, so a backend swap
 would otherwise leave every Droid instance pinning a retired model id.
 
 [`scripts/sync-local-agent-configs.sh`](../../scripts/sync-local-agent-configs.sh)
@@ -184,8 +184,8 @@ geometry from `config/model-profiles/qwen38.json` (the same single source of
 truth the rails suite drift-checks against the live `/props` on :8080), then:
 
 - migrates every retired local id (the registry's `retired_local_aliases`
-  list — the single source, never transcribed into the script) onto the
-  alias the current arm serves — proxy entries to `:4000`, direct-Responses
+  list, the single source, never transcribed into the script) onto the
+  alias the current arm serves, proxy entries to `:4000`, direct-Responses
   entries stay on `:8080`;
 - **adds** the entry when a settings file has no local qwen model at all, so
   every Droid instance (user-level settings cover all projects) can call it;
@@ -196,7 +196,7 @@ truth the rails suite drift-checks against the live `/props` on :8080), then:
   inherits model-specific prompts, tools, and Script-mode eligibility instead
   of the "custom model does not map to a built-in" fallback behavior;
 - collapses duplicate picker lines: entries sharing `(model, baseUrl,
-  displayName)` are one line rendered twice — Droid re-copies legacy
+  displayName)` are one line rendered twice, Droid re-copies legacy
   `config.json` entries into `settings.json` under fresh ids each copy era,
   so each era leaves a full extra set; a group keeps the canonical entry,
   else its newest member;
@@ -208,7 +208,7 @@ For "at any given time" freshness, run it with `MODELS_ONLY=1`: that mode
 converges **only** the `.factory` custom-model lists, takes the alias from the
 LIVE backend (`/props` on :8080, profile fallback when unreachable), and
 touches nothing else. The wiring is machine-local, not shipped:
-`.factory/` is gitignored, so the repo cannot carry the hook — wire it once
+`.factory/` is gitignored, so the repo cannot carry the hook, wire it once
 per machine (project or user `.factory/settings.json`) as a `SessionStart`
 hook running exactly that, per [ADR
 0015](../architecture/adr/0015-session-hook-model-convergence-as-standing-consent.md),
@@ -223,5 +223,5 @@ MODELS_ONLY=1 bash scripts/sync-local-agent-configs.sh   # droid lists only
 
 ## Related
 
-- [Deploy Batching](./DEPLOY_BATCHING.md) — what `uap deliver --deploy` queues.
-- [Coordination](./COORDINATION.md) — what `uap deliver --coordinate` registers.
+- [Deploy Batching](./DEPLOY_BATCHING.md), what `uap deliver --deploy` queues.
+- [Coordination](./COORDINATION.md), what `uap deliver --coordinate` registers.

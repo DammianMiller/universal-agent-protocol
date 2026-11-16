@@ -31,13 +31,13 @@ rewritten by `_reconcile_wire_model()`.
    state, and the TUI and dashboard read the same one. The proxy discovers the
    controller via `PROXY_PLACEMENT_CONTROLLER` emitted by `uap setup`; the
    control surface is loopback-bound regardless of the dashboard `--host`.
-4. **`paused` means weights offloaded and reloaded from disk later** — not the
+4. **`paused` means weights offloaded and reloaded from disk later**, not the
    proxy's existing save/restore, which checkpoints KV to host RAM and frees no
    VRAM. Where an engine has no reload path, `paused` is display-only and the
    only executable option is `kill`.
 5. **Admission runs in the proxy after wire-model resolution**, default
    `PROXY_PLACEMENT_MODE=off`, gated per entry route (the gate is a function of
-   the resolved wire model, not a side effect of one route's rewrite step —
+   the resolved wire model, not a side effect of one route's rewrite step,
    `_reconcile_wire_model` has exactly one call site). Parked requests get
    `409 model_placement_pending`; the proxy never holds a socket across an
    unbounded operator decision. A swap invalidates the proxy's process-lifetime

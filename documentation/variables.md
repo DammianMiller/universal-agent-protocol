@@ -6,7 +6,7 @@ Config comes from three merged sources, in precedence order:
    `os.environ.setdefault`s from its env file, so real process env always wins).
 2. **`.uap.json`** (project root, or up to 3 parent dirs for worktrees;
    `src/utils/config-loader.ts`). Validated by the Zod schema in `src/types/config.ts`.
-3. **`.uap/proxy.env`** — proxy-only runtime env (recipes, escalation, the one
+3. **`.uap/proxy.env`**: proxy-only runtime env (recipes, escalation, the one
    disk-persisted secret). Written chmod 600 by the setup wizard; gitignored.
 
 Systemd deployments read a *separate* env file at `~/.config/uap/anthropic-proxy.env`
@@ -26,7 +26,7 @@ Systemd deployments read a *separate* env file at `~/.config/uap/anthropic-proxy
 
 **Repo scan result:** no live secret is checked into the repo. `.gitignore` covers
 `.env*`, `.uap/`, `.uap-backups/`. The config schema *deliberately refuses* to store the
-judge API key in `.uap.json` (`config.ts:406`) — it goes to `.uap/proxy.env` only.
+judge API key in `.uap.json` (`config.ts:406`); it goes to `.uap/proxy.env` only.
 
 ## Environment variables (grouped)
 
@@ -51,14 +51,14 @@ Complete `process.env` inventory. "Default" blank = unset/feature-off.
 | `UAP_DELIVER_PARALLEL_EXPLORE` | Git-worktree parallel best-of-N | off |
 | `UAP_DELIVER_NO_DEPLOY` | Skip deploy-dev gate | — |
 | `UAP_DELIVER_LOCAL_MODE` | Local-model enforcement relax (advisory/deliver/block) | advisory |
-| `UAP_DELIVER_ACTIVE` / `UAP_DELIVER_BYPASS` | In-flight guard / enforcement escape | — (escape = operator-only) |
+| `UAP_DELIVER_ACTIVE` / `UAP_DELIVER_BYPASS` | In-flight guard / enforcement escape | unset (escape = operator-only) |
 
-### Enforcement escape hatches (operator-only — see `permissions.md`)
+### Enforcement escape hatches (operator-only; see `permissions.md`)
 `UAP_ENFORCE_DELIVERY` (block/advisory/off), `UAP_DELIVER_BYPASS=1`, `UAP_SELF_PROTECT_OFF=1`,
 `UAP_NO_WORKTREE`, `UAP_WORKDIR_SCOPE_OFF`, `UAP_SANDBOX_OFF=1`, `UAP_SANDBOX_ALLOW`
 (colon-separated writable prefixes), `UAP_SANDBOX_WORKDIR`. These are meant to be set only
-in a trusted launch environment; the (currently inert) self-protect enforcer was intended
-to stop a model from persisting them.
+in a trusted launch environment; the self-protect enforcer blocks a model from persisting
+them.
 
 ### Hands-free persistence (`UAP_HANDSFREE*`)
 `UAP_HANDSFREE` (enable; on by default, `0` disables), `UAP_HANDSFREE_INTENSITY`
@@ -68,23 +68,23 @@ to stop a model from persisting them.
 ### Operator attention queue (`UAP_ATTENTION*`, v2.29)
 `UAP_ATTENTION_GRACE_SECS` (runtime override of `attention.graceSecs`, the AFK decider's
 grace window; cap 86400; a cleared/empty value is treated as unset, failing safe to
-config), `UAP_ATTENTION_OFF` (`1` kill switch — no enqueue, no sweep, list returns
+config), `UAP_ATTENTION_OFF` (`1` kill switch: no enqueue, no sweep, list returns
 nothing, no session-start hint; the file is left alone), `UAP_ATTENTION_QUEUE`
 (pins the queue FILE; default is the MAIN checkout's `.uap/attention.json`, shared
 across worktrees via `src/utils/checkout-root.ts`).
 
 ### Sandbox authority (`UAP_SANDBOX*`, `PROXY_SOCKET`, v2.30)
 `UAP_SANDBOX_NET` (`off` defaults every `uap sandbox` run to the kernel egress
-boundary — own netns, nothing up; `shared` otherwise), `UAP_SANDBOX_GRANTS`
+boundary: own netns, nothing up; `shared` otherwise), `UAP_SANDBOX_GRANTS`
 (pins the per-session grant-ledger FILE; default the MAIN checkout's
 `.uap/sandbox-grants.json`), `UAP_SANDBOX_GRANTS_OFF` (`1` resolves zero grants —
 least authority), `UAP_SANDBOX_AUDIT` (pins the audit JSONL; default
 `.uap/sandbox-audit.jsonl`), `PROXY_SOCKET` (proxy env: serve the model gateway
-on an AF_UNIX socket, 0600, in addition to TCP — the permission-gated model
-choke point; unset = off), `UAP_PROXY_SOCKET` (where `uap proxy connect` looks
+on an AF_UNIX socket, 0600, in addition to TCP (the permission-gated model
+choke point); unset = off, `UAP_PROXY_SOCKET` (where `uap proxy connect` looks
 for that socket; default the checkout's `.uap/proxy.sock`). See ADR 0011.
 
-### Observability (`UAP_HALO_*`) — all local, no egress
+### Observability (`UAP_HALO_*`); all local, no egress
 `UAP_HALO_TRACE` (**on by default**; `0` opts out), `UAP_HALO_TRACE_PATH`
 (`.uap/halo/traces.jsonl`), `UAP_HALO_PROJECT_ID` (`uap`), `UAP_HALO_TRACE_MAX_BYTES`
 (10 MB), `UAP_HALO_AUTOMINE` (`0` disables the after-run weakness miner).
@@ -93,7 +93,7 @@ for that socket; default the checkout's `.uap/proxy.sock`). See ADR 0011.
 `UAP_INFERENCE_ENDPOINT` (base URL; blind path default `http://localhost:4000/v1`),
 `UAP_MODEL_ENDPOINT` (slot probe), `UAP_MODEL_PROFILE`, `UAP_MODEL_LEASE` (`0` disables
 cross-process slot leasing), `UAP_MODEL_HTTP_TIMEOUT_MS` (30 min), `UAP_ACTIVE_MODEL`,
-`UAP_ESCALATE_MODEL`, `UAP_EMBEDDING_ENDPOINT` (default `http://192.168.1.165:8081` — a
+`UAP_ESCALATE_MODEL`, `UAP_EMBEDDING_ENDPOINT` (default `http://192.168.1.165:8081`, a
 **hardcoded LAN IP** fallback), `UAP_LLM_SERVER`, `UAP_VISION_ENDPOINT`/`_MODEL`/`_API_KEY`.
 
 ### Proxy lifecycle (TS side)
@@ -102,8 +102,8 @@ cross-process slot leasing), `UAP_MODEL_HTTP_TIMEOUT_MS` (30 min), `UAP_ACTIVE_M
 `UAP_SESSION_ID` (+ harness `CLAUDE_SESSION_ID`/`FACTORY_SESSION_ID`/`CURSOR_SESSION_ID`
 for reference-counted proxy ownership).
 
-### Proxy runtime (Python; ~90 `PROXY_*` vars)
-The proxy reads roughly ninety `PROXY_*` variables — connectivity/timeouts, the context
+### Proxy runtime (Python; ~180 `PROXY_*` vars)
+The proxy reads roughly one hundred eighty `PROXY_*` variables: connectivity/timeouts, the context
 pruner (`PROXY_CONTEXT_WINDOW`, `PROXY_CONTEXT_PRUNE_THRESHOLD` 0.85,
 `PROXY_CONTEXT_PRUNE_TARGET_FRACTION` 0.50), loop/starvation/contamination/attractor
 breakers, tool state machine, session admission, slot save/restore, stream heartbeat,
@@ -113,14 +113,14 @@ grammar constraints, and passthrough control. These are set in the operator's
 | Var | Effect | Default |
 |---|---|---|
 | `LLAMA_CPP_BASE` | Local backend URL (note: LAN, not loopback). A **pin**: kept while it answers `/health`, otherwise the launcher discovers the live llama-server (see below) | `http://192.168.1.165:8080/v1` |
-| `UAP_LLAMA_UPSTREAM_AUTODISCOVER` | `off` pins `LLAMA_CPP_BASE` hard — no discovery even when it is dead | `on` |
-| `UAP_LLAMA_UPSTREAM_WATCH` | Background guard that restarts the proxy when the upstream moves to a new port. `auto` = only under a supervisor (systemd sets `INVOCATION_ID`); `on` forces it; `off` disables. **Never run it unsupervised** — there, stopping the proxy is the end of it | `auto` |
+| `UAP_LLAMA_UPSTREAM_AUTODISCOVER` | `off` pins `LLAMA_CPP_BASE` hard; no discovery even when it is dead | `on` |
+| `UAP_LLAMA_UPSTREAM_WATCH` | Background guard that restarts the proxy when the upstream moves to a new port. `auto` = only under a supervisor (systemd sets `INVOCATION_ID`); `on` forces it; `off` disables. **Never run it unsupervised**: there, stopping the proxy is the end of it | `auto` |
 | `UAP_LLAMA_UPSTREAM_WATCH_SECS` | Watcher poll interval; it acts only after 2 consecutive misses AND a live server on a different port | `20` |
 | `UAP_LLAMA_PROBE_TIMEOUT` | Per-probe timeout (seconds) for `/health`, `/props`, `/v1/models` during resolution | `2` |
 | `ANTHROPIC_API_BASE` | Passthrough target | `https://api.anthropic.com` |
 | `ANTHROPIC_PASSTHROUGH_MODELS` | Cloud allowlist; `__local_only__` disables cloud | default Claude patterns |
 | `PROXY_HOST` / `PROXY_PORT` | Bind (defaults expose the LAN) | `0.0.0.0` / `4000` |
-| `PROXY_CONTEXT_WINDOW` | Prune window and the window advertised on `/v1/models` — both resolve from the same source. `0` = auto-detect from `/slots` (**recommended**). A non-zero value is a **startup fallback, not a cap**: the server is probed first and the detected rail wins (re-checked every 60s), so the setting only applies when the probe fails. To run shallower than the rail for quality, lower `PROXY_CONTEXT_PRUNE_THRESHOLD` / `PROXY_COMPACT_TARGET_FRACTION` instead — those are fractions of the rail and survive a rail change. A window that was never measured (upstream down at boot) is used by the pruner but **not** advertised | 0 |
+| `PROXY_CONTEXT_WINDOW` | Prune window and the window advertised on `/v1/models`; both resolve from the same source. `0` = auto-detect from `/slots` (**recommended**). A non-zero value is a **startup fallback, not a cap**: the server is probed first and the detected rail wins (re-checked every 60s), so the setting only applies when the probe fails. To run shallower than the rail for quality, lower `PROXY_CONTEXT_PRUNE_THRESHOLD` / `PROXY_COMPACT_TARGET_FRACTION` instead; those are fractions of the rail and survive a rail change. A window that was never measured (upstream down at boot) is used by the pruner but **not** advertised | 0 |
 | `PROXY_CONCURRENCY_LIMIT` | Concurrent requests to the single llama slot | 1 |
 | `PROXY_SESSION_ADMISSION` | Cap distinct hot sessions | off |
 | `PROXY_SLOT_SAVE_RESTORE` | Cross-session KV save/restore | off |
@@ -134,7 +134,7 @@ proxy source header; treat that as the authoritative reference for tuning.)
 `UAP_COORD_DB` (coordination SQLite path), `UAP_AGENT`/`UAP_AGENT_ID` (identity),
 `UAP_RECIPE_SIGNAL_DIR` (`~/.cache/uap/recipe-signals`), `UAP_VERIFY_ON_STOP` (run `uap
 verify` at session end), `UAP_SELF_UPDATE`/`UAP_NO_SELF_UPDATE`, `UAP_LOG_LEVEL`,
-`UAP_MAX_PARALLEL`/`UAP_PARALLEL`. Note `UAM_ENV` (`serverless-qdrant.ts:65`) — an
+`UAP_MAX_PARALLEL`/`UAP_PARALLEL`. Note `UAM_ENV` (`serverless-qdrant.ts:65`), an
 apparent typo for `UAP_ENV`, read as-is; documented here so it isn't "fixed" blindly.
 
 ### Third-party / harness-injected
@@ -147,7 +147,7 @@ apparent typo for `UAP_ENV`, read as-is; documented here so it isn't "fixed" bli
 `platforms`, `memory` (short-term SQLite + long-term Qdrant + patternRag), `worktrees`,
 `droids`, `commands`, `template`, `costOptimization` (token budgets), `timeOptimization`
 (batch windows, parallelism), `multiModel` (routing roles/matrix), `agentExecution`
-(benchmark-tuned flags — temperature 0.15, soft/hard budgets 35/50), `collaboration`,
+(benchmark-tuned flags: temperature 0.15, soft/hard budgets 35/50), `collaboration`,
 `modelConcurrency` (adaptive AIMD slot limiting), `recipes` (fusion/confidence; **API key
 never stored here**), `delivery` (`enforcement`/`localMode`/`runtimeVerify` →
 `UAP_ENFORCE_DELIVERY`/`UAP_DELIVER_LOCAL_MODE`), `design` (token gate), `reactor`,
@@ -162,6 +162,6 @@ and `.uap-backups/<date>/`. See `architecture.md` persistence map for the in-rep
 
 ## Related documents
 
-- `permissions.md` — how the escape-hatch vars gate enforcement
-- `architecture.md` — persistence map and trust boundaries
-- `cron.md` — which intervals/timeouts these vars tune
+- `permissions.md`: how the escape-hatch vars gate enforcement
+- `architecture.md`: persistence map and trust boundaries
+- `cron.md`: which intervals and timeouts these vars tune

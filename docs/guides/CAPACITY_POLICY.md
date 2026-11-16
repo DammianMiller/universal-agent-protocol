@@ -35,10 +35,10 @@ the project, then `~/.config/uap/capacity-policy.json`.
 ## HTTP-probed services (no systemd unit)
 
 Since 2026-10-04 a service may declare an **`http`** probe instead of
-`systemd` — exactly one of the two, never both (which one would be the
+`systemd`, exactly one of the two, never both (which one would be the
 truth?). This exists for the strata serve layer, the local Qwen3.8 backend:
 launched by a plain script and reparented to `systemd --user`, it has no
-unit to show, no `NRestarts`, no `MemoryCurrent` — before this, `uap doctor`
+unit to show, no `NRestarts`, no `MemoryCurrent`, before this, `uap doctor`
 simply could not see the backend at all.
 
 ```json
@@ -56,23 +56,23 @@ simply could not see the backend at all.
 
 - **Liveness** is "it answers `/metrics` as the declared kind". Not answering
   at all is DARK (absent, not degraded); the probe tool failing (no curl,
-  timeout) is UNKNOWN — the same fail-open posture as a missing `systemctl`.
+  timeout) is UNKNOWN, the same fail-open posture as a missing `systemctl`.
   A server that answers but is *not* the declared document (a llama.cpp
   Prometheus body behind the port, say) is DARK too: that is exactly the
   wrong-engine misroute this check exists to catch.
 - **`http.metricsMustMatch`** is `execStartMustContain` for a service with no
   ExecStart: `engine.<key>` values that must equal the live document. A
   missing key is RED (unverified, not quietly compliant), a mismatch is RED
-  (configuration drift). Put the load-bearing numbers from the `note` here —
-  kv kind and pool size — or they will drift the way `note` did.
+  (configuration drift). Put the load-bearing numbers from the `note` here,
+  kv kind and pool size, or they will drift the way `note` did.
 - **`headroom`** works exactly as for unit services (one shared
   nvidia-smi probe per run). There is no RSS budget or restartBudget: with
   no unit there is no `MemoryCurrent` and no `NRestarts`; liveness IS the
   probe. Declaring `budget.rssMiB` or `restartBudget` on an http service is
-  now a **parse error**, not a silently-ignored field — a budget that cannot
+  now a **parse error**, not a silently-ignored field, a budget that cannot
   be verified is the anti-pattern this policy exists to prevent.
-- **URL validation is strict** — http(s) base URL only, no userinfo, query,
-  fragment, or path — because the probe passes it to curl as a positional
+- **URL validation is strict**, http(s) base URL only, no userinfo, query,
+  fragment, or path, because the probe passes it to curl as a positional
   argument. That is the same first-wall doctrine as the unit-name charset.
   The URL must also be **canonical**: a raw spelling that only *looks*
   parseable (percent-encoded dot-segments, `/a/..`, a bare `?`, leading
@@ -81,15 +81,15 @@ simply could not see the backend at all.
 
 ## Fields
 
-- **budget** — what the service is configured to stay inside (free-text
+- **budget**, what the service is configured to stay inside (free-text
   `note` records the provenance: which incident, which flag).
   - `budget.vramMiB` declares the service's *own* allocator limit (e.g.
     `--vbr-vram 5120M`), which the server enforces internally. The doctor
-    does **not** compare it against the process's total GPU footprint —
+    does **not** compare it against the process's total GPU footprint,
     the host-side invariant it owns is `headroom.gpuMinFreeMiB`.
   - `budget.rssMiB` **is** enforced: compared against the unit's
     `MemoryCurrent`. Declaring it when systemd cannot report memory
-    (cgroup accounting off) is RED — a declared budget that cannot be
+    (cgroup accounting off) is RED, a declared budget that cannot be
     verified is not healthy.
   - `budget.execStartMustContain` **is** enforced: literal strings that must
     all appear in the unit's probed `ExecStart`, matched as plain substrings
@@ -105,20 +105,20 @@ simply could not see the backend at all.
 
     It exists because `note` is prose and drifts silently. On 2026-09-20 a
     note still read `-np 1` while the unit had been running `-np 2` for hours,
-    and the doctor stayed GREEN throughout — it probed only liveness
+    and the doctor stayed GREEN throughout, it probed only liveness
     properties and never looked at `ExecStart`. Anything load-bearing enough
     to write in the note belongs here too, where a mismatch is RED. As with
     the other budgets, *unverifiable* is also RED: if `systemctl` reports no
     `ExecStart`, the declaration is not quietly assumed satisfied.
-- **headroom.gpuMinFreeMiB** — free VRAM the *host* must keep; below it the
+- **headroom.gpuMinFreeMiB**, free VRAM the *host* must keep; below it the
   service is in OOM territory even while running.
-- **restartBudget** — `knownRestarts` is the accepted historical baseline
+- **restartBudget**, `knownRestarts` is the accepted historical baseline
   (e.g. crashes already fixed); `allowedNew` new crashes beyond that turn the
   service RED. Zero is the right default after a fix lands.
 
 `uap doctor` answers whether a service is up and inside its declared budget.
-Whether the local model is still doing useful *work* — throughput can decay
-~8x over a long-lived process while every one of these checks stays GREEN — is
+Whether the local model is still doing useful *work*, throughput can decay
+~8x over a long-lived process while every one of these checks stays GREEN, is
 [`uap inference health`](INFERENCE_HEALTH.md).
 
 ## Health semantics
@@ -126,9 +126,9 @@ Whether the local model is still doing useful *work* — throughput can decay
 | Health | Meaning |
 | --- | --- |
 | GREEN | Unit active and serving, restarts within budget, headroom verified. |
-| RED | A budget is violated or unverifiable: new crashes since the baseline, GPU free below declared headroom, RSS over budget, headroom/RSS declared but not probeable. Also RED while `activating` (e.g. `SubState=auto-restart`) — a `Restart=always` crash loop is not yet serving, so it never reads GREEN, with or without a declared `restartBudget`. |
-| DARK | Unit failed/inactive/unresolvable — the service is *absent*, not degraded. |
-| UNKNOWN | systemd itself unavailable (container, macOS) — never a fabricated GREEN. |
+| RED | A budget is violated or unverifiable: new crashes since the baseline, GPU free below declared headroom, RSS over budget, headroom/RSS declared but not probeable. Also RED while `activating` (e.g. `SubState=auto-restart`), a `Restart=always` crash loop is not yet serving, so it never reads GREEN, with or without a declared `restartBudget`. |
+| DARK | Unit failed/inactive/unresolvable, the service is *absent*, not degraded. |
+| UNKNOWN | systemd itself unavailable (container, macOS), never a fabricated GREEN. |
 
 ## Running it
 
@@ -139,7 +139,7 @@ uap doctor --strict    # exit 1 on RED/DARK — for CI and monitor loops
 ```
 
 Reference implementation: `config/capacity-policy.json` in this repo is the
-**live policy of the gsq build host**, committed deliberately — the uplift
+**live policy of the gsq build host**, committed deliberately, the uplift
 requires the gsq-rco llama.cpp server and its watchdog monitor to be the
 reference implementations, and keeping the real file in-repo means `uap
 doctor` run from this checkout reports that host truthfully. Consumers
@@ -159,12 +159,12 @@ into a degraded host.
   Known hole: `systemctl restart` / `reset-failed` resets `NRestarts` to 0,
   so bouncing a crash-looping unit produces a false GREEN until the next
   crash. Re-baseline `knownRestarts` in the same commit as any legitimate
-  restart (deploy, config change) — a `uap doctor --rebaseline` verb is
+  restart (deploy, config change), a `uap doctor --rebaseline` verb is
   planned as a follow-up; until it lands the edit is manual and deliberate.
 - **UNKNOWN instead of fail-open GREEN.** A doctor that cannot probe must say
   so; a green report from a blind probe is the failure mode this tool exists
   to prevent.
-- **One GPU probe per run** shared across services — nvidia-smi is not cheap.
+- **One GPU probe per run** shared across services, nvidia-smi is not cheap.
 - **Probes fail soft on a 5s timeout.** A wedged driver or D-Bus makes the
   doctor report UNKNOWN/RED-unverified instead of hanging the monitor loop
   that called it.

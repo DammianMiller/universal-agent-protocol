@@ -1,31 +1,31 @@
 # Pattern Library Reference
 
-> Universal Agent Protocol (UAP) v2.29.0
+> Universal Agent Protocol (UAP) v2.51.0
 
-> **🏭 Where this fits:** Prep / Routing — before your agent starts cutting, it
+> **🏭 Where this fits:** Prep / Routing, before your agent starts cutting, it
 > should pick the right technique for the job. **What it delivers:** the right
 > proven playbook is matched to the task and handed to your agent, so it stops
 > improvising an approach that quietly breaks the [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
 > two stations later.
 
 Left to itself, an agent invents a fresh (and often wrong) approach for every
-task. UAP's execution-pattern library is a rack of proven playbooks — reusable
-problem-solving strategies — that get matched to what you're actually doing and
+task. UAP's execution-pattern library is a rack of proven playbooks, reusable
+problem-solving strategies, that get matched to what you're actually doing and
 handed to the agent before it acts. That's the Prep/Routing station: right job,
 right technique, right bench.
 
-Several of these patterns are quietly the guardrails on the QC station too —
+Several of these patterns are quietly the guardrails on the QC station too,
 they exist because agents love to skip verification. Patterns are defined as
 markdown files under `.factory/patterns/`, catalogued in
 `.factory/patterns/index.json`, and retrieved on demand via a Qdrant-backed
 RAG flow (`uap patterns query`).
 
-## The 23 Patterns
+## The 31 Patterns
 
 The canonical roster lives in `.factory/patterns/index.json`. Each pattern has
 a numeric (or string) id, a markdown body file, a title, an abbreviation, a
 category, and a keyword set used for retrieval. The `Verification` category is
-the QC/Verify station in playbook form — the checks that turn "looks done" into
+the QC/Verify station in playbook form, the checks that turn "looks done" into
 "proven done."
 
 | ID | Title | Abbreviation | Category | What it does |
@@ -52,11 +52,19 @@ the QC/Verify station in playbook form — the checks that turn "looks done" int
 | P35 | Decoder-First Analysis | Decoder-First | Analysis | Build/understand the decoder/parser first when reverse-engineering a format. **Always enforced.** |
 | P36 | Competition Domain Research | Competition-Research | Research | Research the competitive domain (win rate, leaderboard, tournament) before optimizing. |
 | P37 | Ambiguity Detection & Resolution | Ambiguity-Detect | Planning | Detect vague/unspecified requirements and clarify before acting. |
+| P38 | Prior Art First | PriorArt | Planning | Find and reuse prior art (libraries, conventions, in-repo approaches) before inventing a new one from scratch. |
+| P39 | The Fable Three.js Production Loop | Fable-3D | Creative Production | Staged Three.js/WebGL loop for interactive product demos and walkable spaces. |
+| P40 | Blender 3D Production | Blender-3D | Creative Production | Blender asset work end to end: modeling, sculpting, retopology, UVs, textures, rigging, game-ready export. |
+| P41 | Three.js / WebGL Production | Threejs-WebGL | Creative Production | Build and structure Three.js/WebGL/WebGPU scenes, shaders, and React Three Fiber apps. |
+| P42 | Video Editing & Delivery | Video-Edit | Media Production | Edit and deliver video with ffmpeg/ffprobe: captions, reels, shorts, platform-shaped exports. |
+| P43 | Motion & Animation Design | Motion-Anim | Creative Production | Design motion graphics, transitions, and micro-interactions with timing that reads. |
+| P44 | Visual Design & Design Engineering | Design-Eng | Creative Production | Apply design systems, brand guidelines, typography, and art direction to shipped UI. |
+| P45 | Superpowers Programming Methodology | Superpowers | Programming | The superpowers method for code work: TDD, systematic debugging, code review, plan-driven implementation. |
 | IaC | Infrastructure as Code Parity | IaC-Parity | Infrastructure | Keep infrastructure changes reflected in IaC (terraform/kubernetes) for reproducibility. |
 
 ### Always-on patterns
 
-Two patterns are the non-negotiable QC guards on the line — bolted on
+Two patterns are the non-negotiable QC guards on the line, bolted on
 unconditionally regardless of the matched task, set in
 `src/coordination/pattern-router.ts`:
 
@@ -64,17 +72,17 @@ unconditionally regardless of the matched task, set in
 const alwaysIncludeIds = ['P12', 'P35']; // Output Existence, Decoder-First
 ```
 
-- **P12 (Output Existence Verification)** — the anti-"claiming done" guard:
+- **P12 (Output Existence Verification)**, the anti-"claiming done" guard:
   no artifact, no done.
-- **P35 (Decoder-First Analysis)** — anchors format/reverse-engineering work.
+- **P35 (Decoder-First Analysis)**, anchors format/reverse-engineering work.
 
 ## How pattern RAG works
 
-Pattern retrieval is semantic, not keyword-based — the router matches on what
+Pattern retrieval is semantic, not keyword-based, the router matches on what
 the task *means*, not just the words in it. The flow:
 
 1. **Indexing** (`uap patterns index`) runs a generated Python indexer
-   (`agents/scripts/index_patterns_to_qdrant.py`). It scans multiple sources —
+   (`agents/scripts/index_patterns_to_qdrant.py`). It scans multiple sources,
    `CLAUDE.md` (with `@include` resolution), additional source files
    (`AGENTS.md`, etc.), `*/SKILL.md` skill files, and `.factory/patterns/*.md`
    (using `index.json` to preserve the canonical `PNN: Title` identity and
@@ -84,7 +92,7 @@ the task *means*, not just the words in it. The flow:
    (`agents/scripts/query_patterns.py`), embeds the query with the same model,
    and runs a cosine `query_points` search against the collection, returning the
    top-K hits above the score threshold.
-3. **Fallback** — if the Python query script is absent, the CLI falls back to a
+3. **Fallback**, if the Python query script is absent, the CLI falls back to a
    direct Qdrant `scroll` + keyword match (less accurate) and prints a notice.
 
 ### RAG defaults

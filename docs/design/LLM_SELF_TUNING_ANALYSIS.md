@@ -38,11 +38,11 @@
 ### 1.3 What Self-Harness Already Does
 
 The Self-Harness orchestrator runs a closed-loop:
-1. **Mine** — analyzes benchmark `RunRecord[]` to find failure patterns (wrong output, timeouts, tool misuse, guardrail wedges, RECON loops)
-2. **Propose** — generates `Mod` objects (environment changes, scaffolding, middleware) from weakness reports
-3. **Validate** — runs paired benchmark with mod applied vs baseline
-4. **Decide** — accepts if validation delta > threshold AND held-out suite doesn't regress
-5. **Transfer** — records outcome into cross-model store keyed by weakness signature
+1. **Mine**, analyzes benchmark `RunRecord[]` to find failure patterns (wrong output, timeouts, tool misuse, guardrail wedges, RECON loops)
+2. **Propose**, generates `Mod` objects (environment changes, scaffolding, middleware) from weakness reports
+3. **Validate**, runs paired benchmark with mod applied vs baseline
+4. **Decide**, accepts if validation delta > threshold AND held-out suite doesn't regress
+5. **Transfer**, records outcome into cross-model store keyed by weakness signature
 
 **Key insight**: The Mod DSL only touches a handful of knobs today (PROXY_RECON_CONVERGENCE_THRESHOLD, PROXY_CONTEXT_WINDOW, etc.). It does NOT touch recipes, escalation, concurrency, memory, or handsfree settings.
 
@@ -82,7 +82,7 @@ This is the fundamental challenge. A small model cannot reliably judge its own o
 - **Self-Harness**: Benchmarks measure external correctness, not self-assessment
 - **Delivery**: Convergence loop with auto-mine catches failures
 
-**Key gap**: There is no per-session quality signal that approximates "how close to Opus 4.8 is this output?" — only pass/fail on predefined test suites.
+**Key gap**: There is no per-session quality signal that approximates "how close to Opus 4.8 is this output?", only pass/fail on predefined test suites.
 
 ---
 
@@ -90,11 +90,11 @@ This is the fundamental challenge. A small model cannot reliably judge its own o
 
 ### 3.1 Design Principles
 
-1. **LLM as tuner, not executor** — The LLM (Opus or similar) analyzes telemetry and recommends flag configurations; the small model executes them
-2. **Closed-loop validation** — Every tuning recommendation is validated by paired benchmarks before acceptance
-3. **Compositional** — Flags are tuned in groups (not individually) to capture interactions
-4. **Model-specific profiles** — Each executor model gets its own tuning profile stored in the cross-model transfer store
-5. **Progressive disclosure** — Start with coarse tuning (recipe type, enabled/disabled), refine to fine-grained (thresholds, N values)
+1. **LLM as tuner, not executor**, The LLM (Opus or similar) analyzes telemetry and recommends flag configurations; the small model executes them
+2. **Closed-loop validation**, Every tuning recommendation is validated by paired benchmarks before acceptance
+3. **Compositional**, Flags are tuned in groups (not individually) to capture interactions
+4. **Model-specific profiles**, Each executor model gets its own tuning profile stored in the cross-model transfer store
+5. **Progressive disclosure**, Start with coarse tuning (recipe type, enabled/disabled), refine to fine-grained (thresholds, N values)
 
 ### 3.2 System Components
 
@@ -155,7 +155,7 @@ interface QualityScore {
 
 #### 3.3.2 LLM Tuner (`src/self-tuning/llm-tuner.ts`)
 
-The core intelligence — an LM-guided tuner that:
+The core intelligence, an LM-guided tuner that:
 
 1. **Receives**: Quality scores + flag configuration + benchmark results
 2. **Analyzes**: Which flags correlate with quality improvements?
@@ -187,9 +187,9 @@ interface FlagChange {
 ```
 
 **Search strategy**:
-- **Phase 1** (coarse): Binary exploration — enable/disable each major category
-- **Phase 2** (medium): Enum exploration — try each recipe type, each handsfree intensity
-- **Phase 3** (fine): Numeric optimization — tune thresholds, N values, concurrency limits
+- **Phase 1** (coarse): Binary exploration, enable/disable each major category
+- **Phase 2** (medium): Enum exploration, try each recipe type, each handsfree intensity
+- **Phase 3** (fine): Numeric optimization, tune thresholds, N values, concurrency limits
 - **Phase 4** (combinatorial): Joint optimization of interacting flags
 
 #### 3.3.3 Search Space Reducer (`src/self-tuning/search-reducer.ts`)
@@ -208,7 +208,7 @@ Applies tuning proposals to the UAP configuration:
 - Writes to `.uap.json` for JSON-config flags
 - Writes to `.uap/proxy.env` for proxy env flags
 - Exports shell env vars for shell flags
-- **Atomic swap**: reads current config, applies changes, validates, writes — on failure, rolls back
+- **Atomic swap**: reads current config, applies changes, validates, writes, on failure, rolls back
 
 ### 3.4 Integration with Existing Systems
 
@@ -300,7 +300,7 @@ OUTPUT FORMAT:
 
 ### Phase 2: Closed-Loop Integration (Week 5-6)
 
-**Goal**: Full tuning loop — propose → validate → accept/reject → learn.
+**Goal**: Full tuning loop, propose → validate → accept/reject → learn.
 
 | Task | File | Description |
 |------|------|-------------|

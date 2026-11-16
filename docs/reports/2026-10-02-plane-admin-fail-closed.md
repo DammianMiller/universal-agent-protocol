@@ -7,15 +7,15 @@ Deliver run: `run-20261002T030209-1af47d` (status: delivered)
 
 `uap-policy-gate.sh` maps an errored or missing enforcer to ALLOW for everything
 except the two enforcers named in `must_fail_closed()` (`enforcement_self_protect`
-on `SEC_SENSITIVE`, `schema_diff_gate` on `COMMIT_OP`). `plane_admin_protect` —
-the guard over Plane admin credential resets — was not in that selector, so a
+on `SEC_SENSITIVE`, `schema_diff_gate` on `COMMIT_OP`). `plane_admin_protect`,
+the guard over Plane admin credential resets, was not in that selector, so a
 crashed or absent plane enforcer was a silent bypass of the admin controls on
 exactly the surface it exists to protect.
 
 ## Change
 
 New `SHELL_OP` arm, keyed on the tool name (the enforcer's own activation test is
-tool-based — a shell tool is the only one it is ever asked about):
+tool-based, a shell tool is the only one it is ever asked about):
 
 ```bash
 SHELL_OP=0
@@ -44,15 +44,15 @@ Scoping rationale (mirrors why `schema_diff_gate` is gated on `COMMIT_OP`): the
 plane-admin surface is mutable through the shell and nothing else. Arming the
 fail-closed net on every edit would turn a broken plane enforcer into a blanket
 block on all edits in the session. Non-shell tools keep failing open.
-`UAP_SELF_PROTECT_OFF=1` clears this arm too — otherwise the override named in
+`UAP_SELF_PROTECT_OFF=1` clears this arm too, otherwise the override named in
 the refusal is a no-op for the case that prints it.
 
 ## Files changed
 
-- `templates/hooks/uap-policy-gate.sh` — +33 lines (SHELL_OP arm, selector case, rationale comments)
-- `.claude/hooks/uap-policy-gate.sh`, `.factory/hooks/uap-policy-gate.sh`, `.omp/hooks/uap-policy-gate.sh` — identical mirrors (drift test requirement; `uap worktree create` seeds from `templates/hooks/`)
-- `tools/agents/tests/test_gate_failclosed_plane_admin.py` — new, 15 tests
-- `package.json` — `test:enforcers` now registers `test_gate_failclosed_plane_admin` (additive; nothing removed)
+- `templates/hooks/uap-policy-gate.sh`, +33 lines (SHELL_OP arm, selector case, rationale comments)
+- `.claude/hooks/uap-policy-gate.sh`, `.factory/hooks/uap-policy-gate.sh`, `.omp/hooks/uap-policy-gate.sh`, identical mirrors (drift test requirement; `uap worktree create` seeds from `templates/hooks/`)
+- `tools/agents/tests/test_gate_failclosed_plane_admin.py`, new, 15 tests
+- `package.json`, `test:enforcers` now registers `test_gate_failclosed_plane_admin` (additive; nothing removed)
 
 ## Verification
 

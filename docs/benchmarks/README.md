@@ -10,23 +10,23 @@ agentic scaffold changes many variables at once (prompts, retries, tools,
 budgets). So the benchmark program runs in two tiers, and they answer
 different questions:
 
-1. **Controlled paired A/B** (`uap bench paired`) — same model, same tasks,
+1. **Controlled paired A/B** (`uap bench paired`), same model, same tasks,
    same seeds, same harness; the *only* thing toggled is the UAP scaffold.
    This is the only design that isolates UAP's causal contribution, and it's
    the tier whose numbers we quote as findings.
-2. **Uncontrolled field runs** (Terminal-Bench 2.0, uplift sweeps) — real
+2. **Uncontrolled field runs** (Terminal-Bench 2.0, uplift sweeps), real
    tasks, real agents, real token bills. These show magnitude and cost shape
    but can't attribute causation; the
    [TBench Investigation](TBENCH_INVESTIGATION.md) documents exactly how
    apparent lifts dissolve into confounds when you control the variables.
 
 The headline below is therefore deliberately narrower than a marketing page
-would like — that's the point.
+would like, that's the point.
 
 ## Controlled paired result (start here)
 
-The rigorous, reproducible finding from the [paired harness](PAIRED_HARNESS.md)
-— same model, same tasks, same seeds, toggling **only** UAP, with confidence
+The rigorous, reproducible finding from the [paired harness](PAIRED_HARNESS.md),
+same model, same tasks, same seeds, toggling **only** UAP, with confidence
 intervals:
 
 > **UAP's accuracy lift depends on whether the base agent already self-verifies.**
@@ -39,7 +39,7 @@ Full analysis with all five experiments: **[Paired Findings](PAIRED_FINDINGS.md)
 ## Earlier (uncontrolled) Terminal-Bench numbers
 
 UAP-on vs. baseline, 12 representative tasks across 8 categories. These are
-*uncontrolled* — the [TBench Investigation](TBENCH_INVESTIGATION.md) found the
+*uncontrolled*, the [TBench Investigation](TBENCH_INVESTIGATION.md) found the
 apparent lifts were largely confounds; treat the paired results above as
 authoritative.
 
@@ -67,25 +67,25 @@ authoritative.
 
 Reproduce or extend any of it:
 
-- **Task suites** (`benchmarks/suites/`) — the paired-harness suites, ordered
+- **Task suites** (`benchmarks/suites/`), the paired-harness suites, ordered
   roughly by difficulty: `smoke/` (easy/medium/hard sanity checks),
   `real-gate/` and `real-gate-medium/` (small real tasks), `real-gate-hard/`,
   `real-gate-brutal/`, `real-gate-power/`, `real-gate-gated/` (tasks with a
-  deterministic `verifyCmd` as ground truth — no LLM judge),
+  deterministic `verifyCmd` as ground truth, no LLM judge),
   `real-gate-heldout/` (kept out of tuning), and `swe-bench-pro/` (generator +
   A/B runner for SWE-bench-style tasks).
 - **Cluster jobs** (`benchmarks/harbor-*.yaml`, `benchmarks/harbor-configs/`,
-  `benchmarks/harbor-tasks/`) — Harbor job definitions for running the suites
+  `benchmarks/harbor-tasks/`), Harbor job definitions for running the suites
   on a GPU box against local llama.cpp models (e.g. the Qwen3.5/3.6 configs).
-- **Terminal-Bench shim** (`benchmarks/terminal_bench/`) — the opencode agent
+- **Terminal-Bench shim** (`benchmarks/terminal_bench/`), the opencode agent
   adapter used for the TBench runs.
-- **Raw results** (`benchmark-results/`, untracked — local only) — every
+- **Raw results** (`benchmark-results/`, untracked, local only), every
   paired run drops a named directory (timestamped or version-labeled) with
   `records.jsonl`, `report.json`, and `report.md`. Notable series: the June
   2026 `paired-qwen36-*` sweeps (model/adapter/budget ablations), the
   `paired-uplift-*` regression series (per-version uplift tracking), and
   `real-uplift-1610/` (an agentic-baseline run: 100% → 83.3%, Δ −16.7pp with
-  CI [−0.50, 0.00] spanning 0 — i.e. no measurable lift against an agent that
+  CI [−0.50, 0.00] spanning 0, i.e. no measurable lift against an agent that
   already self-verifies, matching the paired finding).
 
 A typical reproduction:

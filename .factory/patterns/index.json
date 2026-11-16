@@ -370,6 +370,153 @@
         "threejs",
         "glsl"
       ]
+    },
+    {
+      "id": 40,
+      "file": "P40_blender_3d.md",
+      "title": "Blender 3D Production",
+      "abbreviation": "Blender-3D",
+      "category": "Creative Production",
+      "keywords": [
+        "blender",
+        "3d model",
+        "modeling",
+        "sculpt",
+        "retopology",
+        "uv unwrap",
+        "texture",
+        "rigging",
+        "game-ready",
+        "hard surface",
+        "character model",
+        "environment art",
+        "geometry nodes",
+        "polycount",
+        "cycles"
+      ]
+    },
+    {
+      "id": 41,
+      "file": "P41_threejs_webgl.md",
+      "title": "Three.js / WebGL Production",
+      "abbreviation": "Threejs-WebGL",
+      "category": "Creative Production",
+      "keywords": [
+        "three.js",
+        "threejs",
+        "webgl",
+        "webgpu",
+        "r3f",
+        "react three fiber",
+        "three fiber",
+        "shader",
+        "glsl",
+        "post-processing",
+        "3d scene",
+        "tsl",
+        "gltf",
+        "scene graph"
+      ]
+    },
+    {
+      "id": 42,
+      "file": "P42_video_editing.md",
+      "title": "Video Editing & Delivery",
+      "abbreviation": "Video-Edit",
+      "category": "Media Production",
+      "keywords": [
+        "video",
+        "video editing",
+        "ffmpeg",
+        "ffprobe",
+        "caption",
+        "subtitle",
+        "reel",
+        "shorts",
+        "youtube",
+        "tiktok",
+        "montage",
+        "color grade",
+        "color grading",
+        "loudness",
+        "lufs",
+        "footage",
+        "mp4",
+        "video export",
+        "audio editing"
+      ]
+    },
+    {
+      "id": 43,
+      "file": "P43_motion_animation.md",
+      "title": "Motion & Animation Design",
+      "abbreviation": "Motion-Anim",
+      "category": "Creative Production",
+      "keywords": [
+        "motion design",
+        "motion graphics",
+        "animation",
+        "animate",
+        "micro-interaction",
+        "transition",
+        "easing",
+        "choreography",
+        "kinetic",
+        "gsap",
+        "lottie",
+        "rive",
+        "remotion",
+        "scroll animation",
+        "spring"
+      ]
+    },
+    {
+      "id": 44,
+      "file": "P44_design_engineering.md",
+      "title": "Visual Design & Design Engineering",
+      "abbreviation": "Design-Eng",
+      "category": "Creative Production",
+      "keywords": [
+        "visual design",
+        "design system",
+        "brand guidelines",
+        "typography",
+        "art direction",
+        "aesthetic",
+        "landing page",
+        "design review",
+        "ui design",
+        "ux design",
+        "poster",
+        "canvas design",
+        "theme",
+        "design slop",
+        "mockup",
+        "design"
+      ]
+    },
+    {
+      "id": 45,
+      "file": "P45_superpowers_method.md",
+      "title": "Superpowers Programming Methodology",
+      "abbreviation": "Superpowers",
+      "category": "Programming",
+      "keywords": [
+        "implement",
+        "debug",
+        "refactor",
+        "code review",
+        "tdd",
+        "test-driven",
+        "systematic debugging",
+        "brainstorming",
+        "writing plans",
+        "executing plans",
+        "subagent-driven",
+        "verification-before-completion",
+        "methodology",
+        "superpowers"
+      ]
     }
   ]
 }

@@ -7,16 +7,16 @@ constant and toggling UAP on/off over the *same* task suite and seeds.
 This matches the evaluation methodology the literature converges on for a
 *scaffold/middleware* layer (UAP changes the scaffold, not the model):
 
-- **Paired design** — the same task at the same seed runs in both arms, so the
+- **Paired design**, the same task at the same seed runs in both arms, so the
   analysis removes between-task variance (the dominant noise source) and gains
   far more statistical power than comparing two independent means.
-- **Metric vector, not a headline number** — correctness *and* tokens, turns,
+- **Metric vector, not a headline number**, correctness *and* tokens, turns,
   tool-calls, cost, latency, each reported as a paired delta with a 95% CI.
-- **Deterministic ground truth** — each task's `verifyCmd` is the scorer (exit 0
+- **Deterministic ground truth**, each task's `verifyCmd` is the scorer (exit 0
   ⇒ resolved). No LLM judge.
-- **Beat a strong baseline** — the baseline arm is the *bare* agent on the same
+- **Beat a strong baseline**, the baseline arm is the *bare* agent on the same
   model and prompt; the only thing that differs is the injected UAP surface.
-- **Per-component ablation** — leave-one-out matrix attributes the marginal
+- **Per-component ablation**, leave-one-out matrix attributes the marginal
   contribution (and token cost) of each UAP component, so we can tell whether
   the whole protocol earns its overhead or just a couple of features do.
 
@@ -36,22 +36,22 @@ uap bench paired --adapter opencode --model qwen35-a3b --epochs 8 --ablation
 
 Artifacts are written to `benchmark-results/paired-<timestamp>/`:
 
-- `records.jsonl` — every run (for post-hoc audit / re-analysis)
-- `report.json` — structured analysis (per-condition, comparisons, ablation)
-- `report.md` — the human-readable paired report
+- `records.jsonl`, every run (for post-hoc audit / re-analysis)
+- `report.json`, structured analysis (per-condition, comparisons, ablation)
+- `report.md`, the human-readable paired report
 
 ## How the on/off toggle works
 
 For each non-baseline arm the harness injects an inspectable UAP surface into the
 isolated scratch repo before the agent runs (see `src/benchmarks/paired/scaffold.ts`):
 
-- `AGENTS.md` — the cross-agent instruction file with one section per enabled
+- `AGENTS.md`, the cross-agent instruction file with one section per enabled
   component (gates, worktree, memory, experts, skills, patterns).
-- `.uap-bench.json` — a machine-readable manifest installed UAP hooks can consume.
+- `.uap-bench.json`, a machine-readable manifest installed UAP hooks can consume.
 - Environment: `UAP_BENCH_COMPONENTS`, `UAP_DELIVER_ACTIVE`, etc.
 
-The baseline arm gets none of this. Everything else — model, prompt, repo state,
-seed — is identical, so the measured delta is attributable to UAP alone. The
+The baseline arm gets none of this. Everything else, model, prompt, repo state,
+seed, is identical, so the measured delta is attributable to UAP alone. The
 injected files are plain text precisely so a reviewer can audit exactly what the
 "treatment" was (pre-empting the asymmetric-prompt critique that sank prior
 memory-layer benchmarks).
@@ -79,16 +79,16 @@ and **pass** once the task is correctly solved.
 
 ## Reading the report
 
-- **Correctness** — baseline → treatment success rate, the paired Δ (percentage
+- **Correctness**, baseline → treatment success rate, the paired Δ (percentage
   points) with a bootstrap 95% CI and a permutation p-value. A claim requires the
   CI to exclude 0.
-- **Gate value (McNemar 2×2)** — of the tasks the baseline got wrong, how many
+- **Gate value (McNemar 2×2)**, of the tasks the baseline got wrong, how many
   did UAP *fix*, vs of the tasks the baseline got right, how many did UAP
   *regress*. A useful layer has `fixed ≫ regressed` (positive net gain).
-- **Metric deltas** — paired Δ for tokens / turns / tool-calls / cost / latency.
+- **Metric deltas**, paired Δ for tokens / turns / tool-calls / cost / latency.
   A credible UAP win is **non-inferior correctness at lower tokens/turns**, or
   higher correctness at acceptable cost.
-- **Pareto** — success vs mean tokens per condition.
+- **Pareto**, success vs mean tokens per condition.
 
 ## Statistical notes
 
@@ -120,9 +120,9 @@ A `deliver` cell's budget is `agentTimeoutSec × UAP_BENCH_DELIVER_TIMEOUT_MULT`
 (default 6, raised from 3 in 2026-09). The ×3 era was calibrated on fast hosted
 models; a full convergence mission on a slow local model (plan + self-gate +
 N turns + acceptance judge, each model call costing minutes) blew through it
-and the harness killed missions whose workdir already passed verification —
+and the harness killed missions whose workdir already passed verification,
 paired-qwen38-e4 lost 21/25 treatment cells that way, manufacturing a -8pp
 "regression" out of pure budget starvation. Raise the multiplier (never
-disable it — an unbounded cell is a wedged overnight run) when the backing
+disable it, an unbounded cell is a wedged overnight run) when the backing
 model is slow, and read a `timeout`-errored cell as *harness budget*, not a
 model failure.

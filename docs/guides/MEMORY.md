@@ -1,8 +1,8 @@
 # Memory System
 
-> UAP v1.224.0
+> UAP v2.51.0
 
-> **🏭 Where this fits:** INTAKE + FEEDBACK — the front and back doors of the [delivery pipeline](./DELIVERY_PIPELINE.md). At intake, a fresh agent forgets everything the last session learned and re-hallucinates scope; at feedback, nobody records the lesson, so the same mistake ships again next week. **What it delivers:** a persistent, searchable memory that hands each new agent the relevant past learnings on the way in, and captures durable lessons on the way out — so your team of agents gets smarter every run instead of starting from zero.
+> **🏭 Where this fits:** INTAKE + FEEDBACK, the front and back doors of the [delivery pipeline](./DELIVERY_PIPELINE.md). At intake, a fresh agent forgets everything the last session learned and re-hallucinates scope; at feedback, nobody records the lesson, so the same mistake ships again next week. **What it delivers:** a persistent, searchable memory that hands each new agent the relevant past learnings on the way in, and captures durable lessons on the way out, so your team of agents gets smarter every run instead of starting from zero.
 
 The Universal Agent Protocol gives agents a persistent, multi-tier memory so
 that learnings survive across sessions, compactions, and even harness switches.
@@ -16,7 +16,7 @@ only the most relevant ones on demand via semantic search.
 ## The four tiers
 
 Memory flows from a cheap, high-churn staging area down to a durable, searchable
-archive — think of it as raw notes at the head of the line being refined into
+archive, think of it as raw notes at the head of the line being refined into
 finished, shelved knowledge. Each tier has a distinct cost/permanence trade-off.
 
 | Tier | Name | Storage | Purpose | Module(s) |
@@ -26,7 +26,7 @@ finished, shelved knowledge. Each tier has a distinct cost/permanence trade-off.
 | 2 | Semantic | Qdrant vectors | Embedding-based recall over consolidated knowledge | [`serverless-qdrant.ts`](../../src/memory/serverless-qdrant.ts), [`embeddings.ts`](../../src/memory/embeddings.ts) |
 | 3 | Long-term archive | Pluggable backends | Durable, auditable store of promoted learnings | [`backends/base.ts`](../../src/memory/backends/base.ts), [`backends/factory.ts`](../../src/memory/backends/factory.ts), [`backends/github.ts`](../../src/memory/backends/github.ts), [`backends/qdrant-cloud.ts`](../../src/memory/backends/qdrant-cloud.ts) |
 
-### Tier 0 — Daily log
+### Tier 0, Daily log
 
 Every observation an agent records lands first in the daily log, a SQLite-backed
 staging table (`daily_log`). This follows a "log first, promote later" pattern:
@@ -35,7 +35,7 @@ entries are worth keeping. Each entry carries a `suggestedTier` of either
 `working` or `semantic` so promotion is guided rather than blind. See
 [`daily-log.ts`](../../src/memory/daily-log.ts).
 
-### Tier 1 — Working cache
+### Tier 1, Working cache
 
 The working cache holds the hot context an agent is likely to need next. Entries
 **decay** over time so the cache stays small and relevant, and a predictive layer
@@ -43,27 +43,27 @@ prefetches likely-needed memories. See
 [`speculative-cache.ts`](../../src/memory/speculative-cache.ts) and
 [`predictive-memory.ts`](../../src/memory/predictive-memory.ts).
 
-### Tier 2 — Semantic
+### Tier 2, Semantic
 
 Consolidated knowledge is embedded and stored as vectors in Qdrant. Recall is by
 semantic similarity rather than exact match, so a query retrieves conceptually
 related memories even when the wording differs. See
 [`serverless-qdrant.ts`](../../src/memory/serverless-qdrant.ts).
 
-### Tier 3 — Long-term archive
+### Tier 3, Long-term archive
 
 The durable archive is backend-pluggable. The bundled backends are selected via
 [`backends/factory.ts`](../../src/memory/backends/factory.ts):
 
-- **Qdrant Cloud** — managed vector store ([`backends/qdrant-cloud.ts`](../../src/memory/backends/qdrant-cloud.ts))
-- **GitHub** — version-controlled archive ([`backends/github.ts`](../../src/memory/backends/github.ts))
+- **Qdrant Cloud**, managed vector store ([`backends/qdrant-cloud.ts`](../../src/memory/backends/qdrant-cloud.ts))
+- **GitHub**, version-controlled archive ([`backends/github.ts`](../../src/memory/backends/github.ts))
 - A common interface defined in [`backends/base.ts`](../../src/memory/backends/base.ts)
 
 ## Semantic recall
 
 Tier 2/3 recall uses **real embeddings**, not placeholder hashes. The default
 provider runs a local `nomic-embed-text-v2-moe` model via `llama-server` (or
-Ollama) and produces **768-dimensional** vectors (Matryoshka — truncatable to
+Ollama) and produces **768-dimensional** vectors (Matryoshka, truncatable to
 256). Running embeddings locally means semantic recall incurs no per-query API
 cost. See [`embeddings.ts`](../../src/memory/embeddings.ts).
 
@@ -74,7 +74,7 @@ threshold (default `0.35`).
 
 Not every observation deserves to be a memory. The write gate
 ([`write-gate.ts`](../../src/memory/write-gate.ts)) scores incoming content and
-**rejects low-value writes** before they consume storage or pollute recall —
+**rejects low-value writes** before they consume storage or pollute recall,
 quality control at the feedback door, so the archive stays high-signal.
 Rejections include:
 
@@ -214,7 +214,7 @@ uap memory maintain [-v|--verbose]
 ## How agents use memory
 
 The recommended decision loop (see the project `CLAUDE.md`) wires memory into
-every task — pulling context in at intake and pushing lessons back out at
+every task, pulling context in at intake and pushing lessons back out at
 feedback:
 
 1. **READ** recent context with `uap memory query`.

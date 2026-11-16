@@ -1,4 +1,4 @@
-# Kimi K3 × UAP Uplift Validation — Factory Droid Harness Plan
+# Kimi K3 × UAP Uplift Validation, Factory Droid Harness Plan
 
 **Status:** Proposed (awaiting go-ahead before any paid API runs)
 **Date:** 2026-09-02
@@ -24,16 +24,16 @@ tech report and repo):
 
 | Benchmark | K3 score | Harness | Re-runnable? |
 |---|---|---|---|
-| **Terminal-Bench 2.1** | **88.3** | Kimi Code | Yes — public tasks, deterministic verifiers, API-feasible |
-| SWE-bench Verified | 93.4 | Vals AI | Partially — harness not public |
+| **Terminal-Bench 2.1** | **88.3** | Kimi Code | Yes, public tasks, deterministic verifiers, API-feasible |
+| SWE-bench Verified | 93.4 | Vals AI | Partially, harness not public |
 | SWE-Marathon | 42.0 | Claude Code / Harbor | Yes, but long-horizon = expensive |
 | PostTrainBench | 36.6 | Claude Code | Yes, but GPU-calibrated |
-| DeepSWE / FrontierSWE / Kimi-Code-Bench | various | internal | No — harness-locked |
+| DeepSWE / FrontierSWE / Kimi-Code-Bench | various | internal | No, harness-locked |
 
 Terminal-Bench 2.1 (89 Dockerized terminal tasks, time-boxed, resolved only
 when post-run verifier tests pass) is the cleanest anchor:
 
-- Public dataset with deterministic, non-LLM verifiers — no judge drift.
+- Public dataset with deterministic, non-LLM verifiers, no judge drift.
 - Already supported by our in-repo paired-harness pattern
   (`benchmarks/terminal_bench/uap_opencode_agent.py`), which we adapt to Droid.
 - Factory has published its own Droid-on-Terminal-Bench methodology
@@ -56,7 +56,7 @@ Sonnet beat Claude Code + Opus). So:
 
 ### Kimi K3 via BYOK (`~/.factory/settings.json` inside the task container)
 
-Primary endpoint — Moonshot's official API (OpenAI-compatible dialect):
+Primary endpoint, Moonshot's official API (OpenAI-compatible dialect):
 
 ```json
 {
@@ -74,7 +74,7 @@ Primary endpoint — Moonshot's official API (OpenAI-compatible dialect):
 }
 ```
 
-Fallback endpoint — OpenRouter (`baseUrl: https://openrouter.ai/api/v1`,
+Fallback endpoint, OpenRouter (`baseUrl: https://openrouter.ai/api/v1`,
 `model: moonshotai/kimi-k3`, `apiKey: ${OPENROUTER_API_KEY}`). Identical
 pricing at time of writing: **$2.55 / Mtok input, $12.75 / Mtok output**.
 
@@ -91,9 +91,9 @@ spaces dasherized + 0-based index into `customModels`).
 
 | Arm | Model route | UAP treatment |
 |---|---|---|
-| **A — Baseline** | Droid → K3 direct | none |
-| **B — UAP (protocol)** | Droid → K3 direct | UAP operating protocol dropped as `AGENTS.md` in the task workdir (Droid reads `AGENTS.md` natively) — same honest treatment surface as the existing opencode paired shim: gates discipline, verify-don't-assume, stop-when-green |
-| **C — UAP (enforced, optional)** | Droid → **UAP proxy :4100** → K3 | Arm B **plus** the UAP proxy in the request path, so deterministic enforcers (MANDATE-DELIVER, guardrails) are in the loop. Mirrors the `UAP_TB_UAP_BASE_URL` pattern of the opencode shim. |
+| **A, Baseline** | Droid → K3 direct | none |
+| **B, UAP (protocol)** | Droid → K3 direct | UAP operating protocol dropped as `AGENTS.md` in the task workdir (Droid reads `AGENTS.md` natively), same honest treatment surface as the existing opencode paired shim: gates discipline, verify-don't-assume, stop-when-green |
+| **C, UAP (enforced, optional)** | Droid → **UAP proxy :4100** → K3 | Arm B **plus** the UAP proxy in the request path, so deterministic enforcers (MANDATE-DELIVER, guardrails) are in the loop. Mirrors the `UAP_TB_UAP_BASE_URL` pattern of the opencode shim. |
 
 A vs B is the primary paired comparison (cheapest, cleanest attribution).
 C runs only if A/B shows a signal worth deepening, since it exercises the full
@@ -118,8 +118,8 @@ before the run (and, for arm C, points the model `baseUrl` at the proxy).
 
 ### New adapter: `benchmarks/terminal_bench/uap_droid_agent.py`
 
-A custom `AbstractInstalledAgent` — the same integration point Factory used
-for its own TB runs — with two exported classes, `DroidBaseline` and
+A custom `AbstractInstalledAgent`, the same integration point Factory used
+for its own TB runs, with two exported classes, `DroidBaseline` and
 `DroidUAP`, differing only in the AGENTS.md drop (and proxy base URL for arm
 C). A companion `uap-droid-setup.sh.j2` runs inside the container:
 
@@ -147,16 +147,16 @@ harness moved to the Harbor registry since the opencode shim was written.)
 Three phases, each gated on the previous one. **No paid run starts without an
 explicit go from the user.**
 
-### Phase 0 — Smoke (no benchmark scoring; ~$5)
+### Phase 0, Smoke (no benchmark scoring; ~$5)
 
 Single cheap TB task (e.g. a hello-world-tier task), a few attempts, both
 arms. Validates:
 
 1. K3 responds correctly through Droid's `generic-chat-completion-api`
-   provider — tool calls parse, multi-turn works.
+   provider, tool calls parse, multi-turn works.
 2. **Preserved thinking history:** K3 requires prior `reasoning_content` to be
    passed back verbatim across turns. Whether Droid round-trips this field for
-   generic providers is unknown — inspect request logs (or the arm-C proxy
+   generic providers is unknown, inspect request logs (or the arm-C proxy
    log) to confirm. If it does not round-trip, note the degradation, keep both
    arms identical (the paired comparison remains valid), and consider the
    Anthropic-compatible Kimi endpoint with `provider: "anthropic"` as a
@@ -165,13 +165,13 @@ arms. Validates:
    for arm C.
 4. Headless auth: `FACTORY_API_KEY` works non-interactively in the container.
 
-### Phase 1 — Pilot (~10–12 tasks × 3 attempts × 2 arms; est. $40–90)
+### Phase 1, Pilot (~10–12 tasks × 3 attempts × 2 arms; est. $40–90)
 
 Stratified sample across TB 2.1 categories (coding, build/deps, data/ML,
 systems, security). Purpose: shake out adapter bugs, measure per-run token
 burn to firm up the Phase 2 budget, and check variance. No conclusions drawn.
 
-### Phase 2 — Full sweep (89 tasks × 5 attempts × 2 arms)
+### Phase 2, Full sweep (89 tasks × 5 attempts × 2 arms)
 
 Five attempts per task matches both Factory's published TB convention and the
 existing paired-harness format. Seeds fixed where the endpoint allows;
@@ -200,7 +200,7 @@ for generic providers, cuts the input side substantially.
 | Risk | Impact | Mitigation |
 |---|---|---|
 | `reasoning_content` not round-tripped by Droid's generic provider | K3 degrades below published behavior | Phase 0 log inspection; both arms affected equally (paired Δ still valid); try Anthropic-compatible endpoint variant |
-| Custom models get Droid's generic tool scaffolding, not per-model tuning | Absolute score likely below Kimi Code's 88.3 even before UAP | Expected and acceptable — the paired Δ is the claim; report absolute with caveat |
+| Custom models get Droid's generic tool scaffolding, not per-model tuning | Absolute score likely below Kimi Code's 88.3 even before UAP | Expected and acceptable, the paired Δ is the claim; report absolute with caveat |
 | Headless `FACTORY_API_KEY` auth inside containers | Adapter blocked | Phase 0 smoke |
 | K3 rate limits / TTFT under parallel attempts | Wall-clock blowup on TB's aggressive timeouts | Bounded concurrency (xargs -P), retry-with-backoff in the adapter |
 | Exact TB 2.1 registry/dataset name changed under Harbor | Run command fails | Confirm in Phase 0 against the current terminal-bench docs |

@@ -1,7 +1,7 @@
 # Review Pre-Pass
 
 Deterministic ruleset scanner that runs **before** the LLM reviewers in the
-parallel review protocol — item 0.2 of the
+parallel review protocol, item 0.2 of the
 [System-1 uplift plan](../plans/system1-uplift-2026-09-18.md), after the
 open-code-review precedent (deterministic rule pipelines first, LLM agent
 second).
@@ -15,12 +15,12 @@ uap review prepass --write      # merge findings into the review artifact
 uap review prepass --json
 ```
 
-Exit code is 1 when any HIGH finding fires (advisory — blocking stays with
+Exit code is 1 when any HIGH finding fires (advisory, blocking stays with
 the `expert-review-required` enforcer), so CI and scripts can gate on it.
 
 ## What it catches
 
-High-precision, line-anchored rules — the bar is "almost always worth a
+High-precision, line-anchored rules, the bar is "almost always worth a
 reviewer's glance," because a scanner that cries wolf teaches reviewers to
 ignore it:
 
@@ -34,18 +34,18 @@ ignore it:
 
 Secret rules scan every file type (prose leaks keys too); code rules only
 fire on source extensions. Ambiguous heuristics deliberately stay with the
-LLM reviewers — this pass owns pattern-matching, not judgment.
+LLM reviewers, this pass owns pattern-matching, not judgment.
 
 **Secrets findings are redacted**: the snippet in the artifact and on stdout
 replaces the matched secret with `***redacted***`, because the artifact's
-purpose is inclusion in LLM reviewer prompts — the scanner must not multiply
+purpose is inclusion in LLM reviewer prompts, the scanner must not multiply
 copies of what it detects. The file:line anchor is enough to inspect the
 secret in place.
 
 ## Review protocol integration
 
 The `parallel-expert-review` skill runs `uap review prepass --write` as step
-0. Findings are written to `.uap/reviews/<branch-slug>.pre-pass.json` — a
+0. Findings are written to `.uap/reviews/<branch-slug>.pre-pass.json`, a
 **sibling** of the review artifact, never `<branch-slug>.json` itself, because
 the expert-review enforcer treats that file's existence as "a review
 happened". Writes are atomic (tmp + rename), and the slug encoding matches the
@@ -73,5 +73,5 @@ dismissing one.
 
 The first dogfood scan of this repo's own CLI found a real command-injection
 path (`uap worktree create <slug>` interpolating the argument into a shell
-string) — fixed in the same change that introduced the scanner. Remaining
+string), fixed in the same change that introduced the scanner. Remaining
 interpolated-`execSync` call sites are ticketed for a follow-up sweep.

@@ -1,11 +1,11 @@
-# Droid client performance options — the local qwen3.8 UAP fleet
+# Droid client performance options, the local qwen3.8 UAP fleet
 
 **Status:** Proposed (monitoring findings + a ranked option menu; nothing starts
 without an explicit go, per the [proof-options house rule](model-performance-proof-options.md))
 **Date:** 2026-11-14
 **Monitored:** the live Droid qwen3.8 UAP clients (3 hooked repos, 4 droid
 processes; the pay2u security-audit run live since 16:01) against
-`~/.uap/telemetry/tool-calls.db` — 20,002 tool calls, 2026-10-11 → now.
+`~/.uap/telemetry/tool-calls.db`, 20,002 tool calls, 2026-10-11 → now.
 
 ## What the monitoring shows
 
@@ -24,14 +24,14 @@ processes; the pay2u security-audit run live since 16:01) against
 Reads are essentially perfect. The model writes blind. Decomposing the
 write/edit failures:
 
-- **stub-refusal (1,097)** — UAP's gutting guard catches the model shrinking a
+- **stub-refusal (1,097)**, UAP's gutting guard catches the model shrinking a
   real file into a stub (or writing N declared functions with empty bodies).
   Each refusal is a saved file but a wasted round-trip; the error text already
   says "use edit_file", and models re-send anyway.
-- **no-op (758)** — writes/edits that produced no change (idempotent retries).
-- **edit-miss (642)** — `old_string not found`: editing from memory instead of
+- **no-op (758)**, writes/edits that produced no change (idempotent retries).
+- **edit-miss (642)**, `old_string not found`: editing from memory instead of
   reading the file first.
-- **path-not-found (502)** — plausible-but-wrong guessed paths
+- **path-not-found (502)**, plausible-but-wrong guessed paths
   (`apps/api/src/repositories/installments_repository.ts`-shaped).
 - edit-ambiguous (180), truncated-write (22).
 - run_bash's 600 = 447 deliver-sandbox refusals + 153 exit-1.
@@ -46,33 +46,33 @@ write/edit failures:
 | 11-14 (today) | **abliterated-iq2_xs serving** (user-switched) | 17.3% |
 
 The best measured live day is the v31 arm; today the client fleet is served by
-**iq2_xs — the fleet's floor tier (2.86 bpw)**. That alone roughly doubles the
+**iq2_xs, the fleet's floor tier (2.86 bpw)**. That alone roughly doubles the
 tool-call failure rate vs the v31 era.
 
 **The frontier routes are dark.** The client's 25 frontier-named entries
 (CC Opus 4.5/4.6, GPT-5.1/5.2, Gemini 3, AG variants) all point at
-`localhost:8317` — **no listener is bound**. The only frontier-tagged outcomes
+`localhost:8317`, **no listener is bound**. The only frontier-tagged outcomes
 in the delivery corpus (opus-4.8) died at 0% of gates in ≤5 turns (early route
 death, not model quality). So "Opus 5.5 / Fable 5.2 levels" currently has **no
-valid measured baseline on this box** — the honest reading of the local gap is
+valid measured baseline on this box**, the honest reading of the local gap is
 the failure table above: frontier-class clients read before editing (~0
 edit-miss), don't gut files (~0 stub-refusal), and don't guess paths (~0
 path-not-found). Closing the write/edit class is closing the gap.
 
 ## The options, ranked by cost
 
-### O-A — Serve the strongest arm for client sessions (free, today)
+### O-A, Serve the strongest arm for client sessions (free, today)
 
 **Cost:** one panel switch · **Expected effect:** the 8.7%-era failure rate
 instead of today's 17.3% (the arm is the largest single measured factor).
 
-Droid client work runs on v31 (UD-IQ4_XS + the Q8_0 engram — the measured-best
+Droid client work runs on v31 (UD-IQ4_XS + the Q8_0 engram, the measured-best
 long-prompt decode) until the **UD-Q3_K_XL arm** (staged 2026-11-14, registry
 `strata-unsloth-ud-q3_k_xl`) is measured and A/B'd; iq2_xs stays for batch and
 benchmark traffic where its throughput per GiB matters. The Q3_K_XL A/B is
 already required before that arm can place (fail-closed `unmeasured`).
 
-### O-B — Restore (or drop) the frontier route, then measure the real gap (free)
+### O-B, Restore (or drop) the frontier route, then measure the real gap (free)
 
 **Cost:** operator time · **Effect:** turns "frontier levels" from a vibe into
 a number.
@@ -80,11 +80,11 @@ a number.
 Either bring the `:8317` CC proxy back up or delete the 25 dead entries so the
 client menu stops lying. Then ONE paired run (the
 [paired discipline](../benchmarks/PAIRED_FINDINGS.md): same tasks, same
-seeds, UAP layer identical, only the model route toggled) — local fleet vs one
-frontier route — gives the actual per-task gap and the failure-table delta.
+seeds, UAP layer identical, only the model route toggled), local fleet vs one
+frontier route, gives the actual per-task gap and the failure-table delta.
 Without this, every "get to Opus/Fable levels" claim is unmeasurable.
 
-### O-C — Kill the three big failure classes at the tool layer (days; the 83%)
+### O-C, Kill the three big failure classes at the tool layer (days; the 83%)
 
 **Cost:** small, contained proxy/tool-router changes · **Effect:** directly
 targets 2,241 of the 2,687 tool failures (stub-refusal + no-op + edit-miss +
@@ -99,7 +99,7 @@ path-not-found + edit-ambiguous).
    in the error (the 502 guessed paths are near-misses of real files).
 3. **stub-refusal → forced-read gate**: after a gutting refusal, the next
    write_file to that path requires a fresh read of the target in the same
-   turn context — make the correct path (edit_file) cheaper than re-sending.
+   turn context, make the correct path (edit_file) cheaper than re-sending.
    The refusal text alone demonstrably does not stop the 1,097 re-sends.
 4. **no-op surfacing**: flag "this write produced zero change" at the tool
    layer (758 idempotent retries today pass silently).
@@ -108,7 +108,7 @@ These are LOCKSTEP-class fixes (the v2.33 known-fix-table family): each one
 needs a paired before/after on the same benchmark suite, reported with the
 house discrimination status.
 
-### O-D — Proxy-side terse-prompt shim for the strata arms (days)
+### O-D, Proxy-side terse-prompt shim for the strata arms (days)
 
 **Cost:** small proxy change · **Effect:** the Sharp-template gains
 (terseness, 2.7× faster median upstream) approximated for the arms that
@@ -117,11 +117,11 @@ cannot take a serve-time template.
 The strata engine has no serve-time template override (GGUF-embedded), so the
 Sharp template round skipped all 4 strata arms. What the proxy CAN do is
 inject the Sharp **system-prompt** text (the terseness directive) into the
-wire when the client's system prompt is absent/overridable — the template's
+wire when the client's system prompt is absent/overridable, the template's
 mechanical wins (fewer filler tokens, earlier tool calls) without the
 GGUF re-embed. Weaker than the real template; cheap to A/B.
 
-### O-E — Aggregate the delivery-gate corpus (free; proof-plan O1)
+### O-E, Aggregate the delivery-gate corpus (free; proof-plan O1)
 
 **Cost:** hours · **Effect:** the model × technique × tier gate table that
 directs every option above.
@@ -139,40 +139,40 @@ or benchmark-only.
   frontier gap is not a gating problem; it is the failure table.
 - **Chasing frontier models for the interactive client before O-B.** No valid
   baseline exists; the two opus-tagged runs died at 0% in ≤5 turns.
-- **Full-pin any strata arm** (the 10-28 OOM doctrine) — throughput gains die
+- **Full-pin any strata arm** (the 10-28 OOM doctrine), throughput gains die
   with the box.
 
 ## Sequencing
 
-O-A today (panel switch, zero risk) → O-C.1 (edit-miss auto-context — the
+O-A today (panel switch, zero risk) → O-C.1 (edit-miss auto-context, the
 single best fix) in the next proxy round → O-B when the frontier route is
 restored → O-C.2/3/4 + O-E as the following PR → O-D last (weakest
 expected value per hour).
 
 ---
 
-## O-B MEASURED — the frontier baseline via Droid + GLM-5.3 (2026-11-14)
+## O-B MEASURED, the frontier baseline via Droid + GLM-5.3 (2026-11-14)
 
 The frontier route landed differently than planned: not Claude Code through
 the `:8317` CLIProxyAPI OAuth (its refresh token is expired; re-login is
-user-interactive), but **Droid itself on `glm-5.3` (Max plan)** — the user
+user-interactive), but **Droid itself on `glm-5.3` (Max plan)**, the user
 switched the session default to glm-5.3 and directed the baseline there. This
 is the same client shape the monitored local baseline used (a Droid session
 doing real tool work), which makes it the honest pair.
 
 **Method (paired discipline): same tasks, same seeds, same driver, same
-gates — only the model route toggled.**
+gates, only the model route toggled.**
 
 - **Driver:** `droid exec --auto high -o json`, identical flags and 8-minute
   per-task ceiling for both arms.
-- **Frontier arm:** `-m glm-5.3` (Droid's own provider auth — no local key
+- **Frontier arm:** `-m glm-5.3` (Droid's own provider auth, no local key
   material involved).
 - **Local arm:** `-m qwen3.8-flash-next-unsloth-ud-iq4_xs-v31` through the
   UAP proxy (`:4000`) → the fleet. During the run the fleet was serving
   **abliterated-iq2_xs** (a peer's live deliver run owned the box, so no arm
-  switch was made) — the local arm is therefore labeled iq2_xs, the fleet's
+  switch was made), the local arm is therefore labeled iq2_xs, the fleet's
   floor tier, NOT v31.
-- **Suite:** 6 fresh-dir tasks exercising the monitored failure classes —
+- **Suite:** 6 fresh-dir tasks exercising the monitored failure classes,
   create+verify (t1), precise-edit of a seeded bug (t2), path near-miss
   `.yaml` vs `.yml` (t3), add-to-existing without gutting (t4), multi-file
   rename (t5), ambiguous-match edit-one-of-two (t6). 16 deterministic gates
@@ -183,9 +183,9 @@ gates — only the model route toggled.**
 
 ### Results (2026-11-14, 19:34–20:22 AEDT)
 
-**Gate outcomes — TIED 13/13.** On small, well-specified, gate-verifiable
+**Gate outcomes, TIED 13/13.** On small, well-specified, gate-verifiable
 tasks the floor-tier arm produces correct results too. The paired gap is
-**not outcome quality on this suite — it is cost**:
+**not outcome quality on this suite, it is cost**:
 
 | Arm | Gates | Exec completes | Tool calls | Turns (mean) | Wall time (total) |
 |---|---:|---:|---:|---:|---:|
@@ -195,7 +195,7 @@ tasks the floor-tier arm produces correct results too. The paired gap is
 The local arm needed **~24x the tool-call volume** and **~10x the wall
 time** for identical gate outcomes, and it burned its ceiling on 5 of 6
 tasks (the substantive file work was done when the ceiling killed the
-session — the gates scored the artifacts, which is why the tie is real).
+session, the gates scored the artifacts, which is why the tie is real).
 One completed local task (t6: a 3-line edit) took **45 turns**; the
 frontier took 4 for the same task. The local arm also spawned 20 subagent
 Task calls + 5 Skill calls where the frontier used none.
@@ -212,9 +212,9 @@ Task calls + 5 Skill calls where the frontier used none.
 | Overall | 59 / 4 / **6.8%** | 1,394 / 76 / 5.5% (1.6% excl. killed-bg-polls) |
 
 Classes: frontier = 2 bash-failures (both its own runs of the
-resolver-broken t5 fixture — reproduced identically on the pristine
+resolver-broken t5 fixture, reproduced identically on the pristine
 template, corrected in the gate), 1 path-not-found (the deliberate t3
-`.yaml`→`.yml` near-miss — recovered within the task), 1 other. Local = 16
+`.yaml`→`.yml` near-miss, recovered within the task), 1 other. Local = 16
 bash, 5 path-not-found, 55 killed-background-poll errors from the
 ceiling kills.
 
@@ -222,20 +222,20 @@ ceiling kills.
 
 1. **The frontier "levels" number on this stack, for this suite, is: same
    gates, 1/24th the tool activity, 1/10th the wall time, zero edit/write
-   misses.** On well-scoped tasks the floor arm eventually converges too —
+   misses.** On well-scoped tasks the floor arm eventually converges too,
    frontier value here is throughput and turn economy, not correctness.
-2. **The blind-write failure class did not fire on this suite** — neither
+2. **The blind-write failure class did not fire on this suite**, neither
    arm missed an edit or gutted a file (all 73 edit/create calls across
    both arms succeeded). These are small tasks whose files fit in one
    read; the monitored corpus's 42%-edit-miss anatomy lives in long,
    context-heavy sessions where the model edits from memory. The suite
    bounds the claim: frontier ≠ better edit *accuracy* here; it is faster
    at the same accuracy. The 20.6% live-corpus failure anatomy remains
-   the measure of the long-session problem — O-C's fixes target that
+   the measure of the long-session problem, O-C's fixes target that
    instrument, not this one.
 3. **The instrument caveat is load-bearing**: these anatomy numbers are
    Droid-native tool results; the monitoring corpus's 20.6% is the UAP
-   tool layer. Same failure classes, different instruments — rates are not
+   tool layer. Same failure classes, different instruments, rates are not
    comparable across them, only within this paired table.
 
 Raw artifacts: `benchmark-results/ob-paired-droid-exec-2026-11-14/`
@@ -244,35 +244,35 @@ the archived scripts in `artifacts/`. The O-E corpus aggregator picks the
 report up as a paired row on its next run.
 
 **Caveats (labeled, not hidden):** n=6 tasks per arm is directional, not
-powered — treat per-task deltas as single observations and the aggregate as
+powered, treat per-task deltas as single observations and the aggregate as
 descriptive. The local arm ran under concurrent fleet load (the live peer
 deliver run), which inflates its latency but not its gate outcomes. The
 frontier anatomy counts Droid-native tool results, not the UAP tool layer the
-monitoring round measured — the classes are aligned but the instruments
+monitoring round measured, the classes are aligned but the instruments
 differ; cross-comparison of rates between the two instruments is qualitative.
 
 ---
 
-## Monitoring round 2 (2026-11-14 evening) — post-O-C/O-D/O-B state
+## Monitoring round 2 (2026-11-14 evening), post-O-C/O-D/O-B state
 
 Re-mined the live corpus after the day's merges (v2.46.0 O-C hints+readGate,
 v2.47.0 O-D shim+O-E corpus, v2.48.0 turnpack ports; master `6dd4fc90`),
 with the O-B GLM-5.3 baseline now available as the frontier reference.
 
-### Finding 1 — THE CLIENT IS STALE (the round's headline)
+### Finding 1, THE CLIENT IS STALE (the round's headline)
 
 The running Droid qwen3.8 UAP client executes the **globally-installed
 `@miller-tech/uap` = v2.45.0** (NVM path, verified: the global dist lacks
 `delivery/path-hints.js`; the npm registry's `latest` is also 2.45.0 while
 master is 2.48.0). Every deliver/client session today therefore runs
-**pre-fix code** — none of O-C's hints, the readGate, or the turnpack
+**pre-fix code**, none of O-C's hints, the readGate, or the turnpack
 listing-anchor ports are in any live client. The only fix that reached the
 client is O-D's proxy-side shim (the proxy serves from the repo tree and was
 restarted 19:14 and again 20:50 for v2.48.0). The npm-publish workflow
 (manual-trigger) was fired 09:58 UTC; until it lands and the global install
 is updated, **every measured "post-fix" window is actually shim-only.**
 
-### Finding 2 — the shim-only window (era B, n=209, directional)
+### Finding 2, the shim-only window (era B, n=209, directional)
 
 | Class | Era A (pre-shim, n=19,794) | Era B (shim live, n=209) |
 |---|---:|---:|
@@ -283,40 +283,40 @@ is updated, **every measured "post-fix" window is actually shim-only.**
 | no-op | 3.8% | 1.9% |
 
 Zero edit-miss and zero path-not-found in era B is encouraging but
-underpowered (one deliver run's task mix, n=209) — directional, not a
-finding. stub-refusal persists at 7.2% (all write_file gutting re-sends) —
+underpowered (one deliver run's task mix, n=209), directional, not a
+finding. stub-refusal persists at 7.2% (all write_file gutting re-sends),
 exactly the class the not-yet-client-live readGate targets, consistent with
 Finding 1.
 
 ### The ranked levers now (against the measured O-B frontier reference)
 
-- **R2-A — Update the global client (free, minutes, the biggest immediate
+- **R2-A, Update the global client (free, minutes, the biggest immediate
   lever):** once the npm publish lands, `npm i -g @miller-tech/uap@latest`
   puts O-C + turnpack in every new client session. The next monitoring
   window after that is the first true post-fix read; watch stub-refusal
   (readGate) and edit-miss (turnpack) first.
-- **R2-B — Serve v31 for client sessions (free):** iq2_xs (floor tier) is
+- **R2-B, Serve v31 for client sessions (free):** iq2_xs (floor tier) is
   STILL serving all client work. The O-B suite measured what that tier
   costs on identical tasks: same gates at ~24x tool volume and ~10x wall
   time. This is the original O-A, still unexecuted.
-- **R2-C — Route frontier-class client sessions to glm-5.3 (one flag, now
+- **R2-C, Route frontier-class client sessions to glm-5.3 (one flag, now
   measured):** `droid -m glm-5.3` / the session default (already set).
   The O-B baseline quantifies the buy: same gates, 1/24 the tool activity,
   1/10 the wall time, zero edit/write misses. This is the concrete
   "Opus 5.5 / Fable 5.2 levels" lever on this box today.
-- **R2-D — Re-measure after R2-A:** the post-client-update window is the
+- **R2-D, Re-measure after R2-A:** the post-client-update window is the
   honest post-fix read; era B's zeros become testable at population scale.
 
 ---
 
-## Monitoring round 3 (2026-11-14 late) — the post-fix read at scale, and what the instrument was actually measuring
+## Monitoring round 3 (2026-11-14 late), the post-fix read at scale, and what the instrument was actually measuring
 
 Post-state: client 2.48.2 global (O-C hints + readGate + turnpack live),
 proxy 2.48.x with the O-D shim, baseModelId shipped (Droid treats the local
 arm as the qwen3.8-max built-in class). The first window with BOTH layers
 fixed: 916 calls, 09:50–11:15 UTC, 13 runs.
 
-### The fixes hold at scale — the first true post-fix read
+### The fixes hold at scale, the first true post-fix read
 
 | Class | Era A (pre, n=19,794) | Era C (post, n=916) |
 |---|---:|---:|
@@ -326,20 +326,20 @@ fixed: 916 calls, 09:50–11:15 UTC, 13 runs.
 | stub-refusal | 5.4% | 7.6% (all write_file) |
 | refused | 2.2% | 3.3% (all run_bash) |
 
-**edit-miss and path-not-found — the two classes O-C and turnpack were
-built for — are zero at n=916**, including adversarial fixtures designed
+**edit-miss and path-not-found, the two classes O-C and turnpack were
+built for, are zero at n=916**, including adversarial fixtures designed
 to trigger them. ok-rate +4.7 points. The lever that remains un-shrunk is
 stub-refusal.
 
 ### The instrument finding: era B and era C are both mostly TEST traffic
 
 The era-C stub-refusals all carry fixture paths (`src/big.ts`, `big.js`,
-`js/player.js` — deliberate gutting attempts at turn=1 in deliver-gate
+`js/player.js`, deliberate gutting attempts at turn=1 in deliver-gate
 test tasks, i.e. the guard PASSING). Top era-C paths are fixtures
 (`a.js` 380, `b.js`/`big.js` 70 each); the real-path remainder is small.
 Era B's round-2 samples were the same fixtures. **The tool-calls DB pools
 benchmark-harness traffic with live-client traffic**, so corpus-level
-"class rates" blend a guard's self-tests with real client behavior —
+"class rates" blend a guard's self-tests with real client behavior,
 future monitoring must segment first (the working recipe: filter on the
 fixture path set + `.uap-deliver/verify.sh`, or segment by `task_id`).
 Era-C's honest split: fixture traffic shows the fixed layer passing its
@@ -355,30 +355,30 @@ Arm + arm-tier remains the dominant cost factor.
 
 ### The levers now (R3)
 
-- **R3-A — Frontier-class sessions route by tier (the literal ask):** the
+- **R3-A, Frontier-class sessions route by tier (the literal ask):** the
   Factory catalog now carries `claude-opus-5-5` (1.6x) and
-  `claude-fable-5.2` (3.2x) as built-ins — "Opus 5.5 / Fable 5.2 levels"
+  `claude-fable-5.2` (3.2x) as built-ins, "Opus 5.5 / Fable 5.2 levels"
   is a MODEL ROUTING choice, one flag per session. Measured reference
   (glm-5.3 on the O-B suite): identical gates at 1/24 the tool volume and
   1/10 the wall time. Suggested split: glm-5.3 default (measured, cheap),
   opus-5-5/fable-5.2 for the hardest tier, local arm for
   cost-insensitive/background work.
-- **R3-B — v31 arm switch (was O-A/R2-B, still unexecuted):** iq2_xs
+- **R3-B, v31 arm switch (was O-A/R2-B, still unexecuted):** iq2_xs
   still serves all client work; the strata unit additionally sits in the
   panel-race latch state (failed+disabled with a live engine process
   holding :8080). Recovery + switch is the documented one-liner
-  (`systemctl --user reset-failed` + `model-switch.sh strata`) — operator
+  (`systemctl --user reset-failed` + `model-switch.sh strata`), operator
   action (infra-protect).
-- **R3-C — baseModelId seam (shipped, unmeasured):** local-arm Droid
+- **R3-C, baseModelId seam (shipped, unmeasured):** local-arm Droid
   sessions now inherit qwen3.8-max-class prompts, tool conventions,
   reasoning levels, and Script-mode eligibility. The first local-arm
   Droid sessions post-change (a live three.js client was streaming
   through the proxy at 22:31) are the watch window.
-- **R3-D — telemetry run-kind tagging:** the era-B/C misread argues for a
+- **R3-D, telemetry run-kind tagging:** the era-B/C misread argues for a
   `run_kind` tag (test vs live) at the classifier, or at minimum the
   fixture-path segmentation recipe documented here. Small change, next
   tools round.
-- **R3-E — stub-refusal remains the top live class:** in live traffic it
+- **R3-E, stub-refusal remains the top live class:** in live traffic it
   is the gutting guard + readGate doing their jobs; the open question is
   whether read-after-refusal recovery got FASTER (429 successful reads in
   era C vs the era-A re-send loops). Needs a live-session segment large
@@ -386,30 +386,30 @@ Arm + arm-tier remains the dominant cost factor.
 
 ---
 
-## Monitoring round 4 (2026-11-15 early) — the per-turn budget is the wall-clock bottleneck the arm ladder alone can't fix
+## Monitoring round 4 (2026-11-15 early), the per-turn budget is the wall-clock bottleneck the arm ladder alone can't fix
 
 Post-state: client 2.48.2 global (O-C + turnpack live in every new
 session), proxy 2.48.x with the O-D shim, baseModelId live, and the GPU
 operating point shipped by the infra round (bf16 unlocked on the fleet
-binaries, 370 W power limit, SM clock locked at 1800 MHz — idle-verified
+binaries, 370 W power limit, SM clock locked at 1800 MHz, idle-verified
 188 W/1800 MHz/65 °C; boot-default confirmation pending the next reboot).
 
-### Finding 1 — the live client's real-path calls went 34/34 ok (first clean live run)
+### Finding 1, the live client's real-path calls went 34/34 ok (first clean live run)
 
 The kubectl deliver (floor arm, `--max-turns 20`) ended at ~2h45m with
-**every real-path tool call ok** — 34/34 kubectl/doctl-pathed calls, max
+**every real-path tool call ok**, 34/34 kubectl/doctl-pathed calls, max
 turn 12, and its final 14 calls (11:42–11:46 UTC) all ok (8 read_file,
 4 list_dir, 1 edit_file, 1 write_file). The fixed tool layer's first
 complete live run shows zero failures on real paths; the failure classes
 still visible in the corpus (round 3) are the guards' own fixtures. The
 deliver exited without writing its `[deliver]` lesson (no memory entry, no
-task record, no OOM, no reboot — cause unknown; the telemetry DB is its
+task record, no OOM, no reboot, cause unknown; the telemetry DB is its
 only record).
 
-### Finding 2 — the per-turn generation budget, now measured
+### Finding 2, the per-turn generation budget, now measured
 
 A live session on the floor arm was streaming with the engine capping
-`thinking limited to 24576 of max_tokens 32768` — 21 capped generations
+`thinking limited to 24576 of max_tokens 32768`, 21 capped generations
 in ~17 minutes, i.e. routine thinking-heavy turns near the 32k budget.
 At the measured deep-context decode rate (126 tok/s) a full-budget turn
 is a ~4.3-minute floor **before tool volume even starts**. The O-B suite
@@ -418,7 +418,7 @@ and the kubectl deliver had a 45-minute stretch with zero tool calls
 (one long turn). Tool volume (O-B's ~24x) and per-turn budget multiply
 into the ~10x wall gap.
 
-### Finding 3 — the GPU operating point is measurable on the serving arm
+### Finding 3, the GPU operating point is measurable on the serving arm
 
 Inference health on the live arm post-operating-point: decode
 113 → 126 tok/s in the >30k-depth bucket (n=6/6), speculative drafts
@@ -429,31 +429,31 @@ reruns will read cleaner than this sample.
 
 ### The levers now (R4)
 
-- **R4-A — Thinking-budget discipline (new, the biggest untried
+- **R4-A, Thinking-budget discipline (new, the biggest untried
   wall-clock lever):** routine tool turns do not need 24.5k thinking
   tokens. The engine reserves 8k for the answer at max_tokens 32768
   (the serve log names the knob: `"answer_room": false` turns the cap
-  off); a lower thinking budget — or a lower client max_tokens for
-  tool-heavy turns — cuts the per-turn floor from ~4.3 min toward
+  off); a lower thinking budget, or a lower client max_tokens for
+  tool-heavy turns, cuts the per-turn floor from ~4.3 min toward
   ~1.5–2 min (12k thinking ≈ 95 s at 126 tok/s). Verify gate parity on
   the R4-B rerun. Knobs: the strata engine config (operator) or request
   shaping at the proxy (UAP, a tools-round change).
-- **R4-B — Arm tier + operating point, measured together (R3-B + the
+- **R4-B, Arm tier + operating point, measured together (R3-B + the
   GPU round):** rerun the archived O-B paired suite on v31 under the
-  new operating point against the archived iq2_xs baseline — one
+  new operating point against the archived iq2_xs baseline, one
   repeatable run quantifies the stacked local-arm gain (tier + 11%
   decode + bf16). Still gated on the operator arm switch (the strata
   unit's latch-state recovery).
-- **R4-C — Draft acceptance 67% → higher:** each acceptance point is
+- **R4-C, Draft acceptance 67% → higher:** each acceptance point is
   free decode; the speculative drafter's spec config (topK/epsilon) is
   tunable on the strata engine.
-- **R4-D — Cache reuse 56%:** 17.5k tok/turn re-read at depth; the
+- **R4-D, Cache reuse 56%:** 17.5k tok/turn re-read at depth; the
   health tool found no prefill bucket with enough samples to split, so
   measure prefill in the R4-B rerun (the Sharp template + turnpack
   context discipline target this).
-- **R4-E — Deliver-lesson gap:** abnormal deliver termination writes no
+- **R4-E, Deliver-lesson gap:** abnormal deliver termination writes no
   `[deliver]` lesson, so the kubectl run's outcome exists only in
-  telemetry. Write the lesson on every exit path — small harness change,
+  telemetry. Write the lesson on every exit path, small harness change,
   next tools round.
 
 Routing unchanged from R3-A: frontier-class sessions route by tier
