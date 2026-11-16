@@ -1,8 +1,8 @@
 # Security Audit — Universal Agent Protocol
 
-Scope: the three trust boundaries flagged in `documentation/permissions.md` — the model
+Scope: the three trust boundaries flagged in `docs/system/permissions.md` — the model
 proxy (:4000), the dashboard + policy-enforcement planes, and the deliver execution/
-filesystem boundary. Intent baselined against the code-verified `documentation/` set.
+filesystem boundary. Intent baselined against the code-verified `docs/system/` set.
 Method: map entry→sink, inspect authz/data/identity/encoding, cross-reference intent vs.
 implementation, self-refute every candidate (attacker≠victim, real sink, reachable). Live
 runtime state was checked where it changes the picture.
