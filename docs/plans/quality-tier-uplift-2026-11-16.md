@@ -282,12 +282,12 @@ explicit and scheduled rather than ad hoc. Owner: the fleet operator.
 
 ## 6. Sequencing and PR plan
 
-1. This plan (docs PR, plus the INDEX row).
-2. 0.1 extractor and anchors.
-3. 0.2 tier and gap compiler.
-4. 0.3 critic wiring.
-5. 0.4 the pagoda reference run, the measured proof.
-6. 0.5 the deliver gate, shadow first, then blocking.
+1. This plan (docs PR, plus the INDEX row) — **#897**.
+2. 0.1 extractor and anchors — **#898 (v2.53.0)**.
+3. 0.2 tier and gap compiler — **#899 (v2.54.0)**.
+4. 0.3 critic wiring — **#900 (v2.55.0)**.
+5. 0.4 the pagoda reference run, the measured proof — in flight.
+6. 0.5 the deliver gate, shadow first, then blocking — **#901 (v2.56.0)**.
 7. Wave 1 in order 1.1, 1.2, 1.3; 1.4 with the operator.
 8. Wave 2 once Wave 0 and Wave 1 measurements exist.
 
