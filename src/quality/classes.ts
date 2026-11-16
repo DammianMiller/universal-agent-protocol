@@ -35,6 +35,18 @@ export interface AxisSpec {
   directives: { low?: string; high?: string };
 }
 
+export interface SamplingProfile {
+  /**
+   * Default executor temperature for this class. Executors keep their own
+   * pinned profiles; this is the class's DECLARED preference the uplift
+   * loop reads when the operator has not pinned one (the small-model
+   * stability doctrine still allows executors to pin lower).
+   */
+  temperature: number;
+  /** Optional top-p companion; omitted means "leave the executor's default". */
+  topP?: number;
+}
+
 export interface ClassSpec {
   cls: string;
   /** Extract a deterministic vector from an artifact file (anchor or capture). */
@@ -47,6 +59,12 @@ export interface ClassSpec {
   degenerate?: (v: TierVector) => string | null;
   /** Human phrase for what one artifact of this class is. */
   artifact: string;
+  /**
+   * The class's sampling profile (Wave 1.3): precision classes run cold
+   * (a transcript must carry exact fields), generative classes run warm
+   * (a scene must explore palette vocabulary). Omitted = executor default.
+   */
+  sampling?: SamplingProfile;
 }
 
 /* ------------------------- visual-scene (Wave 0) ------------------------- */
@@ -104,6 +122,8 @@ const VISUAL_SPEC: ClassSpec = {
   extract: extractTierVector,
   axes: VISUAL_AXES,
   artifact: 'PNG capture',
+  // generative class: palette vocabulary comes from exploration, not precision
+  sampling: { temperature: 0.8, topP: 0.95 },
   degenerate: (v) => {
     // The 0.4 wash signature: near-uniformly bright AND desaturated — a frame
     // whose PASSING glow/val axes measured the wash, not the scene. Saturated
@@ -172,6 +192,8 @@ const REGISTRY: Record<string, ClassSpec> = {
     extract: (p) => extractApiVector(p),
     axes: API_AXES,
     artifact: 'API transcript (JSON)',
+    // precision class: a transcript must carry exact fields and values
+    sampling: { temperature: 0.2 },
     degenerate: (v) =>
       (v.scalars?.exchangeCount ?? 0) < 1
         ? 'degenerate transcript: no exchanges were measured — a run with zero evidence cannot be gapped (re-run with the fixture set)'
@@ -182,6 +204,8 @@ const REGISTRY: Record<string, ClassSpec> = {
     extract: (p) => extractBenchVector(p),
     axes: BENCH_AXES,
     artifact: 'bench results (JSON)',
+    // precision class: outcomes are deterministic or they are noise
+    sampling: { temperature: 0.2 },
     degenerate: (v) =>
       (v.scalars?.taskCount ?? 0) < 1
         ? 'degenerate bench run: zero tasks recorded — the pass-rate is vacuous, re-run the suite before gapping'
