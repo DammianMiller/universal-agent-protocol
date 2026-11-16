@@ -176,7 +176,7 @@ describe('qualityCommand: anchor + profile', () => {
     writeFileSync(bad, 'nope');
     await qualityCommand('profile', { file: bad });
     expect(process.exitCode).toBe(2);
-    expect(logs.join('\n')).toContain('not a decodable PNG');
+    expect(logs.join('\n')).toContain('not a readable PNG capture');
   });
 
   it('anchor <class> --file stores the anchor and reports the summary line', async () => {

@@ -19,7 +19,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { extractTierVector, listAnchors, TIER_EXTRACTOR_VERSION, TierVector } from './tier.js';
+import { listAnchors, TierVector } from './tier.js';
+import { classOfTierKey, extractorVersionFor, resolveClass } from './classes.js';
 
 export const DEFAULT_TOLERANCE = 0.75;
 
@@ -63,50 +64,17 @@ export interface GapReport {
   tierProfile: TierProfile;
 }
 
-/** The gated scalar axes: direction is how a capture can FAIL them. */
-const AXES = {
-  colors12: 'min',
-  edgeFrac: 'min',
-  glowFrac: 'min',
-  darkFrac: 'max',
-  contrast: 'band',
-  valMean: 'min',
-  satMean: 'band',
-} as const;
-type ScalarAxis = keyof typeof AXES;
-type Direction = 'min' | 'max' | 'band';
-
 /**
- * Directional directives, P39-flavored: each names the craft move for that
- * failing side. `low` fires when the value is under a min (or under a band);
- * `high` when over a max (or over a band).
+ * Read an axis value from a vector, class-generically (Wave 1.1): the scalars
+ * map first, then the legacy named visual fields — so pre-1.1 stored anchors
+ * and fresh non-visual vectors both resolve.
  */
-const DIRECTIVES: Record<ScalarAxis, { low?: string; high?: string }> = {
-  colors12: {
-    low: 'palette vocabulary: per-material tone ramps and wider per-voxel jitter (aging, moss, grain), hue-shifted shadow tinting, multi-stop sky gradient',
-  },
-  edgeFrac: {
-    low: 'structure density: mid-ground props and foreground silhouettes; hero framing that fills 60-85% of the frame from 35-55 degrees',
-  },
-  glowFrac: {
-    low: 'emissive coverage: expand the glow voxel set and brighten emissives (windows, lantern fire, water sparkle), then lower the bloom threshold or raise strength',
-  },
-  darkFrac: {
-    high: 'lighten the blacks FIRST (dim is usually dark surfaces, not exposure): lift hemisphere/ambient fill and warm the shadows before touching exposure',
-  },
-  contrast: {
-    low: 'tonal separation: deepen selected shadows and add focal contrast toward the anchor band',
-    high: 'tonal balance: one exposure and tone-map pass — the frame is bimodal (washed highlights plus crushed blacks); move both toward balanced midtones',
-  },
-  valMean: {
-    low: 'overall exposure: raise scene brightness through fill or exposure without washing out the highlights',
-    high: 'overall exposure: pull back exposure or fill; the frame is brighter than the anchor',
-  },
-  satMean: {
-    low: 'chroma: enrich material colors toward the anchor band',
-    high: 'chroma: mute the palette toward the anchor band',
-  },
-};
+export function scalarOfVector(v: TierVector, axis: string): number | undefined {
+  const fromScalars = v.scalars?.[axis];
+  if (fromScalars !== undefined) return fromScalars;
+  const legacy = (v as unknown as Record<string, unknown>)[axis];
+  return typeof legacy === 'number' ? legacy : undefined;
+}
 
 const r5 = (x: number): number => Math.round(x * 1e5) / 1e5;
 
@@ -151,9 +119,13 @@ export function saveTier(projectRoot: string, tier: TierProfile): string {
 }
 
 /**
- * Derive a tier from a class's anchors (at the current extractor version) and
+ * Derive a tier from a class's anchors (at the class's extractor version) and
  * persist it. Returns null when the class has no usable anchors — the caller
  * reports and fails; a tier with no anchors must never be invented.
+ *
+ * Wave 1.1: the axes come from the CLASS's registry entry, and an axis enters
+ * the tier only when EVERY anchor measures it — partial evidence must not
+ * invent a threshold (fail-closed on the axis, fail-soft on the class).
  */
 export function deriveTier(
   projectRoot: string,
@@ -161,21 +133,34 @@ export function deriveTier(
   name = 'default',
   tolerance = DEFAULT_TOLERANCE,
 ): TierProfile | null {
-  const anchors = listAnchors(projectRoot, cls);
+  const spec = resolveClass(cls);
+  const version = extractorVersionFor(cls);
+  const loaded = listAnchors(projectRoot, cls, version);
+  // Degenerate anchors (the Goodhart guard's evidence shapes) never set
+  // policy — an exemplar that cannot support a verdict must not define one.
+  const anchors = loaded.filter((a) => !spec.degenerate?.(a.vector));
   if (anchors.length === 0) return null;
+  const axisTable = spec.axes;
   const thresholds: Record<string, TierThreshold> = {};
-  for (const axis of Object.keys(AXES) as ScalarAxis[]) {
-    const med = median(anchors.map((a) => a.vector[axis]));
-    const direction: Direction = AXES[axis];
-    if (direction === 'min') thresholds[axis] = { min: r5(med * tolerance) };
-    else if (direction === 'max') thresholds[axis] = { max: r5(med / tolerance) };
+  for (const [axis, spec] of Object.entries(axisTable)) {
+    const values: number[] = [];
+    for (const a of anchors) {
+      const v = scalarOfVector(a.vector, axis);
+      if (v === undefined) break;
+      values.push(v);
+    }
+    // Every anchor must measure the axis, or the axis is not derived.
+    if (values.length !== anchors.length) continue;
+    const med = median(values);
+    if (spec.direction === 'min') thresholds[axis] = { min: r5(med * tolerance) };
+    else if (spec.direction === 'max') thresholds[axis] = { max: r5(med / tolerance) };
     else thresholds[axis] = { min: r5(med * tolerance), max: r5(med / tolerance) };
   }
   const tier: TierProfile = {
     key: `${cls}/${name}`,
     anchors: anchors.map((a) => a.path),
     anchorCount: anchors.length,
-    extractorVersion: TIER_EXTRACTOR_VERSION,
+    extractorVersion: version,
     derivedAt: new Date().toISOString(),
     tolerance,
     thresholds,
@@ -184,15 +169,49 @@ export function deriveTier(
   return tier;
 }
 
-const scalarOf = (v: TierVector, axis: ScalarAxis): number => v[axis];
-
-/** Compare a measured vector against a tier: verdict + per-axis critique. Pure. */
+/**
+ * Compare a measured vector against a tier: verdict + per-axis critique. Pure.
+ *
+ * Wave 1.1: the gapped axes are the TIER's own thresholds (any class), the
+ * directives come from the tier's class registry entry, and a degenerate
+ * measurement (the Goodhart guard — a washed frame, an empty transcript)
+ * fails FIRST with the directive naming the evidence problem.
+ */
 export function compileGap(vector: TierVector, tier: TierProfile, capturePath = ''): GapReport {
+  const cls = classOfTierKey(tier.key);
+  const spec = resolveClass(cls);
   const axes: AxisGap[] = [];
-  for (const axis of Object.keys(AXES) as ScalarAxis[]) {
-    const threshold = tier.thresholds[axis];
-    if (!threshold) continue;
-    const value = scalarOf(vector, axis);
+
+  const degenerate = spec.degenerate?.(vector) ?? null;
+  if (degenerate) {
+    axes.push({
+      axis: 'degenerate',
+      value: 0,
+      threshold: {},
+      status: 'fail',
+      delta: 0,
+      severity: 1,
+      directive: degenerate,
+    });
+  }
+
+  for (const [axis, threshold] of Object.entries(tier.thresholds)) {
+    const raw = scalarOfVector(vector, axis);
+    if (raw === undefined) {
+      // The tier gates this axis but the vector does not carry it — that is a
+      // broken probe, reported as such rather than laundered into a pass.
+      axes.push({
+        axis,
+        value: NaN,
+        threshold,
+        status: 'fail',
+        delta: NaN,
+        severity: 1,
+        directive: `unmeasured axis: this ${spec.artifact} did not produce a value for ${axis} — the measurement is broken, not the artifact`,
+      });
+      continue;
+    }
+    const value = raw;
     let status: 'pass' | 'fail' = 'pass';
     let side: 'low' | 'high' | null = null;
     let bound = 0;
@@ -209,13 +228,13 @@ export function compileGap(vector: TierVector, tier: TierProfile, capturePath = 
     const severity = status === 'fail'
       ? Math.min(1, Math.abs(rawDelta) / Math.max(1e-9, Math.abs(bound)))
       : 0;
-    const directive = side ? DIRECTIVES[axis][side] ?? null : null;
+    const directive = side ? spec.axes[axis]?.directives[side] ?? null : null;
     axes.push({
       axis,
       value,
       threshold,
       status,
-      delta: r5(rawDelta),
+      delta: status === 'fail' ? r5(rawDelta) : 0,
       severity: r5(severity),
       directive,
     });
@@ -240,17 +259,20 @@ export type GapResult =
   | { kind: 'ok'; report: GapReport }
   | { kind: 'no-tier'; known: string[] }
   | { kind: 'stale-tier'; tierVersion: number }
-  | { kind: 'unreadable' };
+  | { kind: 'unreadable'; cls: string };
 
-/** Measure a capture and gap it against a stored tier. Fails closed on every seam. */
+/** Measure an artifact and gap it against a stored tier. Fails closed on every seam. */
 export function gapReport(projectRoot: string, capturePath: string, tierKey: string): GapResult {
   const store = loadTiers(projectRoot);
   const tier = store.tiers[tierKey];
   if (!tier) return { kind: 'no-tier', known: Object.keys(store.tiers) };
-  if (tier.extractorVersion !== TIER_EXTRACTOR_VERSION) {
+  const cls = classOfTierKey(tier.key);
+  if (tier.extractorVersion !== extractorVersionFor(cls)) {
     return { kind: 'stale-tier', tierVersion: tier.extractorVersion };
   }
-  const vector = extractTierVector(capturePath);
-  if (!vector) return { kind: 'unreadable' };
+  // The tier's class selects the extractor: a visual tier reads PNG captures,
+  // an api-behavior tier reads API transcripts — never silently cross-read.
+  const vector = resolveClass(cls).extract(capturePath);
+  if (!vector) return { kind: 'unreadable', cls };
   return { kind: 'ok', report: compileGap(vector, tier, capturePath) };
 }

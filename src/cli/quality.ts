@@ -25,7 +25,8 @@ import {
 import { baselinePath, loadBaseline, writeBaseline } from '../quality/baseline.js';
 import { buildReport, changedFiles, QualityReport } from '../quality/report.js';
 import { scanContent } from '../quality/scanner.js';
-import { extractTierVector, storeAnchor, TierVector } from '../quality/tier.js';
+import { TierVector } from '../quality/tier.js';
+import { resolveClass, storeArtifactAnchor } from '../quality/classes.js';
 import { DEFAULT_TOLERANCE, deriveTier, gapReport } from '../quality/tiers.js';
 
 export interface QualityOptions {
@@ -44,6 +45,8 @@ export interface QualityOptions {
   name?: string;
   /** Multiplicative tolerance floor for the derive subcommand (default 0.75). */
   tolerance?: string;
+  /** Outcome class for the profile subcommand (default: visual-scene). */
+  class?: string;
 }
 
 function resolveDir(o: QualityOptions): string {
@@ -80,10 +83,11 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  baseline --update   Regenerate .uap/quality-baseline.json (ratchet)');
       console.log('  report              Verbose report incl. grandfathered + skipped');
       console.log('  mutate --changed    Stryker incremental on changed files');
-      console.log('  anchor <class>      Measure PNG exemplar(s) into tier anchors (--file/--files)');
-      console.log('  profile --file <f>  Measure one PNG capture (deterministic vector)');
+      console.log('  anchor <class>      Measure exemplar artifact(s) into tier anchors (--file/--files)');
+      console.log('  profile --file <f>  Measure one artifact into a deterministic vector (--class)');
       console.log('  derive <class>      Derive a tier from a class\'s anchors (--name, --tolerance)');
-      console.log('  gap --file <f>      Gap a capture against a tier (--tier <class/name>); exit 2 below tier');
+      console.log('  gap --file <f>      Gap an artifact against a tier (--tier <class/name>); exit 2 below tier');
+      console.log(chalk.dim('  Classes: visual-scene (PNG), api-behavior (API transcript JSON), bench-score (bench results JSON)'));
   }
 }
 
@@ -268,49 +272,63 @@ const summaryLine = (v: TierVector): string =>
   `colors=${v.colors12} sat=${v.satMean} val=${v.valMean} contrast=${v.contrast} ` +
   `edge=${v.edgeFrac} glow=${v.glowFrac} dark=${v.darkFrac}`;
 
+/** Class-generic one-liner: visual keeps the named-field line, others list scalars. */
+function vectorSummary(v: TierVector, cls: string): string {
+  if (cls === 'visual-scene') return summaryLine(v);
+  const scalars = Object.entries(v.scalars ?? {})
+    .map(([k, x]) => `${k}=${x}`)
+    .join(' ');
+  return scalars || `extractor=v${v.extractorVersion}`;
+}
+
 /**
  * `uap quality anchor <class> --file a.png [--files a.png,b.png]` — measure
  * exemplar(s) and store them as tier anchors under .uap/quality/anchors/.
- * Anchors are measuring references only: project-local, gitignored, never
- * shipped (P39). Unreadable/non-PNG inputs are reported and fail the command.
+ * The class picks the extractor: visual-scene reads PNG captures, api-behavior
+ * reads API transcripts, bench-score reads bench results. Anchors are measuring
+ * references only: project-local, gitignored, never shipped (P39). Unreadable
+ * inputs are reported and fail the command.
  */
 function anchorCmd(dir: string, options: QualityOptions): void {
   const paths = anchorPaths(options);
   if (!options.target || paths.length === 0) {
-    console.log(chalk.yellow('  Usage: uap quality anchor <class> --file <png> [--files <png,png>]'));
+    console.log(chalk.yellow('  Usage: uap quality anchor <class> --file <artifact> [--files <a,b>]'));
     process.exitCode = 2;
     return;
   }
+  const spec = resolveClass(options.target);
   const vectors: TierVector[] = [];
   let failed = 0;
   for (const p of paths) {
-    const rec = storeAnchor(dir, options.target, p);
+    const rec = storeArtifactAnchor(dir, options.target, p);
     if (!rec) {
-      console.log(chalk.red(`  ✗ ${p} — not a decodable PNG (measuring references must be PNG captures)`));
+      console.log(chalk.red(`  ✗ ${p} — not a readable ${spec.artifact} (class '${options.target}')`));
       failed += 1;
       continue;
     }
     vectors.push(rec.vector);
     console.log(chalk.green(`  ✓ anchor ${rec.cls}/${rec.name}`));
-    console.log(chalk.dim(`    ${summaryLine(rec.vector)}`));
+    console.log(chalk.dim(`    ${vectorSummary(rec.vector, rec.cls)}`));
     console.log(chalk.dim(`    ${rec.profilePath}`));
   }
   if (options.json) console.log(JSON.stringify(vectors, null, 2));
   if (failed > 0) process.exitCode = 2;
 }
 
-/** `uap quality profile --file <png>` — print one capture's deterministic vector. */
+/** `uap quality profile --file <f> [--class <cls>]` — print one artifact's deterministic vector. */
 function profileCmd(options: QualityOptions): void {
   const paths = anchorPaths(options);
   const target = options.file || paths[0];
   if (!target) {
-    console.log(chalk.yellow('  Usage: uap quality profile --file <png>'));
+    console.log(chalk.yellow('  Usage: uap quality profile --file <artifact> [--class <class>]'));
     process.exitCode = 2;
     return;
   }
-  const v = extractTierVector(target);
+  const cls = options.class || 'visual-scene';
+  const spec = resolveClass(cls);
+  const v = spec.extract(target);
   if (!v) {
-    console.log(chalk.red(`  ✗ ${target} — not a decodable PNG`));
+    console.log(chalk.red(`  ✗ ${target} — not a readable ${spec.artifact} (class '${cls}')`));
     process.exitCode = 2;
     return;
   }
@@ -319,9 +337,11 @@ function profileCmd(options: QualityOptions): void {
     return;
   }
   console.log(chalk.bold(`\n  tier vector: ${target}`));
-  console.log(`    ${summaryLine(v)}`);
-  console.log(chalk.dim(`    dominant: ${v.dominant.map((d) => `#${d.hex.toString(16).padStart(6, '0')} ${Math.round(d.frac * 100)}%`).join(' · ')}`));
-  console.log(chalk.dim(`    sha256=${v.sha256.slice(0, 16)}… extractor=v${v.extractorVersion} ${v.canonicalWidth}x${v.canonicalHeight}`));
+  console.log(`    ${vectorSummary(v, cls)}`);
+  if (cls === 'visual-scene' && v.dominant) {
+    console.log(chalk.dim(`    dominant: ${v.dominant.map((d) => `#${d.hex.toString(16).padStart(6, '0')} ${Math.round(d.frac * 100)}%`).join(' · ')}`));
+  }
+  console.log(chalk.dim(`    sha256=${v.sha256.slice(0, 16)}… extractor=v${v.extractorVersion}`));
 }
 
 /** `uap quality derive <class> --name <tier> [--tolerance 0.75]` — anchors -> thresholds policy. */
@@ -341,7 +361,7 @@ function deriveCmd(dir: string, options: QualityOptions): void {
   const tier = deriveTier(dir, cls, options.name || 'default', tolerance);
   if (!tier) {
     console.log(chalk.red(`  ✗ class '${cls}' has no anchors at the current extractor version.`));
-    console.log(chalk.dim('    Add measuring references first: uap quality anchor <class> --file <png>'));
+    console.log(chalk.dim(`    Add measuring references first: uap quality anchor <class> --file <artifact of ${resolveClass(cls).artifact}>`));
     process.exitCode = 2;
     return;
   }
@@ -365,7 +385,7 @@ function deriveCmd(dir: string, options: QualityOptions): void {
 function gapCmd(dir: string, options: QualityOptions): void {
   const file = options.file || (options.files ? options.files.split(',')[0] : undefined);
   if (!file || !options.tier) {
-    console.log(chalk.yellow('  Usage: uap quality gap --file <png> --tier <class/name>'));
+    console.log(chalk.yellow('  Usage: uap quality gap --file <artifact> --tier <class/name>'));
     process.exitCode = 2;
     return;
   }
@@ -382,7 +402,7 @@ function gapCmd(dir: string, options: QualityOptions): void {
     return;
   }
   if (res.kind === 'unreadable') {
-    console.log(chalk.red(`  ✗ ${file} — not a decodable PNG`));
+    console.log(chalk.red(`  ✗ ${file} — not a readable ${resolveClass(res.cls).artifact} (class '${res.cls}')`));
     process.exitCode = 2;
     return;
   }
