@@ -280,12 +280,37 @@ deliveries; ladder-only runs join at promotion.
 
 ### Wave 1, generalization to all outcome classes
 
-**1.1 Extractor classes beyond visual.** api-behavior: golden request and
-response pairs; schema conformance, field coverage, semantic diff distance, and
-latency envelope. doc-style: the shipped prose-style gates as anchors; the
-v2.51.1 rewrite corpus is the harvest. bench-score: terminal-bench and swebench
-as tiers, on the existing bench:ladder seam. Acceptance: one non-visual class
-end-to-end, API first (examples/workflows provides the fixtures).
+**1.1 Extractor classes beyond visual — SHIPPED (two classes end-to-end).**
+The class registry (`src/quality/classes.ts`) is the seam: every outcome
+class registers how to extract a vector, which axes it gates with their fail
+directions, the directional directive vocabulary, and a degenerate-evidence
+guard. Shipped classes:
+
+- **api-behavior** (`src/quality/api-behavior.ts`): a transcript of golden
+  request/response exchanges with a lightweight schema. Axes:
+  schemaConformance (recursive required/type conformance), fieldCoverage
+  (golden leaf inventory coverage), semanticFidelity (mean trigram-Dice over
+  stable-string JSON), latencyP95Ms (nearest-rank). Deterministic, fail-soft.
+- **bench-score** (`src/quality/bench-score.ts`): a bench results file.
+  Axes: passRate (min), errorRate (max); unknown status words count as fail
+  but never as error.
+- **doc-style: recorded seam, not yet harvested.** The registry makes it a
+  registration away, but the v2.51.1 rewrite corpus is not yet in
+  anchor-ready form; deferred rather than blocking the shipped classes.
+
+Generalized with it: derive/gap compile against the class's own axis table
+(pre-1.1 visual stores derive and gap byte-identically — the voxel 0.4 tier
+still passes 4/4 captures at 7/7 axes through the generic path), the tier's
+class selects its extractor (cross-class reads fail closed with the class
+named), degenerate anchors cannot derive policy, and the Goodhart wash guard
+(near-uniformly bright AND desaturated — the 0.4 finding) fails a capture
+first with the evidence problem named. Acceptance: one non-visual class
+end-to-end, API first — met, and exceeded (bench-score too): exemplar
+transcripts anchored, tier derived, at-tier run passes clean, a degraded
+small-model run fails with severity-ordered per-axis directives (exit 2);
+same for a 30-task bench pair. No transcript fixtures existed under
+examples/workflows, so the validation used synthesized exemplar + degraded
+runs of a realistic tasks-API shape (recorded in PR #903).
 
 **1.2 Best-of-N plus the escalation ladder.** Acceptance: N=3 seeded variants
 ranked deterministically on a fixture; the ladder fires on a measured plateau
@@ -317,7 +342,11 @@ explicit and scheduled rather than ad hoc. Owner: the fleet operator.
 5. 0.4 the pagoda reference run, the measured proof — **shipped** (see the
    vector table above).
 6. 0.5 the deliver gate, shadow first, then blocking — **#901 (v2.56.0)**.
-7. Wave 1 in order 1.1, 1.2, 1.3; 1.4 with the operator.
+6a. Interaction-gate goto fix (driver-relative URL resolution) —
+   **#902 (v2.56.1)**.
+6b. Wave 1.1 extractor classes beyond visual (api-behavior + bench-score,
+   class registry, degenerate guards) — **#903**.
+7. Wave 1 in order 1.2, 1.3; 1.4 with the operator (1.1 shipped, 6b).
 8. Wave 2 once Wave 0 and Wave 1 measurements exist.
 
 ## 7. Risks and open questions
