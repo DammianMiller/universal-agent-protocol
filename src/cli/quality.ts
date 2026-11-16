@@ -6,6 +6,10 @@
  *   baseline   regenerate .uap/quality-baseline.json (--update)
  *   report     full report including grandfathered violations and skips
  *   mutate     Stryker incremental mutation run scoped to changed files
+ *   anchor     measure PNG exemplar(s) into tier anchors (0.1)
+ *   profile    measure one PNG capture into a deterministic vector (0.1)
+ *   derive     derive a tier (thresholds) from a class's anchors (0.2)
+ *   gap        gap a capture against a tier; verdict + critique (0.2)
  *
  * Gate parity: the Python proxy enforcer `quality_metrics_gate.py` mirrors the fast
  * path (LOC, complexity, any-types) so agent edits are blocked pre-exec with
@@ -22,6 +26,7 @@ import { baselinePath, loadBaseline, writeBaseline } from '../quality/baseline.j
 import { buildReport, changedFiles, QualityReport } from '../quality/report.js';
 import { scanContent } from '../quality/scanner.js';
 import { extractTierVector, storeAnchor, TierVector } from '../quality/tier.js';
+import { DEFAULT_TOLERANCE, deriveTier, gapReport } from '../quality/tiers.js';
 
 export interface QualityOptions {
   projectDir?: string;
@@ -33,6 +38,12 @@ export interface QualityOptions {
   file?: string;
   /** Anchor class when invoked as `uap quality anchor <class>` (mapped from the positional target). */
   target?: string;
+  /** Tier key (class/name) for the gap subcommand. */
+  tier?: string;
+  /** Tier name for the derive subcommand. */
+  name?: string;
+  /** Multiplicative tolerance floor for the derive subcommand (default 0.75). */
+  tolerance?: string;
 }
 
 function resolveDir(o: QualityOptions): string {
@@ -56,6 +67,10 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       return anchorCmd(dir, options);
     case 'profile':
       return profileCmd(options);
+    case 'derive':
+      return deriveCmd(dir, options);
+    case 'gap':
+      return gapCmd(dir, options);
     default:
       console.log(chalk.bold('uap quality — quality-metrics gate\n'));
       console.log('  init                Write .uap/quality-metrics.json (activates the gate)');
@@ -67,6 +82,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  mutate --changed    Stryker incremental on changed files');
       console.log('  anchor <class>      Measure PNG exemplar(s) into tier anchors (--file/--files)');
       console.log('  profile --file <f>  Measure one PNG capture (deterministic vector)');
+      console.log('  derive <class>      Derive a tier from a class\'s anchors (--name, --tolerance)');
+      console.log('  gap --file <f>      Gap a capture against a tier (--tier <class/name>); exit 2 below tier');
   }
 }
 
@@ -305,4 +322,85 @@ function profileCmd(options: QualityOptions): void {
   console.log(`    ${summaryLine(v)}`);
   console.log(chalk.dim(`    dominant: ${v.dominant.map((d) => `#${d.hex.toString(16).padStart(6, '0')} ${Math.round(d.frac * 100)}%`).join(' · ')}`));
   console.log(chalk.dim(`    sha256=${v.sha256.slice(0, 16)}… extractor=v${v.extractorVersion} ${v.canonicalWidth}x${v.canonicalHeight}`));
+}
+
+/** `uap quality derive <class> --name <tier> [--tolerance 0.75]` — anchors -> thresholds policy. */
+function deriveCmd(dir: string, options: QualityOptions): void {
+  const cls = options.target;
+  if (!cls) {
+    console.log(chalk.yellow('  Usage: uap quality derive <class> --name <tier> [--tolerance 0.75]'));
+    process.exitCode = 2;
+    return;
+  }
+  const tolerance = options.tolerance === undefined ? DEFAULT_TOLERANCE : Number(options.tolerance);
+  if (!Number.isFinite(tolerance) || tolerance <= 0 || tolerance > 1) {
+    console.log(chalk.red('  ✗ --tolerance must be a multiplicative floor in (0, 1], e.g. 0.75'));
+    process.exitCode = 2;
+    return;
+  }
+  const tier = deriveTier(dir, cls, options.name || 'default', tolerance);
+  if (!tier) {
+    console.log(chalk.red(`  ✗ class '${cls}' has no anchors at the current extractor version.`));
+    console.log(chalk.dim('    Add measuring references first: uap quality anchor <class> --file <png>'));
+    process.exitCode = 2;
+    return;
+  }
+  if (options.json) {
+    console.log(JSON.stringify(tier, null, 2));
+    return;
+  }
+  console.log(chalk.green(`  ✓ tier ${tier.key} (from ${tier.anchorCount} anchor(s), tolerance ${tier.tolerance})`));
+  for (const [axis, th] of Object.entries(tier.thresholds)) {
+    const band = th.min !== undefined && th.max !== undefined
+      ? `${th.min}..${th.max}`
+      : th.min !== undefined
+        ? `>= ${th.min}`
+        : `<= ${th.max}`;
+    console.log(`    ${axis.padEnd(10)} ${band}`);
+  }
+  console.log(chalk.dim('    Review and edit the policy file: .uap/quality/tiers.json'));
+}
+
+/** `uap quality gap --file <png> --tier <class/name>` — verdict + per-axis critique. */
+function gapCmd(dir: string, options: QualityOptions): void {
+  const file = options.file || (options.files ? options.files.split(',')[0] : undefined);
+  if (!file || !options.tier) {
+    console.log(chalk.yellow('  Usage: uap quality gap --file <png> --tier <class/name>'));
+    process.exitCode = 2;
+    return;
+  }
+  const res = gapReport(dir, file, options.tier);
+  if (res.kind === 'no-tier') {
+    console.log(chalk.red(`  ✗ unknown tier '${options.tier}'`));
+    console.log(chalk.dim(`    known: ${res.known.length ? res.known.join(', ') : '(none — derive one first: uap quality derive <class>)'}`));
+    process.exitCode = 2;
+    return;
+  }
+  if (res.kind === 'stale-tier') {
+    console.log(chalk.red(`  ✗ tier '${options.tier}' was derived by extractor v${res.tierVersion}; the current extractor differs. Re-derive it (fail closed): uap quality derive <class>`));
+    process.exitCode = 2;
+    return;
+  }
+  if (res.kind === 'unreadable') {
+    console.log(chalk.red(`  ✗ ${file} — not a decodable PNG`));
+    process.exitCode = 2;
+    return;
+  }
+  const report = res.report;
+  if (options.json) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    const head = report.pass ? chalk.green(`  ✓ tier ${report.tier}`) : chalk.red(`  ✗ tier ${report.tier}`);
+    console.log(chalk.bold(`\n  ${head} — ${file}`));
+    for (const a of report.axes) {
+      const mark = a.status === 'pass' ? chalk.green('✓') : chalk.red('✗');
+      const band = a.threshold.min !== undefined && a.threshold.max !== undefined
+        ? `[${a.threshold.min}, ${a.threshold.max}]`
+        : a.threshold.min !== undefined ? `>= ${a.threshold.min}` : `<= ${a.threshold.max}`;
+      console.log(`    ${mark} ${a.axis.padEnd(10)} ${a.value} (tier ${band})`);
+      if (a.directive) console.log(chalk.dim(`      → ${a.directive}`));
+    }
+    console.log(`\n    ${report.failing} of ${report.axes.length} axes below tier${report.worst ? ` · worst: ${report.worst}` : ''}`);
+  }
+  if (!report.pass) process.exitCode = 2;
 }
