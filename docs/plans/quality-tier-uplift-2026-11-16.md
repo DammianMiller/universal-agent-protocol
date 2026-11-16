@@ -135,12 +135,13 @@ One pipeline under the existing `uap quality` namespace:
     -> gap report -> tier gate in deliver -> gap-directed iteration
     -> best-of-N selection -> escalation ladder -> telemetry
 
-CLI surface:
+CLI surface (as shipped through 0.2):
 
-    uap quality anchor add <class> <artifact...>   # measure and store an anchor profile
-    uap quality profile <artifact>                # deterministic feature vector (JSON)
-    uap quality tier derive <class>               # anchors -> thresholds (reviewed policy file)
-    uap quality gap <artifact> --tier <name>       # deltas plus directional edit directives
+    uap quality anchor <class> --file|--files <png>   # measure and store an anchor profile
+    uap quality profile --file <png>                  # deterministic feature vector (JSON)
+    uap quality derive <class> --name <tier> [--tolerance 0.75]
+                                                     # anchors -> thresholds (reviewed policy file)
+    uap quality gap --file <png> --tier <class/name>  # deltas plus directional edit directives; exit 2 below tier
 
 How the pieces behave:
 
@@ -190,17 +191,25 @@ How the pieces behave:
 
 ### Wave 0, the reference implementation (each lands as its own PR)
 
-**0.1 Anchor registry + visual extractor v1.** Canonical capture spec;
-deterministic, versioned feature vectors; `uap quality anchor` and
-`uap quality profile`. Acceptance: the two Fable anchors profiled and stored; a
-determinism test (same input, identical vector hash); synthetic-image unit
-tests (flat, gradient, noise with known values); the pagoda captures profiled
-and matching 1.2 within tolerance.
+**0.1 Anchor registry + visual extractor v1 — SHIPPED (PR #898, v2.53.0).**
+Canonical capture spec; deterministic, versioned feature vectors
+(`src/quality/tier.ts`); `uap quality anchor` and `uap quality profile`.
+Acceptance: the two Fable anchors profiled and stored; a determinism test
+(same input, identical vector hash); synthetic-image unit tests (flat,
+gradient, noise with known values); the pagoda captures profiled and matching
+1.2 within tolerance. All met (19 tests, `test/quality/tier.test.ts`).
 
-**0.2 Tier derivation + gap compiler.** `uap quality tier derive` and
-`uap quality gap`. Acceptance: the gap report on the current pagoda captures
-reproduces table 1.2; every failing axis carries a directive an executor can act
-on without ever seeing the reference.
+**0.2 Tier derivation + gap compiler — SHIPPED (PR #899, v2.54.0).**
+`uap quality derive` and `uap quality gap` (`src/quality/tiers.ts`). Acceptance:
+the gap report on the current pagoda captures reproduces table 1.2; every
+failing axis carries a directive an executor can act on without ever seeing
+the reference. Met on the real case: tier `visual-scene/fable-high` derived
+from the two Fable anchors (tolerance 0.75), pagoda t0 gap = 5 of 7 axes
+below tier (colors 662 vs >= 744, glow 0.0019 vs >= 0.023, dark 0.24 vs
+<= 0.071, edge 0.057 vs >= 0.088, contrast 0.348 outside [0.16, 0.28]),
+severity-ordered with worst-first directives (darkFrac: "lighten the blacks
+FIRST"), exit 2. Fail-closed seams: no-tier, stale-tier (extractor version
+drift), unreadable captures.
 
 **0.3 Fresh-critic wiring.** The 27B quality arm wired as critic and escalation
 model (config plus placement discipline; the switch doctrine is respected);
