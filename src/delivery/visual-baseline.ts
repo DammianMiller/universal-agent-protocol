@@ -46,7 +46,7 @@ function visualDir(projectRoot: string): string {
   return join(projectRoot, '.uap', 'visual');
 }
 
-interface DecodedImage {
+export interface DecodedImage {
   width: number;
   height: number;
   channels: number;
@@ -59,7 +59,7 @@ interface DecodedImage {
  * handle (never throws). Pure Node (`zlib.inflateSync`). Supports the format
  * Playwright/Chromium emits: 8-bit, non-interlaced, colour-type 2/6.
  */
-function decodePng(path: string): DecodedImage | null {
+export function decodePng(path: string): DecodedImage | null {
   try {
     const buf = readFileSync(path);
     if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) return null; // PNG magic

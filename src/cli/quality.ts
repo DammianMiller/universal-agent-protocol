@@ -21,6 +21,7 @@ import {
 import { baselinePath, loadBaseline, writeBaseline } from '../quality/baseline.js';
 import { buildReport, changedFiles, QualityReport } from '../quality/report.js';
 import { scanContent } from '../quality/scanner.js';
+import { extractTierVector, storeAnchor, TierVector } from '../quality/tier.js';
 
 export interface QualityOptions {
   projectDir?: string;
@@ -30,6 +31,8 @@ export interface QualityOptions {
   update?: boolean;
   changed?: boolean;
   file?: string;
+  /** Anchor class when invoked as `uap quality anchor <class>` (mapped from the positional target). */
+  target?: string;
 }
 
 function resolveDir(o: QualityOptions): string {
@@ -49,6 +52,10 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       return reportCmd(dir, options);
     case 'mutate':
       return mutateCmd(dir, options);
+    case 'anchor':
+      return anchorCmd(dir, options);
+    case 'profile':
+      return profileCmd(options);
     default:
       console.log(chalk.bold('uap quality — quality-metrics gate\n'));
       console.log('  init                Write .uap/quality-metrics.json (activates the gate)');
@@ -58,6 +65,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  baseline --update   Regenerate .uap/quality-baseline.json (ratchet)');
       console.log('  report              Verbose report incl. grandfathered + skipped');
       console.log('  mutate --changed    Stryker incremental on changed files');
+      console.log('  anchor <class>      Measure PNG exemplar(s) into tier anchors (--file/--files)');
+      console.log('  profile --file <f>  Measure one PNG capture (deterministic vector)');
   }
 }
 
@@ -227,4 +236,73 @@ function mutateCmd(dir: string, options: QualityOptions): void {
     console.log(chalk.red(`  ✗ Mutation run failed or surviving mutants exceeded thresholds.`));
     process.exitCode = 2;
   }
+}
+
+// ─── Tier layer (quality-tier uplift plan, 2026-11-16) ──────────────────────
+
+function anchorPaths(options: QualityOptions): string[] {
+  const paths: string[] = [];
+  if (options.file) paths.push(options.file);
+  if (options.files) paths.push(...options.files.split(',').map((f) => f.trim()).filter(Boolean));
+  return [...new Set(paths)];
+}
+
+const summaryLine = (v: TierVector): string =>
+  `colors=${v.colors12} sat=${v.satMean} val=${v.valMean} contrast=${v.contrast} ` +
+  `edge=${v.edgeFrac} glow=${v.glowFrac} dark=${v.darkFrac}`;
+
+/**
+ * `uap quality anchor <class> --file a.png [--files a.png,b.png]` — measure
+ * exemplar(s) and store them as tier anchors under .uap/quality/anchors/.
+ * Anchors are measuring references only: project-local, gitignored, never
+ * shipped (P39). Unreadable/non-PNG inputs are reported and fail the command.
+ */
+function anchorCmd(dir: string, options: QualityOptions): void {
+  const paths = anchorPaths(options);
+  if (!options.target || paths.length === 0) {
+    console.log(chalk.yellow('  Usage: uap quality anchor <class> --file <png> [--files <png,png>]'));
+    process.exitCode = 2;
+    return;
+  }
+  const vectors: TierVector[] = [];
+  let failed = 0;
+  for (const p of paths) {
+    const rec = storeAnchor(dir, options.target, p);
+    if (!rec) {
+      console.log(chalk.red(`  ✗ ${p} — not a decodable PNG (measuring references must be PNG captures)`));
+      failed += 1;
+      continue;
+    }
+    vectors.push(rec.vector);
+    console.log(chalk.green(`  ✓ anchor ${rec.cls}/${rec.name}`));
+    console.log(chalk.dim(`    ${summaryLine(rec.vector)}`));
+    console.log(chalk.dim(`    ${rec.profilePath}`));
+  }
+  if (options.json) console.log(JSON.stringify(vectors, null, 2));
+  if (failed > 0) process.exitCode = 2;
+}
+
+/** `uap quality profile --file <png>` — print one capture's deterministic vector. */
+function profileCmd(options: QualityOptions): void {
+  const paths = anchorPaths(options);
+  const target = options.file || paths[0];
+  if (!target) {
+    console.log(chalk.yellow('  Usage: uap quality profile --file <png>'));
+    process.exitCode = 2;
+    return;
+  }
+  const v = extractTierVector(target);
+  if (!v) {
+    console.log(chalk.red(`  ✗ ${target} — not a decodable PNG`));
+    process.exitCode = 2;
+    return;
+  }
+  if (options.json) {
+    console.log(JSON.stringify(v, null, 2));
+    return;
+  }
+  console.log(chalk.bold(`\n  tier vector: ${target}`));
+  console.log(`    ${summaryLine(v)}`);
+  console.log(chalk.dim(`    dominant: ${v.dominant.map((d) => `#${d.hex.toString(16).padStart(6, '0')} ${Math.round(d.frac * 100)}%`).join(' · ')}`));
+  console.log(chalk.dim(`    sha256=${v.sha256.slice(0, 16)}… extractor=v${v.extractorVersion} ${v.canonicalWidth}x${v.canonicalHeight}`));
 }

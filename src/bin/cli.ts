@@ -839,17 +839,18 @@ program
 program
   .command('quality')
   .description('Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types')
-  .argument('[subcommand]', 'init | check | baseline | report | mutate')
-  .argument('[target]', 'Positional target file (check) — same as --file')
+  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile')
+  .argument('[target]', 'Positional target file (check) or anchor class (anchor) — same as --file')
   .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
   .option('--json', 'Emit machine-readable JSON')
   .option('--files <list>', 'Comma-separated relative file list to scan')
   .option('--staged', 'Scan only files changed vs the upstream base')
   .option('--changed', 'Scope mutate/check to changed files (default for mutate)')
   .option('--update', 'Regenerate the ratchet baseline (baseline subcommand)')
-  .option('-f, --file <path>', 'Target file (check)')
+  .option('-f, --file <path>', 'Target file (check; PNG to measure for anchor/profile)')
   .action(async (subcommand, target, options) => {
-    if (target && !options.file) options.file = target;
+    if (subcommand === 'anchor' && target) options.target = target;
+    else if (target && !options.file) options.file = target;
     const cmd = await lazy.quality();
     await cmd(subcommand, options);
   });
