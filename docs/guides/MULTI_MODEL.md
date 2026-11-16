@@ -1,26 +1,26 @@
 # Multi-Model Routing
 
-> Applies to UAP **v1.224.0**
+> Applies to UAP **v2.51.0**
 
-> **🏭 Where this fits:** PREP/ROUTING — this is the station where a normal
+> **🏭 Where this fits:** PREP/ROUTING, this is the station where a normal
 > agentic workflow sends *everything* to one model: paying premium-model rates
 > for routine edits, or trusting a cheap model with reasoning it can't handle.
-> **What it delivers:** the right job goes to the right station — a strong
-> planner for hard reasoning, a cheap/local executor for the bulk of the work —
+> **What it delivers:** the right job goes to the right station, a strong
+> planner for hard reasoning, a cheap/local executor for the bulk of the work,
 > so you pay for expensive thinking only when the work actually needs it.
 
 UAP runs agentic work across multiple LLMs instead of one. A high-capability
 model plans, a cheaper or local model executes, and a reviewer model checks the
 result. Routing decisions are made per task (and per subtask) so you pay for
-expensive reasoning only when the work actually needs it — one of the early
+expensive reasoning only when the work actually needs it, one of the early
 stations on your [delivery pipeline](./DELIVERY_PIPELINE.md), before a single
 line of code is written.
 
 ## Why multi-model
 
 A single frontier model is the simplest setup, but most of the tokens an agent
-spends are on routine execution — applying an edit, running a tool, writing a
-test — not on hard reasoning. Sending all of that to a premium model is
+spends are on routine execution, applying an edit, running a tool, writing a
+test, not on hard reasoning. Sending all of that to a premium model is
 expensive and slow. Sending the *hard* reasoning to a cheap model is the
 opposite failure. Routing fixes both.
 
@@ -36,19 +36,19 @@ Multi-model routing lets you:
 
 UAP separates planning, routing, and execution into three components:
 
-1. **TaskPlanner** (`src/models/planner.ts`) — decomposes a task into subtasks.
+1. **TaskPlanner** (`src/models/planner.ts`), decomposes a task into subtasks.
    It classifies the task's complexity, and for non-trivial work it breaks the
    task into ordered subtasks with inputs, outputs, and constraints. Every plan
    is auto-validated by a plan validator (`src/models/plan-validator.ts`) at all
    complexity levels before it is returned.
 
-2. **ModelRouter** (`src/models/router.ts`) — assigns a model to the overall
+2. **ModelRouter** (`src/models/router.ts`), assigns a model to the overall
    task and to each subtask. It classifies the task by complexity and type,
    applies the routing rules, and selects a model for the matched role
    (planner / executor / reviewer / fallback). Classification results are cached
    to avoid repeated work on near-identical task descriptions.
 
-3. **TaskExecutor** (`src/models/executor.ts`) — executes the plan. Subtasks run
+3. **TaskExecutor** (`src/models/executor.ts`), executes the plan. Subtasks run
    with a bounded level of parallelism, each call has retry-with-backoff logic
    (`retryDelayMs`, default 1000 ms), and failed attempts feed retry context
    into subsequent tries. The executor produces per-subtask results and a
@@ -78,7 +78,7 @@ Run `uap model presets` to print the live list.
 
 In addition to the presets above, UAP ships seven detailed JSON **profiles** in
 [`config/model-profiles/`](../../config/model-profiles/). These carry richer
-runtime settings the presets lack — pricing tiers, rate limits, tool-calling
+runtime settings the presets lack, pricing tiers, rate limits, tool-calling
 options, extended-thinking budgets, server-optimization flags, and ready-to-run
 launch commands:
 
@@ -102,12 +102,12 @@ The router first classifies the task, then applies rules.
 **Complexity** is inferred from keywords. Examples (from
 `COMPLEXITY_KEYWORDS` in `src/models/router.ts`):
 
-- `critical` — security, authentication, authorization, deployment, migration,
+- `critical`, security, authentication, authorization, deployment, migration,
   production, database, encryption, credentials, secrets
-- `high` — architecture, design, refactor, performance, optimization,
+- `high`, architecture, design, refactor, performance, optimization,
   algorithm, distributed, concurrent, multi-step, complex
-- `medium` — feature, implement, add, create, update, integrate, api, endpoint
-- `low` — fix, typo, comment, rename, format, style, simple, minor, quick,
+- `medium`, feature, implement, add, create, update, integrate, api, endpoint
+- `low`, fix, typo, comment, rename, format, style, simple, minor, quick,
   documentation
 
 **Task type** is inferred similarly: `planning`, `coding`, `refactoring`,
@@ -135,13 +135,13 @@ The matched role is resolved to a concrete model via your role assignments.
 **Routing strategy** further shapes selection. Four strategies are supported
 (`routingStrategy`, default `balanced`):
 
-- `cost-optimized` — minimize cost, use the cheapest capable model
-- `performance-first` — maximize quality, use the best model
-- `balanced` — balance cost and performance (default)
-- `adaptive` — learn from task results over time
+- `cost-optimized`, minimize cost, use the cheapest capable model
+- `performance-first`, maximize quality, use the best model
+- `balanced`, balance cost and performance (default)
+- `adaptive`, learn from task results over time
 
 > **One nuance worth internalizing:** when an executor stalls and the work
-> escalates, escalate to a **stronger, distinct** model — not the same model in
+> escalates, escalate to a **stronger, distinct** model, not the same model in
 > a different seat. A same-model judge (a local model grading its own output)
 > was measured to add no lift. The value of routing comes from the *difference*
 > in capability between the station that got stuck and the one you hand off to.
@@ -166,7 +166,7 @@ uap model export -f yaml      # ... or YAML
 uap model health              # validate that assigned models exist and resolve
 ```
 
-Example — see how a task routes:
+Example, see how a task routes:
 
 ```bash
 uap model route "add OAuth2 login with JWT sessions" --verbose
@@ -228,12 +228,12 @@ export TARGET_URL=http://127.0.0.1:8080
 export UAP_MODEL_PROFILE=generic
 ```
 
-To customize a model's runtime behavior — temperature, tool-call batching,
-extended-thinking budget, rate limits, or server-optimization flags — edit the
+To customize a model's runtime behavior, temperature, tool-call batching,
+extended-thinking budget, rate limits, or server-optimization flags, edit the
 corresponding JSON file in `config/model-profiles/`. Each file is documented
 inline with `_comment` fields.
 
 ## See also
 
-- [Droids and Skills](./DROIDS_AND_SKILLS.md) — specialist agents and reusable
+- [Droids and Skills](./DROIDS_AND_SKILLS.md), specialist agents and reusable
   workflows that run on top of the routed models.

@@ -8,8 +8,7 @@ background behavior, its cadence, and whether it is idempotent / authenticated.
 ## Always-on services (systemd user units, opt-in at setup)
 
 Installed to `~/.config/systemd/user/` by `src/cli/systemd-services.ts` (only when
-`--systemd-services` / the Maximum profile's `proxy.autostart` is chosen). Both are
-`Restart=always` — they self-restart on crash, not on a schedule.
+`--systemd-services` / the Maximum profile's `proxy.autostart` is chosen). Both are `Restart=always`: they self-restart on crash, not on a schedule.
 
 | Unit | ExecStart | Restart | Purpose |
 |---|---|---|---|
@@ -30,10 +29,10 @@ Env comes from `~/.config/uap/anthropic-proxy.env` / `llama-server.env` via
 | Deploy batcher windows | `coordination/deploy-batcher.ts:924` | `setTimeout` per action (commit 30 s / push 5 s / merge 10 s / deploy 60 s) | Batches git/deploy actions to reduce churn. |
 | Dashboard SSE poller | `dashboard/server.ts:101` | 2 s | Reads new `dashboard_events` rows, fans out to SSE clients (cross-process feed). |
 | Dashboard seeder heartbeat | `dashboard/data-seeder.ts:222` | 30 s | Liveness only; injects no fabricated data. |
-| Attention AFK decider sweep (v2.29) | `dashboard/server.ts` (same block as the idle-resident sweeper) | 60 s | `sweepExpired` — adopts grace-elapsed attention items' recorded safe defaults (logged), escalates no-default items. Rides the `UAP_IDLE_SWEEP` fleet-ownership guard; no-ops under `UAP_ATTENTION_OFF`; unref'd, never holds the process open. |
+| Attention AFK decider sweep (v2.29) | `dashboard/server.ts` (same block as the idle-resident sweeper) | 60 s | `sweepExpired` adopts grace-elapsed attention items' recorded safe defaults (logged) and escalates no-default items. Rides the `UAP_IDLE_SWEEP` fleet-ownership guard; no-ops under `UAP_ATTENTION_OFF`; unref'd, never holds the process open. |
 | Recipe signal writer | `coordination/recipe-signal.ts:77` | per prompt (reactor) | Writes routing signals to `~/.cache/uap/recipe-signals`. |
 
-## Event-driven lifecycle (not timed — triggered by harness hooks)
+## Event-driven lifecycle (not timed; triggered by harness hooks)
 
 | Trigger | Handler | Effect |
 |---|---|---|
@@ -49,22 +48,19 @@ Env comes from `~/.config/uap/anthropic-proxy.env` / `llama-server.env` via
 The **CI watcher** (`delivery/ci-watcher.ts`, only when `uap deliver --watch-ci`) commits
 and pushes a feature branch, then polls **GitHub Actions** via the `gh` CLI every 15 s
 (20-min timeout, 8 resolve attempts). Auth is the operator's existing `gh`/`GITHUB_TOKEN`
-credential — UAP adds none. It **refuses to push `master`/`main`** (hardcoded guard). This
+credential; UAP adds none. It **refuses to push `master`/`main`** (hardcoded guard). This
 is the only recurring call that leaves the machine.
 
 ## Idempotency notes
 
-- Heartbeats, memory consolidation, cache eviction, and the dashboard pollers are all
-  read-modify-write on local SQLite with WAL + busy_timeout — safe to overlap across
-  processes.
+- Heartbeats, memory consolidation, cache eviction, and the dashboard pollers are all read-modify-write on local SQLite with WAL and busy_timeout, safe to overlap across processes.
 - The deploy batcher and CI watcher perform git actions; they are guarded (no
   `master`/`main` push, batch windows) but are the operations to review before enabling
   in a shared repo.
-- No internal HTTP endpoint is called on a timer without a credential — the proxy and
-  dashboard listeners are pulled *by* clients, not pushed to by a scheduler.
+- No internal HTTP endpoint is called on a timer without a credential; the proxy and dashboard listeners are pulled *by* clients, not pushed to by a scheduler.
 
 ## Related documents
 
-- `automation.md` — the event-driven agent automations these loops support
-- `variables.md` — the interval/timeout env vars
-- `architecture.md` — the services and their bind surface
+- `automation.md`: the event-driven agent automations these loops support
+- `variables.md`: the interval and timeout env vars
+- `architecture.md`: the services and their bind surface

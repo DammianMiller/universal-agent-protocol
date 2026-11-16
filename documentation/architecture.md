@@ -1,29 +1,23 @@
 # Architecture
 
-**What UAP is (intent):** a discipline layer that sits *underneath* an AI coding agent's
-harness (Claude Code, Factory, Cursor, OpenCode, oh-my-pi) and mediates its work through
-memory injection, policy enforcement, verification gates, and tool-output compression —
-"a station at every point where the line usually breaks."
+**What UAP is (intent):** a discipline layer that sits *underneath* an AI coding agent's harness (Claude Code, Factory, Cursor, OpenCode, oh-my-pi) and mediates its work through memory injection, policy enforcement, verification gates, and tool-output compression: "a station at every point where the line usually breaks."
 
-**What UAP is (implementation):** a TypeScript/Node CLI (`uap`, `src/bin/cli.ts`, 58
-top-level commands, ~210 registrations including subcommands) plus a Python FastAPI model proxy, wired into harnesses via shell
-hooks, four SQLite databases, an optional Docker Qdrant vector store, and a bubblewrap
-kernel sandbox.
+**What UAP is (implementation):** a TypeScript/Node CLI (`uap`, `src/bin/cli.ts`, 76 top-level commands plus subcommands) with a Python FastAPI model proxy, wired into harnesses via shell hooks, four SQLite databases, an optional Docker Qdrant vector store, and a bubblewrap kernel sandbox.
 
 ## Stack
 
 | Layer | Technology | Where |
 |---|---|---|
-| CLI + subsystems | TypeScript (Node ≥18), 434 modules in 34 `src/` subsystems | `src/` |
-| Model proxy | Python FastAPI/uvicorn, ~10.6k lines; optional AF_UNIX surface (`PROXY_SOCKET`, 0600) alongside TCP | `tools/agents/scripts/anthropic_proxy.py` |
+| CLI + subsystems | TypeScript (Node ≥18), 454 modules in 35 `src/` subsystems | `src/` |
+| Model proxy | Python FastAPI/uvicorn, ~18.5k lines; optional AF_UNIX surface (`PROXY_SOCKET`, 0600) alongside TCP | `tools/agents/scripts/anthropic_proxy.py` |
 | Policy enforcers | Python scripts (exit 0=allow / 2=block) | `src/policies/enforcers/*.py` → materialized to `.policy-tools/` |
 | Harness integration | Shell hook scripts installed into per-platform `settings.local.json` | `templates/hooks/`, `src/cli/hooks.ts` |
 | Persistence | SQLite ×4 (tasks, coordination, policies, telemetry) + JSON/JSONL ledgers | see table below |
-| Operator attention queue | JSON store in the MAIN checkout's `.uap/attention.json` (one per checkout, worktree-shared; `UAP_ATTENTION_QUEUE` pins a file) — sanitized at ingest AND load, fail-open, atomic unique-tmp writes | `src/delivery/attention.ts` |
-| Sandbox consent ledger | JSON store in the MAIN checkout's `.uap/sandbox-grants.json` (per-session TTL-bounded grants) + append-only `.uap/sandbox-audit.jsonl` — sanitize at ingest AND load, least-authority on failure, atomic unique-tmp writes | `src/policies/sandbox-grants.ts` |
+| Operator attention queue | JSON store in the MAIN checkout's `.uap/attention.json` (one per checkout, worktree-shared; `UAP_ATTENTION_QUEUE` pins a file); sanitized at ingest AND load, fail-open, atomic unique-tmp writes | `src/delivery/attention.ts` |
+| Sandbox consent ledger | JSON store in the MAIN checkout's `.uap/sandbox-grants.json` (per-session TTL-bounded grants) plus an append-only `.uap/sandbox-audit.jsonl`; sanitize at ingest AND load, least-authority on failure, atomic unique-tmp writes | `src/policies/sandbox-grants.ts` |
 | Vector memory | Qdrant (auto-started Docker `uap-qdrant`, :6333) or cloud; in-memory fallback | `src/memory/serverless-qdrant.ts` |
 | Sandbox | bubblewrap (`bwrap`) read-only root + writable holes; P4: per-session grant holes (consent ledger) + `--net off` kernel egress boundary (own netns, nothing up) | `src/cli/sandbox.ts` |
-| Browser | CloakBrowser (Playwright-compatible, stealth) — execution/visual gates only | `src/browser/web-browser.ts` |
+| Browser | CloakBrowser (Playwright-compatible, stealth), used by the execution and visual gates only | `src/browser/web-browser.ts` |
 | Services | systemd **user** units (`uap-anthropic-proxy`, llama-server), `Restart=always` | `src/cli/systemd-services.ts` |
 
 ## Process topology
@@ -46,13 +40,11 @@ kernel sandbox.
 
 ## Auth flow
 
-There is **no user authentication anywhere in the system** — it is a single-operator
-local tool. Identity boundaries are process/trust-tier based (see `permissions.md`):
+There is **no user authentication anywhere in the system**; it is a single-operator local tool. Identity boundaries are process/trust-tier based (see `permissions.md`):
 
 - The **proxy** (:4000) accepts any request; cloud passthrough forwards the *client's*
   `Authorization`/`x-api-key` (or falls back to server `ANTHROPIC_API_KEY`), returning
-  401 only when no credential exists for a passthrough model. The
-  `ANTHROPIC_PASSTHROUGH_MODELS=__local_only__` sentinel disables cloud entirely.
+  401 only when no credential exists for a passthrough model. The `ANTHROPIC_PASSTHROUGH_MODELS=__local_only__` sentinel disables cloud entirely.
 - The **dashboard** (:3847) has no auth and `Access-Control-Allow-Origin: *`, including
   its policy-mutating POST endpoints.
 - Provider keys are env-var-only in code (`apiKeyEnvVar` on model presets); the one
@@ -62,22 +54,18 @@ local tool. Identity boundaries are process/trust-tier based (see `permissions.m
 
 ## Trust boundaries
 
-1. **Kernel (strongest):** `uap sandbox` — bwrap read-only root; only the workdir,
+1. **Kernel (strongest):** `uap sandbox`, bwrap read-only root; only the workdir,
    tmp dirs, and `~/.claude`/`~/.cache`/`~/.npm` are writable. Holds even under
    `--dangerously-skip-permissions`. Network deliberately unrestricted.
-2. **Hook plane:** PreToolUse gate (`uap-policy-gate.sh`) runs Python enforcers from
-   `.policy-tools/` per the `policies.db` `executable_tools` join; Stop hook
-   (`handsfree stop-check`, exit 2) blocks premature session end. Bypassed by
-   `--dangerously-skip-permissions` (known; sandbox is the compensating control).
+2. **Hook plane:** PreToolUse gate (`uap-policy-gate.sh`) runs Python enforcers from `.policy-tools/` per the `policies.db` `executable_tools` join; the Stop hook (`handsfree stop-check`, exit 2) blocks premature session end. `--dangerously-skip-permissions` bypasses it (known; the sandbox is the compensating control).
 3. **Deliver plane:** applier/agentic-executor protected paths (`.git`, `.uap`, CI dirs,
    lockfiles, gate configs, IaC, pre-existing tests + their oracle import graph),
    runtime integrity snapshot/restore, secret-stripped gate spawns (`CI=true`, all
    `*_API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL` removed).
-4. **Proxy plane:** ~90 `PROXY_*` guardrails (loop/starvation/contamination breakers,
+4. **Proxy plane:** ~180 `PROXY_*` guardrails (loop/starvation/contamination breakers,
    context pruner, session admission, grammar constraints, sandbox tool-stripping via
    the `X-Uap-Sandbox: 1` header).
-5. **LAN boundary (weakest):** proxy binds `0.0.0.0:4000` unauthenticated; dashboard
-   optionally `0.0.0.0:3847` unauthenticated. See `permissions.md` findings.
+5. **LAN boundary (weakest):** the proxy binds `0.0.0.0:4000` unauthenticated; the dashboard optionally binds `0.0.0.0:3847` unauthenticated. See the `permissions.md` findings.
 6. **Internet egress (three paths only):** api.anthropic.com passthrough, OpenAI
    presets if routed, Qdrant Cloud if configured. Everything else is localhost/LAN.
    No analytics/telemetry leaves the machine.
@@ -101,31 +89,22 @@ local tool. Identity boundaries are process/trust-tier based (see `permissions.m
 
 ## Notable intent-vs-implementation deltas
 
-- **Self-protect enforcement** (`enforcement_self_protect.py`) is registered in the gate
-  hook (v1.224): it guards `policies.db`, the hook scripts, and the trust anchors
-  (`.uap/operator-overrides.json`, `.uap/policy-liveness.json`) against tampering —
-  including interpreter-mediated writes (`python3 -c 'open(...,"w")'`) that text scans
-  can't see. The delivery enforcer still exempts the policy directories — see
-  `permissions.md` §Findings.
-- Of 50 active policy rows, only **17 enforce at runtime**; the rest are markdown-keyword
-  (Plane B) advisories that never see native Edit/Write/Bash.
+- **Self-protect enforcement** (`enforcement_self_protect.py`) is registered in the gate hook (v1.224). It guards `policies.db`, the hook scripts, and the trust anchors (`.uap/operator-overrides.json`, `.uap/policy-liveness.json`) against tampering, including interpreter-mediated writes (`python3 -c 'open(...,"w")'`) that text scans can't see. The delivery enforcer still exempts the policy directories; see `permissions.md` §Findings.
+- Of 50 active policy rows, only **17 enforce at runtime**. The rest are markdown-keyword (Plane B) advisories that never see native Edit/Write/Bash.
 - The agentic executor enforces protected paths, snapshot-restore, and a context budget.
   Worktree-isolated parallel verification is implemented in `candidate-workspace.ts`.
 
 ## Conditional capabilities
 
-- **Emails/notifications: absent.** No SMTP/webhook/chat-provider code exists; the only
-  "notification" channel is inter-agent messages in the local coordination DB.
-- **SEO: not applicable.** No public web product; the dashboard is a local console, and
-  the only page rendering is the headless visual gate.
-- Scheduled/background work exists → see `cron.md`. Embedded automation exists
-  extensively → see `automation.md`.
+- **Emails/notifications: absent.** No SMTP, webhook, or chat-provider code exists. The only notification channel is inter-agent messages in the local coordination DB.
+- **SEO: not applicable.** There is no public web product; the dashboard is a local console, and the only page rendering is the headless visual gate.
+- Scheduled and background work exists; see `cron.md`. Embedded automation is extensive; see `automation.md`.
 
 ## Related documents
 
-- `flows.md` — permission-relevant journeys and their side effects
-- `permissions.md` — trust tiers, enforcement planes, resource matrix, findings
-- `variables.md` — configuration and secrets mapped to risk
-- `cron.md` — scheduled and interval work inventory
-- `automation.md` — embedded agents/automations, guardrails, approval gates
+- `flows.md`: permission-relevant journeys and their side effects
+- `permissions.md`: trust tiers, enforcement planes, resource matrix, findings
+- `variables.md`: configuration and secrets mapped to risk
+- `cron.md`: scheduled and interval work inventory
+- `automation.md`: embedded agents/automations, guardrails, approval gates
 - Existing narrative docs: `docs/INDEX.md` (guides per subsystem), `docs/guides/SANDBOX.md`

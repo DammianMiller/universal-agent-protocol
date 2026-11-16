@@ -1,6 +1,6 @@
 # UAP Configuration Reference
 
-> **Generated from the settings registry** (`src/config/settings-registry.ts`) via `uap config docs`. Do not edit by hand — change the registry and regenerate.
+> **Generated from the settings registry** (`src/config/settings-registry.ts`) via `uap config docs`. Do not edit by hand, change the registry and regenerate.
 
 Every UAP setting, what it does, its default, and a recommendation. Inspect and change any of these with **`uap config`**:
 
@@ -16,23 +16,23 @@ uap config wizard               # interactive expert configurator (also: uap set
 
 ## Categories
 
-- [Delivery & enforcement](#delivery) — Whether coding routes through `uap deliver` and how hard the gates block.
-- [Verification gates](#verification) — Proving generated code actually builds and runs before "done".
-- [Model routing](#routing) — Which model handles planning, execution, and review.
-- [Serving recipes & escalation](#recipes) — Confidence/fusion recipes and the judge model that grades a local model.
-- [Memory](#memory) — Short-term recall, long-term semantic memory, and pattern RAG.
-- [Concurrency & model slots](#concurrency) — How many agents/inference slots run in parallel before backpressure.
-- [Multi-agent collaboration](#collaboration) — The shared coordination board and file-overlap protection.
-- [Orchestrator & hands-free](#orchestration) — Long-task autonomy: decompose, resume, and loop-to-100%.
-- [Reactor (auto-apply)](#reactor) — Per-prompt injection of the matching experts, skills, and patterns.
-- [Design system](#design) — DESIGN.md interrogation and the hard token gate for UI work.
-- [Engineering principles](#principles) — How code should be written, and the backward-compatibility stance.
-- [Worktree workflow](#worktree) — Branch-per-feature isolation and auto-cleanup.
-- [Inference proxy tuning](#proxy) — Guardrails and context limits for a local model behind the proxy.
-- [Sandbox & session authority](#sandbox) — Kernel-enforced agent boundaries: the bubblewrap floor, per-session grants, and the network egress boundary.
-- [Dashboard](#dashboard) — The live analytics server and its mutation token.
-- [Token & time optimization](#optimization) — Context budgets, caching, batching, and parallelism.
-- [General](#general) — Project metadata and CLI behavior.
+- [Delivery & enforcement](#delivery), Whether coding routes through `uap deliver` and how hard the gates block.
+- [Verification gates](#verification), Proving generated code actually builds and runs before "done".
+- [Model routing](#routing), Which model handles planning, execution, and review.
+- [Serving recipes & escalation](#recipes), Confidence/fusion recipes and the judge model that grades a local model.
+- [Memory](#memory), Short-term recall, long-term semantic memory, and pattern RAG.
+- [Concurrency & model slots](#concurrency), How many agents/inference slots run in parallel before backpressure.
+- [Multi-agent collaboration](#collaboration), The shared coordination board and file-overlap protection.
+- [Orchestrator & hands-free](#orchestration), Long-task autonomy: decompose, resume, and loop-to-100%.
+- [Reactor (auto-apply)](#reactor), Per-prompt injection of the matching experts, skills, and patterns.
+- [Design system](#design), DESIGN.md interrogation and the hard token gate for UI work.
+- [Engineering principles](#principles), How code should be written, and the backward-compatibility stance.
+- [Worktree workflow](#worktree), Branch-per-feature isolation and auto-cleanup.
+- [Inference proxy tuning](#proxy), Guardrails and context limits for a local model behind the proxy.
+- [Sandbox & session authority](#sandbox), Kernel-enforced agent boundaries: the bubblewrap floor, per-session grants, and the network egress boundary.
+- [Dashboard](#dashboard), The live analytics server and its mutation token.
+- [Token & time optimization](#optimization), Context budgets, caching, batching, and parallelism.
+- [General](#general), Project metadata and CLI behavior.
 
 ## Delivery & enforcement
 
@@ -46,7 +46,7 @@ uap config wizard               # interactive expert configurator (also: uap set
 | **Type** | enum (block \| advisory \| off \| escalate) |
 | **Default** | `block` |
 
-How the delivery gate treats a direct source edit outside `uap deliver`. `block` refuses it (exit 2) and routes it to deliver; `escalate` lets direct edits land and routes to deliver only as an ESCALATION — after `delivery.escalateAfterFailures` consecutive gate failures, `delivery.escalateAfterEdits` edits to one file with no green gate, or a single change above `delivery.complexEditChars`; `advisory` warns but allows; `off` disables the gate. (The `UAP_ENFORCE_DELIVERY` env var overrides this at runtime.)
+How the delivery gate treats a direct source edit outside `uap deliver`. `block` refuses it (exit 2) and routes it to deliver; `escalate` lets direct edits land and routes to deliver only as an ESCALATION, after `delivery.escalateAfterFailures` consecutive gate failures, `delivery.escalateAfterEdits` edits to one file with no green gate, or a single change above `delivery.complexEditChars`; `advisory` warns but allows; `off` disables the gate. (The `UAP_ENFORCE_DELIVERY` env var overrides this at runtime.)
 
 **Recommendation:** `escalate` for everyday agent work: small and medium edits go straight to disk and are judged by the project's own build/test + the verify hooks, while deliver is reserved for complex multi-file work and for when direct editing is demonstrably not working. `block` only when EVERY change must pass the convergence loop (unattended hands-free runs); `advisory` when a capable human is driving.
 
@@ -60,7 +60,7 @@ How the delivery gate treats a direct source edit outside `uap deliver`. `block`
 
 How a local-model session resolves a `block` posture. `escalate` lets direct edits land and escalates to deliver on evidence (failed gates, churn, size); `deliver` routes every substantive edit through the convergence loop; `block` forbids raw edits; `advisory` warns.
 
-**Recommendation:** `escalate` when a local model does the writing — deliver becomes the escalation point instead of a tax on every small task; `deliver` only for unattended runs where each change must be converged; `advisory` for exploratory work.
+**Recommendation:** `escalate` when a local model does the writing, deliver becomes the escalation point instead of a tax on every small task; `deliver` only for unattended runs where each change must be converged; `advisory` for exploratory work.
 
 ### `delivery.escalateAfterFailures`
 
@@ -84,7 +84,7 @@ Escalate mode: after this many CONSECUTIVE verification failures (uap verify, th
 
 Escalate mode: when one source file has been edited this many times with no green gate in between, the next edit to it escalates to `uap deliver` (thrashing guard). Any passing verification resets the count. 0 disables this trigger.
 
-**Recommendation:** Leave at 10 — generous enough for honest iteration, low enough to stop a model that is patching the same file line by line.
+**Recommendation:** Leave at 10, generous enough for honest iteration, low enough to stop a model that is patching the same file line by line.
 
 ### `delivery.complexEditChars`
 
@@ -108,7 +108,7 @@ Escalate mode: a single edit or whole-file write above this many characters (or 
 
 Stronger model id for deliver escalation ladders: repair passes, the phase-5 escalation tier, and the evaluator fallback. Same role as $UAP_ESCALATE_MODEL but persisted in .uap.json (reproducible).
 
-**Recommendation:** Point at your strongest available preset/model (e.g. an Opus cloud id) when the executor is a local model — stuck epics then escalate instead of re-splitting into the same wall.
+**Recommendation:** Point at your strongest available preset/model (e.g. an Opus cloud id) when the executor is a local model, stuck epics then escalate instead of re-splitting into the same wall.
 
 ### `UAP_ENFORCE_DELIVERY`
 
@@ -120,7 +120,7 @@ Stronger model id for deliver escalation ladders: repair passes, the phase-5 esc
 
 Runtime override of the delivery gate read by the hooks/enforcers from the shell env. Takes precedence over `delivery.enforcement`.
 
-**Recommendation:** Leave UNSET so it defaults to `block`. Exporting `advisory` globally leaks into every shell and silently disables the gate + the delivery-enforcement tests — set it inline per-command if you must.
+**Recommendation:** Leave UNSET so it defaults to `block`. Exporting `advisory` globally leaks into every shell and silently disables the gate + the delivery-enforcement tests, set it inline per-command if you must.
 
 ### `UAP_DELIVER_BYPASS`
 
@@ -144,7 +144,7 @@ When set to 1 for a single command, exempts that one sanctioned manual edit from
 
 Refuse model writes to deploy/IaC files (Dockerfile, docker-compose, *.tf, *.tfvars, pulumi, serverless) during `uap deliver`. Permissive by default (false) so the model can edit IaC freely; set true to block IaC writes and snapshot/restore them against run_bash tampering. The `--protect-iac` CLI flag overrides this per-run.
 
-**Recommendation:** Leave false (permissive) for most projects — IaC edits are legitimate deliverable work. Set true only when the deploy topology is a fixed trust anchor the mission must not alter.
+**Recommendation:** Leave false (permissive) for most projects, IaC edits are legitimate deliverable work. Set true only when the deploy topology is a fixed trust anchor the mission must not alter.
 
 ## Verification gates
 
@@ -160,7 +160,7 @@ Refuse model writes to deploy/IaC files (Dockerfile, docker-compose, *.tf, *.tfv
 
 Installs the runtime-verify Stop-hook: at end of turn it actually runs the changed code (headless / vm-dom / child-process) and blocks stopping on a genuine runtime failure.
 
-**Recommendation:** Enable for any project with a runnable artifact — it catches "declared done but never ran". Safe on empty projects (it skips when nothing is runnable).
+**Recommendation:** Enable for any project with a runnable artifact, it catches "declared done but never ran". Safe on empty projects (it skips when nothing is runnable).
 
 ### `delivery.userValidation`
 
@@ -172,7 +172,7 @@ Installs the runtime-verify Stop-hook: at end of turn it actually runs the chang
 
 User-path validation gate: deliver runs the .uap/user-paths.json critical journeys through the real client (headless browser / HTTP / built CLI) as the terminal gate rung. block = DELIVERED requires them green; advisory = report only; off = disabled.
 
-**Recommendation:** Leave on block — it is the only gate that proves the artifact works for a real user, not just that tests pass.
+**Recommendation:** Leave on block, it is the only gate that proves the artifact works for a real user, not just that tests pass.
 
 ### `UAP_USER_VALIDATION`
 
@@ -206,7 +206,7 @@ Master switch for the runtime execution gate in the Stop hook. `0` bypasses it.
 | **Type** | enum (standard \| max) |
 | **Default** | `standard` |
 
-Maximum-fidelity mode. `max` flips every verification default to its strongest: raised verifier floor (runtime+integration), acceptance judge required, blocking vision review, and a fail-CLOSED visual gate — a delivery is accepted only when it builds, runs, looks right, and matches the spec. (`UAP_FIDELITY` overrides at runtime.)
+Maximum-fidelity mode. `max` flips every verification default to its strongest: raised verifier floor (runtime+integration), acceptance judge required, blocking vision review, and a fail-CLOSED visual gate, a delivery is accepted only when it builds, runs, looks right, and matches the spec. (`UAP_FIDELITY` overrides at runtime.)
 
 **Recommendation:** `max` when correctness matters more than speed (UI work, releases, hands-free autonomy). `standard` for fast exploratory iteration.
 
@@ -278,7 +278,7 @@ Model id sent to the vision endpoint for aesthetic review (e.g. qwen3.8-27b).
 | **Type** | boolean |
 | **Default** | `true` |
 
-The plan-comprehension scan in `uap plan validate` (B1): deterministic readability rules over the plan artifact — executive summary first, detail progressing downward, section word budgets, jargon density, diagram required at a task-count threshold. Findings are advisory hints the judge-model review adjudicates.
+The plan-comprehension scan in `uap plan validate` (B1): deterministic readability rules over the plan artifact, executive summary first, detail progressing downward, section word budgets, jargon density, diagram required at a task-count threshold. Findings are advisory hints the judge-model review adjudicates.
 
 **Recommendation:** Leave on: the scan is local, instant, and advisory by default.
 
@@ -292,7 +292,7 @@ The plan-comprehension scan in `uap plan validate` (B1): deterministic readabili
 
 Give the readability scan deterministic teeth: error-severity findings (no opening summary, detail before the high level, missing diagram) fail `uap plan validate` outright instead of being adjudicated hints. `--force` / `UAP_PLAN_REVIEW_FORCE=1` remains the escape hatch.
 
-**Recommendation:** Enable once your plan templates reliably pass — it enforces plans a human can skim. Keep off while calibrating.
+**Recommendation:** Enable once your plan templates reliably pass, it enforces plans a human can skim. Keep off while calibrating.
 
 ### `plan.readability.minSummaryWords`
 
@@ -302,7 +302,7 @@ Give the readability scan deterministic teeth: error-severity findings (no openi
 | **Type** | number |
 | **Default** | `20` |
 
-Minimum prose words between the plan title and the first section — the executive-summary gate.
+Minimum prose words between the plan title and the first section, the executive-summary gate.
 
 **Recommendation:** 20 words is a two-sentence what-and-why. Lower for terse internal plans; 0 effectively disables the rule.
 
@@ -364,7 +364,7 @@ Runtime kill switch for the plan readability scan: `0` skips it entirely in `uap
 
 Runtime strict override for the plan readability scan: `1` makes error-severity findings block the validation stamp (same as `plan.readability.strict`).
 
-**Recommendation:** Use inline for CI enforcement without changing the project config; never export globally — a hard gate in every shell surprises interactive agents.
+**Recommendation:** Use inline for CI enforcement without changing the project config; never export globally, a hard gate in every shell surprises interactive agents.
 
 ## Model routing
 
@@ -420,7 +420,7 @@ Comma-separated model IDs the proxy forwards to Anthropic instead of serving loc
 
 Enables serving-layer recipes (confidence escalation, fusion, ratings) in front of the local model.
 
-**Recommendation:** Enable for a local model when you have a stronger judge model available — it materially lifts output quality.
+**Recommendation:** Enable for a local model when you have a stronger judge model available, it materially lifts output quality.
 
 ### `recipes.recipe`
 
@@ -468,7 +468,7 @@ How many candidate samples the fusion recipe generates before the judge picks/me
 
 Allows the generating model to also act as its own judge (generator == evaluator).
 
-**Recommendation:** Keep `false` — a distinct, stronger judge is what adds the lift. Only allow self-judge if no separate judge is available.
+**Recommendation:** Keep `false`, a distinct, stronger judge is what adds the lift. Only allow self-judge if no separate judge is available.
 
 ### `recipes.judge.model`
 
@@ -489,11 +489,11 @@ The model ID used to grade/escalate. Must be distinct from and stronger than the
 | **Where** | `.uap/proxy.env` |
 | **Type** | string |
 | **Default** | `null` |
-| **Secret** | yes — never store in `.uap.json` |
+| **Secret** | yes, never store in `.uap.json` |
 
 API key for the judge/escalation model endpoint.
 
-**Recommendation:** Store only in `.uap/proxy.env` (chmod 600) — never in `.uap.json`. `uap config set` writes it there.
+**Recommendation:** Store only in `.uap/proxy.env` (chmod 600), never in `.uap.json`. `uap config set` writes it there.
 
 ## Memory
 
@@ -509,7 +509,7 @@ API key for the judge/escalation model endpoint.
 
 Enables long-term semantic memory (vector recall across sessions) via Qdrant.
 
-**Recommendation:** Keep on — cross-session recall is a core value. Requires a running Qdrant (`uap memory start`).
+**Recommendation:** Keep on, cross-session recall is a core value. Requires a running Qdrant (`uap memory start`).
 
 ### `memory.longTerm.provider`
 
@@ -543,7 +543,7 @@ How many recent short-term entries are retained/injected per session.
 | **Type** | boolean |
 | **Default** | `false` |
 
-Enables pattern RAG — semantic retrieval of the 23 execution patterns to steer the agent.
+Enables pattern RAG, semantic retrieval of the 23 execution patterns to steer the agent.
 
 **Recommendation:** Enable for local models (patterns compensate for weaker planning); optional for frontier models.
 
@@ -566,7 +566,7 @@ Qdrant endpoint for long-term/pattern memory.
 | **Where** | shell env |
 | **Type** | string |
 | **Default** | `null` |
-| **Secret** | yes — never store in `.uap.json` |
+| **Secret** | yes, never store in `.uap.json` |
 
 API key for a cloud Qdrant cluster.
 
@@ -610,7 +610,7 @@ Slots to hold back from the budget so the interactive session never starves behi
 
 AIMD backpressure: shrinks the effective slot budget on exhaustion signals (429/timeouts) and recovers over time.
 
-**Recommendation:** Keep on — it prevents overload cascades when many agents run at once.
+**Recommendation:** Keep on, it prevents overload cascades when many agents run at once.
 
 ### `UAP_MAX_PARALLEL`
 
@@ -646,7 +646,7 @@ Cross-process model-slot lease around every completion so concurrent agents stay
 
 When a completion comes back truncated (`finish_reason: length`) and the caller did not pin maxTokens, the model client re-requests once at a 32k budget and returns the better of the two results. `0` disables the retry.
 
-**Recommendation:** Leave on — reasoning models routinely burn the default budget on thinking and return cut-off answers. Disable only when paying twice for a completion is worse than losing it.
+**Recommendation:** Leave on, reasoning models routinely burn the default budget on thinking and return cut-off answers. Disable only when paying twice for a completion is worse than losing it.
 
 ## Multi-agent collaboration
 
@@ -776,7 +776,7 @@ Consecutive no-progress turns before hands-free breaks the loop instead of pushi
 | **Type** | boolean |
 | **Default** | `true` |
 
-Per-prompt injection of the experts, skills, and patterns that match what you just asked — so relevant capability is on the bench before the agent starts.
+Per-prompt injection of the experts, skills, and patterns that match what you just asked, so relevant capability is on the bench before the agent starts.
 
 **Recommendation:** Keep on. Disable only to debug prompt bloat or measure the reactor's own contribution.
 
@@ -806,7 +806,7 @@ Turns on DESIGN.md: the agent interrogates and lints UI work against your design
 
 Hard-blocks UI edits that hardcode off-token colors or off-scale spacing.
 
-**Recommendation:** Enable once your DESIGN.md tokens are stable — it keeps the UI on-system automatically.
+**Recommendation:** Enable once your DESIGN.md tokens are stable, it keeps the UI on-system automatically.
 
 ## Engineering principles
 
@@ -834,7 +834,7 @@ Applies the engineering principles (simplest sufficient implementation, reuse ov
 
 Backward-compatibility stance. `remove` deletes obsolete paths outright; `preserve` keeps them working and migrates callers; `ask` (default) prompts once per session instead of guessing.
 
-**Recommendation:** Leave on `ask` unless the project's answer is settled. `remove` is for side projects — on anything published it tells the agent to delete migration paths.
+**Recommendation:** Leave on `ask` unless the project's answer is settled. `remove` is for side projects, on anything published it tells the agent to delete migration paths.
 
 ### `principles.maturity`
 
@@ -938,7 +938,7 @@ Max concurrent upstream generations the proxy admits before queuing.
 
 Breaks no-progress generation loops by forcing a single non-streaming call.
 
-**Recommendation:** Keep on for local models — it is a core reliability guardrail.
+**Recommendation:** Keep on for local models, it is a core reliability guardrail.
 
 ### `PROXY_STUCK_BREAK`
 
@@ -984,9 +984,9 @@ The serving recipe the proxy applies (mirror of `recipes.recipe`, consumed by th
 | **Type** | boolean |
 | **Default** | `true` |
 
-Real-time flag adaptation (LLM Self-Tuning P4): the reactor emits per-session adjustments from live signals (tool-failure/quality/context/RECON) so the proxy can escalate or converge mid-session. This is the effective master switch — off means no signal is emitted.
+Real-time flag adaptation (LLM Self-Tuning P4): the reactor emits per-session adjustments from live signals (tool-failure/quality/context/RECON) so the proxy can escalate or converge mid-session. This is the effective master switch, off means no signal is emitted.
 
-**Recommendation:** Leave on. It is conservative (emits only when a live signal breaches a threshold) and is the effective master switch — disabling it turns the whole feature off regardless of the proxy side.
+**Recommendation:** Leave on. It is conservative (emits only when a live signal breaches a threshold) and is the effective master switch, disabling it turns the whole feature off regardless of the proxy side.
 
 ### `PROXY_REALTIME_ADAPT`
 
@@ -1012,7 +1012,7 @@ Proxy side of real-time adaptation: whether the serving proxy honors a fresh ada
 | **Type** | string |
 | **Default** | `` |
 
-AF_UNIX socket the inference proxy serves IN ADDITION to its TCP port — a permission-gated (0600) model-path choke point for sandboxed and multi-user setups (unset = off).
+AF_UNIX socket the inference proxy serves IN ADDITION to its TCP port, a permission-gated (0600) model-path choke point for sandboxed and multi-user setups (unset = off).
 
 **Recommendation:** Set in .uap/proxy.env to the checkout's `.uap/proxy.sock` on shared boxes; leave unset for single-user loopback setups.
 
@@ -1036,7 +1036,7 @@ Where `uap proxy connect` looks for the proxy socket when re-serving it on local
 | **Type** | enum (shared \| off) |
 | **Default** | `shared` |
 
-Default network mode for `uap sandbox`: shared (normal network) or off (own network namespace with nothing up — the kernel egress boundary; model access impossible by design). Strictly `shared` or `off`: any other value fails loud (exit 2), never a silent downgrade to shared.
+Default network mode for `uap sandbox`: shared (normal network) or off (own network namespace with nothing up, the kernel egress boundary; model access impossible by design). Strictly `shared` or `off`: any other value fails loud (exit 2), never a silent downgrade to shared.
 
 **Recommendation:** Leave shared; use `--net off` per-run for untrusted code, evals, and data-only work.
 
@@ -1062,7 +1062,7 @@ Pins the per-session sandbox grant ledger to an explicit FILE. Default: the MAIN
 
 Kill switch for the grant ledger: `1` resolves zero grants (no extra writable holes). The sandbox itself and its kernel boundary are unaffected.
 
-**Recommendation:** Leave unset. Inline use only, when the ledger is misbehaving — the safe direction is always least authority.
+**Recommendation:** Leave unset. Inline use only, when the ledger is misbehaving, the safe direction is always least authority.
 
 ### `UAP_SANDBOX_WORKDIR`
 
@@ -1084,7 +1084,7 @@ Workdir `uap sandbox` makes writable (default: cwd). Refused when over-broad ($H
 | **Type** | string |
 | **Default** | `` |
 
-Extra writable paths, colon-separated — UNRECORDED authority, honored for compatibility. Every use is named in the audit trail and the launch banner, and entries get the same plan-time realpath re-check recorded grants get: an entry resolving to `/`, `/home`, or `$HOME` is refused loudly, and a symlink entry binds its resolved target, not the link.
+Extra writable paths, colon-separated, UNRECORDED authority, honored for compatibility. Every use is named in the audit trail and the launch banner, and entries get the same plan-time realpath re-check recorded grants get: an entry resolving to `/`, `/home`, or `$HOME` is refused loudly, and a symlink entry binds its resolved target, not the link.
 
 **Recommendation:** Prefer `uap sandbox grant <path> --session <id> --reason "..."` (recorded, TTL-bounded, revocable); use this only in throwaway scripts.
 
@@ -1108,7 +1108,7 @@ Pins the sandbox audit trail (JSONL, one line per grant/revoke/sandbox-run) to a
 | **Type** | string |
 | **Default** | `` |
 
-Pins the DIRECTORY holding the consent-ledger trust anchors (one 0600 JSON per checkout, the tamper-evidence hash of the sanitized ledger). Default: `$XDG_STATE_HOME/uap/sandbox-anchors` (or `~/.local/state/uap/sandbox-anchors`) — OUTSIDE the checkout's write reach by design.
+Pins the DIRECTORY holding the consent-ledger trust anchors (one 0600 JSON per checkout, the tamper-evidence hash of the sanitized ledger). Default: `$XDG_STATE_HOME/uap/sandbox-anchors` (or `~/.local/state/uap/sandbox-anchors`), OUTSIDE the checkout's write reach by design.
 
 **Recommendation:** Tests and non-standard layouts only; leave unset so the anchor stays outside the tree it vouches for.
 
@@ -1123,7 +1123,7 @@ Pins the DIRECTORY holding the consent-ledger trust anchors (one 0600 JSON per c
 | **Where** | shell env |
 | **Type** | string |
 | **Default** | `null` |
-| **Secret** | yes — never store in `.uap.json` |
+| **Secret** | yes, never store in `.uap.json` |
 
 The token required for dashboard policy-mutation routes (enable/disable/stage/level). Read routes stay open.
 
@@ -1149,7 +1149,7 @@ Dashboard data refresh interval in milliseconds (floor 250).
 | **Type** | boolean |
 | **Default** | `true` |
 
-Ride-along dashboard: `uap proxy ensure|start` also starts (or adopts) `uap dashboard serve`, and release/stop tears it down under the same ownership rules — so a session gets monitoring without running a second command. Only takes effect where the proxy itself runs (hooks gate on proxy.autostart).
+Ride-along dashboard: `uap proxy ensure|start` also starts (or adopts) `uap dashboard serve`, and release/stop tears it down under the same ownership rules, so a session gets monitoring without running a second command. Only takes effect where the proxy itself runs (hooks gate on proxy.autostart).
 
 **Recommendation:** Leave on. Turn off if you prefer to run `uap dash serve` yourself, or the port is spoken for.
 
@@ -1215,7 +1215,7 @@ How long `uap proxy ensure` waits for the ride-along dashboard to serve before g
 
 Enables token budgets, response caching, and embedding batching to cut token spend.
 
-**Recommendation:** Keep on — it is free savings with no quality cost.
+**Recommendation:** Keep on, it is free savings with no quality cost.
 
 ### `timeOptimization.parallelExecution.maxParallelDroids`
 
@@ -1259,4 +1259,4 @@ Disables the automatic global-CLI version check/self-update on `uap setup`.
 
 ---
 
-*Not every environment variable UAP reads is a first-class setting — the inference proxy alone exposes ~130 `PROXY_*` tuning knobs. The registry surfaces the high-impact, commonly-tuned ones; see the proxy source (`tools/agents/scripts/anthropic_proxy.py`) for the full set.*
+*Not every environment variable UAP reads is a first-class setting, the inference proxy alone exposes ~130 `PROXY_*` tuning knobs. The registry surfaces the high-impact, commonly-tuned ones; see the proxy source (`tools/agents/scripts/anthropic_proxy.py`) for the full set.*

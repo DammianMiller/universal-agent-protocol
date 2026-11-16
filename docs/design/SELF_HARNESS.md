@@ -1,17 +1,17 @@
-# Self-Harness for UAP — Design Doc
+# Self-Harness for UAP, Design Doc
 
 > Status: **Proposal / for review**  ·  Scope: **Option C (full vision)**  ·  Author: design pass 2026-06-23
 >
-> Grounds: *Self-Harness: Harnesses That Improve Themselves* (Zhang et al., arXiv:2606.09498) — an
+> Grounds: *Self-Harness: Harnesses That Improve Themselves* (Zhang et al., arXiv:2606.09498), an
 > agent that rewrites its own operating harness from failure traces via a 3-stage loop
 > (Weakness Mining → Harness Proposal → Proposal Validation), no human engineer. Reports
 > Terminal-Bench-2.0 lifts incl. **Qwen3.5-35B-A3B 23.8%→38.1%** (our model's sibling).
 
-> **🏭 Where this fits:** Feedback station (the floor tunes its own machines) —
+> **🏭 Where this fits:** Feedback station (the floor tunes its own machines),
 > without it, the same failure mode recurs every run and a human has to hand-tune
 > the harness for each new model, which doesn't scale. **What it delivers:** an
 > autonomous loop that mines real failure traces, proposes bounded harness fixes,
-> validates them against real gates, and keeps only the winners — so the whole
+> validates them against real gates, and keeps only the winners, so the whole
 > [delivery pipeline](../guides/DELIVERY_PIPELINE.md) gets better at building the
 > next change instead of repeating the last mistake.
 
@@ -19,12 +19,12 @@
 
 The paper's thesis is exactly the lesson of our manual harness-tuning campaign on Qwen3.6-35B-A3B:
 effective harnesses are **model-specific** and hand-engineering them doesn't scale. We *manually* ran
-the Self-Harness loop this cycle — mined a failure (tool-call path-garbling), proposed mods (n-predict
+the Self-Harness loop this cycle, mined a failure (tool-call path-garbling), proposed mods (n-predict
 cap, loop breakers, the recon-poison fix, pattern-RAG), and validated via the paired benchmark. The
 result was a null UAP-lift but several real harness fixes. **Self-Harness automates that loop.**
 
 Crucially, UAP already owns **two of the paper's three stages** and a richer modification surface than
-the paper (which only edits prompts). This doc specifies closing the loop and going beyond — cross-model
+the paper (which only edits prompts). This doc specifies closing the loop and going beyond, cross-model
 transfer and online learning.
 
 ## 2. What UAP already has (the 70%)
@@ -63,13 +63,13 @@ mine→propose→validate→accept and persists results. Humans do both today.
 New code lives under `src/self-harness/`: `orchestrator.ts` (one iteration), `validate.ts` (the real
 paired-bench validator), `run.ts` (the committing loop + versioned snapshot), `mine.ts`, `propose.ts`,
 `mods.ts` (the DSL), `transfer.ts`, plus the `uap self-harness` CLI. It **reuses** `benchmarks/paired/`
-for validation and the HALO exporter for mining — no reimplementation.
+for validation and the HALO exporter for mining, no reimplementation.
 
-## 4. The Modification DSL — bounded, typed, reversible
+## 4. The Modification DSL, bounded, typed, reversible
 
 The paper warns against "generic instruction padding" and unbounded edits. We constrain proposals to a
 **typed `Mod` union**, each member *mechanically* applicable and *automatically* reversible. The proposer
-may only emit these — never free-form code.
+may only emit these, never free-form code.
 
 ```ts
 type Mod =
@@ -78,14 +78,14 @@ type Mod =
   | { kind: 'middleware'; id: MiddlewareId; params: Record<string, JsonScalar> }  // Phase 2
 ```
 
-- **`env`** — only an **allow-listed** subset of `PROXY_*` / `LLAMA_*` knobs with declared ranges
+- **`env`**, only an **allow-listed** subset of `PROXY_*` / `LLAMA_*` knobs with declared ranges
   (e.g. `LLAMA_N_PREDICT ∈ [512,16384]`, `PROXY_HARD_FINALIZE_TURNS ∈ [10,80]`,
   `PROXY_RECON_CONVERGENCE_THRESHOLD ∈ [20,200]`, narrowing keep/core-set, repeat-penalty, DRY). This
   is the layer that *actually moved our model* (n-predict 8192→4096). **No model/ctx/KV/spec knob is
-  allow-listed** (those need slot-clears and risk OOM — out of the autonomous loop's reach).
-- **`scaffold`** — edits to a single `UAP_COMPONENTS` instruction block (the paper's surface).
-- **`middleware`** (Phase 2) — toggles/params for purpose-built proxy interceptors, the highest-value
-  class. First member: **`toolcall-path-normalizer`** — snaps a garbled tool-call `path` to the nearest
+  allow-listed** (those need slot-clears and risk OOM, out of the autonomous loop's reach).
+- **`scaffold`**, edits to a single `UAP_COMPONENTS` instruction block (the paper's surface).
+- **`middleware`** (Phase 2), toggles/params for purpose-built proxy interceptors, the highest-value
+  class. First member: **`toolcall-path-normalizer`**, snaps a garbled tool-call `path` to the nearest
   real file in the workdir (the exact failure that beat every prompt-level fix this cycle). A Mod here is
   a *mechanical* fix the model can't fumble, which is where Self-Harness can beat the paper.
 
@@ -93,7 +93,7 @@ Every Mod carries a `revert()` (env knob → prior value; scaffold → prior tex
 applied set is a **versioned harness profile** (env snapshot + scaffold snapshot + middleware config),
 committed to git per accepted iteration so any change is bisectable and rollback is one revert.
 
-## 5. Stage 1 — Weakness Mining
+## 5. Stage 1, Weakness Mining
 
 - Input: HALO spans (`.uap/halo/traces.jsonl`) from the just-run validation suite **plus** the paired
   bench's per-run records (which already capture `correct`, `error`, latency, turns).
@@ -102,12 +102,12 @@ committed to git per accepted iteration so any change is bisectable and rollback
   hash of the failure shape (e.g. `toolcall.path.garbled`, `gen.runaway.npredict`, `loop.nonterminate`).
 - Extend HALO span capture so the proxy emits spans for the failure modes we now know matter: tool-call
   arg corruption, n-predict-cap hits, breaker fires, recon/finalize fires, verify-fail vs timeout. (Most
-  are already logged as text — promote them to structured spans.)
+  are already logged as text, promote them to structured spans.)
 - Output ranked by `frequency × est_impact`. Mining is **read-only**.
 
-## 6. Stage 2 — Harness Proposal
+## 6. Stage 2, Harness Proposal
 
-- An LLM proposer (a *capable* model — Opus/Sonnet via the same proxy, or a configured remote) receives:
+- An LLM proposer (a *capable* model, Opus/Sonnet via the same proxy, or a configured remote) receives:
   the top weakness signatures + evidence, the **current harness profile**, the **Mod DSL schema**, and
   **prior accepted/rejected Mods for this `(model_family, signature)`** from the transfer store.
 - It emits 1–`K` candidate `Mod`s (validated against the DSL schema; out-of-DSL → rejected at parse).
@@ -115,7 +115,7 @@ committed to git per accepted iteration so any change is bisectable and rollback
 - Determinism/repro: proposer seeded; proposals logged with the prompt and the weakness report that
   produced them.
 
-## 7. Stage 3 — Proposal Validation (reuse `benchmarks/paired/`)
+## 7. Stage 3, Proposal Validation (reuse `benchmarks/paired/`)
 
 - For each candidate Mod, apply it in isolation (others reverted) and run `runPaired` over a **fixed
   validation suite** + a **held-out regression suite** (disjoint tasks, to catch overfitting).
@@ -123,11 +123,11 @@ committed to git per accepted iteration so any change is bisectable and rollback
   validation suite **AND** no significant regression on the held-out suite **AND** no cost blow-up beyond
   a budget (tokens/turns). This is exactly the paper's "conservative validation preventing regressions,"
   implemented with statistics we already ship.
-- Multiple accepted Mods are then **stacked and re-validated together** (interactions are real — cf. how
+- Multiple accepted Mods are then **stacked and re-validated together** (interactions are real, cf. how
   narrowing + recon + finalize interacted this cycle) before the profile is committed.
 - The **ablation matrix** (`ablation.ts`) runs periodically to prune Mods that have stopped paying off.
 
-## 8. Beyond the paper #1 — Cross-model transfer
+## 8. Beyond the paper #1, Cross-model transfer
 
 The paper's stated limitation is that fixes stay model-specific. UAP's pattern-RAG makes transfer cheap:
 
@@ -137,13 +137,13 @@ The paper's stated limitation is that fixes stay model-specific. UAP's pattern-R
   signatures with the same shape retrieve their prior winning Mods as *priors*, which still go through
   full validation on the new model (transfer is a hypothesis, not a shortcut). Negative results are
   stored too, so we don't re-propose known-bad Mods.
-- This turns N independent per-model tuning runs into a **shared, growing harness-knowledge base** —
+- This turns N independent per-model tuning runs into a **shared, growing harness-knowledge base**,
   the system gets faster at adapting to each new model.
 
-## 9. Beyond the paper #2 — Online / continuous self-harness
+## 9. Beyond the paper #2, Online / continuous self-harness
 
 - The same mining stage runs on **production** HALO traces (not just bench), so real Shannon/Cline
-  traffic surfaces failures the bench misses. Proposals from prod traces are **never auto-applied** —
+  traffic surfaces failures the bench misses. Proposals from prod traces are **never auto-applied**,
   they enqueue a validation run on the bench, and only a passing, regression-clean Mod is promoted.
 - Cadence: a scheduled `uap self-harness run --since <window>` (cron) that mines recent prod traces,
   proposes, validates offline, and opens a PR-like profile diff for a human gate (configurable to
@@ -151,46 +151,46 @@ The paper's stated limitation is that fixes stay model-specific. UAP's pattern-R
 
 ## 10. Safety, rollback, and self-poisoning prevention
 
-This is non-negotiable: an auto-modifying harness that can tune guardrail thresholds **can wedge itself**
-— we have direct evidence (the recon-convergence death-spiral, `2e82e88`, that stripped tools forever).
+This is non-negotiable: an auto-modifying harness that can tune guardrail thresholds **can wedge itself**,
+we have direct evidence (the recon-convergence death-spiral, `2e82e88`, that stripped tools forever).
 Controls:
 
-1. **Bounded DSL + allow-list + ranges** — the loop physically cannot touch model/ctx/KV/spec, cannot
+1. **Bounded DSL + allow-list + ranges**, the loop physically cannot touch model/ctx/KV/spec, cannot
    emit arbitrary code, cannot set a knob outside its safe range.
-2. **Held-out regression gate** — no Mod that regresses the held-out suite is accepted, even if it helps
+2. **Held-out regression gate**, no Mod that regresses the held-out suite is accepted, even if it helps
    validation.
-3. **Versioned profiles + one-command revert** — every accepted iteration is a git commit; rollback is
+3. **Versioned profiles + one-command revert**, every accepted iteration is a git commit; rollback is
    `git revert` of the profile + a proxy/llama restart.
-4. **Liveness canary** — after applying a profile, a fast smoke suite must pass *and* the guardrail-fire
+4. **Liveness canary**, after applying a profile, a fast smoke suite must pass *and* the guardrail-fire
    rates (breaker/recon/finalize per N requests) must stay within a sane band; a Mod that spikes them
    (the poison signature) is auto-reverted.
-5. **Budget ceiling** — max iterations / token budget per run (we already have the workflow budget
+5. **Budget ceiling**, max iterations / token budget per run (we already have the workflow budget
    primitive); the loop stops when it converges or exhausts budget.
 
 ## 11. Phasing
 
-- **P0 — Plumbing (small).** Promote the failure-mode logs to structured HALO spans; add the held-out
+- **P0, Plumbing (small).** Promote the failure-mode logs to structured HALO spans; add the held-out
   regression suite; pin a stable `signature` hashing. *Exit:* `uap harness analyze` emits a typed
   `WeaknessReport`.
-- **P1 — Closed loop, env DSL (Option A). [BUILT]** `uap self-harness run` orchestrates
+- **P1, Closed loop, env DSL (Option A). [BUILT]** `uap self-harness run` orchestrates
   mine→propose→validate→decide over `env` Mods, reusing `benchmarks/paired/`. The real validator
   (`validate.ts`) runs a baseline arm, physically toggles the env knob + restarts the server, runs a
   candidate arm, reverts, and pairs the two into a `Comparison`; held-out runs the same way. `--apply`
   commits accepted Mods to the env file, restarts once, and writes a **versioned profile snapshot**
   (`run.ts`, `profile.ts`) + append-only history; without it the run is a pure dry-run that touches
   nothing. *Exit met:* one autonomous iteration accepts a real env Mod (e.g. re-discovers
-  `LLAMA_N_PREDICT=4096`) with paired stats. `scaffold`/`middleware` Mods are not auto-validated here —
+  `LLAMA_N_PREDICT=4096`) with paired stats. `scaffold`/`middleware` Mods are not auto-validated here,
   they route through the human-gated pending queue (§9).
-- **P2 — Middleware Mods (Option B).** Add the `middleware` Mod class + the `toolcall-path-normalizer`.
+- **P2, Middleware Mods (Option B).** Add the `middleware` Mod class + the `toolcall-path-normalizer`.
   *Exit:* the loop proposes+validates the normalizer and measurably cuts path-garbling on the medium
   suite (the ceiling manual fixes couldn't crack).
-- **P3 — Transfer + online (Option C). [BUILT]** Cross-model transfer store keyed by (model family,
+- **P3, Transfer + online (Option C). [BUILT]** Cross-model transfer store keyed by (model family,
   failure kind, signature) + transfer-seeded proposer (`src/self-harness/transfer.ts`); online mining from
-  HALO spans AND proxy-log signals (`trace-mine.ts`); gated promotion queue (`pending.ts`) — prod-mined
+  HALO spans AND proxy-log signals (`trace-mine.ts`); gated promotion queue (`pending.ts`), prod-mined
   proposals enqueue for validation, env knobs may auto-promote after validation, scaffold/middleware are
   human-gated. CLI: `uap self-harness {transfer,mine-prod,pending}`. *Exit met:* a Qwen3.6 normalizer
   acceptance auto-seeds a Qwen3.7 proposal; real proxy-journal mining enqueued the path-normalizer behind
-  a human gate. **Scheduling [BUILT]:** `deploy/systemd/uap-self-harness-mine.{service,timer}` — a daily user timer
+  a human gate. **Scheduling [BUILT]:** `deploy/systemd/uap-self-harness-mine.{service,timer}`, a daily user timer
   runs `mine-prod` (mine + enqueue, gated) then `prune`. **Ablation-prune [BUILT]:** `TransferStore.prune`
   + `PendingQueue.prune` drop stale / no-longer-paying entries; `uap self-harness prune`. P3 fully closed.
 
@@ -206,7 +206,7 @@ Controls:
 ## 13. Open questions / risks
 
 - **Reachability ceiling.** This cycle proved Qwen3.6-IQ4_XS's wall is token-level tool-call fidelity,
-  which prompt/param Mods can't fix — only P2's middleware can. If middleware Mods are out of scope, the
+  which prompt/param Mods can't fix, only P2's middleware can. If middleware Mods are out of scope, the
   loop may correctly converge to "no further lift available," which is a *valid* (if unexciting) result.
 - **Proposer cost/quality.** A weak proposer emits weak Mods; a strong remote proposer adds cost/dependency.
   Mitigate by caching proposals per signature and transferring across models.

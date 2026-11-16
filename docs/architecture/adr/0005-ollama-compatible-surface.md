@@ -1,4 +1,4 @@
-# ADR 0005: The Ollama-compatible surface — a third inbound dialect on a second port
+# ADR 0005: The Ollama-compatible surface, a third inbound dialect on a second port
 
 - Status: Accepted
 - Date: 2026-10-06 (branch `feature/340-ollama-compat-endpoint`)
@@ -6,8 +6,8 @@
 
 ## Context
 
-The anthropic proxy already serves two inbound dialects — Anthropic Messages
-(`/v1/messages`) and OpenAI Chat Completions (`/v1/chat/completions`) — both
+The anthropic proxy already serves two inbound dialects, Anthropic Messages
+(`/v1/messages`) and OpenAI Chat Completions (`/v1/chat/completions`), both
 normalized through a single guarded Anthropic pipeline (admission control,
 rail semaphore, loop detection, tool narrowing, malformed-tool retry, context
 pruning). Ollama-native tooling is a third client family that auto-discovers
@@ -26,8 +26,8 @@ alternative, so "just document the OpenAI surface" does not reach it.
    tooling cannot be pointed at it.
 
 2. **Translation only, through the shared guarded core.** Ollama requests are
-   translated to OpenAI shape and run through `_guarded_openai_completion` —
-   the same core the OpenAI route uses — then translated back to Ollama wire
+   translated to OpenAI shape and run through `_guarded_openai_completion`,
+   the same core the OpenAI route uses, then translated back to Ollama wire
    shapes. This buys a parity guarantee: an Ollama client cannot drift from
    the other surfaces in guardrail coverage, because there is only one
    pipeline. The cost is double translation: only fields that survive BOTH
@@ -35,7 +35,7 @@ alternative, so "just document the OpenAI surface" does not reach it.
 
 3. **Buffered streaming, same tradeoff as the OpenAI surface.** Streaming is
    buffered through the guardrails, then emitted as Ollama NDJSON (one content
-   line plus a final `done: true` line) — not token-by-token from upstream.
+   line plus a final `done: true` line), not token-by-token from upstream.
    Token-granular streaming would require bypassing the pipeline; correctness
    of the guardrails was ranked above stream granularity. This is the same
    call the OpenAI inbound already made; clients see their reply arrive at
@@ -59,7 +59,7 @@ alternative, so "just document the OpenAI surface" does not reach it.
   honored.
 - A companion bind failure must never take the primary down: uvicorn signals
   bind failure with `sys.exit(1)` inside `serve()`, and `SystemExit` is a
-  `BaseException` that `gather(return_exceptions=True)` does not contain —
+  `BaseException` that `gather(return_exceptions=True)` does not contain,
   the companion task is therefore wrapped in an explicit containment guard.
 - Option mapping is deliberately minimal (`temperature`, `top_p`, `top_k`,
   `stop`, `num_predict`): Ollama's `format` (structured output),
@@ -70,5 +70,5 @@ alternative, so "just document the OpenAI surface" does not reach it.
   the backend actually exposes (llama.cpp `/props`), cached per model, and
   never invents plausible-looking numbers a client would display as fact.
 - The Claude contract ids that `/v1/models` advertises for Anthropic-SDK
-  compatibility are protocol fictions and do NOT appear in `/api/tags` — an
+  compatibility are protocol fictions and do NOT appear in `/api/tags`, an
   Ollama client must only see ids the backend actually serves.

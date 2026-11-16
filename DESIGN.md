@@ -75,15 +75,15 @@ components:
 
 ## Overview
 
-UAP Console is the operator surface for the Universal Agent Protocol — the live
+UAP Console is the operator surface for the Universal Agent Protocol: the live
 dashboard and the project generator. Its job is to make a lot of fast-moving
 machine state (agents, tasks, memory, gates, telemetry) legible at a glance,
 without ceremony.
 
 The aesthetic is **GitHub-dark developer console**: a near-black canvas, cool
 slate panels, monospace for anything structural or numeric, and a single
-confident blue for interaction. It should feel like a well-built terminal UI —
-calm, dense, and trustworthy — not a marketing page. Restraint over decoration:
+confident blue for interaction. It should feel like a well-built terminal UI,
+calm, dense, and trustworthy, not a marketing page. Restraint over decoration:
 color is reserved for status and action, never used as ornament.
 
 ## Colors
@@ -91,28 +91,28 @@ color is reserved for status and action, never used as ornament.
 A cool, near-monochrome slate foundation carries the UI; saturated hues are
 spent only on status and interaction.
 
-- **bg (#0d1117):** The canvas — a deep, slightly blue-black behind everything.
+- **bg (#0d1117):** The canvas, a deep, slightly blue-black behind everything.
 - **surface (#161b22):** Panels, cards, and the primary content containers.
-- **surface-raised (#21262d):** Hovered rows, popovers, and raised controls —
+- **surface-raised (#21262d):** Hovered rows, popovers, and raised controls,
   the next step up from `surface`.
 - **border (#30363d):** Hairline separators and container outlines.
 - **text (#c9d1d9):** Primary reading text on dark surfaces.
-- **text-muted (#8b949e):** Secondary text — metadata, captions, timestamps.
+- **text-muted (#8b949e):** Secondary text: metadata, captions, timestamps.
 - **text-subtle (#484f58):** Tertiary text and disabled states.
-- **primary (#58a6ff):** The single interaction color — links, focus, primary
+- **primary (#58a6ff):** The single interaction color: links, focus, primary
   actions, active state. Nothing else competes for "click me."
 - **success (#3fb950):** Passing gates, healthy agents, completed tasks.
 - **danger (#f85149):** Failures, blocked states, destructive actions.
-- **warning (#d29922):** Degraded/at-risk states needing attention.
+- **warning (#d29922):** Degraded or at-risk states needing attention.
 - **accent-purple (#bc8cff) / accent-orange (#d18616):** Categorical accents for
-  charts, tags, and telemetry series — never for primary actions.
+  charts, tags, and telemetry series, never for primary actions.
 - **on-accent (#ffffff):** Text/icons placed on a saturated accent fill.
 
 ## Typography
 
 Two families, used deliberately. A **monospace** stack (`SF Mono → Fira Code →
-Cascadia Code`) for everything structural — headings, code, IDs, metrics,
-status — because the product is about machine state and alignment matters. A
+Cascadia Code`) for everything structural (headings, code, IDs, metrics,
+status), because the product is about machine state and alignment matters. A
 **system sans** stack for prose-like body copy and labels, for comfortable
 reading. Type sizes stay tight (11–20px); hierarchy comes from weight and color
 more than scale.
@@ -126,7 +126,7 @@ and boxes; let the dark canvas do the separating.
 
 ## Shapes
 
-Soft, small radii throughout (`3–12px`) — enough to feel finished, never
+Soft, small radii throughout (`3–12px`): enough to feel finished, never
 playful. Cards use `lg` (8px); inline controls and chips use `md`/`sm`.
 
 ## Components
@@ -141,7 +141,7 @@ playful. Cards use `lg` (8px); inline controls and chips use `md`/`sm`.
 - **Do** use a design token (or a CSS `var(--…)`) for every color and spacing
   value in new UI.
 - **Do** reserve `primary` for interaction and the status hues for status only.
-- **Don't** hardcode off-token hex colors or off-scale spacing — the UAP design
+- **Don't** hardcode off-token hex colors or off-scale spacing; the UAP design
   gate blocks them (`uap design check`, bypass once with `UAP_DESIGN_GATE_OFF=1`).
-- **Don't** introduce a second interaction color or decorative gradients; the
+- **Don't** introduce a second interaction color or decorative gradients. The
   console's authority comes from restraint.

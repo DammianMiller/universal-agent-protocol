@@ -1,10 +1,10 @@
 # Worktree Workflow
 
-> Applies to UAP v1.224.0
+> Applies to UAP v2.51.0
 
-> **🏭 Where this fits:** ISOLATION — the station where a normal agentic workflow smears half-finished edits across `main`, clobbers files, and lets parallel agents collide into corrupt merge state. **What it delivers:** every agent works on its own branch in its own checkout, so the project root stays clean, each unit of work has a tidy PR boundary, and any number of agents can run at once without stepping on each other.
+> **🏭 Where this fits:** ISOLATION, the station where a normal agentic workflow smears half-finished edits across `main`, clobbers files, and lets parallel agents collide into corrupt merge state. **What it delivers:** every agent works on its own branch in its own checkout, so the project root stays clean, each unit of work has a tidy PR boundary, and any number of agents can run at once without stepping on each other.
 
-UAP runs agents — often many of them at once — against a single repository. The
+UAP runs agents, often many of them at once, against a single repository. The
 worktree workflow exists to keep every edit an agent makes isolated on its own
 branch and its own checkout, so that agent work never touches the project root
 and parallel agents never collide. Think of it as giving each agent its own
@@ -18,11 +18,11 @@ The implementation lives in [`src/cli/worktree.ts`](../../src/cli/worktree.ts).
 
 When an agent edits files directly in the project root, three problems appear:
 
-- **Cross-contamination** — a half-finished change sits in the working tree
+- **Cross-contamination**, a half-finished change sits in the working tree
   where the next operation (build, test, another agent) can trip over it.
-- **No clean PR boundary** — there is no branch that contains *only* this unit
+- **No clean PR boundary**, there is no branch that contains *only* this unit
   of work, so review and rollback become guesswork.
-- **Parallel collisions** — two agents writing to the same files at the same
+- **Parallel collisions**, two agents writing to the same files at the same
   time produce corrupt, non-deterministic state.
 
 A git worktree solves all three. Each feature gets its own directory under
@@ -40,22 +40,22 @@ uap worktree finish <id>       # 4. land: sync, push, merge the PR, then clean u
 # (or) uap worktree cleanup <id>   manual teardown without merging
 ```
 
-1. **Create** — `create` allocates the next numeric ID from a registry,
+1. **Create**, `create` allocates the next numeric ID from a registry,
    builds the branch name `feature/NNN-<slug>`, and runs
    `git worktree add -b <branch> .worktrees/NNN-<slug> <base>`. The base branch
-   defaults to the freshly-fetched `origin/<default>` — not your current branch —
+   defaults to the freshly-fetched `origin/<default>`, not your current branch,
    so a worktree is never born stale (override with `--from`, skip the fetch with
    `--no-fetch`). See [Parallel Agents](PARALLEL_AGENTS.md). The new worktree is
    recorded in a SQLite registry at `.uap/worktree_registry.db` so concurrent
    `create` calls never race on the same ID.
-2. **Work** — `cd` into the worktree and make changes. Everything stays on the
+2. **Work**, `cd` into the worktree and make changes. Everything stays on the
    feature branch and inside the worktree directory.
-3. **Publish** — `pr` syncs the branch with `origin/master` (a clean merge, or a
+3. **Publish**, `pr` syncs the branch with `origin/master` (a clean merge, or a
    clear failure asking you to resolve conflicts in the worktree), pushes the
    branch, and opens a PR via the `gh` CLI.
-4. **Land** — `finish` does the full sync → push → ensure-PR → merge sequence,
+4. **Land**, `finish` does the full sync → push → ensure-PR → merge sequence,
    deletes the remote branch, then runs `cleanup` for you.
-5. **Clean up** — `cleanup` removes the worktree, deletes the local and remote
+5. **Clean up**, `cleanup` removes the worktree, deletes the local and remote
    branch, and marks the registry entry as `cleaned`.
 
 ## The enforcement gate
@@ -83,7 +83,7 @@ non-zero. The strict variant is what you wire into a CI step or a pre-edit
 check; the advisory variant is for interactive orientation.
 
 The same `.worktrees/` containment is enforced at edit time by the
-`worktree-required` policy enforcer — see [POLICIES.md](./POLICIES.md).
+`worktree-required` policy enforcer, see [POLICIES.md](./POLICIES.md).
 
 ### Making enforcement optional
 
@@ -91,16 +91,16 @@ Worktree *enforcement* is a project choice, asked at setup time. In the guided
 setup wizard (`uap setup`), the **Worktree isolation** toggle under
 "Multi-agent coordination" drives it:
 
-- **On (default)** — the pre-edit hooks hard-block edits outside
+- **On (default)**, the pre-edit hooks hard-block edits outside
   `.worktrees/`, the `worktree-required` policy enforcer stays active, and
   generated CLAUDE.md files carry the MANDATORY worktree section.
-- **Off** — setup writes `"worktrees": { "enabled": true, "enforce": false }`
+- **Off**, setup writes `"worktrees": { "enabled": true, "enforce": false }`
   to `.uap.json`, deactivates the `worktree-required` policy, and omits the
   MANDATORY section from generated CLAUDE.md. Worktrees remain fully
   *supported* (`uap worktree create/pr/finish` all work); edits in the project
   root are simply no longer blocked.
 
-You can flip it later by editing `.uap.json` — set both keys so every layer
+You can flip it later by editing `.uap.json`, set both keys so every layer
 agrees:
 
 ```json
@@ -124,7 +124,7 @@ state in the policy database. A missing or unreadable flag defaults to
 only).
 
 **Integrity note:** the self-disable path relies on the
-`enforcement-self-protect` policy (installed by `uap init`) — it hard-blocks
+`enforcement-self-protect` policy (installed by `uap init`), it hard-blocks
 agent edits to `.uap.json` on both the Edit/Write and Bash channels, so an
 agent cannot flip `enforce` itself. Projects that deploy the hook templates
 *without* the seeded policy DB get no such protection on the Bash channel.
@@ -134,7 +134,7 @@ agent cannot flip `enforce` itself. Projects that deploy the hook templates
 The numeric ID is allocated from the SQLite registry, not from a directory
 scan, so two agents calling `create` at the same moment get distinct IDs and
 distinct branches. Because each agent operates in its own worktree directory on
-its own branch, their edits, builds, and commits are fully isolated — the only
+its own branch, their edits, builds, and commits are fully isolated, the only
 shared point is `origin/master`, which each branch syncs against at `pr`/`finish`
 time. This is what makes conflict-free parallel agent execution possible.
 

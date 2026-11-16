@@ -1,14 +1,14 @@
-# Model-performance proof options — how to demonstrate UAP's benefits with honest numbers
+# Model-performance proof options, how to demonstrate UAP's benefits with honest numbers
 
 **Status:** Proposed (a menu of options, ordered by cost; each names what it
-would prove, what it would NOT prove, and its price — no option starts
+would prove, what it would NOT prove, and its price, no option starts
 without an explicit go)
 **Date:** 2026-10-12
 **Builds on:** [PAIRED_FINDINGS](../benchmarks/PAIRED_FINDINGS.md) (the honest
 baseline: what has and has not replicated), the
 [reliability ladder](../performance/reliability-ladder.md) (the underpowered-status
-rule), [harness-engineering uplift](harness-engineering-uplift-2026-07-31.md)
-(the mechanism priors), and [K3 uplift validation](k3-uap-uplift-validation.md)
+rule), the 2026-07-31 harness-engineering uplift analysis (the mechanism
+priors, archived in git history), and [K3 uplift validation](k3-uap-uplift-validation.md)
 (the frontier run).
 
 ## The claim we are actually proving
@@ -19,48 +19,48 @@ harness established:
 - UAP's gate loop delivers a large accuracy lift **only against base agents
   that do not self-verify** (+20pp vs a single-shot model); against a strong
   self-verifying harness the pooled accuracy effect is a wash
-  (**Δ 0.0pp [−5.5, +6.9]** — the CI excludes +20pp) at a token cost.
+  (**Δ 0.0pp [−5.5, +6.9]**, the CI excludes +20pp) at a token cost.
 - UAP never significantly *hurt* accuracy on any surface measured.
 - The one tier where payoff dwarfed cost in the ladder is the hardest one
   (brutal tier 26.1% → 56.8%, ⚠ underpowered).
 
 So "prove benefits and improvements to model performance" decomposes into
-**four distinct, separately-provable claims** — and each option below is
+**four distinct, separately-provable claims**, and each option below is
 mapped to the claim(s) it can actually carry:
 
 | # | Claim | Where it is strongest |
 |---|---|---|
 | C1 | The gate loop lifts weak/non-self-verifying models and hardest-tier tasks | Local paired A/B |
-| C2 | Memory + compounding surfaces lift long-horizon, multi-session work | Unmeasured gap — no existing number |
+| C2 | Memory + compounding surfaces lift long-horizon, multi-session work | Unmeasured gap, no existing number |
 | C3 | Operator surfaces (attention, pace) improve throughput/stopping, not accuracy | Unmeasured gap |
 | C4 | Frontier-model uplift under a canonical harness | The K3 plan |
 
 **House rule (applies to every option):** every reported delta carries its
 discrimination status (powered / underpowered / descriptive) and a paired
-design — same model, same tasks, same seeds, only the UAP layer toggled.
+design, same model, same tasks, same seeds, only the UAP layer toggled.
 An underpowered delta is labeled "directional, underpowered" and never quoted
 as a finding. Analysis follows the established format: per-task paired rates,
 bootstrap 95% CI, McNemar on discordant pairs.
 
 ## The options, ordered by cost
 
-### O1 — Aggregate the delivery-gate telemetry we already record (free)
+### O1, Aggregate the delivery-gate telemetry we already record (free)
 
 **Claims:** C1 (descriptive support) · **Cost:** hours of analysis, no runs ·
-**Prereqs:** none — the data exists.
+**Prereqs:** none, the data exists.
 
 Every `deliver` outcome already records best-%-of-gates per attempt per model
 per technique (the `[deliver]` lessons). Option: aggregate this corpus into a
-measured table — model × technique × tier → gate-pass rate and token cost —
+measured table, model × technique × tier → gate-pass rate and token cost,
 and publish it as the first *descriptive* performance dataset.
 
 - **Would prove:** where in the model/technique matrix the protocol's gates
-  bind (and where they are overhead) — at population scale, no new runs.
+  bind (and where they are overhead), at population scale, no new runs.
 - **Would NOT prove:** causality (no controlled arm); it is descriptive
   evidence that directs where to spend O2's controlled runs.
 - **Discrimination status:** descriptive by construction; label it that way.
 
-### O2 — Targeted local paired replication where the payoff was (free, GPU-local)
+### O2, Targeted local paired replication where the payoff was (free, GPU-local)
 
 **Claims:** C1 · **Cost:** GPU-hours only ·
 **Prereqs:** the local stack (`uap bench paired`, the swe-bench-pro-gen suite).
@@ -72,13 +72,13 @@ single-shot arm (the +20pp regime, to check it still holds on today's models).
 
 - **Would prove:** whether C1 survives replication on the current stack with
   enough attempts to graduate from "underpowered, directional" to a powered
-  finding — the single most valuable upgrade to the ladder.
+  finding, the single most valuable upgrade to the ladder.
 - **Would NOT prove:** anything about memory, attention, or frontier models.
 - **Discrimination status:** starts underpowered by design; the run count is
   chosen from a power calculation on the pilot variance (the existing paired
   format's bootstrap CI sizes the needed attempts).
 
-### O3 — The multi-session memory experiment (free; the real gap)
+### O3, The multi-session memory experiment (free; the real gap)
 
 **Claims:** C2 · **Cost:** GPU-hours + a task-suite design ·
 **Prereqs:** a k-session task sequence where session k depends on k−1.
@@ -86,27 +86,27 @@ single-shot arm (the +20pp regime, to check it still holds on today's models).
 The strongest *unmeasured* claim. The harness-engineering ablation gives the
 prior (long-term memory alone: +5.6pp on their harness) and the paired
 findings could not test it (their tasks are single-session). Design: N task
-*sequences* of k sessions each, same model, two arms — UAP memory on vs
-wiped-between-sessions — measuring per-session success, tokens, and the
+*sequences* of k sessions each, same model, two arms, UAP memory on vs
+wiped-between-sessions, measuring per-session success, tokens, and the
 session-over-session trend. The paired Δ *and the slope difference* are the
 two numbers.
 
 - **Would prove:** whether UAP's memory system (recall-first, compounding,
-  one store across agents) delivers the multi-session lift C2 claims — this
+  one store across agents) delivers the multi-session lift C2 claims, this
   is the repo's most defensible original contribution, so it deserves the
   repo's most careful experiment.
 - **Would NOT prove:** single-session accuracy (O2's territory).
 - **Discrimination status:** no prior number exists; pilot first, then power
   up. Sequence design is the hard part and is the first deliverable.
 
-### O4 — Pace-injection stopping behavior (free, unit-level)
+### O4, Pace-injection stopping behavior (free, unit-level)
 
 **Claims:** C3 · **Cost:** hours · **Prereqs:** the `eta:pace` reactor block
 and `model_analytics.db`.
 
 The measured-pace surfaces inject the agent's own EWMA estimate. Test whether
 the injection changes *stopping* behavior: iterations past green, wall-clock
-to stop, over-iteration rate — paired on/off on the same task set. This is a
+to stop, over-iteration rate, paired on/off on the same task set. This is a
 behavior metric (throughput and token waste), deliberately not an accuracy
 claim.
 
@@ -117,7 +117,7 @@ claim.
 - **Discrimination status:** underpowered at pilot scale; directional unless
   powered up.
 
-### O5 — Attention/AFK unattended-throughput (free)
+### O5, Attention/AFK unattended-throughput (free)
 
 **Claims:** C3 · **Cost:** hours · **Prereqs:** the attention queue + a
 task set with operator-blocking asks.
@@ -127,14 +127,14 @@ ask-instead-of-stop rail plus the AFK auto-decider): wall-clock to
 completion, number of hard stops, safe-default adoption correctness (each
 adoption is logged, so correctness is auditable).
 
-- **Would prove:** the throughput claim — less idle time, more unattended
-  completions — and that auto-adopted defaults were correct (the safety
+- **Would prove:** the throughput claim, less idle time, more unattended
+  completions, and that auto-adopted defaults were correct (the safety
   claim).
 - **Would NOT prove:** accuracy improvement; the correctness audit bounds the
   risk the throughput number would otherwise hide.
 - **Discrimination status:** descriptive unless task count is powered.
 
-### O6 — Frontier replication under a canonical harness (paid)
+### O6, Frontier replication under a canonical harness (paid)
 
 **Claims:** C4 · **Cost:** ~$5 smoke → ~$40–90 pilot → ~$900–4,300 full ·
 **Prereqs:** the [K3 plan](k3-uap-uplift-validation.md), verbatim.
@@ -153,7 +153,7 @@ comparator (K3's published 88.3, harness caveat attached).
 - **Discrimination status:** 89 tasks × 5 attempts is powered for the
   published convention's effect sizes; report Δ with bootstrap CI + McNemar.
 
-### O7 — Role-DAG structure vs the gate loop (free, GPU-local)
+### O7, Role-DAG structure vs the gate loop (free, GPU-local)
 
 **Claims:** C1 (its strongest form) · **Cost:** GPU-hours only ·
 **Prereqs:** `uap workflow` (shipped) + the bundled
@@ -165,9 +165,9 @@ LiveCodeBench-Hard-style task set.
 The measured prior is external and published: five Qwen3.8-27B roles on a
 static relay-with-cross-correction graph matched the authors' own harness on
 LiveCodeBench Hard (9.8/10 vs 9.6 on their first ten; Fable 5 single-call at
-8.0) — structure, not model class, carried the result. UAP now has the
+8.0), structure, not model class, carried the result. UAP now has the
 capability to test that prior against ITS OWN baseline: the gate loop. The
-experiment now validates EXACTLY what ships — team-solve-deliver is the
+experiment now validates EXACTLY what ships, team-solve-deliver is the
 auto-applied posture for high/critical missions, so arm C is the product's
 default hardest-tier behavior, not a bespoke rig:
 
@@ -178,11 +178,11 @@ default hardest-tier behavior, not a bespoke rig:
 | C | `uap deliver --team-solve` (the shipped auto posture: roles direct the convergence loop; solve/repair are gates-driven loops; verify is gates-only) |
 
 - **Would prove:** whether role-DAG structure lifts a weak local model
-  BEYOND the gate loop alone — the C1 claim's strongest form, and the first
+  BEYOND the gate loop alone, the C1 claim's strongest form, and the first
   number that would justify the workflow layer (and its auto-engagement on
   the hardest tier) on measured grounds rather than the GVS5H prior.
 - **Would NOT prove:** parity with the authors' harness (their numbers are
-  theirs — different prompts, OpenRouter host, their grader; UAP's port
+  theirs, different prompts, OpenRouter host, their grader; UAP's port
   keeps the method, not the bytes), anything about frontier models, or any
   C2/C3 claim.
 - **Discrimination status:** pilot first (10 problems × 3 arms × 3 passes);
@@ -208,7 +208,7 @@ default hardest-tier behavior, not a bespoke rig:
 ## What no option here claims
 
 None of these options will show UAP lifting a strong self-verifying agent's
-single-session accuracy — the pooled 0.0pp replication already bounds that
+single-session accuracy, the pooled 0.0pp replication already bounds that
 claim, and the honest headline is the *conditional*: the protocol pays where
 verification, memory, and operator attention are otherwise missing. A plan
 that promised more would be exactly the unpowered-delta marketing the paired

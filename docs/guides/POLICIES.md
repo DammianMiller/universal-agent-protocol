@@ -1,8 +1,8 @@
 # Policies
 
-> Applies to UAP v1.224.0
+> Applies to UAP v2.51.0
 
-> **🏭 Where this fits:** CROSS-CUTTING — the executable rules bolted to every station of the [delivery pipeline](./DELIVERY_PIPELINE.md). In a normal agentic workflow the "rules" live in a prose prompt the model is free to ignore; that's how work escapes isolation, skips tests, or ships without review. **What it delivers:** each rule is a Python enforcer that actually inspects an operation and can *block* it before it runs — worktree isolation, test deltas, expert review, schema diffs, artifact hygiene, and more — so the guardrails hold instead of merely being suggested.
+> **🏭 Where this fits:** CROSS-CUTTING, the executable rules bolted to every station of the [delivery pipeline](./DELIVERY_PIPELINE.md). In a normal agentic workflow the "rules" live in a prose prompt the model is free to ignore; that's how work escapes isolation, skips tests, or ships without review. **What it delivers:** each rule is a Python enforcer that actually inspects an operation and can *block* it before it runs, worktree isolation, test deltas, expert review, schema diffs, artifact hygiene, and more, so the guardrails hold instead of merely being suggested.
 
 UAP policies are **executable gates, not prose**. Each policy can carry a Python
 enforcer that inspects an operation and decides whether it may proceed. A
@@ -19,19 +19,19 @@ in [`src/cli/policy.ts`](../../src/cli/policy.ts).
 
 The flow is **hook to DB to enforcer to block**:
 
-1. **Hook** — A `PreToolUse` hook fires before a tool call (Edit, Write, Bash,
+1. **Hook**, A `PreToolUse` hook fires before a tool call (Edit, Write, Bash,
    etc.). Tools registered through the enforced tool router
    ([`src/policies/enforced-tool-router.ts`](../../src/policies/enforced-tool-router.ts))
    are automatically routed through the policy gate.
-2. **DB** — The gate
+2. **DB**, The gate
    ([`PolicyGate`](../../src/policies/policy-gate.ts)) loads all active policies
    from the policy store (a SQLite-backed DB, cached with a short TTL) and
    filters them to the ones matching the current enforcement stage
    (`pre-exec`, `post-exec`, `review`, or `always`).
-3. **Enforcer** — Each matching policy that has an attached Python enforcer is
+3. **Enforcer**, Each matching policy that has an attached Python enforcer is
    invoked as `python3 <enforcer>.py --operation <op> --args <json>`. Enforcers
    receive the operation name and its arguments and return a JSON verdict.
-4. **Block** — An enforcer emits `{"allowed": true, ...}` and exits `0` to
+4. **Block**, An enforcer emits `{"allowed": true, ...}` and exits `0` to
    allow, or `{"allowed": false, "reason": ...}` and **exits `2` to block** (see
    the shared `emit()` helper in
    [`src/policies/enforcers/_common.py`](../../src/policies/enforcers/_common.py)).
@@ -49,7 +49,7 @@ boundary.** It steers well-behaved agents away from unsafe or out-of-process
 actions; it does not sandbox a hostile process. Enforcers also honor explicit
 overrides (for example the `worktree-required` enforcer respects
 `UAP_NO_WORKTREE=1`). Treat policies as guardrails that keep cooperating agents
-on the rails — not as a containment mechanism against untrusted code.
+on the rails, not as a containment mechanism against untrusted code.
 
 ## The enforcers
 
@@ -121,7 +121,7 @@ Each enforcer guards a specific station of the pipeline. The enforcers in
 |----------|---------------|
 | `enforcement_self_protect` | The model must not be able to disable the enforcement layer |
 | `enforcement_infra_protect` | The model must not kill or displace the inference stack (the Anthropic proxy, llama-server, their ports) |
-| `bearer_lockdown` | ADR-0007 cookie-only frontend gate — blocks bearer-token auth in the frontend |
+| `bearer_lockdown` | ADR-0007 cookie-only frontend gate, blocks bearer-token auth in the frontend |
 
 > The `architecture_review` enforcer file is stored with a policy-ID prefix
 > (`<uuid>_architecture_review.py`) because it is attached to a specific
@@ -210,19 +210,19 @@ the next tool call.
 
 ## Changing an enforcer's code
 
-Three things trip people up here, and all of them fail *silently* — the source
+Three things trip people up here, and all of them fail *silently*, the source
 looks fixed, `uap policy install` prints success, and the gate goes on
 enforcing the old behaviour.
 
 **1. The gate does not run `src/policies/enforcers/*.py`.** It runs
 `.policy-tools/<policyId>_<toolName>.py`, a separate materialized copy (plus a
 snapshot in the `code` column of `policies.db`). Editing the source changes
-nothing on its own — the executable copy has to be refreshed by
+nothing on its own, the executable copy has to be refreshed by
 `uap policy install <slug>`.
 
 **2. `uap policy install` reads the enforcer from the RUNNING PACKAGE, not from
 your repo.** `resolvePolicyDir()` resolves `src/policies/enforcers/` relative to
-the installed package first, and only falls back to `process.cwd()` — deliberately,
+the installed package first, and only falls back to `process.cwd()`, deliberately,
 so that `uap` works in projects that are not this repo. When `uap` is the global
 install, editing this repo's enforcer and running `uap policy install` copies the
 **global package's** version, and the message still says
@@ -244,7 +244,7 @@ That last `grep` is the only real confirmation. A byte-size comparison against
 the enforcer source works too: a mismatch means the copy came from somewhere else.
 
 **3. Run the install from the MAIN checkout, not a worktree.** The gate anchors
-runtime state — `policies.db` and `.policy-tools/` — to `MAIN_ROOT`, so every
+runtime state, `policies.db` and `.policy-tools/`, to `MAIN_ROOT`, so every
 worktree enforces the same policies. Run from inside a worktree, the install
 writes a worktree-local `.policy-tools/` that the gate never reads.
 
@@ -258,4 +258,4 @@ Put together, an enforcer fix is three steps in two directories:
 
 Note that `enforcement-self-protect` blocks agent writes to `src/policies/**`
 outright, with no model-reachable bypass. An agent cannot make any of these
-changes — enforcer edits are an operator action by design.
+changes, enforcer edits are an operator action by design.

@@ -1,4 +1,4 @@
-# ADR 0003: The mission orchestrator — a durable goal layer above deliver runs
+# ADR 0003: The mission orchestrator, a durable goal layer above deliver runs
 
 - Status: Accepted
 - Date: 2026-10-03 (branch `feature/331-mission-orchestrator`, Choir-uplift PR 1 of 2)
@@ -50,7 +50,7 @@ missions moving until their frozen acceptance criteria are met.
    (`poll-cycle.ts`) is PURE and unit-tested; `runPollCycle`
    (`poll-executor.ts`) applies its actions through injected seams
    (supervisor, spawner, board), matching the project's house style
-   (`plan.ts`, `deliver.ts`). A cycle never throws — a bad state produces a
+   (`plan.ts`, `deliver.ts`). A cycle never throws, a bad state produces a
    report note, not a dead daemon.
 6. **Launches are claimed atomically.** `claimLaunch` is a single-statement
    conditional UPDATE (60-second window), so the daemon poll and
@@ -58,13 +58,13 @@ missions moving until their frozen acceptance criteria are met.
 7. **Backoff: first relaunch immediate, then exponential (15·2^n, cap 1 day).**
    A clean interruption is the healthy case; repeated failures back off.
    Struggle (failed/interrupted attempts per mission) is deduped per
-   (mission, run, outcome, taskRef, observedAt) — identical re-observations
-   dedupe, genuinely new failures accumulate — and 3+ struggle turns salvage
+   (mission, run, outcome, taskRef, observedAt), identical re-observations
+   dedupe, genuinely new failures accumulate, and 3+ struggle turns salvage
    proposals into escalation asks. Salvage is APPROVAL-GATED (the Choir
    overseer split): the orchestrator proposes, the human rules
    (`uap mission salvage approve|reject`).
 8. **The daemon is systemd-owned.** `uap-orchestrator.service` runs
-   `uap mission poll --loop --interval 300` (hidden alias: `uap orch poll` —
+   `uap mission poll --loop --interval 300` (hidden alias: `uap orch poll`,
    deliberately distinct from `uap orchestrator on|off`, which toggles the
    in-deliver blackboard orchestrator). Node and the CLI entrypoint are
    captured absolute at install time; `uap doctor` probes the unit against
@@ -81,19 +81,19 @@ missions moving until their frozen acceptance criteria are met.
 - The attempt ledger is the struggle metric; whole-mission notes (no runId)
   are never deduped so launch-loops escalate instead of retrying silently.
 - PR 2 (merge gate) consumes exactly: `verifyAcceptanceHash`,
-  `hashAcceptance`, the revision history, and the mission↔run linkage — it
+  `hashAcceptance`, the revision history, and the mission↔run linkage, it
   must never parse acceptance text out of the instruction string.
 
 ## Alternatives considered
 
-- **Fold missions into the coordination DB** — rejected: lifecycle mismatch
+- **Fold missions into the coordination DB**, rejected: lifecycle mismatch
   (see Decision 1).
-- **Let deliver own the goal loop** — rejected: deliver already owns
+- **Let deliver own the goal loop**, rejected: deliver already owns
   in-run orchestration (blackboard, epics); the goal layer must survive the
   run process, so it lives above it.
-- **Adopt Choir itself as the backend** — deferred: single-machine today;
+- **Adopt Choir itself as the backend**, deferred: single-machine today;
   the protocol's distributed-worker surface (GitHub issues, forks) is a
   follow-up if distribution becomes a requirement.
-- **Auto-execute approved escalations** — rejected: salvage and escalation
+- **Auto-execute approved escalations**, rejected: salvage and escalation
   are approval-gated by user decision (2026-10-03); the daemon proposes,
   never schedules.

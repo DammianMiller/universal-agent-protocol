@@ -1,4 +1,4 @@
-# Architecture Review — Operator-Directed Model Placement (MOS + MPC)
+# Architecture Review, Operator-Directed Model Placement (MOS + MPC)
 
 Reviewed: `docs/specs/operator-model-placement.md` (963 lines, commit `3e415113`).
 Reviewer lens: pattern fit, blast radius, cost of reversal, evolutionary path.
@@ -7,7 +7,7 @@ All claims below were verified against the worktree at
 
 ## Verdict
 
-**Accept with conditions.** The design is unusually well-grounded — measured
+**Accept with conditions.** The design is unusually well-grounded, measured
 footprints, fail-closed unknowns, `mode=off` default, a byte-identical
 regression test as the top-priority test. It is not implementable as written:
 three load-bearing factual claims about existing code are false, and one
@@ -43,7 +43,7 @@ Fit gaps:
   `src/inference/probe.ts` (probe primitives, `SlotsInfo`, `collect`) and
   `src/capacity/` (policy parsing), never the reverse. §5 item 4 (per-UUID GPU
   probing) is a change to `src/inference/probe.ts`, which `uap doctor` already
-  consumes — phase 0 therefore edits a module with live consumers, and the spec
+  consumes, phase 0 therefore edits a module with live consumers, and the spec
   should say so.
 - **The registry is a fifth source of endpoint truth.** It would carry
   endpoints, units, rails, and costs, alongside `src/models/types.ts` (pinned
@@ -70,7 +70,7 @@ Affects: `tools/agents/scripts/anthropic_proxy.py` (17k lines, every client),
 Worst case if wrong: an enforcement step that stops a unit and fails to start
 the replacement leaves the machine with **no backend on `:4000`/`:8080`** while
 every agent, role fallback, and harness profile still points there. That is a
-full local outage, not a degraded path — which is why the spec's insistence on
+full local outage, not a degraded path, which is why the spec's insistence on
 rollback-before-`auto` is correct and should be a hard gate, not a phase label.
 
 Second-worst case is quieter and more likely: a stale upstream model-id cache
@@ -121,7 +121,7 @@ file it as `docs/architecture/adr/0006-operator-directed-model-placement.md`
    (`_pt_client`, `:14473`) and the save/restore path (`_sr_client`, `:13823`),
    under routes `/v1/chat/completions` (`:15832`), `/api/chat` (`:16618`),
    `/api/generate` (`:16655`), and `/anthropic/v1/messages` (`:15743`). The
-   purity claim is fine — it only mutates `openai_body["model"]`, adds to
+   purity claim is fine, it only mutates `openai_body["model"]`, adds to
    `_rewritten_model_ids`, and logs. The coverage claim is not. §4.3 must
    enumerate the entry paths and state which are gated and which are exempt
    (and why), or the gate is a hole in the exact place it matters.
@@ -149,7 +149,7 @@ file it as `docs/architecture/adr/0006-operator-directed-model-placement.md`
    counters hung on the httpx client object), `_admitted_sessions` (`:4920`),
    and `_client_request_times` / `resolve_client_id` (`:2011-2020`). None is
    exposed. The impact preview therefore needs a **new proxy endpoint** that
-   reports live in-flight work per target — new machinery, not a join of two
+   reports live in-flight work per target, new machinery, not a join of two
    existing registries. That changes the phase-2 estimate and should be named as
    a phase-2 deliverable.
 
@@ -158,14 +158,14 @@ file it as `docs/architecture/adr/0006-operator-directed-model-placement.md`
    states `strata-server` is **unit-less** ("launched by
    `/home/cogtek/dev/strata/run-iq3_xxs.sh`... No restartBudget: with no unit,
    NRestarts does not exist"). Enforcement step 4 is
-   `systemctl --user start <new unit>` with "the profile's flags" — for every
+   `systemctl --user start <new unit>` with "the profile's flags", for every
    alternate config on this host, that unit does not exist in tracked config,
    and the reference implementation (`~/.config/uap/model-switch.sh`) is
    machine-local and unreviewed. Add a phase-0 deliverable: tracked systemd
    units (with `Conflicts=` edges) for every placeable config, or the design
    degrades to raw process control, which the risk table explicitly forbids.
    Note also that `config/capacity-policy.json`'s `services` is a **list**, not
-   a map — `models validate` must look entries up by `name`.
+   a map, `models validate` must look entries up by `name`.
 
 5. **§5.1's call-site list and migration precedent are wrong.** The service
    method `acquireModelSlot` (`src/coordination/service.ts:1075`) has exactly
@@ -173,7 +173,7 @@ file it as `docs/architecture/adr/0006-operator-directed-model-placement.md`
    not reference it. The real consumers go through `withModelSlot()` at
    `src/delivery/agentic-executor.ts:2569` and
    `src/models/openai-compat-client.ts:260`. And the claim that schema
-   evolution "already lives" in `src/coordination/database.ts` is false — that
+   evolution "already lives" in `src/coordination/database.ts` is false, that
    file contains no `ALTER TABLE` or `PRAGMA` at all, and there is no
    `PRAGMA user_version` anywhere in `src/`. The precedent is
    `src/memory/short-term/schema.ts` (a `PRAGMA table_info` guard at `:23`, and
@@ -182,7 +182,7 @@ file it as `docs/architecture/adr/0006-operator-directed-model-placement.md`
    create-copy-drop-rename at `:75`), plus
    `src/policies/database-manager.ts:111-125` and `src/tasks/database.ts:140-153`.
    Because the coordination DB has no version marker, the migration must be
-   guarded by a `PRAGMA table_info` probe to stay idempotent across opens — an
+   guarded by a `PRAGMA table_info` probe to stay idempotent across opens, an
    unguarded `ALTER` next to `CREATE TABLE IF NOT EXISTS` will throw on second
    open.
 
@@ -200,7 +200,7 @@ file it as `docs/architecture/adr/0006-operator-directed-model-placement.md`
    holders are already `agentic:${model.apiModel ?? 'default'}` and
    `model:${model.apiModel ?? 'default'}`. Deriving the new `target` column from
    `apiModel` would make a backend switch change the key, orphaning outstanding
-   leases and resetting per-target backpressure — the same hazard
+   leases and resetting per-target backpressure, the same hazard
    `src/models/types.ts:229` documents. Define `target` as the stable device +
    endpoint identity from the ledger, and say so in §5.1.
 
@@ -220,7 +220,7 @@ file it as `docs/architecture/adr/0006-operator-directed-model-placement.md`
    `PRAGMA table_info` idempotence guard; define `target` as endpoint identity.
 6. Add a **phase 1.5: per-target upstream addressing**, before the proxy gate.
    `LLAMA_CPP_BASE` is a single module constant (`:289`) referenced 35 times,
-   including every derived probe — `.replace("/v1", "/props")` (`:3403`,
+   including every derived probe, `.replace("/v1", "/props")` (`:3403`,
    `:16452`), `/slots` (`:3470`, `:3529`, `:4926`, `:15073`), `/health`
    (`:5210`, `:16722`), `_upstream_port()` CLOSE-WAIT accounting (`:4580`), and
    the streaming retry loops (`:15065-15700`). A per-target semaphore on top of
@@ -242,8 +242,8 @@ file it as `docs/architecture/adr/0006-operator-directed-model-placement.md`
 ## Debt assessment
 
 Paying down real debt: the prose-in-five-profile-files problem, the
-`DEFAULT_SLOTS = 2` lie on a single-rail backend (`src/utils/model-slots.ts:13`
-— correctly flagged as safe for llama.cpp and unsafe for Strata), the
+`DEFAULT_SLOTS = 2` lie on a single-rail backend (`src/utils/model-slots.ts:13`,
+correctly flagged as safe for llama.cpp and unsafe for Strata), the
 single-row `model_backpressure`, and the global `upstream_semaphore`. Adding new
 debt only if phase 1.5 is skipped: a per-target policy layered on a
 single-target transport is exactly the kind of "just for now" seam that becomes
@@ -268,7 +268,7 @@ permanent.
 - `refactoring-specialist`: phase 1.5 per-target upstream addressing in
   `anthropic_proxy.py`.
 
-## Appendix — ADR draft to file as ADR-0006
+## Appendix, ADR draft to file as ADR-0006
 
 ```markdown
 # ADR-0006: Operator-directed model placement (registry + ledger + proxy gate)

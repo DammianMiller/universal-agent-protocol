@@ -1,4 +1,4 @@
-# ADR 0013: Declarative workflow layer — static step DAGs over the orchestrator
+# ADR 0013: Declarative workflow layer, static step DAGs over the orchestrator
 
 - Status: Accepted (amended by ADR 0014: a fourth step kind `loop`, the
   caller-injected convergence-loop seam, and the team-solve-deliver
@@ -6,27 +6,27 @@
 - Date: 2026-11-03
 - Spec: `uap workflow` (src/workflow/, src/cli/workflow.ts,
   examples/workflows/team-solve/, docs/guides/WORKFLOWS.md).
-- Supersedes: none — additive layer; `orchestrate()` and every existing
+- Supersedes: none, additive layer; `orchestrate()` and every existing
   delivery surface are untouched.
 
 ## Context
 
 UAP's task DAG machinery (ADR 0009's blackboard orchestrator) executes a
-graph of fresh-context tasks with bounded repair and resume — but the DAG it
+graph of fresh-context tasks with bounded repair and resume, but the DAG it
 runs is model-authored at runtime (decompose.ts). Every mission re-plans
 itself; nothing about the plan is a durable, reviewable, reusable asset.
 
 The measured external counterpoint is GVS5H (Lee, 2026; reproduced by
-Memdoor's team-solve): five Qwen3.8-27B roles on a STATIC graph — planner,
+Memdoor's team-solve): five Qwen3.8-27B roles on a STATIC graph, planner,
 two parallel ideators from different algorithm families, solver, reviewer,
-repairer — talking only through files, judged only by a deterministic
+repairer, talking only through files, judged only by a deterministic
 harness, matched the authors' own harness on LiveCodeBench Hard (9.8/10 vs
 9.6; a frontier single-call at 8.0). The claim is structure, not model
 class: the graph and the ledger discipline carried the result.
 
 UAP had the engine but not the declarative layer: no way to author the graph
 as data, pin models per step, run deterministic command steps as first-class
-nodes, or resume a blocked run — nothing a CI or a cron could execute as a
+nodes, or resume a blocked run, nothing a CI or a cron could execute as a
 file.
 
 ## Decision
@@ -34,7 +34,7 @@ file.
 1. **A workflow is data.** `.uap/workflows/<name>/workflow.yaml` (zod-
    validated) + role-prompt files; search roots project → home → bundled
    `examples/` (first hit wins). The loader is fail-closed: unique ids, known
-   `requires:`, cycle rejection (Kahn — topoOrder's fail-soft is right for
+   `requires:`, cycle rejection (Kahn, topoOrder's fail-soft is right for
    model-authored plans, wrong for a static file), kind/field confusion,
    parallel write collision (graph-safety FALSE INDEPENDENCE, checked at
    authoring time), run-dir path escapes, load-time model-pin validation,
@@ -64,7 +64,7 @@ file.
    symlink escapes) and cannot plant run-state.json; model replies are data
    (prompts and files, never a shell); model-written code executes only via
    authored commands, exactly like `deliver` gate scripts. Untrusted input
-   composes with `uap sandbox --net off` externally — no sandbox stub inside
+   composes with `uap sandbox --net off` externally, no sandbox stub inside
    the layer.
 7. **Validation is a gated option, not a claim.** O7 in
    docs/plans/model-performance-proof-options.md: paired three-arm (single-
@@ -74,15 +74,15 @@ file.
 
 ## Alternatives considered
 
-- **Extend decompose.ts with static plan files** — rejected: couples the
+- **Extend decompose.ts with static plan files**, rejected: couples the
   declarative format to the model-planning path; a static workflow needs
   different validation (fail-closed, not fail-soft) and different authoring
   ergonomics than a runtime plan.
-- **Byte-port Memdoor's mario engine** — rejected: UAP already owns a
+- **Byte-port Memdoor's mario engine**, rejected: UAP already owns a
   validated orchestrator with repair/resume semantics; a second engine would
   duplicate them. The port keeps the METHOD (roles, ledger discipline,
   deterministic verdict), not the bytes.
-- **Build workflows on droids/Task** — rejected: droid delegation is runtime
+- **Build workflows on droids/Task**, rejected: droid delegation is runtime
   ad-hoc (the orchestrating model decides); a workflow must be executable
   headless from a file, by CI, without any model in the driver's seat.
 

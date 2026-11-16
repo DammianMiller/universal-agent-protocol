@@ -1,4 +1,4 @@
-# LCB-Droid Smoke — 10 problems × 1 pass, arm 2 (UAP-in-Droid)
+# LCB-Droid Smoke, 10 problems × 1 pass, arm 2 (UAP-in-Droid)
 
 **Result: 10/10 = 100% pass@1 on hidden tests. All 10 public gates green. All 10 scorer-control references green. 9/10 agents self-stopped; 1/10 hit the wall cap with a gate-green solution collected at cap.**
 
@@ -12,7 +12,7 @@ collect-at-cap, concurrency 1. Scoring: the vendored LCB fork's
 `codegen_metrics` (hidden tests, k=1, `release_v6`), each attempt scored
 alongside the published passing reference as a per-problem control.
 
-## Caveats — read before comparing any number below
+## Caveats, read before comparing any number below
 
 1. **The abliteration delta is unmeasured and is the strongest confound.**
    The local model is the *abliterated* IQ3_S quant, not the pristine
@@ -28,7 +28,7 @@ alongside the published passing reference as a per-problem control.
 4. **This subset is published-solved.** The published orchestrated arm
    scores 10/10 on pass 1 over these exact 10 problems (9 of them 5/5).
    A local 10/10 therefore **validates the pipeline and reaches the subset
-   ceiling — it does not establish parity or superiority on the full 100**,
+   ceiling, it does not establish parity or superiority on the full 100**,
    where the published orchestrated mean is 93.0 and single-call is 84.2.
 5. **n = 1 pass.** No variance measured. Published per-pass spread on the
    full 100 is 92–94 (orchestrated) and 82–86 (single).
@@ -36,7 +36,7 @@ alongside the published passing reference as a per-problem control.
    collected-at-cap solution passes both public and hidden tests, but the
    session never self-terminated (result doc killed before emission, so
    whether it kept working past a green gate is unobservable).
-7. **Token usage is unmeasurable on this chain** — the local proxy reports
+7. **Token usage is unmeasurable on this chain**, the local proxy reports
    zero usage counters, so no cost/efficiency comparison is possible.
 
 ## Per-problem results
@@ -80,7 +80,7 @@ rescue), served-model snapshots, resumable records, and hidden-test
 scoring with per-problem reference controls all worked with zero
 infrastructure blockers.
 
-The 10/10 is at the subset ceiling — consistent with the published
+The 10/10 is at the subset ceiling, consistent with the published
 orchestrated arm, but this subset cannot discriminate arms. Any claim
 about local-vs-published performance requires the full 100 (or a
 randomly drawn, not published-solved, subset).
@@ -92,20 +92,20 @@ cap, so a full run should expect some wall-caps and keep collect-at-cap.
 
 ## Artifacts
 
-- `benchmarks/lcb-droid/results/smoke-10/` — `summary.json`,
+- `benchmarks/lcb-droid/results/smoke-10/`, `summary.json`,
   `records.jsonl` (per-attempt records with served-model snapshots),
   `smoke-scored.jsonl` (official verdicts + controls), `solutions/*.py`
   (the 10 collected model outputs), `droid-results/*.json` (droid result
   docs per completed session; abc399_e's was killed at cap).
 - `benchmarks/lcb-droid/render_tasks.py`, `run_smoke.py`, `score_smoke.py`
-  — reproduce with the recipe in `benchmarks/lcb-droid/README.md`.
-- `benchmarks/lcb-droid/anchors.json` — published anchors and per-problem
+  reproduce with the recipe in `benchmarks/lcb-droid/README.md`.
+- `benchmarks/lcb-droid/anchors.json`, published anchors and per-problem
   verdicts (GVS5H @ 707e2129).
 
 ## Decision gate (requires explicit go)
 
-1. **Stop** — smoke goal met, archive as-is.
-2. **Pilot 50×3** — ~71 h serial; adds variance signal.
-3. **Full 100×5** — ~237 h serial; directly comparable to published means.
-4. **Add arm 1** (no AGENTS.md protocol) — isolates the protocol's
+1. **Stop**, smoke goal met, archive as-is.
+2. **Pilot 50×3**, ~71 h serial; adds variance signal.
+3. **Full 100×5**, ~237 h serial; directly comparable to published means.
+4. **Add arm 1** (no AGENTS.md protocol), isolates the protocol's
    contribution on the same chain; any of the above can be combined with it.

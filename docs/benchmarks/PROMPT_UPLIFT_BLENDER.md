@@ -3,13 +3,13 @@
 **Date:** 2026-11-12, revised 2026-11-13 · **Subject:** `abliterated-iq2_xs` on a
 frozen Blender build contract, driven by bespoke harness tooling (the repo's UAP
 install is 2.39.1; UAP supplies the memory store and worktree workflow here, not the
-harness — there is no uplift subsystem to attribute a result to)
+harness, there is no uplift subsystem to attribute a result to)
 **Scope:** one measured prompt-uplift run against a frozen multi-gate acceptance
 contract, and the four transferable lessons it produced. This is a dated study, not
 a feature doc: the harness lives in the experiment repo, not here. It is an
 *uncontrolled field run* in the sense defined by
-[benchmarks/README.md](README.md) — one model, no control arm, prompt changed at every
-step — so it shows magnitude and mechanism, not causation; quote the paired harness for
+[benchmarks/README.md](README.md), one model, no control arm, prompt changed at every
+step, so it shows magnitude and mechanism, not causation; quote the paired harness for
 causal claims. For the evergreen mechanism the study informs, see
 [guides/DELIVER.md](../guides/DELIVER.md) (iterate against real completion gates) and
 [guides/LOCAL_MODELS.md](../guides/LOCAL_MODELS.md).
@@ -24,22 +24,22 @@ Task: write a Blender Python script that builds a rigged, animated, game-ready
 robot. Acceptance is two independent gates, and the model is asked to produce exactly
 one artifact, its build script:
 
-- **Structural gate** — 12 checks: exactly 19 bones, 4 clips, under 12k tris, feet
+- **Structural gate**, 12 checks: exactly 19 bones, 4 clips, under 12k tris, feet
   on the floor, weapon grip at the palm, every mesh bound to the rig, FBX
   round-trip, and so on. Hash-pinned in `.uap/gate-lock.json` (`a519af41c595…`),
   along with the human-readable contract `gates.md`.
-- **Visual gate** — 8 pixel-level checks over 36 rendered PNGs (4 clips × 3 keyframe
+- **Visual gate**, 8 pixel-level checks over 36 rendered PNGs (4 clips × 3 keyframe
   positions × 3 ortho cameras). Pixels are classified by HSV hue, so the gate reads
   the render the way a reviewer would: is the weapon at the hand, are the feet on the
   floor line, is any part floating off in space. Added after the lock file was
   written, so it is pinned by recorded hash (`7672fece1d0e…`) rather than by
-  `gate-lock.json` — see the caveat under lesson 1.
+  `gate-lock.json`, see the caveat under lesson 1.
 
 Model: `abliterated-iq2_xs` (a ~2-bit quantized small model), temp 0, **first attempt
 only, no repair turns**. Each stage is one prompt revision, scored by `prompt_sha`, so
 a score is attributable to an exact prompt.
 
-`n` counts scored attempts — 124 of the 130 rows in `.uap/uplift/results.jsonl`; the
+`n` counts scored attempts, 124 of the 130 rows in `.uap/uplift/results.jsonl`; the
 six `--dry-prompt` rows print the prompt and record no score. A build that crashes
 is scored 0, not excluded. `12/12` is the structural gate; `both gates` means 12/12
 *and* 8/8 on the same first attempt. The `arm` column is the model that actually
@@ -70,8 +70,8 @@ First-attempt rate at *both* gates, measured on IQ2_XS alone, went 0/3 → 3/9 �
 The 5/6 rate held across two consecutive prompt revisions; the revision after them
 regressed to 4/6 with two failure modes that neither of its predecessors had shown. The
 revision after *that* closed both of those modes and regressed further, to 1/6, on a
-mode no earlier revision had produced. The revision after *that* — the same prompt plus
-one rule about which Euler slot carries the animated angle — restored 5/6, so three
+mode no earlier revision had produced. The revision after *that*, the same prompt plus
+one rule about which Euler slot carries the animated angle, restored 5/6, so three
 prompts now measure 5/6 and only the last of them closes the failure family its
 predecessor exposed. The series reads as a record of which rung falls next rather than
 of monotone improvement: each revision closed the family that was visible and left a
@@ -80,8 +80,8 @@ reasoning truncations, 1 built-but-incomplete (11/12, 6/8), 1 clean pass.
 
 ## An arm switch went unnoticed for two stages
 
-`B-visual-v4` and `B-visual-v5` — 15 attempts, the two stages that produced every
-recorded both-gates pass in the original write-up — were not served by the model the
+`B-visual-v4` and `B-visual-v5`, 15 attempts, the two stages that produced every
+recorded both-gates pass in the original write-up, were not served by the model the
 stage rows say they were. Both arms declare port 8080, so only one could own the
 endpoint, and the runner recorded the *configured* model (`MODEL`,
 `abliterated-iq2_xs`) rather than the served one; `served_model` and the
@@ -90,7 +90,7 @@ endpoint, and the runner recorded the *configured* model (`MODEL`,
 Prompt-token counts are a fingerprint, but a weak one inside this window: the same
 prompt file produces the same prompt for either arm, so `13868` and `14828` appear in
 both engine logs. The completion-token count is per-attempt and separates them
-cleanly — each window's counts appear in one log, in attempt order, and not in the
+cleanly, each window's counts appear in one log, in attempt order, and not in the
 other at all.
 
 | window | prompt tokens | `usage.completion_tokens` | IQ2_XS log | IQ4_XS v31 log |
@@ -115,7 +115,7 @@ attempt order: the `16762` window at lines 272807–272924, the `16961` window a
 prompt-token count. The `18163` prompt count appears in neither the IQ4_XS v31 log nor
 the swift-1.5-iq3_s log at all, and that window's six completion counts appear in
 neither. The `16961` window has exactly seven such lines in the
-IQ2_XS log — the six attempts plus one unrelated 19-token generation at line 104791 —
+IQ2_XS log, the six attempts plus one unrelated 19-token generation at line 104791,
 and one line in the IQ4_XS log at an unrelated 1,378-token generation. The `16762`
 window's `6738` also shows up once in that log at an unrelated 42,964-token prompt, and
 in the IQ4_XS log not at all. The `17629` prompt count appears once in the IQ4_XS log,
@@ -125,8 +125,8 @@ appear in that log at all.
 The same log lines carry generation speed, which corroborates: ~150–170 tok/s on
 IQ2_XS against ~80 tok/s on IQ4_XS v31, and the reruns' recorded `gen_elapsed`
 implies IQ2_XS speed. Port 8080 declared `abliterated-iq2_xs` (`GET /v1/models`)
-throughout the rerun windows — it has since been restored to the fleet default
-`strata` — and every `B-visual-v6` row carries
+throughout the rerun windows, it has since been restored to the fleet default
+`strata`, and every `B-visual-v6` row carries
 `served_model=abliterated-iq2_xs` with no `arm_mismatch`.
 
 Consequences:
@@ -136,16 +136,16 @@ Consequences:
   v4's four `sys` `NameError` crashes, its three reasoning truncations, and the
   17 px walk-cycle failure. Those are not 2-bit-model behaviour.
 - Re-running the same two prompts on the restored IQ2_XS arm still clears the pixel
-  gate: 3/9 at v4 and 2/6 at v5, so the claim survives — at a lower rate, and with
+  gate: 3/9 at v4 and 2/6 at v5, so the claim survives, at a lower rate, and with
   the improvement continuing to 5/6 at v6 for two consecutive prompt revisions, each
   of which cleared both gates five of six attempts. The third revision in that series
   regressed to 4/6 and the fourth to 1/6, so the step to 5/6 is real but neither later
-  revision is the one to keep. The fifth revision — the same prompt plus a rule naming
-  which Euler slot carries the animated angle — restored 5/6 and closed the family the
+  revision is the one to keep. The fifth revision, the same prompt plus a rule naming
+  which Euler slot carries the animated angle, restored 5/6 and closed the family the
   fourth had exposed, so it is the one to keep.
 - The mechanism is lesson 1 with the verifier swapped for the model: integrity
   established after the fact instead of enforced at run time. One line in the
-  runner — compare `served_model` to `MODEL` before scoring — would have caught the
+  runner, compare `served_model` to `MODEL` before scoring, would have caught the
   switch on the first affected attempt.
 
 ## Four lessons
@@ -160,17 +160,17 @@ out of the way, but nothing enforces the header's sentence at runtime: the model
 script runs as ordinary Blender Python with write access to its workspace, and the
 workspace sits inside the same repo as the originals. Integrity was therefore
 established *after* the fact: pinned hash matches live, and every workspace carried
-byte-identical gate copies — one distinct hash across all 117 validator copies, all 78
+byte-identical gate copies, one distinct hash across all 117 validator copies, all 78
 visual-gate copies, all 78 render-script copies and all 117 `gates.md` copies, covering
 the 124 scored runs.
 
 That audit has one weakness worth naming. `make_workspace` builds
 `runs/<stage>/attempt-N` and `--tag` is **not** in the path, so a rerun `rmtree`s and
 rewrites the directory its predecessor used. The 124 scored attempts land in 102 attempt
-directories, 19 of which were written more than once — 18 pairs (the nine
+directories, 19 of which were written more than once, 18 pairs (the nine
 `B-visual-v4` and six `B-visual-v5` originals plus their `arm-rerun` twins, and the
 first three `B-visual-v6` attempts plus their `arm-probe` twins) and `bare` attempt 1
-five times, 22 extra writes in total — and the hash audit can only see the **last
+five times, 22 extra writes in total, and the hash audit can only see the **last
 writer** of each. The 15 IQ4-arm workspaces survive only because the quarantine copied
 them to
 `runs/B-visual-v{4,5}-arm-iq4_xs-v31/` before the rerun; those 15 archived directories
@@ -183,8 +183,8 @@ whose score row and workspace agree on the same writer.
 Be precise about the strength of that. The runner copies the gates but does not
 re-verify the hashes *inside* the run, and the workspace copy is writable, so the
 guarantee here is audit-after-the-fact rather than runtime enforcement. That is enough
-to make the pass rate falsifiable — a tampered gate would show up as a hash mismatch
-when checked — but it is not the same as a read-only mount or a pre-flight assertion.
+to make the pass rate falsifiable, a tampered gate would show up as a hash mismatch
+when checked, but it is not the same as a read-only mount or a pre-flight assertion.
 Closing that gap is cheap: recompute the workspace gate hashes after the model's
 script has written and before the gates execute, and score the attempt 0 on mismatch.
 Four `hashlib` calls in the runner turn "no tampering was found afterwards" into
@@ -198,7 +198,7 @@ rather than the producer.
 
 Every run records `prompt_sha` alongside its score, and prompt files compose with
 `#extends <stage>` so a revision is a delta, not a rewrite. That is what made v4
-diagnosable: the geometry rules demonstrably worked — attempt 5 hit both gates, and
+diagnosable: the geometry rules demonstrably worked, attempt 5 hit both gates, and
 its static numbers matched the offline geometry test that had been run before the
 stage shipped: 842 tris, feet 0.0000 m, grip 0.0000 m, predicted island ratio 0.088
 against a 0.30 limit and measured 0.087. Its clip diffs came out smaller than the
@@ -217,9 +217,9 @@ rerun rows carry the identical `prompt_sha` as the originals and differ only by
 `--tag`, so the two arms can be separated attempt by attempt instead of discarded.
 It also paid for itself forward: v6's five pose-table revisions are a demonstrable
 uplift step, not a lucky streak. The three rungs that failed in the v4 and v5 IQ2_XS
-reruns — the attack clip losing all its weapon pixels (`gap 999`, four times at v4,
+reruns, the attack clip losing all its weapon pixels (`gap 999`, four times at v4,
 twice at v5), a walk cycle lifting feet past the limit, and jump endpoints leaving the
-root off the floor — each got a named rule, and the next six attempts cleared all eight
+root off the floor, each got a named rule, and the next six attempts cleared all eight
 rungs five times. The revision after that, which added one rule and changed the prompt
 hash, cleared them five times again in a second six-attempt window, so the step did not
 rest on one prompt's luck. A third revision, banning assignment expressions inside pose
@@ -227,7 +227,7 @@ tables, cleared them only four times in its own six-attempt window and introduce
 failure modes its predecessors had not seen; a fourth, which closed both of those,
 cleared them once; and a fifth, which added one rule about which Euler slot carries the
 animated angle, cleared them five times again and closed the family the fourth had
-exposed — which is why the honest headline is 5/6 three times, not 5/6 and rising, and
+exposed, which is why the honest headline is 5/6 three times, not 5/6 and rising, and
 why the improvement claim belongs to the prompts that measured 5/6 rather than to the
 series of edits.
 
@@ -241,16 +241,16 @@ NameError: name 'sys' is not defined. Did you forget to import 'sys'?
 ```
 
 The composed prompt asks for an `argv` guard (`argv` appears 7 times) and never
-contains the words `import sys` — 0 occurrences in 43,382 characters. So the import is
+contains the words `import sys`, 0 occurrences in 43,382 characters. So the import is
 purely the model's own guess. Reading the generated headers confirms it: v3's three
 runs each happened to write `import bpy, sys, os`, while v4's four crashing runs wrote
-`import bpy` / `import math` / `from mathutils import …` and omitted `sys` — same
+`import bpy` / `import math` / `from mathutils import …` and omitted `sys`, same
 instruction, different coin flip. v5 states the header as four lines to copy verbatim,
 `import sys` included, and the crash count went to 0/6 with the validator at 6/6.
 
 State the arm caveat: those four crashes were IQ4_XS runs. On IQ2_XS the v4 rerun had
 0 `sys` crashes and 8/9 at 12/12, so the crash lesson cannot be separated from the
-arm switch by this log alone — but v5's IQ2_XS rerun also had 0 `sys` crashes, and
+arm switch by this log alone, but v5's IQ2_XS rerun also had 0 `sys` crashes, and
 its one build failure was an `IndentationError`, a different mode. The instruction
 that matters is the one the failure names: when a prompt asks for a construct, state
 the import or declaration that construct needs, as text to copy rather than prose to
@@ -259,10 +259,10 @@ understand. Small models rewrite headers; they do not reliably infer them.
 The same shape showed up twice more in v6, both as prompt-text defects rather than
 model defects. The appended post-save self-check block sits indented 4 spaces in the
 prompt file for display, and one v6 run pasted it verbatim into a top-level script and
-died on `IndentationError: unexpected indent` — fixed by a rule that says to paste it
+died on `IndentationError: unexpected indent`, fixed by a rule that says to paste it
 at column 0; an `IndentationError` also ended one v5 IQ2_XS rerun. And `Action.fcurves`
-does not exist in Blender 5.2: seven v6 runs died on that `AttributeError` — four in
-the original window, three in the arm probe — *after* printing correct self-check
+does not exist in Blender 5.2: seven v6 runs died on that `AttributeError`, four in
+the original window, three in the arm probe, *after* printing correct self-check
 values and *after* saving the file, so the build exited 0 while the attempt scored 0.
 Every scored row in the log reports `build_rc` 0; a crash is caught from the build
 tail, never from the return code. That is why the prompt
@@ -278,10 +278,10 @@ three were IQ4_XS runs.
 
 The pattern holds across the whole log, not just v4. Of 124 scored runs, 15 had
 reasoning on and 109 had it off. Every one of the 109 reasoning-off runs finished with
-`finish=stop` — none truncated. All 8 truncated runs in the log had reasoning on, and
+`finish=stop`, none truncated. All 8 truncated runs in the log had reasoning on, and
 all 8 scored 0. Reasoning on did not become safe at a bigger budget either: the 7
 reasoning-on runs that were given 32k–64k tokens did finish, and their best score was
-11/12 — no reasoning-on run in the log ever cleared the structural gate. 12 of the 15
+11/12, no reasoning-on run in the log ever cleared the structural gate. 12 of the 15
 reasoning-on runs predate the arm switch (the `bare` and `A-acceptance` stages, recorded
 as IQ2_XS), and the conclusion is unchanged on that subset alone: 5 truncated, best
 score 11/12, no 12/12. Meanwhile v5, run with
@@ -296,16 +296,16 @@ must be pinned in the invocation for scores to stay comparable across stages.
 On the IQ2_XS arm the pixel gate's two animation rungs were the last thing standing for
 most of the study, and both were amplitude, not geometry:
 
-- **`vis-weapon-at-hand`** — 4 of 9 v4 reruns and 2 of 6 v5 reruns. Every failure
+- **`vis-weapon-at-hand`**, 4 of 9 v4 reruns and 2 of 6 v5 reruns. Every failure
   reported `gaps {'attack.mid': 999}` or `{'attack.end': 999}`: `999` means *no
   weapon pixels found in that frame*, not "drifted a little". The attack pose rotated
   the blade edge-on out of the camera plane.
-- **`vis-feet-on-floor`** — 1 v4 rerun (13 px at `jump.end`, limit 12) and 1 v5 rerun
+- **`vis-feet-on-floor`**, 1 v4 rerun (13 px at `jump.end`, limit 12) and 1 v5 rerun
   (26 px at `walk.end`).
 
 The structural gate measures the rest pose, so both builds pass 12/12 and fail the
 pixel gate. Its `feet-on-floor` rung measures the lowest world-Z of any `Foot*` mesh
-vertex in the rest pose against a 0.005 m tolerance — a static measurement — while the
+vertex in the rest pose against a 0.005 m tolerance, a static measurement, while the
 visual gate measures the lift in every rendered frame. That gap, a structural check
 that never exercises the animated state, is the argument for the visual gate existing
 at all.
@@ -316,8 +316,8 @@ diagonal against a 0.30 limit except `rule-f` attempt 16 at 0.113, still well un
 limit, while the five runs that failed it measured 3.142–3.338
 at `B-visual` and 4.504 and 6.393 at `B-visual-v3`; all five `rule-i` clears measured
 0.087. On the floor rung, eight of the
-eleven IQ2_XS runs that cleared it at v4 or v5 reported a max lift of exactly 12 px —
-the limit itself, at `jump.start` — so "cleared" there was a coin flip against the
+eleven IQ2_XS runs that cleared it at v4 or v5 reported a max lift of exactly 12 px,
+the limit itself, at `jump.start`, so "cleared" there was a coin flip against the
 next frame. v6's twenty-four clearing runs reported 1–9 px, none at the limit, and all
 five `rule-i` clears reported 9 px at `walk.start` with the feet touching the floor line
 at 1 px on `idle.start`. The rules moved the margin.
@@ -341,15 +341,15 @@ family while the model found the other:
   row without constraining the expressions inside it.
 - The revision after that banned assignment expressions inside pose tables outright.
   It scored 4/6, and its two failures were two more members of the same family rather
-  than a repeat of either: attempt 24 mixed types in the rotation slot — `d0` is the
+  than a repeat of either: attempt 24 mixed types in the rotation slot, `d0` is the
   3-tuple `(0.0, 0.0, 0.0)` while `d10, d20, dm10, dm20, dm70` are scalar
   `math.radians(…)` values, and rows pass those bare names straight into
-  `Euler(rot, 'XYZ')` — so `Euler()` received a scalar where it wanted a triple and
+  `Euler(rot, 'XYZ')`, so `Euler()` received a scalar where it wanted a triple and
   died with the bare message `TypeError: mathutils.Euler()`; re-executing its tables in
   order, the first failing call is `Idle / spine_03 / frame 24` with `rot = 0.1745`,
   five rows *upstream* of the walrus row that first drew attention to this attempt.
   Attempt 25 referenced `dm30` in a row without ever assigning it (`NameError: name
-  'dm30' is not defined. Did you mean: 'dm10'?`) — it obeyed the ban on `:=` and the
+  'dm30' is not defined. Did you mean: 'dm10'?`), it obeyed the ban on `:=` and the
   arity rule, then used a name the prompt's own crib sheet does not define.
 
 Banning one syntax did not make the rows plain. The next revision shipped exactly that
@@ -378,7 +378,7 @@ failure, the mechanism, the requirement that the animated angle go in the *first
 of the rotation triple, and a self-check line `SELFCHECK slot0=<count>`. All six
 attempts reported the same 18,163-token prompt, five cleared both gates, and an
 independent scan of the scripts' syntax trees found non-zero rotation slots only in the
-first position — eight or ten animated rows per script, and zero second-slot patterns,
+first position, eight or ten animated rows per script, and zero second-slot patterns,
 where every rule-h failure had *only* second-slot patterns. RULE H's family stayed
 closed: no `Euler()` type errors, no undefined angle names, no `:=`. The one failure was
 a returning family, not a new one: attempt 39 wrote a **7-element** row into the
@@ -390,9 +390,9 @@ rendering. `build_rc` is 0 because Blender 5.2 exits 0 on an uncaught script exc
 under `-b -P`; the traceback is in the row's build tail, and the workspace holds the
 18,155-character script but no `.blend`. Every self-check the earlier revisions added
 lives *below* the crash (line 263 onward), so none of them ran for that attempt. It is
-the fourth unpack-arity failure in the log — `A-acceptance` attempt 9 died on `bone_defs`
+the fourth unpack-arity failure in the log, `A-acceptance` attempt 9 died on `bone_defs`
 (`expected 4, got 3`), `B-visual-v2` attempt 1 on `parts` (`too many values … expected
-5`), `prompt-fix-rerun` attempt 10 on the pose keys (`expected 3, got 2`) — and the
+5`), `prompt-fix-rerun` attempt 10 on the pose keys (`expected 3, got 2`), and the
 second on the parts table. RULES F, G, H and I pin the *pose* tables' row shape; the
 prompt shows a parts table to copy but never states its field count or asks for a
 self-check on it.
@@ -421,17 +421,17 @@ python3 tooling/uplift_runner.py --stage B-visual-v6 --attempt N \
 
 Pin `--reasoning-effort none` and `--max-tokens 12000` (lesson 4), keep `--tag` so an
 attempt served by a different arm stays separable in `results.jsonl` (the quarantine
-section) — the tagged rerun windows used `--tag arm-rerun`, `api-fix-rerun`,
+section), the tagged rerun windows used `--tag arm-rerun`, `api-fix-rerun`,
 `prompt-fix-rerun`, `rule-f-rerun`, `rule-g-rerun`, `rule-h-rerun` and `rule-i-rerun`,
 and `.uap/uplift/rerun-arm.sh`, `.uap/uplift/rerun-rule-g.sh`,
-`.uap/uplift/rerun-rule-h.sh` and `.uap/uplift/rerun-rule-i.sh` drive whole windows —
+`.uap/uplift/rerun-rule-h.sh` and `.uap/uplift/rerun-rule-i.sh` drive whole windows,
 and confirm the endpoint before scoring: `GET /v1/models` on port 8080 must return
 `abliterated-iq2_xs`. Note that
 `--tag` does **not** change the workspace path, so a rerun overwrites the attempt
 directory of any earlier run with the same `--stage` and `--attempt`; archive the
 directory first if the original run's artifacts still matter, as the quarantine did.
-The rule windows therefore used fresh attempt numbers — 10–15, 16–21, 22–27, 28–33 and
-34–39 — so no earlier workspace was overwritten. As of this revision the on-disk
+The rule windows therefore used fresh attempt numbers, 10–15, 16–21, 22–27, 28–33 and
+34–39, so no earlier workspace was overwritten. As of this revision the on-disk
 `B-visual-v6` prompt carries the first-slot rule (RULE I) on top of the named-angle
 block (RULE H): composed prompt sha `e6733cb043d58a8f`, 18,163 prompt tokens, attempts
 34–39.

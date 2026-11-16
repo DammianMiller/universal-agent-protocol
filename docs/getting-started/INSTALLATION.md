@@ -1,6 +1,6 @@
 # Installation
 
-> **🏭 Where this fits:** Setting up the floor — before any station can run, UAP has to be installed and wired into your agent harness. **What it delivers:** one `npm install` + one `uap setup` and every station on the [delivery pipeline](../guides/DELIVERY_PIPELINE.md) is live in your project.
+> **🏭 Where this fits:** Setting up the floor, before any station can run, UAP has to be installed and wired into your agent harness. **What it delivers:** one `npm install` + one `uap setup` and every station on the [delivery pipeline](../guides/DELIVERY_PIPELINE.md) is live in your project.
 
 Welcome. The Universal Agent Protocol (UAP) is the discipline layer that turns
 your AI agent into a reliable member of your software delivery line. Left to its
@@ -9,25 +9,25 @@ edits your main branch, writes plausible-but-wrong code, and cheerfully declares
 "done" on something that never actually ran. UAP puts a station at each of those
 break points so the work that comes off the line is trustworthy.
 
-It ships as a single npm package (`@miller-tech/uap`, v2.29.0) that installs the
+It ships as a single npm package (`@miller-tech/uap`, v2.51.0) that installs the
 `uap` CLI. This page gets it onto your machine and wired into your project.
 
 ## Prerequisites
 
-You don't need all of these to start — UAP works with just Node, and turns on
+You don't need all of these to start, UAP works with just Node, and turns on
 more stations as you provide the pieces.
 
 | Requirement | Needed for | Notes |
 | --- | --- | --- |
 | **Node.js >= 18** | Everything | The CLI is published as ESM and requires Node 18 or newer. |
 | **git** | Worktree workflow, memory prepopulation from history | Any recent git. |
-| **Docker** | Local Qdrant (semantic memory tier) | `uap setup` starts a Qdrant container via docker-compose. Optional — memory degrades gracefully without it. |
+| **Docker** | Local Qdrant (semantic memory tier) | `uap setup` starts a Qdrant container via docker-compose. Optional, memory degrades gracefully without it. |
 | **Python 3** | Pattern RAG indexing & embeddings | Optional. `uap setup` creates a virtualenv and installs the pattern indexing dependencies. |
 | **A local OpenAI-compatible model** | `uap deliver`, multi-model routing | Optional. Points at an OpenAI-compatible `/v1` endpoint (default `http://localhost:4000/v1`). |
 
 If you skip Docker, Python, or a local model, those steps are simply skipped and
 the matching features (semantic recall, pattern RAG, the convergence harness) sit
-dormant until you provide them later. Nothing breaks — you just start with fewer
+dormant until you provide them later. Nothing breaks, you just start with fewer
 stations lit up.
 
 ## Install
@@ -56,7 +56,7 @@ uap setup
 
 `uap setup` is a **friendly, arrow-key guided wizard by default** (powered by
 @clack/prompts). It walks you through the whole delivery line, one station at a
-time — memory tiers so your agent remembers, patterns and the policy engine so it
+time, memory tiers so your agent remembers, patterns and the policy engine so it
 follows your rules, your model provider/profile, harness hooks, the browser
 dashboard, and the newer stations too: **recipes and the escalation judge,
 delivery gates, model-slot concurrency, cross-agent collaboration, DESIGN.md, and
@@ -76,7 +76,7 @@ files** (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, …, plus `.uap.json`) to
 into reusable UAP policies and skills** (see below). It then chains the
 individual commands so the whole system "just works", running these steps:
 
-0. **Self-update the CLI** — before anything else, `setup` checks npm and
+0. **Self-update the CLI**, before anything else, `setup` checks npm and
    **auto-updates the globally-installed `uap` to the latest published version**
    if it is behind, so every setup runs against current behaviour. It is
    non-fatal and self-limiting: only a real global install is updated (a source
@@ -84,11 +84,11 @@ individual commands so the whole system "just works", running these steps:
    and it is **skipped in CI** for reproducibility (`UAP_SELF_UPDATE=1` forces
    it). The update applies on the next `uap` invocation. Disable with
    `--no-self-update` or `UAP_NO_SELF_UPDATE=1`.
-1. **Initialize the project** (`uap init` under the hood) — creates `.uap.json`,
+1. **Initialize the project** (`uap init` under the hood), creates `.uap.json`,
    the `agents/data/memory` directory structure, the short-term memory database,
    a `CLAUDE.md` (or `AGENT.md`), the worktree workflow scaffold, and the Python
    pattern scripts.
-2. **Start Qdrant** — uses the serverless Qdrant manager if one is configured in
+2. **Start Qdrant**, uses the serverless Qdrant manager if one is configured in
    `.uap.json`, otherwise starts a Qdrant container via docker-compose. If Docker
    is unavailable this step warns and continues.
 3. **Wait for the Qdrant healthcheck** (up to 15s). If Qdrant is not reachable,
@@ -97,7 +97,7 @@ individual commands so the whole system "just works", running these steps:
    daily-log entries into longer-lived memory tiers (non-fatal if unavailable).
 5. **Create the Python virtualenv** for pattern RAG if `init` did not already do
    so. Skipped with a warning when Python 3 is not on the system.
-6. **Index patterns into Qdrant** — only when both Qdrant and Python are ready.
+6. **Index patterns into Qdrant**, only when both Qdrant and Python are ready.
 7. **Configure the MCP Router** for all detected AI harnesses.
 8. **Install policy-gate and lifecycle hooks** for the project's platforms (run
    `uap hooks doctor` afterward to verify coverage).
@@ -120,9 +120,9 @@ uap setup -d <path>          # set up a project directory other than the cwd
 
 ### Backup & custom-content extraction
 
-Every `uap setup` first copies your agent instruction files — `CLAUDE.md`,
+Every `uap setup` first copies your agent instruction files, `CLAUDE.md`,
 `AGENTS.md`, `AGENT.md`, `GEMINI.md`, `.cursorrules`, `.clinerules`,
-`.windsurfrules`, and `.uap.json` — to `.uap-backups/<date>/` (idempotent, gitignored)
+`.windsurfrules`, and `.uap.json`, to `.uap-backups/<date>/` (idempotent, gitignored)
 so a run is always reversible. Disable with `--no-backup`.
 
 It then detects **non-standard sections** in those files (anything beyond the UAP
@@ -183,7 +183,7 @@ uap hooks doctor     # audit policy-gate coverage (exits non-zero on gaps)
 
 ## Next steps
 
-- [Quickstart](./QUICKSTART.md) — a 5-minute path from setup to your first
+- [Quickstart](./QUICKSTART.md), a 5-minute path from setup to your first
   delivered task.
-- [Configuration](./CONFIGURATION.md) — `.uap.json` options, environment
+- [Configuration](./CONFIGURATION.md), `.uap.json` options, environment
   variables, Qdrant, and model profiles.

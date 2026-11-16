@@ -1,7 +1,7 @@
 # Operator-Directed Model Placement (MOS + MPC)
 
 Status: draft for review. Not implemented.
-Scope: local inference placement — which model sits on which device, who is
+Scope: local inference placement, which model sits on which device, who is
 allowed to ask for a different one, and what happens to everyone already
 resident when the answer is no.
 
@@ -13,7 +13,7 @@ Today the operator picks a backend by hand. `~/.config/uap/model-switch.sh`
 takes one of `flash | exl3 | signal | gsq | ampere | swift | strata`, disables
 every other backend unit, starts the chosen one, and blocks on
 `http://127.0.0.1:8080/health`. The units are mutually exclusive by
-declaration — `uap-strata-server.service` carries:
+declaration, `uap-strata-server.service` carries:
 
 ```
 Conflicts=uap-exl3-server.service uap-llama-server.service uap-ampere-server.service
@@ -34,7 +34,7 @@ blind act. Three consequences:
    attached to the resident model, what they are doing, or how much context
    they lose. The operator chooses blind.
 3. **The cost of loading a second model is unknown at decision time.** The
-   numbers exist — but only as prose in profile comments.
+   numbers exist, but only as prose in profile comments.
    `config/exl3-profiles/qwen38-27b-exl3.env:17` records
    `VRAM resident: 20964 MiB / 24576 MiB`;
    `config/llama-profiles/qwen38-27b-dflash2.env:37` records
@@ -56,7 +56,7 @@ Do not rebuild these. Placement composes on top of them.
 | --- | --- |
 | Declared service budgets, headroom, restart budgets | `config/capacity-policy.json`, `src/capacity/policy.ts` |
 | Health semantics, fail-open vs fail-closed probes | `docs/guides/CAPACITY_POLICY.md`, `src/capacity/probe.ts` |
-| Free VRAM probe | `probeGpuFreeMiB()` — **GPU 0 only** |
+| Free VRAM probe | `probeGpuFreeMiB()`, **GPU 0 only** |
 | Post-load config verification | `metricsMustMatch` (`{"kv":"int8","max_context":131072}` for `strata-server`) |
 | Slot budget: env → config → probe → default | `src/utils/model-slots.ts` (`DEFAULT_SLOTS = 2`, 30s cache) |
 | Cross-process slot semaphore, AIMD backpressure | `src/utils/model-slot-lease.ts`, `src/coordination/service.ts:1045-1174` |
@@ -77,15 +77,15 @@ Two gaps that shape the design:
 
 From the operator, before drafting:
 
-1. **Surface:** a shared core with two front ends — TUI (`uap models`) and a
+1. **Surface:** a shared core with two front ends, TUI (`uap models`) and a
    dashboard Models tab. Neither is authoritative; both read the same state.
-2. **Trigger:** the proxy admission gate. Every client is covered — Claude
-   Code, Codex, OpenCode, UAP agents — because they all enter through
+2. **Trigger:** the proxy admission gate. Every client is covered, Claude
+   Code, Codex, OpenCode, UAP agents, because they all enter through
    `:4000/v1`. A gate in the TypeScript router alone would cover only UAP's
    own callers.
 3. **Eviction:** prompt first. Never evict without an explicit yes. Auto mode
    may load alongside; it may never displace.
-4. **Devices:** multi-device abstraction from the start — GPU0, GPU1, CPU
+4. **Devices:** multi-device abstraction from the start, GPU0, GPU1, CPU
    offload tier, each with its own budget. Single-GPU is the degenerate case,
    not the model.
 
@@ -136,7 +136,7 @@ says so, but `apply` refuses rather than racing a live writer. No new
 long-lived process: the dashboard server is already running, and the proxy is
 already the only component that sees every request.
 
-### 4.1 Model registry — `config/model-registry.json`
+### 4.1 Model registry, `config/model-registry.json`
 
 Machine-readable cost per **config**, replacing the prose in profile comments.
 Two files, merged. `config/model-registry.json` in the repo carries the shape:
@@ -228,7 +228,7 @@ cost(config, cells) = resident_gpu_mib
                     + max(0, cells - kv_resident_cells) / 1000 × kv_mib_per_1k_cells
 ```
 
-For the live config, `cells ≤ 32768` costs exactly 21,812 MiB — the KV pool is
+For the live config, `cells ≤ 32768` costs exactly 21,812 MiB, the KV pool is
 already resident. Requesting the full 114,688-cell session cap costs
 21,812 + 81,920/1000 × 12.2 ≈ **22,810 MiB**, which exceeds the card. That is
 not a rounding error; it is the reason the profile caps sessions at 114,688
@@ -259,13 +259,13 @@ Rules:
   says `concurrency: 1` because Strata exposes one rail, while
   `config/llama-profiles/qwen38-27b-mtp.env` sets `LLAMA_PARALLEL=2`. The
   registry states it per config, cross-checked against a live probe. A mismatch
-  is surfaced, never silently resolved — `src/utils/model-slots.ts:13` falls
+  is surfaced, never silently resolved, `src/utils/model-slots.ts:13` falls
   back to `DEFAULT_SLOTS = 2` when the probe fails, which is **safe for
   llama.cpp and unsafe for Strata**: handing two concurrent requests to a
   1-rail server is exactly the overflow the profile warns about. Rail discovery
   must become backend-aware before the registry can be trusted to allocate.
 
-**Ownership — the registry must not become a fifth source of truth.** Endpoints
+**Ownership, the registry must not become a fifth source of truth.** Endpoints
 already live in four places: `src/models/types.ts:229` pins the live-backend
 alias with a comment explaining why pinning more would "turn a backend switch
 into an outage"; `config/model-profiles/`; `config/llama-profiles/`; and
@@ -275,7 +275,7 @@ than restates, and `models validate` fails on a contradiction:
 | Number | Owner | Registry holds |
 | --- | --- | --- |
 | Endpoint the proxy forwards to | proxy env (`LLAMA_CPP_BASE`) | read-only echo for display, never consumed by routing |
-| Liveness + budget + metrics identity | `config/capacity-policy.json` (`services` is a **list** keyed by `name` — lookups must not assume a map) | the service `name` it cross-checks against |
+| Liveness + budget + metrics identity | `config/capacity-policy.json` (`services` is a **list** keyed by `name`, lookups must not assume a map) | the service `name` it cross-checks against |
 | Launch flags per llama profile | `config/llama-profiles/*.env` | the profile path |
 | Advertised model ids + session caps | `config/model-profiles/*.json` | cross-check only |
 | Measured footprints (`resident_gpu_mib`, `host_rss_mib`, KV geometry) | `~/.uap/model-registry.json` | the only owner |
@@ -283,8 +283,8 @@ than restates, and `models validate` fails on a contradiction:
 
 #### 4.1.1 What measurement actually returns (measured on this host)
 
-The naive recipe — file size for weights, `nvidia-smi` used-minus-weights for
-overhead — is wrong on both counts, and the numbers below are why.
+The naive recipe, file size for weights, `nvidia-smi` used-minus-weights for
+overhead, is wrong on both counts, and the numbers below are why.
 
 Current live config: `strata-iq3_s.json`, engine `strata`, pack `iq3_s`,
 `--max-context 131072 --kv int8 --kv-resident 32768 --vram-reserve-mib 1200
@@ -317,7 +317,7 @@ Four conclusions the registry schema has to absorb:
    and nothing else.
 2. **The engine preallocates at startup.** `--vram-reserve-mib 1200` and
    `--expert-cache auto` mean the process claims the card at load time. Free
-   VRAM after a load is a leftover, not a budget — which is why "free + what
+   VRAM after a load is a leftover, not a budget, which is why "free + what
    the victim frees" is the only meaningful headroom question, and why
    `load_alongside` is effectively unavailable on this host right now.
 3. **Host RAM is a first-class constraint, not a footnote.** The engine holds
@@ -327,7 +327,7 @@ Four conclusions the registry schema has to absorb:
    `resident_gpu_mib`: a candidate is admissible on a device only if that
    device's measured host free RAM covers the candidate's RSS. (At measure time
    the model is already resident, so the check belongs to admission, not
-   measurement — `measure` records the footprint and the host state it saw.)
+   measurement, `measure` records the footprint and the host state it saw.)
 4. **The desktop is a permanent tenant, and it is bigger than the floor
    assumes.** Non-backend GPU use measured 290–1,516 MiB across samples: one
    sample showed Xorg 1,227 + Chrome 214 + Steam 75 = 1,516 MiB with 975 MiB
@@ -335,7 +335,7 @@ Four conclusions the registry schema has to absorb:
    snapd-desktop-integration 8 = 290 MiB, with `memory.used` at 23,105 MiB
    against 21,812 + 290 = 22,102 accounted, leaving ~1,003 MiB attributed to no
    PID at all. So `--query-compute-apps` is not a reliable census of GPU
-   consumers — Xorg appears in it sometimes and not others. The robust
+   consumers, Xorg appears in it sometimes and not others. The robust
    quantity is the *unattributed remainder*, and `uap models measure` should
    derive `reserved_mib` as `device.capacity_mib − free − Σ(compute apps that
    are UAP backends)`, which captures graphics memory whether or not it is
@@ -362,7 +362,7 @@ reading that includes another backend's allocation, or a device whose derived
 `validate` fails an entry whose measurement predates the unit's current
 `ExecStart`.
 
-### 4.2 Placement ledger — `~/.uap/placement.json`
+### 4.2 Placement ledger, `~/.uap/placement.json`
 
 Live state. Written under an advisory lock; every writer re-reads before
 committing so a stale view cannot clobber.
@@ -396,7 +396,7 @@ committing so a stale view cannot clobber.
 
 `free_mib` for `gpu0` is what `nvidia-smi` reports right now (1,016 MiB at the
 time of writing; observed range 245–1,016 as the engine's expert cache grows
-and shrinks), not what would be free after a victim is drained — see §4.4.
+and shrinks), not what would be free after a victim is drained, see §4.4.
 
 Host RAM is a placement constraint in its own right, which is why `cpu0` is a
 device and not a footnote. `free -m` on this box: 123.8 GiB total, 89.1 GiB
@@ -413,10 +413,10 @@ GiB) because mmap'd GGUF pages count toward RSS, and the expert cache is
   that failed rather than reporting a generic "insufficient memory".
 
 Resident states: `hot` (serving), `warming` (loading, not yet accepting),
-`paused` (offloaded, reloadable from disk — see below), `draining` (marked
+`paused` (offloaded, reloadable from disk, see below), `draining` (marked
 for removal, refusing new requests, finishing in-flight).
 
-`free_mib` is refreshed on read from `probeGpuFreeMiB()` — never trusted from
+`free_mib` is refreshed on read from `probeGpuFreeMiB()`, never trusted from
 the last writer's snapshot. The ledger records intent; the probe records fact.
 When they disagree, the probe wins and the disagreement is surfaced.
 
@@ -443,16 +443,16 @@ the ledger can hold but the executor cannot produce**, and the only executable
 option in the preview is `kill`. The preview must label which one it is
 offering, because "pause" sounds free and currently is not.
 
-### 4.3 Admission gate — in the proxy
+### 4.3 Admission gate, in the proxy
 
 The gate runs **before** the wire model is rewritten and **before** anything is
-sent upstream, and it decides on **the model the client asked for** — the id
+sent upstream, and it decides on **the model the client asked for**, the id
 that needs a placement decision. (An earlier draft gated after
 `_reconcile_wire_model()` on its rewritten value; that ordering defeats the
 gate: a non-resident id is silently rewritten to `ids[0]` before the gate ever
 sees it, and the gate forwards exactly what it exists to park. Implemented the
 other way, and in `mode=ask|auto` `_reconcile_wire_model()` skips its silent
-rewrite entirely — an id the upstream does not serve is the operator's decision,
+rewrite entirely, an id the upstream does not serve is the operator's decision,
 never an automatic substitution. `mode=off` keeps the rewrite, byte-identical.)
 
 But **it is not unbypassable, and an earlier draft claimed it was.**
@@ -466,15 +466,15 @@ route funnels through the `/v1/messages` handler (the OpenAI and Ollama
 surfaces run a synthetic request through `messages()` via
 `_guarded_openai_completion`):
 
-- `/v1/messages` — the gate, placed immediately before
+- `/v1/messages`, the gate, placed immediately before
   `_reconcile_wire_model()`. Every named client (Claude Code, Codex, OpenCode,
   UAP agents) enters here; this is the phase-2 deliverable.
-- `/v1/chat/completions`, `/anthropic/v1/messages` — same handler; a park
+- `/v1/chat/completions`, `/anthropic/v1/messages`, same handler; a park
   surfaces in the OpenAI error dialect with the placement id and the
   `uap models pending` resolve path.
-- `/api/chat`, `/api/generate` (Ollama-compatible) — same handler; a park
+- `/api/chat`, `/api/generate` (Ollama-compatible), same handler; a park
   surfaces in the Ollama error dialect the same way.
-- Passthrough (`_pt_client`) — exempt by construction: it returns before the
+- Passthrough (`_pt_client`), exempt by construction: it returns before the
   gate, the model is cloud, it has no local cost, and it never reaches
   `:8080`.
 
@@ -511,21 +511,21 @@ own dialects), plus a `Retry-After: 2` header:
              "resolve_with": "uap models pending  |  uap models apply <placement_id> <option>  |  dashboard Models tab" } }
 ```
 
-Contract notes (api-designer sign-off, 2026-10-08 — verdict: approve with
+Contract notes (api-designer sign-off, 2026-10-08, verdict: approve with
 changes, all applied):
 
 - `retry_after_ms` (and the header) are a re-poll **floor**, not an expected
-  resolution time — resolution is operator-bound; both dedupe windows make a
+  resolution time, resolution is operator-bound; both dedupe windows make a
   short re-poll cheap, and a resolved placement serves the next retry.
 - `message` is the one field every Anthropic SDK surface renders to the
   human; the operator instructions live there. The OpenAI/Ollama dialects
   prefer this message over re-derived copy.
 - `resolve_with` is human-renderable text, display-only, **no stability
-  guarantee** — machine consumers key on `type`, `placement_id`, `reason`
+  guarantee**, machine consumers key on `type`, `placement_id`, `reason`
   only.
 - `reason` is machine-computed, never guessed: `unknown_model`,
   `no_measured_config` (fail closed), `not_resident` (loadable, not loaded),
-  `auto_loading` (phase 4: the controller is loading the model itself — the
+  `auto_loading` (phase 4: the controller is loading the model itself, the
   client's retry IS the protocol, no operator step exists, so the `message`
   deliberately says so instead of pointing at `uap models pending`),
   `auto_failed` (phase 4: the auto attempt failed; the pending entry survives
@@ -533,7 +533,7 @@ changes, all applied):
   `unroutable_target` (the controller vouched for a resident on another
   endpoint; this proxy posts to one discovered upstream, so the id is not
   sent to it raw), `no_controller` (read-only admission with no reachable
-  controller — the resolution is "start the dashboard / set
+  controller, the resolution is "start the dashboard / set
   PROXY_PLACEMENT_CONTROLLER", not a placement decision), or
   `invalid_request` (controller-side: missing model_id). New values may be
   added additively.
@@ -552,7 +552,7 @@ Code requests for the same unloaded model produce one operator prompt, not ten.
 Two windows, deliberately different: the proxy's own dedupe map is a **short
 burst window** (~5s, enough to coalesce a burst that arrives in milliseconds)
 so a resolved placement forwards on the very next request, while the
-controller's ledger pending entry dedupes for **120s** — the operator-prompt
+controller's ledger pending entry dedupes for **120s**, the operator-prompt
 window. The controller re-checks the ledger and answers `forward` the moment a
 live resident serves the id, so the long window never outlives a resolution.
 
@@ -564,7 +564,7 @@ or answers `park` and writes the pending entry. Without a controller, or when
 it does not answer within its short timeout, the proxy degrades to read-only
 admission from its own cached upstream ids: an id the upstream serves
 forwards; an id it does not serve parks (`not_resident`); no knowledge
-(unprobed cache) forwards — the same fail-open direction
+(unprobed cache) forwards, the same fail-open direction
 `_reconcile_wire_model` takes with the same cache.
 
 Environment: `PROXY_PLACEMENT_MODE=off|ask|auto` (default `off`;
@@ -585,7 +585,7 @@ proxy over a local control socket (or by the CLI/dashboard directly), which:
 
 1. drains victims (§4.5),
 2. `systemctl --user stop <victim unit>`,
-3. polls `nvidia-smi` until the expected MiB are actually released — with a
+3. polls `nvidia-smi` until the expected MiB are actually released, with a
    timeout, because a process that lingers holds the card,
 4. `systemctl --user start <new unit>` with the profile's flags,
 5. polls `/health`, then `/slots`, then `/metrics`, applying the capacity
@@ -601,7 +601,7 @@ implementation; the module is that script with drain, verification, and
 rollback.
 
 **One caveat the earlier draft glossed: those units are machine-local.**
-`grep -rn "Conflicts=" config/` returns nothing — the mutually-conflicting
+`grep -rn "Conflicts=" config/` returns nothing, the mutually-conflicting
 backend units live in `~/.config/systemd/user/`, installed by hand, and the
 capacity policy itself records `strata-server` as unit-less. Enforcement
 step 4 (`systemctl --user start <new unit>`) depends on units the repo does
@@ -632,7 +632,7 @@ go-ahead, and until then the timeouts are conservative defaults labelled
 unvalidated. Publishing a hold ceiling without a measured envelope behind it is
 the same mistake as publishing a VRAM cost without a measurement.
 
-**How the proxy finds the controller.** This is new wiring, not reuse — an
+**How the proxy finds the controller.** This is new wiring, not reuse, an
 earlier draft claimed the lifecycle helper already passes `UAP_DASHBOARD_URL`
 to the proxy; that variable exists nowhere in the repo. The proxy reads no
 dashboard address today. So: `uap setup` emits `PROXY_PLACEMENT_CONTROLLER`
@@ -640,7 +640,7 @@ into `.uap/proxy.env` next to the other `PROXY_*` knobs it already emits, and
 the unit file's `EnvironmentFile` picks it up. The value is a loopback URL.
 Two constraints from the existing server code (`src/dashboard/server.ts`): the
 dashboard may bind port 0 (OS-picked, resolved only after `listen`), and it may
-bind `0.0.0.0` for LAN reachability — a placement control endpoint that stops
+bind `0.0.0.0` for LAN reachability, a placement control endpoint that stops
 and starts systemd units must be **loopback-bound regardless of `--host`**,
 with `mutationAuthorized(req)` on every write. If the controller URL is unset
 or nothing answers it, admission runs read-only: it can answer "already
@@ -658,7 +658,7 @@ wrong in both directions: a 2-slot llama.cpp server is throttled to 1, and a
 
 Replace it with a per-target semaphore map keyed by the resolved wire model's
 target, sized from the registry's `rails` and cross-checked against the live
-`/slots` count — the same reconciliation `getModelSlotBudget()` already does
+`/slots` count, the same reconciliation `getModelSlotBudget()` already does
 for the TypeScript side. The wire-model decision and the concurrency gate must
 read the same target or they will disagree under load.
 
@@ -687,7 +687,7 @@ gate needs, and `uap models measure` reads it from there.
 
 The other half of the row is host RAM, and on this machine it is the binding
 constraint. The Strata engine's resident set is 52.9 GiB of a 128 GiB host with
-30 GiB available — it keeps the 52 GiB native GGUF and the 27 GiB PLE file
+30 GiB available, it keeps the 52 GiB native GGUF and the 27 GiB PLE file
 mapped. A second config of that shape does not fit on the host even if the card
 had room, so `fits_host` is not a formality and the registry must carry
 `host_rss_mib` as a measured field with the same fail-closed rule as the GPU
@@ -727,7 +727,7 @@ memory. The correct question is "does the set I intend to have loaded fit in
 24,576 minus the device's reserved floor minus nothing else", not "does
 `nvidia-smi` say there is room".
 `probeGpuFreeMiB()` reads `memory.free`, which on this machine reports 245–975
-MiB at steady state — a number that is true and useless at the same time,
+MiB at steady state, a number that is true and useless at the same time,
 because it describes what is left after the operator's chosen configuration
 already filled the card.
 
@@ -735,7 +735,7 @@ already filled the card.
 while the victim still holds the card reports the opposite of the truth: the
 preview would promise room that does not exist until the victim is gone, and
 the load would then OOM. Concretely, free is 975 MiB and the victim holds
-21,812 MiB, so a displacement that needs 22.5 GiB has 22,787 MiB to work with —
+21,812 MiB, so a displacement that needs 22.5 GiB has 22,787 MiB to work with,
 and only after the stop is verified, not before.
 
 **Host RSS is a hard gate, not a footnote.** 52.8 GiB of the machine's 121.7
@@ -759,20 +759,20 @@ deliberately set low, because that service fills the card by design and the
 measured steady state with the desktop sharing the GPU is ~245 MiB free; a
 600 MiB floor would hold the doctor permanently RED at the operator's chosen
 operating point and train everyone to ignore it. The placement reserve is the
-opposite question — how much to keep back so the *next* model can load — and
+opposite question, how much to keep back so the *next* model can load, and
 on a 24 GiB card it has to be stated explicitly or it is silently zero.
 
 On today's machine the arithmetic is blunt: 24,576 total, 21,812 held by one
 config, ~290 by the desktop, and every alternate config in the registry needs
 22–25 GiB. `load_alongside` has no solutions. Displacement is the only option,
-and that is the correct output, not a bug — it is the same conclusion the
+and that is the correct output, not a bug, it is the same conclusion the
 `Conflicts=` graph already encodes, now stated in MiB instead of unit names.
 
 Generated options, in ranking order:
 
-1. **reuse** — a resident model already satisfies the request.
-2. **load_alongside** — fits on a device with room; nothing is displaced.
-3. **displace** — minimal eviction set that makes room, smallest first.
+1. **reuse**, a resident model already satisfies the request.
+2. **load_alongside**, fits on a device with room; nothing is displaced.
+3. **displace**, minimal eviction set that makes room, smallest first.
 
 Ranking: reuse > load_alongside with matching `task_affinity` > load_alongside
 > smallest displacement > largest displacement. The operator always sees the
@@ -783,19 +783,19 @@ A parked request whose option list is non-empty does not have to wait for a
 human `apply`. `src/placement/auto.ts` picks from the same ranked list the
 operator sees, under two rules:
 
-1. **Non-displacing options auto-enforce when the policy is enabled** —
+1. **Non-displacing options auto-enforce when the policy is enabled**,
    reuse needs nothing, load-alongside evicts nothing; the budget math
    already said it fits.
 2. **Displacement auto-enforces only for allowlisted models.** The
    allowlist (`uap models auto --allow-displace <model> --yes`) is the
-   standing operator confirmation the core invariant requires — see the
+   standing operator confirmation the core invariant requires, see the
    §6 phase-4 note for why this extends, not violates, "never displacement".
 
 The policy lives in `~/.uap/placement-auto.json` (`UAP_PLACEMENT_AUTO`):
 `{"enabled": bool, "allow_displace": [model keys]}` plus the §4.4.2 knobs.
 **Opt-in, fail-closed**:
 a missing file, a corrupt file, or a missing `enabled: true` key all mean
-auto is OFF — every park waits for a manual apply, exactly as in phase 3.
+auto is OFF, every park waits for a manual apply, exactly as in phase 3.
 `uap models auto` with no flags prints status; `--enable`/`--disable` flip
 it; `--allow-displace` refuses to record anything without `--yes`, because
 what it records is consent to evict unattended.
@@ -805,10 +805,10 @@ Mechanics, all fail-closed (hardened after the phase-4 parallel review):
 - **One background run per requested MODEL** (`scheduleAutoResolution` keys
   its run map by model, not placement id): the client-supplied identity
   headers can mint fresh placement ids at request rate, so the id is no
-  dedupe at all — the model is the real "same load" key. The proxy parks
+  dedupe at all, the model is the real "same load" key. The proxy parks
   `auto_loading` reasons under a model-only burst key too, so rotating the
   client-id header does not even re-ask the controller.
-- **Single-flight machine-wide**: auto runs queue on one tail promise —
+- **Single-flight machine-wide**: auto runs queue on one tail promise,
   two alongside options computed against the same pre-load free-memory
   snapshot can otherwise both start and oversubscribe the card. A hard cap
   (`AUTO_MAX_CONCURRENT_RUNS = 2`) bounds the queue outright.
@@ -817,10 +817,10 @@ Mechanics, all fail-closed (hardened after the phase-4 parallel review):
   start can exceed the 120s operator-prompt TTL), because a mid-run expiry
   would mint a fresh entry and a second concurrent run for the same model.
 - **A failed run parks its model in a cooldown** (~10 min): a persistently
-  failing load would otherwise re-enforce at every TTL expiry — an
+  failing load would otherwise re-enforce at every TTL expiry, an
   unattended drain→stop→fail→rollback oscillation the operator consented
   to neither. A later success clears the cooldown.
-- **The run never rejects**: every ledger write inside it is caught — a
+- **The run never rejects**: every ledger write inside it is caught, a
   lock hiccup in a background run must not become an unhandled rejection
   that kills the dashboard daemon. The entry self-heals via TTL expiry.
 - Enforcement starts on a `setImmediate` yield, after the park answer is
@@ -828,18 +828,18 @@ Mechanics, all fail-closed (hardened after the phase-4 parallel review):
   ledger lock) must not stall the admit path, which the proxy holds to a
   2s timeout.
 - Success removes the pending entry; the client's next retry forwards.
-  Failure (or a thrown error) marks the entry `reason: "auto_failed"` —
+  Failure (or a thrown error) marks the entry `reason: "auto_failed"`,
   one attempt per entry, plus the per-model cooldown above; the operator
   sees it in `uap models pending` like any other park.
 - Only a persisted, won-the-write-race entry schedules (the answer's
   placement id must be the ledger's entry id, or a resolved pending would
   have nothing to remove). A lost race or an unpersisted answer reports
-  the honest reason — never `auto_loading` for a run that will not
+  the honest reason, never `auto_loading` for a run that will not
   execute.
-- Unknown and unmeasured models never auto-load — there is nothing to
+- Unknown and unmeasured models never auto-load, there is nothing to
   enforce. The park reasons `unknown_model` / `no_measured_config` stand.
 - If the controller dies mid-enforcement, the machine can be left with the
-  victim stopped and nothing loaded — the ledger self-heals (TTL, then
+  victim stopped and nothing loaded, the ledger self-heals (TTL, then
   resync), the machine does not; recovery is manual (`uap models load`).
   A durable enforcement queue is deliberately out of scope for one
   operator's loopback dashboard; revisit only if controller death
@@ -848,19 +848,19 @@ Mechanics, all fail-closed (hardened after the phase-4 parallel review):
 Precedence note: the CONTROLLER's auto policy (this section) decides
 auto-loads; the proxy's `PROXY_PLACEMENT_MODE` never reaches the
 controller. An operator running `mode=ask` with the auto policy enabled
-gets auto-loads — the policy file is the single authority, and
+gets auto-loads, the policy file is the single authority, and
 `uap models auto --disable` is the off switch.
 
 #### 4.4.2 Idle-resident unload (the missing reverse)
 
 §4.4.1 closes the loop on the *load* side only: a parked request loads its
-model, but nothing ever unloads a resident again — the first auto-loaded
+model, but nothing ever unloads a resident again, the first auto-loaded
 model holds its device until a human remembers to stop it. The idle sweep
 (`src/placement/idle.ts`, wired into the dashboard process that already owns
 enforcement) is the consent-gated reverse:
 
 - **Off by default.** No `unload_idle_after_secs` in the policy → the sweep
-  is a per-tick no-op. The knob floors at 60 s — under a minute the sweep
+  is a per-tick no-op. The knob floors at 60 s, under a minute the sweep
   would oscillate (unload, next request auto-loads, unload again).
 - **Consent per model.** `unload_allow` is the standing-consent twin of
   `allow_displace` (`uap models auto --allow-unload <model> --yes`; the
@@ -870,16 +870,16 @@ enforcement) is the consent-gated reverse:
   records `usage[model] = now` in the ledger (top-level, so it survives
   the resident rebuild in `syncLedger`). The touch is fail-soft with a
   short lock fuse (250 ms): a ledger hiccup or lock contention loses the
-  touch, which only delays an unload — never blocks a forward.
+  touch, which only delays an unload, never blocks a forward.
 - **Arming never evicts the already-idle.** A resident with no usage record
   gets its clock SEEDED at first observation; the sweep acts only on
   windows it actually watched. A successful unload CLEARS the entry, so a
   RELOADED model gets a fresh window instead of inheriting a stale clock
-  that predates it — and entries for models with no live resident are
+  that predates it, and entries for models with no live resident are
   pruned each tick, so residue cannot accumulate.
 - **The sweep never races placement's own work.** A model with a
   non-expired pending entry (parked for the operator, or mid-auto-load)
-  is skipped — demand exists. A refused or faulting unload parks the
+  is skipped, demand exists. A refused or faulting unload parks the
   model in a 10-minute failure cooldown, the twin of auto-load's: a
   persistently failing stop would otherwise drain→stop→restart the
   backend every 60 s, unsupervised. Overlapping ticks are dropped (a
@@ -888,20 +888,20 @@ enforcement) is the consent-gated reverse:
   sweep also probes the endpoint for ESTABLISHED connections (`ss`, scoped
   to the backend's server-side sockets): a client past the gate (direct
   curl, another agent on the port) resets the clock and skips the tick.
-  If `ss` cannot answer, the resident is skipped — a refusal to guess,
+  If `ss` cannot answer, the resident is skipped, a refusal to guess,
   never a guess that it's idle.
 - **The stop is the operator's stop.** The sweep only decides WHEN; the
-  unload itself is `unloadPlacement` — drain, in-flight refusal (a
+  unload itself is `unloadPlacement`, drain, in-flight refusal (a
   generation running at the final check aborts the stop), verify-free,
   rollback. Fleet-spawned client dashboards set `UAP_IDLE_SWEEP=0`
   (`false`/`off` also accepted), so exactly one sweeper touches the
-  shared ledger. Two OPERATOR-started dashboards would both sweep — same
+  shared ledger. Two OPERATOR-started dashboards would both sweep, same
   pre-existing exposure as two manual unloads; run one.
 - **Policy edits take effect without a restart**: the sweep re-reads the
   policy file every tick.
 - **Accepted loop surface (documented, not mitigated):** an unauthenticated
   loopback caller can keep a resident pinned forever by re-admitting
-  (resetting its clock), or — with both auto-load and idle-unload armed —
+  (resetting its clock), or, with both auto-load and idle-unload armed,
   drive park→load→idle→unload churn. The same caller could just use the
   model; the allowlists still bound WHICH models are affected.
 
@@ -932,7 +932,7 @@ Two sources exist and neither alone answers "who is using this model":
   count, and the holder is a lease-holder string (`model:<apiModel>`,
   `agentic:<apiModel>`), not a client identity.
 - The proxy holds the live request state, but it is **not exposed**. An
-  earlier draft named a `_client_registry` served at `/v1/api/clients` —
+  earlier draft named a `_client_registry` served at `/v1/api/clients`,
   neither exists. The real primitives are `_current_request_session`
   (contextvar, `:4853`), the in-flight counters hung on the httpx client
   (`_inflight_inc`/`_inflight_dec`, `:4628-4637`), session admission state
@@ -940,17 +940,17 @@ Two sources exist and neither alone answers "who is using this model":
   (`resolve_client_id` + `_client_request_times`, `:2011-2053`). None has a
   route.
 
-So the preview needs a **new proxy endpoint** — in-flight work per target
-(client id, session, request id, started-at) — as an explicit phase-2
+So the preview needs a **new proxy endpoint**, in-flight work per target
+(client id, session, request id, started-at), as an explicit phase-2
 deliverable, not a join of two existing registries. **Shipped** (phase 3) as
 the loopback-only `GET /internal/placement/inflight`, keyed by the same
 target id the admission gate sets (`device:endpoint`, `default` when no
 controller answer set one). The registration lives at the httpx client's
-`send()` override — the one choke point every upstream call shares — not at
+`send()` override, the one choke point every upstream call shares, not at
 `_post_with_retry` alone: guardrail and recipe passes post directly, and the
 first cut (guarded only `_post_with_retry`) was caught by a live smoke showing
 an empty list mid-generation. The `uap models apply` impact list reads this
-endpoint (best-effort; `unknown` when the proxy does not answer — never a
+endpoint (best-effort; `unknown` when the proxy does not answer, never a
 guessed "idle"). The lease side still needs a target column (§4.3) before it
 can attribute a holder to a specific resident model.
 
@@ -975,7 +975,7 @@ failure modes the repo has already recorded:
 5. Start the new unit with the profile's flags.
 6. Poll `/health`, then the advertised ids (`/v1/models`): the load-bearing
    check is that the requested model is actually SERVABLE now. **Shipped
-   scope (phase 3): id-level verify-up only** — the deep `/slots` +
+   scope (phase 3): id-level verify-up only**, the deep `/slots` +
    `/metrics` `metricsMustMatch` check ("wrong `kv` kind or pool size is
    RED, not up") stays `uap doctor`'s job (the existing capacity cross-check
    runs the same probes with the policy attached); wiring it into the
@@ -986,7 +986,7 @@ failure modes the repo has already recorded:
    ids **for the process lifetime** ("fetched at most once per process"), and
    `_upstream_model_name()` (`:1724`) reads the same cache. Skip this and the
    first request after a successful switch fails the `requested in ids`
-   check and gets silently rewritten to the *previous* backend's first id —
+   check and gets silently rewritten to the *previous* backend's first id,
    no banner, wrong model. The invalidation must also cover the `/props` and
    `/slots` snapshots, `_admitted_sessions` (`:4920`), and the parked-request
    burst map. This is a step in the sequence and a row in the §7 test list,
@@ -1024,11 +1024,11 @@ model.
 ### 4.7 Surfaces
 
 Namespace note: `uap models` (plural, placement) sits next to the existing
-`uap model` (singular, multi-model routing at `src/bin/cli.ts:2035`) — a
+`uap model` (singular, multi-model routing at `src/bin/cli.ts:2035`), a
 near-homonym, kept because they answer different questions (where does it
 live vs which model answers). Help text for both cross-references the other.
 
-**TUI** — `uap models`:
+**TUI**, `uap models`:
 
 ```
 uap models status                 residents, devices, free/headroom, holders
@@ -1042,8 +1042,8 @@ uap models measure <model>              populate measured footprints
 uap models validate               registry ↔ capacity-policy cross-check
 ```
 
-**Dashboard** — replace the Models tab stub. `web/dash/tab-models.js` prints
-"Models — coming soon"; `web/dash/tabs.js:494` registers a `models` tab that
+**Dashboard**, replace the Models tab stub. `web/dash/tab-models.js` prints
+"Models, coming soon"; `web/dash/tabs.js:494` registers a `models` tab that
 renders cost and routing only. Neither shows placement. New routes on the
 existing server:
 
@@ -1064,7 +1064,7 @@ TUI appears in the dashboard on the next event, and vice versa.
 
 ## 5. What this forces us to fix
 
-Not optional extras — the design does not work without them.
+Not optional extras, the design does not work without them.
 
 1. **Per-target leases and backpressure.** `model_backpressure` is one row, so
    two residents share one adaptive limit; a struggling model would throttle a
@@ -1074,7 +1074,7 @@ Not optional extras — the design does not work without them.
 2. **Per-target upstream semaphores.** `upstream_semaphore` is one global gate
    sized from `PROXY_CONCURRENCY_LIMIT`. With two residents it lets traffic
    aimed at model A queue behind model B. The wire-model decision and the
-   concurrency gate must not diverge — `qwen38-27b-mtp.env` already warns to
+   concurrency gate must not diverge, `qwen38-27b-mtp.env` already warns to
    keep `PROXY_CONCURRENCY_LIMIT` equal to the slot count and
    `PROXY_CONTEXT_WINDOW` equal to per-slot context.
 3. **Backend-aware rail discovery.** `getModelSlotBudget()` falls back to
@@ -1121,7 +1121,7 @@ CREATE INDEX IF NOT EXISTS idx_model_leases_target ON model_leases(target, expir
 primary key on the target id. SQLite cannot drop a table constraint in place,
 so this is the standard create-new-table → copy → drop → rename, inside one
 transaction. Map the legacy `id = 1` row to `target = 'default'` in the copy so
-a revert of the code loses no operator-tuned state — that keeps the one-way
+a revert of the code loses no operator-tuned state, that keeps the one-way
 door reversible in code only.
 
 Three rules keep this from breaking anything:
@@ -1131,26 +1131,26 @@ Three rules keep this from breaking anything:
   until a caller opts in by naming a target. The migration is additive.
 - **`target` is the placement target identity (device + endpoint from the
   ledger), never the model name.** The existing holder strings already embed
-  the model id (`model:<apiModel>`, `agentic:<apiModel>` — see
+  the model id (`model:<apiModel>`, `agentic:<apiModel>`, see
   `src/models/openai-compat-client.ts:260` and
   `src/delivery/agentic-executor.ts:2569`). Keying `target` on `apiModel`
   would make a backend switch change the key mid-flight: outstanding leases
-  orphan, and per-target backpressure resets — the exact hazard
+  orphan, and per-target backpressure resets, the exact hazard
   `src/models/types.ts:229` documents for pinned endpoints. The ledger's
   target id is stable across model changes on the same endpoint.
 - **`acquireModelSlot` keeps its current signature** with `target` as an
   optional trailing argument. The only direct TS caller is
   `src/utils/model-slot-lease.ts:94` (an earlier draft also listed
-  `src/cli/coord.ts` — it does not call it); the real consumers all go through
+  `src/cli/coord.ts`, it does not call it); the real consumers all go through
   `withModelSlot()` at `src/models/openai-compat-client.ts:260` and
   `src/delivery/agentic-executor.ts:2569`. None of them changes in the same
   commit that adds the column.
 
 **The migration needs an idempotence guard this database does not have.**
-`src/coordination/database.ts` contains only `CREATE TABLE IF NOT EXISTS` — no
+`src/coordination/database.ts` contains only `CREATE TABLE IF NOT EXISTS`, no
 `ALTER TABLE`, no `PRAGMA user_version`, no version marker at all, so an
 unguarded `ALTER` next to the creates throws on the second open. The precedent
-to follow is `src/memory/short-term/schema.ts:23` — probe
+to follow is `src/memory/short-term/schema.ts:23`, probe
 `PRAGMA table_info(model_leases)`, add the column only if `target` is absent,
 and guard the `model_backpressure` rebuild on its actual column shape. The
 backpressure rebuild copies the same create-new-table → copy → drop → rename
@@ -1165,12 +1165,12 @@ TABLE to change CHECK constraints, so we must rebuild the table").
 | 1 | ledger, `models status`, `models pending`, cost math, preview | `off` |
 | 2 | proxy gate, `409` pending, dashboard state/pending, Models tab | `ask` |
 | 3 | enforcement: drain, stop, verify-free, start, verify-metrics, rollback; `apply`/`dismiss`/`load`/`unload`/`units` surfaces; `Conflicts=` drop-ins; the in-flight proxy endpoint | `ask` |
-| 4 | auto mode: the controller auto-loads a parked, placeable request — alongside always; by displacement only for models the operator allowlisted (`uap models auto --allow-displace <model> --yes`). Never displacement by default. | `auto` |
+| 4 | auto mode: the controller auto-loads a parked, placeable request, alongside always; by displacement only for models the operator allowlisted (`uap models auto --allow-displace <model> --yes`). Never displacement by default. | `auto` |
 
 Phase 4's displacement allowlist extends the earlier "never displacement"
 wording deliberately, and the argument is the spec's own invariant: *never
 evict without explicit operator confirmation*. The allowlist IS that
-confirmation — standing, written deliberately under a `--yes` that prints
+confirmation, standing, written deliberately under a `--yes` that prints
 what it consents to, auditable in `~/.uap/placement-auto.json`, and removable
 per model at any time. Displacement stays impossible without it; alongside
 auto-load is the only automatic path. (Recorded here because the phase table
@@ -1203,7 +1203,7 @@ Two ordering constraints, plus one refactor the review forced us to schedule:
   `{target_id, base_url, slots_url, props_url, health_url}` threaded through
   the send paths, with `LLAMA_CPP_BASE` as the default target so single-backend
   behavior is unchanged. It is the riskiest refactor in a 17k-line file; it
-  gets its own branch, its own review, and lands before the phase-2 gate —
+  gets its own branch, its own review, and lands before the phase-2 gate,
   otherwise phases 3–4 admit per-target placement the proxy cannot address.
 - **Tracked unit templates are a phase-2 prerequisite** (see §4.3's caveat):
   enforcement can only `systemctl --user start` units that exist, and today
@@ -1221,13 +1221,13 @@ Implementation runs in `.worktrees/345-model-placement/` on
 - Registry: schema validation; disagreement with `capacity-policy.json` fails.
 - Ledger: concurrent writers, pending expiry, dead-PID holder pruning.
 - Proxy gate: `409` shape, dedupe per `(client, model)`, **`mode=off`
-  produces byte-identical behavior to today** — the regression that matters
-  most, because the proxy serves every client — and, per §4.3's route list,
+  produces byte-identical behavior to today**, the regression that matters
+  most, because the proxy serves every client, and, per §4.3's route list,
   **each non-exempt entry route parks in `mode=ask`** when the requested
   local model is not resident (`/v1/chat/completions`, `/api/chat`,
   `/api/generate`, `/anthropic/v1/messages`), while passthrough stays exempt.
 - Enforcement: after a successful swap the proxy's upstream id cache is
-  invalidated — the next request must not be rewritten to the previous
+  invalidated, the next request must not be rewritten to the previous
   backend's id (§4.6 step 7).
 - Dashboard: writes require `mutationAuthorized()`; reads do not.
 - Existing suites must stay green: `test/models/lease-heartbeat.test.ts`,
@@ -1254,14 +1254,14 @@ These were open in earlier drafts and are now settled.
 
 1. **Registry location: repo defaults merged with machine-local overrides.**
    `config/model-registry.json` holds the model names, engines, units, launch
-   scripts, rails, and context geometry — everything reviewable and mostly
+   scripts, rails, and context geometry, everything reviewable and mostly
    machine-independent. `~/.uap/model-registry.json` holds the measured numbers
    for this machine: device totals, `reserved_mib`, and each config's
    `resident_gpu_mib` / `host_rss_mib`. The loader deep-merges the local file
    over the repo file per model and per device, and `uap models validate`
    reports which file each field in each entry came from, so a stale machine
    number is never mistaken for a reviewed default. A machine with no local
-   file has no measured footprints, which means everything fails closed — the
+   file has no measured footprints, which means everything fails closed, the
    correct outcome for an unmeasured box.
 2. **Enforcement lives on the TS side, invoked by the proxy over loopback
    HTTP.** The proxy is Python and has no systemd machinery; the TS side already
@@ -1280,7 +1280,7 @@ These were open in earlier drafts and are now settled.
    each one, which takes the live backend down.
 4. **`paused` means offload and reload from disk later.** It is not the proxy's
    existing save/restore mechanism, which checkpoints one slot's KV to host RAM
-   and keeps the slot — it frees no VRAM, is opt-in, gated on single-session
+   and keeps the slot, it frees no VRAM, is opt-in, gated on single-session
    use, and with 29.3 GiB of host RAM available against a 52.9 GiB resident
    process may not have headroom for a checkpoint at all. A paused config is
    recorded with its offload location and is resumable by reloading from disk.
