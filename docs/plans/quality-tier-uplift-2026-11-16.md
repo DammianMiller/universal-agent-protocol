@@ -312,9 +312,24 @@ same for a 30-task bench pair. No transcript fixtures existed under
 examples/workflows, so the validation used synthesized exemplar + degraded
 runs of a realistic tasks-API shape (recorded in PR #903).
 
-**1.2 Best-of-N plus the escalation ladder.** Acceptance: N=3 seeded variants
-ranked deterministically on a fixture; the ladder fires on a measured plateau
-and cuts with a documented gap when its rounds are exhausted.
+**1.2 Best-of-N plus the escalation ladder — SHIPPED (PR #904, v2.58.0).**
+`src/quality/tier-ladder.ts`: each round produces N seeded candidate
+artifacts, every candidate is measured with the tier's class extractor,
+ranking is a total order on (pass, failing axes, severity sum, worst
+severity, worst axis, id) — deterministic — and the round's best survives.
+K rounds without a severity improvement fire the escalation
+(`onEscalate` — the stronger-model switch) and reset the budget; never on
+the final round. Exhaustion below tier cuts with the final gap attached
+(failing axes + directives) — a documented failure, never a silent pass;
+no-candidate and unmeasurable rounds cut the same way; the N cap is
+enforced in the loop (attempt-farm guard). CLI: `uap quality ladder
+--tier <class/name> --rounds-dir <dir>` ranks harvested roundNN/
+candidate directories. Acceptance met live against a derived
+api-behavior/fable-high tier: a small-model climb (3 graded degraded
+variants → directive-guided improvements → at-tier) reaches the tier on
+round 3 (exit 0); a stalled model plateaus, escalates on round 3, and
+cuts exhausted with the gap documented (exit 2). bench-score drives the
+same loop in tests. 15 tests; suite 6563 green.
 
 **1.3 Proxy target-contract injection plus per-class sampling profiles.**
 Acceptance: the executor prompt carries the contract; the sampling profile
@@ -345,8 +360,10 @@ explicit and scheduled rather than ad hoc. Owner: the fleet operator.
 6a. Interaction-gate goto fix (driver-relative URL resolution) —
    **#902 (v2.56.1)**.
 6b. Wave 1.1 extractor classes beyond visual (api-behavior + bench-score,
-   class registry, degenerate guards) — **#903**.
-7. Wave 1 in order 1.2, 1.3; 1.4 with the operator (1.1 shipped, 6b).
+   class registry, degenerate guards) — **#903 (v2.57.0)**.
+6c. Wave 1.2 tier ladder (best-of-N, plateau escalation, honest cut) —
+   **#904 (v2.58.0)**.
+7. Wave 1 in order 1.3, then 1.4 with the operator (1.1, 1.2 shipped).
 8. Wave 2 once Wave 0 and Wave 1 measurements exist.
 
 ## 7. Risks and open questions
