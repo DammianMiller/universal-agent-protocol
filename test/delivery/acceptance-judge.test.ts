@@ -416,3 +416,53 @@ describe('gatherEvidence — linked worktree resolution', () => {
     }
   });
 });
+
+describe('runAcceptanceGate — P39 critic form (0.3)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'acc-critic-'));
+    writeFileSync(join(dir, 'counter.js'), 'exports.increment = (n) => n + 1;');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('asks for the fixed form when criticForm is requested, and not otherwise', async () => {
+    const prompts: string[] = [];
+    const executor = async (p: string) => {
+      prompts.push(p);
+      return '{"criteria":[{"requirement":"increment","met":true,"reason":"ok"}],"pass":true}';
+    };
+    await runAcceptanceGate({ spec: SPEC, projectRoot: dir, executor, criticForm: true });
+    await runAcceptanceGate({ spec: SPEC, projectRoot: dir, executor });
+    expect(prompts[0]).toContain('CRITIC FORM (P39)');
+    expect(prompts[1]).not.toContain('CRITIC FORM (P39)');
+  });
+
+  it('attaches the parsed critic report to the result and renders it in the report', async () => {
+    const executor = async () =>
+      '{"criteria":[{"requirement":"increment","met":true,"reason":"ok"}],"pass":true,' +
+      '"critic":{"verdict":"no","faults":[{"rank":1,"note":"darkFrac 0.24 vs tier 0.07 — lift hemisphere fill FIRST","severity":"blocking"}]}}';
+    const r = await runAcceptanceGate({ spec: SPEC, projectRoot: dir, executor, criticForm: true });
+    expect(r.critic?.verdict).toBe('no');
+    expect(r.critic?.faults[0].severity).toBe('blocking');
+    const text = formatAcceptanceReport(r);
+    expect(text).toContain('CRITIC ✗');
+    expect(text).toContain('lift hemisphere fill FIRST');
+    expect(text).toContain('1) darkFrac 0.24');
+  });
+
+  it('keeps the critic advisory: a malformed critic never changes the verdict', async () => {
+    const executor = async () =>
+      '{"criteria":[{"requirement":"increment","met":true,"reason":"ok"}],"pass":true,"critic":{"verdict":"nope"}}';
+    const r = await runAcceptanceGate({ spec: SPEC, projectRoot: dir, executor, criticForm: true });
+    expect(r.passed).toBe(true);
+    expect(r.critic).toBeUndefined();
+  });
+
+  it('does not ask for a critic on the fail-open paths', async () => {
+    const executor = async () => 'not json at all';
+    const r = await runAcceptanceGate({ spec: SPEC, projectRoot: dir, executor, criticForm: true });
+    expect(r.parseError).toBeTruthy();
+    expect(r.critic).toBeUndefined();
+  });
+});
+

@@ -19,6 +19,7 @@ export interface JudgePlan {
   reason:
     | 'configured-evaluator'
     | 'self-judge-allowed'
+    | 'escalation-judge'
     | 'auto-distinct-judge'
     | 'offline-local-no-distinct-judge';
 }
@@ -27,14 +28,23 @@ export interface JudgePlan {
  * Decide who judges. PURE. Precedence:
  *  1. an explicitly-configured evaluator preset  → distinct
  *  2. operator opted into self-judge             → generator (distinct=false)
- *  3. cloud generator, distinct cheap judge avail → the distinct judge
- *  4. local/offline (no distinct reachable)       → generator (distinct=false)
+ *  3. configured escalation arm (distinct, known preset) → the escalation model
+ *  4. cloud generator, distinct cheap judge avail → the distinct judge
+ *  5. local/offline (no distinct reachable)       → generator (distinct=false)
+ *
+ * The escalation rung (3) is the quality-tier uplift arm: a local/offline
+ * generator (the reference run: exec==judge, distinct=NO) gets the verified
+ * stronger model as its acceptance critic via the existing UAP_ESCALATE_MODEL
+ * seam — no new switch, and a stale/unknown preset id fails soft (falls
+ * through), matching deliver's evaluator fail-soft doctrine.
  */
 export function resolveJudgePlan(opts: {
   evaluatorPresetId: string | null;
   generatorId: string;
   generatorProvider?: string;
   allowSelfJudge: boolean;
+  /** Configured escalation arm (flag > $UAP_ESCALATE_MODEL > .uap.json deliver.escalateModel). */
+  escalateModelId?: string;
   /** Cheap distinct judge preferred when the generator is cloud. */
   distinctJudgeId?: string;
   /** Cheap distinct judge to use when the generator itself IS distinctJudgeId. */
@@ -43,12 +53,23 @@ export function resolveJudgePlan(opts: {
 }): JudgePlan {
   // A configured evaluator only counts as distinct if it is actually a
   // DIFFERENT model than the generator (CWE-345: don't assert distinctness we
-  // haven't verified). If it collides, fall through to the auto/offline logic.
+  // haven't verified). If it collides, fall through to the escalation/auto/
+  // offline logic.
   if (opts.evaluatorPresetId && opts.evaluatorPresetId !== opts.generatorId) {
     return { judgeModelId: opts.evaluatorPresetId, distinct: true, reason: 'configured-evaluator' };
   }
   if (opts.allowSelfJudge) {
     return { judgeModelId: opts.generatorId, distinct: false, reason: 'self-judge-allowed' };
+  }
+  // The escalation arm outranks the implicit cheap-judge default: setting it
+  // is an explicit operator designation of the quality critic. It must be a
+  // KNOWN preset (stale ids fail soft) and actually distinct from the generator.
+  if (
+    opts.escalateModelId &&
+    opts.escalateModelId !== opts.generatorId &&
+    opts.hasPreset(opts.escalateModelId)
+  ) {
+    return { judgeModelId: opts.escalateModelId, distinct: true, reason: 'escalation-judge' };
   }
   const cloud = opts.generatorProvider === 'anthropic' || opts.generatorProvider === 'openai';
   const preferred = opts.distinctJudgeId ?? 'haiku-4.5';
@@ -61,6 +82,32 @@ export function resolveJudgePlan(opts: {
     judgeModelId: opts.generatorId,
     distinct: false,
     reason: 'offline-local-no-distinct-judge',
+  };
+}
+
+/**
+ * Fresh-critic enforcement for tier-relevant deliveries (quality-tier uplift
+ * 0.3). A project that has derived quality tiers has digitized its bar; a
+ * self-verifying generator against that bar is the exact failure the reference
+ * run recorded (exec==judge, distinct=NO). PURE. `blocked` demands a distinct
+ * critic before the run proceeds; the operator escapes deliberately via
+ * UAP_DELIVER_ALLOW_SELF_JUDGE=1 (allowSelfJudge), which stays the explicit
+ * opt-out everywhere.
+ */
+export function resolveCriticEnforcement(opts: {
+  /** True when the project carries any derived quality tier (.uap/quality/tiers.json). */
+  tierRelevant: boolean;
+  distinct: boolean;
+  allowSelfJudge: boolean;
+  generatorId: string;
+}): { blocked: boolean; message?: string } {
+  if (!opts.tierRelevant || opts.distinct || opts.allowSelfJudge) return { blocked: false };
+  return {
+    blocked: true,
+    message:
+      `✗ fresh-critic contract violated: tier-relevant delivery, but the generator (${opts.generatorId}) would grade its own work. ` +
+      'Wire a distinct critic: --escalate-model / $UAP_ESCALATE_MODEL / .uap.json deliver.escalateModel ' +
+      '(e.g. the verified qwen38-27b arm), or opt out explicitly with UAP_DELIVER_ALLOW_SELF_JUDGE=1.',
   };
 }
 

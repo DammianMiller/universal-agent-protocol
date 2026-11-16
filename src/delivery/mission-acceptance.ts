@@ -94,6 +94,8 @@ export interface MissionAcceptanceDeps {
   visionReview?: typeof visionAcceptanceFeedback;
   judge?: typeof runAcceptanceGate;
   userPathsNote?: typeof buildUserPathsNote;
+  /** Ask the judge for the P39 fixed-form critic report (deliver sets this when the judge is distinct). */
+  criticForm?: boolean;
 }
 
 /**
@@ -380,6 +382,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
       spec: resolvedSpec,
       projectRoot: root,
       executor: deps.judgeExecutor,
+      ...(deps.criticForm ? { criticForm: true } : {}),
       ...(runtimeNote ? { runtimeNote } : {}),
     });
     const verdict = resolveAcceptanceVerdict(r, deps.primary);

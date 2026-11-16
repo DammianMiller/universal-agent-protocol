@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveJudgePlan,
+  resolveCriticEnforcement,
   formatVerificationProvenance,
 } from '../../src/delivery/verification-provenance.js';
 
@@ -112,6 +113,101 @@ describe('resolveJudgePlan', () => {
     });
     expect(p.distinct).toBe(false);
     expect(p.reason).toBe('offline-local-no-distinct-judge');
+  });
+
+  // Quality-tier uplift 0.3: the escalation arm as the fresh critic for
+  // generators that would otherwise self-verify (the reference run's
+  // exec==judge, distinct=NO on the local fleet).
+  it('0.3: gives a LOCAL generator the escalation arm as a distinct judge', () => {
+    const p = resolveJudgePlan({
+      evaluatorPresetId: null,
+      generatorId: 'qwen38-flash-next',
+      generatorProvider: 'custom', // local, 127.0.0.1
+      allowSelfJudge: false,
+      escalateModelId: 'qwen38-27b',
+      hasPreset: (id) => ['qwen38-27b', 'haiku-4.5'].includes(id),
+    });
+    expect(p.judgeModelId).toBe('qwen38-27b');
+    expect(p.distinct).toBe(true);
+    expect(p.reason).toBe('escalation-judge');
+  });
+
+  it('0.3: escalation outranks the implicit cheap-judge default (explicit operator designation)', () => {
+    const p = resolveJudgePlan({
+      evaluatorPresetId: null,
+      generatorId: 'opus-4.8',
+      generatorProvider: 'anthropic',
+      allowSelfJudge: false,
+      escalateModelId: 'qwen38-27b',
+      hasPreset: (id) => ['qwen38-27b', 'haiku-4.5', 'sonnet-5'].includes(id),
+    });
+    expect(p.reason).toBe('escalation-judge');
+    expect(p.judgeModelId).toBe('qwen38-27b');
+  });
+
+  it('0.3: a stale/unknown escalation preset fails soft to the offline fallback', () => {
+    const p = resolveJudgePlan({
+      evaluatorPresetId: null,
+      generatorId: 'qwen38-flash-next',
+      generatorProvider: 'custom',
+      allowSelfJudge: false,
+      escalateModelId: 'qwen99-turbo', // not a known preset
+      hasPreset: (id) => ['haiku-4.5'].includes(id),
+    });
+    expect(p.distinct).toBe(false);
+    expect(p.reason).toBe('offline-local-no-distinct-judge');
+  });
+
+  it('0.3: escalation that collides with the generator never fakes distinctness', () => {
+    const p = resolveJudgePlan({
+      evaluatorPresetId: null,
+      generatorId: 'qwen38-27b',
+      generatorProvider: 'custom',
+      allowSelfJudge: false,
+      escalateModelId: 'qwen38-27b', // same model — not a critic
+      hasPreset: (id) => ['qwen38-27b'].includes(id),
+    });
+    expect(p.distinct).toBe(false);
+    expect(p.judgeModelId).toBe('qwen38-27b');
+    expect(p.reason).toBe('offline-local-no-distinct-judge');
+  });
+
+  it('0.3: a configured evaluator still outranks the escalation arm', () => {
+    const p = resolveJudgePlan({
+      evaluatorPresetId: 'opus-4.8',
+      generatorId: 'qwen38-27b',
+      generatorProvider: 'custom',
+      allowSelfJudge: false,
+      escalateModelId: 'sonnet-5',
+      hasPreset: () => true,
+    });
+    expect(p.reason).toBe('configured-evaluator');
+  });
+});
+
+describe('resolveCriticEnforcement (0.3 fresh-critic contract)', () => {
+  it('blocks a tier-relevant self-verifying run with the fix in the message', () => {
+    const r = resolveCriticEnforcement({
+      tierRelevant: true,
+      distinct: false,
+      allowSelfJudge: false,
+      generatorId: 'qwen38-flash-next',
+    });
+    expect(r.blocked).toBe(true);
+    expect(r.message).toContain('UAP_ESCALATE_MODEL');
+    expect(r.message).toContain('UAP_DELIVER_ALLOW_SELF_JUDGE=1');
+  });
+
+  it('allows the run when the judge is distinct', () => {
+    expect(resolveCriticEnforcement({ tierRelevant: true, distinct: true, allowSelfJudge: false, generatorId: 'x' }).blocked).toBe(false);
+  });
+
+  it('allows the run when the operator explicitly opted into self-judge', () => {
+    expect(resolveCriticEnforcement({ tierRelevant: true, distinct: false, allowSelfJudge: true, generatorId: 'x' }).blocked).toBe(false);
+  });
+
+  it('never blocks projects without derived tiers (additive default)', () => {
+    expect(resolveCriticEnforcement({ tierRelevant: false, distinct: false, allowSelfJudge: false, generatorId: 'x' }).blocked).toBe(false);
   });
 });
 
