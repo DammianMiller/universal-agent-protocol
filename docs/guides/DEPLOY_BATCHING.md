@@ -1,12 +1,12 @@
 # Deploy Batching
 
-> UAP v1.224.0
+> UAP v2.51.0
 
-> **🏭 Where this fits:** LINE COORDINATION → SHIPPING — this is the station
+> **🏭 Where this fits:** LINE COORDINATION → SHIPPING, this is the station
 > where parallel agents collide: two push to the same branch within seconds and
 > one gets rejected, or a burst of redundant deploys stampedes CI. **What it
 > delivers:** git and deploy actions are queued, squashed, and deduplicated into
-> one ordered batch — so many agents can ship down the same line without
+> one ordered batch, so many agents can ship down the same line without
 > trampling each other.
 
 When several agents work in parallel, they all want to commit, push, merge, and
@@ -14,16 +14,16 @@ deploy at roughly the same time. That's the moment a normal agentic workflow
 falls apart at the end of the [delivery pipeline](./DELIVERY_PIPELINE.md). Left
 unmanaged, it produces two failure modes:
 
-- **Merge conflicts** — two agents push to the same branch within seconds of
+- **Merge conflicts**, two agents push to the same branch within seconds of
   each other and the second push is rejected (or worse, races into a conflicted
   state).
-- **Thundering deploys** — a burst of redundant deploys, duplicate workflow
+- **Thundering deploys**, a burst of redundant deploys, duplicate workflow
   triggers, and a noisy commit history full of one-line commits.
 
 The deploy batcher solves this by *queueing* git/deploy actions and grouping
 them inside short, per-action-type time windows. Commits to the same branch are
 squashed, duplicate pushes and workflow triggers are deduplicated, and the
-result is executed as a single ordered batch — the line coordinator that keeps
+result is executed as a single ordered batch, the line coordinator that keeps
 the shipping station orderly.
 
 The implementation lives in
@@ -132,7 +132,7 @@ uap deploy urgent --off   # restore default windows
 uap deploy <queue|batch|execute|status|flush|config|set-config|urgent> [options]
 ```
 
-### `queue` — add an action to the batch queue
+### `queue`, add an action to the batch queue
 
 ```bash
 uap deploy queue \
@@ -160,7 +160,7 @@ uap deploy queue --agent-id agent-123 --action-type commit --target main \
   -m "feat: add batcher" -f "src/a.ts,src/b.ts"
 ```
 
-### `batch` — create a batch from ready actions
+### `batch`, create a batch from ready actions
 
 ```bash
 uap deploy batch [-v|--verbose]
@@ -169,7 +169,7 @@ uap deploy batch [-v|--verbose]
 Collects pending actions whose window has elapsed and prints the new batch ID
 plus the command to execute it.
 
-### `execute` — run a specific batch
+### `execute`, run a specific batch
 
 ```bash
 uap deploy execute --batch-id <id> [--dry-run]
@@ -178,7 +178,7 @@ uap deploy execute --batch-id <id> [--dry-run]
 `--batch-id` is required. Reports executed/failed counts, duration, and any
 per-action errors.
 
-### `status` — inspect the queue
+### `status`, inspect the queue
 
 ```bash
 uap deploy status [-v|--verbose]
@@ -187,7 +187,7 @@ uap deploy status [-v|--verbose]
 Shows pending (unbatched) actions grouped by type, pending batches, and a
 summary.
 
-### `flush` — batch and execute everything pending
+### `flush`, batch and execute everything pending
 
 ```bash
 uap deploy flush [-v|--verbose] [--dry-run]
@@ -196,7 +196,7 @@ uap deploy flush [-v|--verbose] [--dry-run]
 Repeatedly creates and executes batches until the queue is empty. This is the
 one-shot "do it all now" command.
 
-### `config` / `set-config` — view and change windows
+### `config` / `set-config`, view and change windows
 
 ```bash
 uap deploy config
@@ -206,7 +206,7 @@ uap deploy set-config --message '{"commit":60000,"push":3000}'
 `set-config` takes a JSON object of window values (ms); every value must be a
 positive number. Changes apply to the current batcher instance.
 
-### `urgent` — toggle fast windows
+### `urgent`, toggle fast windows
 
 ```bash
 uap deploy urgent --on

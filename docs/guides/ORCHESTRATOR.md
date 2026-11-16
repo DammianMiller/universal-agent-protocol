@@ -1,14 +1,14 @@
 # The Orchestrator & Hands-Free Persistence
 
-> **🏭 Where this fits:** BUILD — the station that turns *"build this whole
+> **🏭 Where this fits:** BUILD, the station that turns *"build this whole
 > thing"* into finished, verified work without a human babysitting the loop.
-> **What it delivers:** any model — local or frontier — runs a huge multi-epic
+> **What it delivers:** any model, local or frontier, runs a huge multi-epic
 > build hands-free, in fresh minimal context per task, and **cannot stop until
 > the whole thing is 100% done**. Install once; it self-applies. Automagic. ✨
 
 This is UAP's answer to the question *"why can Fable grind on a huge task for
 hours while other models stop after ten minutes?"* Fable's persistence is
-trained into the weights. UAP puts the same persistence in the **harness** —
+trained into the weights. UAP puts the same persistence in the **harness**,
 so **every** model gets it.
 
 - **[The orchestrator](#the-orchestrator)** runs a decomposed build as a task
@@ -24,7 +24,7 @@ the machinery engages.
 
 ---
 
-## TL;DR — install & go
+## TL;DR, install & go
 
 ```bash
 npm install -g @miller-tech/uap
@@ -36,7 +36,7 @@ That's it. From then on:
 - Ask for a big, multi-part build (in Claude Code, `uap deliver`, opencode, …).
 - The model writes a plan (a todo list, or `uap deliver` decomposes it).
 - UAP captures that plan as a **completion ledger** and drives the model
-  through it — fresh context per task, keep-going injected each turn, and the
+  through it, fresh context per task, keep-going injected each turn, and the
   session **blocked from ending** until every item is done.
 - A new session **auto-resumes** an unfinished build.
 
@@ -58,7 +58,7 @@ own convergence loop that sees only:
 - a one-line orientation snippet of the overall mission,
 - its own goal, acceptance criteria, and the files it owns,
 - the **verified interface contracts** of its *direct* dependencies (a few
-  hundred tokens — "what already exists"), and
+  hundred tokens, "what already exists"), and
 - a small, relevant pull from memory.
 
 Not the full spec. Not every prior summary. This is what lets a small-context
@@ -75,15 +75,15 @@ its window.
 | **Adaptive re-planning** | A task that discovers missing work can emit `NEW_TASKS:[…]`; they're validated, de-duped, and folded into the DAG. |
 | **Dependency-correct** | A task runs only after every dependency has *succeeded*; a failed dependency blocks (never builds on a broken base). |
 
-It is **auto-on** for any decomposed mission — minimal-context orchestration is
+It is **auto-on** for any decomposed mission, minimal-context orchestration is
 strictly better than a full-mission prompt for small models.
 
 ---
 
 ## The epic controller
 
-One `deliver` run drives one task DAG. A **massive** mission — *design → build
-→ operational readiness* — is more than one DAG: it's a **sequence of epics**,
+One `deliver` run drives one task DAG. A **massive** mission, *design → build
+→ operational readiness*, is more than one DAG: it's a **sequence of epics**,
 each itself a full mission. The epic controller is the loop above the
 orchestrator:
 
@@ -97,11 +97,11 @@ for each epic (dependency-ordered):
         …until accepted or the attempt budget is spent
 ```
 
-- **Fresh session per epic/attempt** — exactly the "start new sessions per
+- **Fresh session per epic/attempt**, exactly the "start new sessions per
   task, inject only what's needed, loop until complete" pattern.
-- **Generator ≠ Evaluator** — an epic that "delivered" but fails the acceptance
+- **Generator ≠ Evaluator**, an epic that "delivered" but fails the acceptance
   judge is retried; a delivered-and-accepted epic is marked done.
-- **Never spins forever** — bounded per-epic attempts; stagnation gives up
+- **Never spins forever**, bounded per-epic attempts; stagnation gives up
   gracefully.
 
 It **auto-engages** for genuinely epic-scale missions (complex *and* ≥ 1200
@@ -113,10 +113,10 @@ characters). Smaller work uses the orchestrator or the plain loop.
 
 The orchestrator and epic controller run inside `uap deliver`. But most huge
 builds are driven **interactively** (Claude Code, opencode) where the model
-decides when it's "done". Hands-free persistence makes *that* Fable-like too —
-for any model — using four pieces that all ship **auto-on**.
+decides when it's "done". Hands-free persistence makes *that* Fable-like too,
+for any model, using four pieces that all ship **auto-on**.
 
-### B · The completion ledger — the objective definition of done
+### B · The completion ledger, the objective definition of done
 
 `.uap/completion-ledger.json` is the persistent, whole-build checklist: the
 epic/task DAG with a status per item. Completion is judged against **this**,
@@ -128,24 +128,24 @@ The ledger is populated automatically:
   as epics are accepted.
 - **Interactive sessions**: whenever the model writes a plan with the built-in
   todo tool (Claude Code `TodoWrite`), a PostToolUse hook **mirrors that plan
-  into the ledger** — statuses follow (`completed → done`, `in_progress`,
-  `pending`). No manual step. (Only a real multi-step plan seeds it — ≥ 3 todos
+  into the ledger**, statuses follow (`completed → done`, `in_progress`,
+  `pending`). No manual step. (Only a real multi-step plan seeds it, ≥ 3 todos
   by default.)
 
-### A · The Stop-hook block — you can't stop early
+### A · The Stop-hook block, you can't stop early
 
 When the model tries to end its turn, the Stop hook checks the ledger. If the
 build is incomplete it **blocks the stop** and hands the model a
-*"NOT DONE — REMAINING: …"* message, so it keeps working. Fully guarded so it
+*"NOT DONE, REMAINING: …"* message, so it keeps working. Fully guarded so it
 can never wedge:
 
 - honors the harness `stop_hook_active` flag (never re-blocks in a loop),
 - only blocks when there's an **active ledger with remaining items**,
-- bounded by per-build **block + stagnation counters** — progress resets the
+- bounded by per-build **block + stagnation counters**, progress resets the
   counter; a genuine stall gives up. *"Never stop early"* and *"never spin
   forever"* are the same feature.
 
-### C · Model-aware intensity — trust Fable, drive the local model
+### C · Model-aware intensity, trust Fable, drive the local model
 
 The forcing scales **inversely** with a model's intrinsic persistence:
 
@@ -155,16 +155,16 @@ The forcing scales **inversely** with a model's intrinsic persistence:
 | **Opus / Sonnet / GPT** | moderate | Nudge past premature "done". |
 | **Qwen / local** | aggressive | Firmly drive; more blocks tolerated. |
 
-### D · Reactor injection — the standing "keep going" directive
+### D · Reactor injection, the standing "keep going" directive
 
 While a build is in progress, every prompt gets a
-*"keep going until 100% — REMAINING: …"* directive injected (via the reactor
+*"keep going until 100%, REMAINING: …"* directive injected (via the reactor
 hook you already have). Casual sessions with no active build see nothing.
 
-### Auto-resume — pick up where you left off
+### Auto-resume, pick up where you left off
 
 On session start, if a build was left unfinished, a resume banner surfaces it
-(*"Resuming a build in progress — N/M done, REMAINING: …"*) so a fresh session
+(*"Resuming a build in progress, N/M done, REMAINING: …"*) so a fresh session
 continues it **without being asked**.
 
 **The full loop, all automatic:**
@@ -182,10 +182,10 @@ model plans (todos)  →  ledger auto-seeds  →  reactor injects "keep going" e
 `uap dash serve` (open `http://localhost:3847`) now includes two panels for
 this machinery:
 
-- **Orchestrations & Hierarchy** — the live `mission → epic → task` tree with
+- **Orchestrations & Hierarchy**, the live `mission → epic → task` tree with
   per-node status and the agents working each node, plus the active build
   ledger's progress.
-- **Token Savings by Influence** — real tokens/cost saved, attributed per
+- **Token Savings by Influence**, real tokens/cost saved, attributed per
   mechanism (model routing, context compression), with honest
   *measured / estimated* labels.
 

@@ -5,8 +5,8 @@
 - Spec: completion-triggered scheduling (C1) and routing dials (C2), responding to the
   "serial execution / no delegation" and "wrong worker on the wrong job"
   gaps in mtlynch.io's *Why Are Coding Agents So Dumb?*
-- Supersedes: none — replaces the wave-barrier scheduling note documented in
-  `deliver.parallelTasks` (CONFIGURATION.md) and the `OrchestratorConfig`
+- Supersedes: none, replaces the wave-barrier scheduling note documented in
+  `deliver.parallelTasks` (the Configuration guide, `docs/getting-started/CONFIGURATION.md`) and the `OrchestratorConfig`
   doc block; extends the `DeliveryPhase` plan schema additively.
 
 ## Context
@@ -26,7 +26,7 @@ Two independent costs lived in the task orchestrator:
 
 ## Decision
 
-1. **C1 — completion-triggered dispatch.** The orchestrator keeps an
+1. **C1, completion-triggered dispatch.** The orchestrator keeps an
    in-flight array, fills free slots from the READY set (graph order), races
    on completion, and settles the winner sequentially before refilling.
    Invariants:
@@ -37,9 +37,9 @@ Two independent costs lived in the task orchestrator:
      a deliberate trade of run-to-run reproducibility for utilization;
    - a throwing settle drains in-flight flights (`allSettled` in a
      `finally`) so a seam-callback throw cannot abandon tasks mid-mutation
-     (reachable only under completion-triggered dispatch — the wave barrier
+     (reachable only under completion-triggered dispatch, the wave barrier
      guaranteed an empty in-flight set on any throw).
-2. **C2 — per-leaf model dials.** `DeliveryPhase.model?: string` is an
+2. **C2, per-leaf model dials.** `DeliveryPhase.model?: string` is an
    optional dial, planner-relayed (copy a key the MISSION text names
    verbatim, never invent one) or hand-authored. Semantics:
    - normalized once at parse (`normalizeModelDial`: lowercased to match
@@ -51,7 +51,7 @@ Two independent costs lived in the task orchestrator:
    - fail-closed: unknown keys, non-isolated tasks, and the blind-executor
      path all degrade to the mission model with a warning naming the actual
      reason, plus a plan-time lint at mission start (not hours later at
-     bind time). The preset lookup uses `Object.hasOwn` — prototype-chain
+     bind time). The preset lookup uses `Object.hasOwn`, prototype-chain
      keys (`constructor`, `__proto__`) are planner-reachable untrusted
      text and must not bind an unpinned model.
 3. **Known debt, out of scope here:** the production projection drops
@@ -62,7 +62,7 @@ Two independent costs lived in the task orchestrator:
 
 - Utilization: a slot refills the moment a task settles; dependents start
   when their last dependency succeeds, not when the wave drains.
-- The first C1 tests would literally deadlock under wave scheduling — they
+- The first C1 tests would literally deadlock under wave scheduling, they
   pin the behavior by construction (a regression manifests as a timeout).
 - Resume round-trips keep dials; the persisted `model` key is additive and
   old readers strip it harmlessly (their allowlist predates the field).

@@ -1,7 +1,7 @@
 # AutoMode Pre-Execution Risk Classification
 
 Uplift 1.3. Every outbound `tool_use` block is risk-classified **before the
-client dispatches it**, ahead of — and never instead of — the deterministic
+client dispatches it**, ahead of, and never instead of, the deterministic
 verb/regex enforcers in `src/policies/enforcers/`.
 
 ## Design
@@ -13,18 +13,18 @@ classify_tool_call(tool_name: str, tool_input: dict) -> RiskAssessment
 ```
 
 `RiskAssessment` is a frozen dataclass: `risk_class`, `risk_score` (1–5),
-`signals` (every rule that fired, formatted `name:class+weight` — every
+`signals` (every rule that fired, formatted `name:class+weight`, every
 point of score is attributable to a named signal), `latency_ms`. The
 function is **pure**: no I/O, no globals, same input → same output.
 
 This is the Python-side calibrated heuristic floor for AutoMode. Its
 vocabulary is *inspired by* the unmerged TypeScript SYS1 baseline
-(`src/classify/baseline.ts` on `feature/301-sys1-classifier`) — not ported:
+(`src/classify/baseline.ts` on `feature/301-sys1-classifier`), not ported:
 the TS baseline scores prose state descriptions, this scorer parses shell
 structure, so the domains and machinery differ and "cross-stack
 parity" would overclaim. The promotion path is a **Python-resident head (or
 sidecar) behind the same `classify_tool_call` contract**, gated by the
-calibration harness at held-out destructive recall 1.0 — when it lands, the
+calibration harness at held-out destructive recall 1.0, when it lands, the
 wiring, harness, and doctrine below do not change.
 
 ### Classes
@@ -50,7 +50,7 @@ The scorer mirrors `enforcement_self_protect.py` rather than reinventing it:
   stepped over so the real verb is judged: `sudo rm -rf /` classifies
   destructive.
 - **Chained commands** (`&&`, `||`, `;`, `|`, background `&`) are split per
-  segment — with separators inside quotes ignored, so the `;` inside
+  segment, with separators inside quotes ignored, so the `;` inside
   `python3 -c "import shutil; shutil.rmtree(x)"` cannot hide the rmtree.
 - **`sh -c` / `bash -c` / `eval`** payloads are unwrapped and classified
   recursively (depth-bounded).
@@ -63,7 +63,7 @@ The scorer mirrors `enforcement_self_protect.py` rather than reinventing it:
   (`node_modules`, `dist`, `build`, `/tmp/…`, …) classifies write, not
   destructive. One non-scratch target keeps destructive.
 
-Known residuals (accepted — advisory-only cost, and the same limits the
+Known residuals (accepted, advisory-only cost, and the same limits the
 enforcers document):
 
 - a path held in a shell variable is invisible to any text scan;
@@ -71,26 +71,26 @@ enforcers document):
 - an **escaped quote** inside a double-quoted string defeats the quote
   blanking (`python3 -c "a=\";\"; shutil.rmtree('/x')"` splits at the
   escaped quote, because the blanking regex does not model backslash
-  escapes) — same accepted-residual class as shell variables: text scans
+  escapes), same accepted-residual class as shell variables: text scans
   cannot see shell state.
 
 ## Advisory doctrine
 
 **The scorer never blocks and never modifies the stream.** The deterministic
-enforcer chain is the blocking floor and is exactly as strict as before —
+enforcer chain is the blocking floor and is exactly as strict as before,
 nothing gets looser. The classification is consumed three ways at the
 proxy's outbound `tool_use` interception points
 (`tools/agents/scripts/anthropic_proxy.py`):
 
-1. **Debug log** — one line per tool_use:
+1. **Debug log**, one line per tool_use:
    `AUTOMODE RISK: <id> <tool> class=… score=… signals=… latency=…ms`.
-2. **Telemetry** — score ≥ 4 calls append a `dashboard_events` row
+2. **Telemetry**, score ≥ 4 calls append a `dashboard_events` row
    (`category=automode`, `type=risk.classified`, severity `warning` for
    destructive) via `project_telemetry.record_risk_event`, so the
    dashboard's Live Events panel shows high-risk calls. Routine reads do
    not flood the feed.
 3. **Nothing else.** On any classifier exception the proxy logs a warning
-   and passes the tool call through unchanged — the advisory path fails
+   and passes the tool call through unchanged, the advisory path fails
    OPEN precisely because the enforcer floor fails CLOSED; a dead
    classifier degrades to today's behaviour plus one warning line.
 

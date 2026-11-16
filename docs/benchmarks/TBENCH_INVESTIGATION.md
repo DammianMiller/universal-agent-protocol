@@ -1,4 +1,4 @@
-# Terminal-Bench Investigation — Findings & Improvement Plan
+# Terminal-Bench Investigation, Findings & Improvement Plan
 
 > A rigorous investigation into whether UAP improves a local model
 > (Qwen3.6-35B-A3B via llama.cpp) on terminal-bench@2.0, and what to do next.
@@ -15,7 +15,7 @@
   benchmark. The single apparent win (`fix-git` 0/3 → 3/3) was traced by
   ablation to a **one-flag harness bug** (`OpenCodeBaseline` invoked opencode
   without `--dir /app`), not to UAP. With a fair control the arms tie.
-- **Single 6-task runs are not trustworthy** — per-task pass rates flip
+- **Single 6-task runs are not trustworthy**, per-task pass rates flip
   run-to-run (≈10–33% variance). Several "results" earlier in the investigation
   were variance, not signal.
 - **What is genuinely true:** deliver's value is *real-gate projects*
@@ -79,7 +79,7 @@ UAP-context lift.**
    here was overturned by ablation or a fairer control.
 3. **Always multi-seed.** n=1 on this benchmark is noise; report mean±range.
 4. **Disprove cheaply first.** The `openssl` "difference" was killed in 30s by
-   checking that the task matches no UAP category (no mechanism) — no run needed.
+   checking that the task matches no UAP category (no mechanism), no run needed.
 5. **Watchdog hang-prone runs.** `sqlite-db-truncate` hangs opencode for *both*
    agents; without a stall-killer a run loses hours.
 
@@ -100,7 +100,7 @@ are different goals.
    loop detection) and bound it. Ship the stall-watchdog into the runner.
 2. **Reduce variance with self-consistency.** Run N attempts/task and vote or
    judge-select. Directly converts boundary tasks (the 1–2/3 tasks) into wins.
-   Cost: N× inference — but the model is local/zero-marginal-cost.
+   Cost: N× inference, but the model is local/zero-marginal-cost.
 3. **Escalate hard tasks to a stronger model.** The compute/ML/algorithm tasks
    (`path-tracing`, `torch-tensor-parallelism`, `caffe-cifar-10`, `mteb-retrieve`,
    `financial-document-processor`) are beyond a 3B-active model's ceiling.
@@ -109,7 +109,7 @@ are different goals.
    per-component value with controlled per-snippet A/Bs (multi-seed) and keep
    only what measurably helps, or redesign injection to be higher-signal
    (task-relevant patterns/skills with measured impact). Do **not** expand
-   `PATTERN_SNIPPETS` on faith — the git snippet was proven inert.
+   `PATTERN_SNIPPETS` on faith, the git snippet was proven inert.
 
 ### B. Improve real UAP usage (where value actually lives)
 
@@ -119,7 +119,7 @@ are different goals.
    (time-to-green, regression rate), not terminal-bench.
 2. **Token efficiency.** The MCP router's ~98% tool-schema reduction is a real,
    measurable win independent of pass-rate. Track tokens-per-task as a
-   first-class metric — likely where UAP's clearest ROI is.
+   first-class metric, likely where UAP's clearest ROI is.
 3. **Reliability & safety.** Enforcement gates, worktree isolation, and
    never-regress delivery are correctness wins that a pass-rate benchmark does
    not capture. Measure defects-prevented / regressions-avoided.
@@ -129,8 +129,8 @@ are different goals.
 ### Recommended sequence
 
 1. **Fix the hangs** (cheap, unblocks every future run).
-2. **Self-consistency on the quick-6, multi-seed** — the most likely real
+2. **Self-consistency on the quick-6, multi-seed**, the most likely real
    tbench gain, and a clean experiment.
-3. **Escalation for the hard-task tail** — addresses the model-ceiling failures.
+3. **Escalation for the hard-task tail**, addresses the model-ceiling failures.
 4. In parallel, **shift UAP-value measurement off pass-rate** to token
    efficiency + real-gate deliver, where the value is demonstrable.

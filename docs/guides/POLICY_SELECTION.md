@@ -1,12 +1,12 @@
 # Policy Selection & Recommendations
 
-UAP ships ~33 executable policies (the [enforcer catalog](POLICIES.md)). You don't want all of them on for every project — you want the set that fits *your* workflow. This guide gives you a recommended core plus tailored add-ons by scenario, and the commands to apply them.
+UAP ships ~33 executable policies (the [enforcer catalog](POLICIES.md)). You don't want all of them on for every project, you want the set that fits *your* workflow. This guide gives you a recommended core plus tailored add-ons by scenario, and the commands to apply them.
 
 > **Live version of this guide:** `uap policy recommend` (all scenarios) or `uap policy recommend <scenario>` (a tailored set with an install command). The recommendations here and in the CLI come from the same source (`src/config/policy-recommendations.ts`).
 
 ## How policies work (the 20-second version)
 
-A policy is enforced by a hook → the enforcer inspects the tool call → it **allows (exit 0)** or **blocks (exit 2)**. Only `REQUIRED`-level policies hard-block; `RECOMMENDED`/`OPTIONAL` are advisory. Each enforcer also has an env kill-switch (e.g. `UAP_NO_WORKTREE`, `UAP_DELIVER_BYPASS`) so a human can override a single call — they're **cooperative guardrails**, not a sandbox. For a true write boundary, pair them with the [sandbox](SANDBOX.md). Full mechanics: [Policies](POLICIES.md).
+A policy is enforced by a hook → the enforcer inspects the tool call → it **allows (exit 0)** or **blocks (exit 2)**. Only `REQUIRED`-level policies hard-block; `RECOMMENDED`/`OPTIONAL` are advisory. Each enforcer also has an env kill-switch (e.g. `UAP_NO_WORKTREE`, `UAP_DELIVER_BYPASS`) so a human can override a single call, they're **cooperative guardrails**, not a sandbox. For a true write boundary, pair them with the [sandbox](SANDBOX.md). Full mechanics: [Policies](POLICIES.md).
 
 ## Apply them
 
@@ -19,7 +19,7 @@ uap config wizard                    # interactive: pick a scenario, install in 
 uap setup --profile custom           # baseline setup, then the wizard (config + policies)
 ```
 
-## The core set — recommended for every project
+## The core set, recommended for every project
 
 The safety floor. `uap setup` installs the delivery-enforcement + self-protect pieces automatically; the rest are one `uap policy install` away.
 
@@ -33,7 +33,7 @@ The safety floor. `uap setup` installs the delivery-enforcement + self-protect p
 | `memory-before-plan` | The agent recalls prior decisions before re-deriving them. |
 | `workdir-scope` | Writes are contained to the project directory. |
 
-## Scenarios — add these on top of the core
+## Scenarios, add these on top of the core
 
 Pick the row that matches how you work. Each adds to the core set above.
 
@@ -63,7 +63,7 @@ Fail fast locally, re-converge on red CI, and treat deploys as monitored + verif
 
 `validate-plan-before-build` · `ship-loop-gate` · `artifact-hygiene` · `doc-live-over-report` · `codebase-read-before-plan`
 
-A wrong plan wastes an entire autonomous run — validate up front, grade the real system (not the model's optimism), and only end when the work is genuinely done.
+A wrong plan wastes an entire autonomous run, validate up front, grade the real system (not the model's optimism), and only end when the work is genuinely done.
 
 ### Security-sensitive
 *Handling secrets, infrastructure, or regulated code.*
@@ -89,10 +89,10 @@ uap policy level <id> REQUIRED      # promote an advisory to a hard block
 uap policy disable <id>             # turn it off entirely
 ```
 
-Start stricter than you think you need — it's easier to relax a gate that's too noisy than to notice a class of mistakes a missing gate let through. Run `uap config doctor` to catch settings that quietly weaken the whole set (e.g. a leaked `UAP_ENFORCE_DELIVERY=advisory`).
+Start stricter than you think you need, it's easier to relax a gate that's too noisy than to notice a class of mistakes a missing gate let through. Run `uap config doctor` to catch settings that quietly weaken the whole set (e.g. a leaked `UAP_ENFORCE_DELIVERY=advisory`).
 
 ## See also
 
-- [Policies](POLICIES.md) — the full enforcer catalog + CLI reference
-- [Configuration Reference](../reference/CONFIGURATION_REFERENCE.md) — every setting `uap config` exposes
-- [Sandbox](SANDBOX.md) — the kernel-level write boundary that backs the cooperative gates
+- [Policies](POLICIES.md), the full enforcer catalog + CLI reference
+- [Configuration Reference](../reference/CONFIGURATION_REFERENCE.md), every setting `uap config` exposes
+- [Sandbox](SANDBOX.md), the kernel-level write boundary that backs the cooperative gates

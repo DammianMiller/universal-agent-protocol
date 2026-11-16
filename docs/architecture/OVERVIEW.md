@@ -1,17 +1,17 @@
 # UAP Architecture Overview
 
-447 TypeScript modules across 34 `src/` subsystems · 530 vitest suites (~6,250 tests, + a ~1,400-test Python enforcer/proxy suite)
+454 TypeScript modules across 35 `src/` subsystems · 548 vitest suites (~6,450 tests, + a ~1,490-test Python enforcer/proxy suite)
 
 > **Why it looks like this:** every station exists because a specific failure
-> class shows up there in real agentic delivery — the architecture is the
+> class shows up there in real agentic delivery, the architecture is the
 > codified countermeasure, station by station.
 
 > **Code-verified reference:** this narrative overview is the intent-level floor plan. For
-> the reverse-engineered, implementation-accurate map — including trust boundaries,
-> enforcement planes, and where enforcement diverges from the prose — see
+> the reverse-engineered, implementation-accurate map, including trust boundaries,
+> enforcement planes, and where enforcement diverges from the prose, see
 > [`documentation/architecture.md`](../../documentation/architecture.md).
 
-> **🏭 Where this fits:** Whole pipeline — this is the factory-floor map. A bare
+> **🏭 Where this fits:** Whole pipeline, this is the factory-floor map. A bare
 > agent walks work from an idea to a shipped change with no stations in between,
 > so it forgets context, edits the wrong branch, writes plausible-but-broken
 > code, declares "done" on a red build, and repeats the mistake next session.
@@ -19,7 +19,7 @@
 > normally breaks, so your agent's output comes off the line understood,
 > isolated, built, verified, coordinated, shipped, and remembered.
 
-Think of UAP as the **software-delivery pipeline** your agent runs on — a
+Think of UAP as the **software-delivery pipeline** your agent runs on, a
 sausage-factory floor where each station guards one stage of turning an
 instruction into a merged, working change. The stations are UAP's subsystems.
 This document is the floor plan: what each station is, and which break it
@@ -27,11 +27,11 @@ prevents. For the end-to-end walkthrough, see the
 [delivery pipeline guide](../guides/DELIVERY_PIPELINE.md).
 
 The Universal Agent Protocol (UAP) is a layer that sits **underneath** an AI
-coding agent's harness — Claude Code, Factory, Cursor, OpenCode, Codex, and
+coding agent's harness, Claude Code, Factory, Cursor, OpenCode, Codex, and
 others. It does not replace the model or the harness. Instead it installs
 **hooks** that intercept the harness's tool calls, then mediates each call
-through three services — memory injection, policy enforcement, and tool-output
-compression — before handing control back. On top of that mediation layer it
+through three services, memory injection, policy enforcement, and tool-output
+compression, before handing control back. On top of that mediation layer it
 ships a rich CLI for memory, delivery, worktrees, tasks, deployment, and
 multi-model routing.
 
@@ -47,14 +47,14 @@ to the subsystem that guards it. Read this as the conveyor belt your work rides:
 
 | Stage | What breaks without a station | Station (subsystem) |
 |-------|-------------------------------|---------------------|
-| **1. Intake** — understand the work | agent forgets past sessions, hallucinates scope | 4-tier **memory**, **reactor** per-prompt injection, DESIGN.md |
-| **2. Prep / routing** — pick the approach | wrong model, wrong tactic | pattern router, query-complexity, **multi-model routing**, recipe selection |
-| **3. Isolation** — protect the tree | agent edits `master`, clobbers files, collides | **worktree**-per-feature, **file coordination**, delivery gate |
-| **4. Build** — write the code | plausible-but-wrong code, stubs, empty/looping local-model output | **deliver** loop, serving-layer recipes, proxy guardrails, local-model handling |
-| **5. QC / verify** — prove it works | *the big one:* agent says "done" on broken code and self-grades wrong | **completion gates**, execution/runtime verify, **acceptance judge**, generator≠evaluator, tiered gates |
-| **6. Line coordination** — many hands | parallel agents collide, duplicate, deadlock | **coordination DB**, collaboration board + challenge, model-slot concurrency, deploy batching |
-| **7. Shipping** — merge & release | regressions, broken CI, skipped version bumps | worktree→PR flow, version/completion gates, CI feedback watcher, never-regress, git-safety |
-| **8. Feedback** — learn from it | same mistake every session | **memory promotion**, pattern RL, session analysis |
+| **1. Intake**, understand the work | agent forgets past sessions, hallucinates scope | 4-tier **memory**, **reactor** per-prompt injection, DESIGN.md |
+| **2. Prep / routing**, pick the approach | wrong model, wrong tactic | pattern router, query-complexity, **multi-model routing**, recipe selection |
+| **3. Isolation**, protect the tree | agent edits `master`, clobbers files, collides | **worktree**-per-feature, **file coordination**, delivery gate |
+| **4. Build**, write the code | plausible-but-wrong code, stubs, empty/looping local-model output | **deliver** loop, serving-layer recipes, proxy guardrails, local-model handling |
+| **5. QC / verify**, prove it works | *the big one:* agent says "done" on broken code and self-grades wrong | **completion gates**, execution/runtime verify, **acceptance judge**, generator≠evaluator, tiered gates |
+| **6. Line coordination**, many hands | parallel agents collide, duplicate, deadlock | **coordination DB**, collaboration board + challenge, model-slot concurrency, deploy batching |
+| **7. Shipping**, merge & release | regressions, broken CI, skipped version bumps | worktree→PR flow, version/completion gates, CI feedback watcher, never-regress, git-safety |
+| **8. Feedback**, learn from it | same mistake every session | **memory promotion**, pattern RL, session analysis |
 
 Three stations are tightened against the failure classes named in
 mtlynch.io's *Why Are Coding Agents So Dumb?*: plan **legibility** (a
@@ -75,14 +75,14 @@ wherever your agent works.
 
 A bare agent harness calls a tool (Edit, Write, Bash, a spawned sub-agent, an
 MCP tool) and the model sees the raw result. UAP inserts itself between the
-harness and the tool by registering hooks at the harness's interception points —
+harness and the tool by registering hooks at the harness's interception points,
 this is how every station gets a chance to inspect the work before it moves down
 the line:
 
-- **Claude Code / VSCode / Factory / Cursor** — `PreToolUse` hooks
-- **OpenCode** — the `tool.execute.before` plugin hook
-- **Codex** — gating via the UAP MCP server (`execute_tool`)
-- **Hermes** — the `pre_tool_call` event
+- **Claude Code / VSCode / Factory / Cursor**, `PreToolUse` hooks
+- **OpenCode**, the `tool.execute.before` plugin hook
+- **Codex**, gating via the UAP MCP server (`execute_tool`)
+- **Hermes**, the `pre_tool_call` event
 
 The same logical lifecycle runs on every harness:
 
@@ -161,9 +161,9 @@ src/
 
 ## Subsystems (station by station)
 
-### Memory (`src/memory/`) — Intake & Feedback stations
+### Memory (`src/memory/`), Intake & Feedback stations
 
-**The break it prevents:** at intake, a fresh agent has amnesia — it re-litigates
+**The break it prevents:** at intake, a fresh agent has amnesia, it re-litigates
 solved problems and hallucinates scope. At feedback, it drops the lesson it just
 learned and repeats the mistake tomorrow. Memory is the station that carries
 context onto the belt and carries lessons back off it.
@@ -186,29 +186,29 @@ chain (Ollama `nomic-embed-text` → OpenAI `text-embedding-3-small` → local
 
 Key modules:
 
-- `hierarchical-memory.ts` — in-memory hot/warm/cold tier manager with
+- `hierarchical-memory.ts`, in-memory hot/warm/cold tier manager with
   auto promote/demote, time-decay importance, and token-budget enforcement,
   persisted to its own SQLite DB.
-- `dynamic-retrieval.ts` — the per-task orchestrator: classifies the task,
+- `dynamic-retrieval.ts`, the per-task orchestrator: classifies the task,
   sets adaptive retrieval depth + token budget, queries all sources, dedups,
   compresses, and formats the final context block.
-- `memory-consolidator.ts` — summarizes working entries into session memory,
+- `memory-consolidator.ts`, summarizes working entries into session memory,
   extracts lessons, and dedups by content hash + embedding similarity.
-- `write-gate.ts` — a quality filter that scores candidate memories and only
+- `write-gate.ts`, a quality filter that scores candidate memories and only
   persists those above threshold (prevents memory pollution). This is the
   feedback station's own gate: only lessons that change future behavior get
   promoted.
-- `knowledge-graph.ts` — the L4 graph: upsert entities, strengthen
+- `knowledge-graph.ts`, the L4 graph: upsert entities, strengthen
   relationships, recursive-CTE traversal.
-- `context-compressor.ts` / `semantic-compression.ts` — token budgeting and
+- `context-compressor.ts` / `semantic-compression.ts`, token budgeting and
   distillation of context into atomic typed facts.
-- `predictive-memory.ts` / `speculative-cache.ts` — prefetch likely-needed
+- `predictive-memory.ts` / `speculative-cache.ts`, prefetch likely-needed
   memories before they are queried.
-- `task-classifier.ts` — classifies an instruction to drive retrieval hints.
-- `model-router.ts` — benchmark-fingerprint LLM routing with feedback learning
+- `task-classifier.ts`, classifies an instruction to drive retrieval hints.
+- `model-router.ts`, benchmark-fingerprint LLM routing with feedback learning
   (consumed by `src/models/unified-router.ts`).
 
-### MCP Router (`src/mcp-router/`) — cross-cutting: keep the belt from jamming
+### MCP Router (`src/mcp-router/`), cross-cutting: keep the belt from jamming
 
 **The break it prevents:** a context window flooded with tool schemas and raw
 tool output stalls every station downstream. The router keeps context lean so
@@ -219,7 +219,7 @@ by two independent mechanisms (`src/mcp-router/server.ts`,
 `output-compressor.ts`):
 
 1. **Tool hiding.** Instead of exposing 150+ downstream MCP tool schemas
-   (~500 tokens each) to the model, the router exposes just three meta-tools —
+   (~500 tokens each) to the model, the router exposes just three meta-tools,
    `discover_tools`, `execute_tool`, `deliver`. The model issues a
    natural-language `discover_tools` query, gets back matching tool paths, then
    calls `execute_tool({path, args})`. Downstream tools live in an in-memory
@@ -233,26 +233,26 @@ by two independent mechanisms (`src/mcp-router/server.ts`,
 
 The design target documented in source is ~75,000 tokens of tool definitions
 collapsed to ~700 (98%+). Per-output FTS5 savings are computed live per call.
-See [../integrations/MCP_ROUTER.md](../integrations/MCP_ROUTER.md) for setup.
+See the [MCP Router guide](../guides/MCP_ROUTER.md) for setup.
 
-### Policies (`src/policies/`) — cross-cutting: the rules posted at every station
+### Policies (`src/policies/`), cross-cutting: the rules posted at every station
 
 **The break it prevents:** rules that live in a README are advisory and get
 skipped under pressure. Policies are the executable rules bolted to each
-station — worktree, task, delivery, tests, review — so a violation stops the
+station, worktree, task, delivery, tests, review, so a violation stops the
 belt instead of sliding through.
 
 Project guidelines expressed as **executable hook gates** rather than prose.
 Two layers:
 
-- **TypeScript middleware** — `policy-gate.ts` (`PolicyGate.executeWithGates`)
+- **TypeScript middleware**, `policy-gate.ts` (`PolicyGate.executeWithGates`)
   is the in-process gate used by the MCP server's `execute_tool`. It loads
   REQUIRED policies from a SQLite store (`policies.db`), evaluates keyword /
   anti-pattern rules against the operation, and throws `PolicyViolationError`
   on a REQUIRED violation. Stages: `pre-exec | post-exec | review | always`;
   completion/merge/deploy operations auto-force a `review` stage.
-- **Shell gate + Python enforcers** — `templates/hooks/uap-policy-gate.sh`
-  binds to harness hook events and invokes the 32 enforcers in
+- **Shell gate + Python enforcers**, `templates/hooks/uap-policy-gate.sh`
+  binds to harness hook events and invokes the 34 enforcers in
   `src/policies/enforcers/`. A blocked verdict is **exit code 2** (hard block).
 
 Enforcers cover the worktree gate (`worktree_required.py`), task discipline
@@ -261,24 +261,24 @@ Enforcers cover the worktree gate (`worktree_required.py`), task discipline
 (`schema_diff_gate.py`), quality metrics (`quality_metrics_gate.py`), design
 tokens (`design_token_gate.py`), visual verification (`visual_verification.py`),
 branch freshness (`branch_freshness.py`), self-protection
-(`enforcement_self_protect.py` — guards the policy DB, hook scripts, and trust
+(`enforcement_self_protect.py`, guards the policy DB, hook scripts, and trust
 anchors like `.uap/operator-overrides.json` against tampering, including
 interpreter-mediated writes), memory-before-plan, MCP-router-first,
 and more. Levels: **REQUIRED** blocks, **RECOMMENDED** logs,
 **OPTIONAL** informs.
 
 Two trust anchors sit above the policies themselves: the
-**operator-overrides file** (`.uap/operator-overrides.json` — temporary,
-expiring bypasses) and the **liveness cache** (`.uap/policy-liveness.json` —
+**operator-overrides file** (`.uap/operator-overrides.json`, temporary,
+expiring bypasses) and the **liveness cache** (`.uap/policy-liveness.json`,
 for policies that declare liveness requirements, a record that their compliant
-path — the PATH commands, agent-writable dirs, resolvable skills they depend
-on — is still satisfiable, so a policy whose sanctioned route has rotted can
+path, the PATH commands, agent-writable dirs, resolvable skills they depend
+on, is still satisfiable, so a policy whose sanctioned route has rotted can
 degrade gracefully instead of silently blocking or silently passing). Both are
 honored only when root-owned, symlink-free, not group/world-writable, and (the
-cache) fresh — so a compromised or misbehaving agent running as the same uid
+cache) fresh, so a compromised or misbehaving agent running as the same uid
 cannot mint its own bypass.
 
-### Quality gate (`src/quality/`) — QC station, deterministic edition
+### Quality gate (`src/quality/`), QC station, deterministic edition
 
 **The break it prevents:** review-by-eyeball lets complexity and coverage rot
 compound invisibly until the codebase fights every change. This station turns
@@ -287,7 +287,7 @@ tighten.
 
 The quality-metrics gate polices cyclomatic/cognitive complexity,
 Halstead difficulty, LOC-per-file, coverage, CRAP, surviving mutants, dead
-code, duplicate blocks, and explicit `any`/`unknown` — deterministically, with
+code, duplicate blocks, and explicit `any`/`unknown`, deterministically, with
 no LLM in the loop. The built-in scanner (LOC, complexity, any-types) always
 runs; external tools (lizard, jscpd, rust-code-analysis, knip, Stryker) are
 probed and skipped with a warning when absent. Existing debt is frozen in a
@@ -296,10 +296,10 @@ violations block, and regenerating the baseline is a deliberate,
 reviewer-signed-off act. Enforcement lands at edit time
 (`quality_metrics_gate.py`) and at commit/CI time (`uap quality check`); when
 active, the parallel-review artifact must embed a `quality` block and
-`quality.pass: false` vetoes the ship — reviewers adjudicate the numbers, they
+`quality.pass: false` vetoes the ship, reviewers adjudicate the numbers, they
 can't outvote them.
 
-### Delivery — `uap deliver` (`src/delivery/`) — Build & QC stations
+### Delivery, `uap deliver` (`src/delivery/`), Build & QC stations
 
 **The break it prevents:** this is the heart of the floor. Left alone, an agent
 emits plausible-but-wrong code and declares victory on a red build. The deliver
@@ -307,11 +307,11 @@ loop won't let the work leave the Build/QC stations until the project's *real*
 gates actually pass.
 
 An 86-module convergence loop that drives an underlying model against the
-project's **real** completion gates until the work actually passes — the
+project's **real** completion gates until the work actually passes, the
 mechanism behind UAP's "agents stop declaring victory on broken code." See the
 [deliver flow](#how-uap-deliver-orchestrates) below.
 
-### Coordination (`src/coordination/`) — Isolation & Line-coordination stations
+### Coordination (`src/coordination/`), Isolation & Line-coordination stations
 
 **The break it prevents:** put two agents on one repo and they edit the same
 file, duplicate work, or deadlock. This station gives every agent its own lane,
@@ -337,14 +337,14 @@ droids from `capability-router.ts`. `pattern-router.ts` matches tasks to
 Terminal-Bench patterns (always enforcing **P12** Output Existence and
 **P35** Decoder-First).
 
-### Models (`src/models/`) — Prep / routing station
+### Models (`src/models/`), Prep / routing station
 
 **The break it prevents:** an agent that reaches for the same model on every task
 either overpays for trivial edits or under-powers a hard migration. This station
 picks the right approach and model before the work hits the belt.
 
 Multi-model routing. `router.ts` classifies a task (complexity + type from
-keyword scoring) and `selectModel()` picks a model per the routing strategy —
+keyword scoring) and `selectModel()` picks a model per the routing strategy,
 `performance-first`, `cost-optimized`, `adaptive`, or `balanced` (default,
 which walks priority-ordered routing rules). `unified-router.ts` layers a
 benchmark signal on top: it returns a consensus when the rule-based and
@@ -354,7 +354,7 @@ model per subtask; `executor.ts` runs the plan level-by-level with retries and
 fallback; `execution-profiles.ts` tunes *how* the chosen model runs
 (temperature, budgets); `analytics.ts` records outcomes so routing improves.
 
-### Tasks (`src/tasks/`) — Prep / routing & Line-coordination stations
+### Tasks (`src/tasks/`), Prep / routing & Line-coordination stations
 
 **The break it prevents:** work without a tracked task drifts scope, races other
 agents on the same files, and starts before its prerequisites are ready. This
@@ -370,7 +370,7 @@ release with overlap detection); `decoder-gate.ts` implements the P35
 Decoder-First pre-execution validator (droid schema, tool availability,
 claim conflicts, worktree requirement, ambiguity).
 
-### Dashboard (`src/dashboard/`) — floor visibility
+### Dashboard (`src/dashboard/`), floor visibility
 
 **The break it prevents:** a floor you can't see is a floor you can't trust. This
 gives you a live view of every station.
@@ -379,7 +379,7 @@ A live visualization layer (`uap dashboard`) over tasks, agents, memory,
 policies, models, and benchmark/session history, with an event stream for
 real-time updates.
 
-### Observability (`src/observability/`) — Feedback station
+### Observability (`src/observability/`), Feedback station
 
 **The break it prevents:** without traces you can't tell *why* a run failed, so
 the floor never improves. This station records what really happened so the
@@ -388,7 +388,7 @@ pipeline can be tuned.
 Emits HALO / OpenInference spans for delivery runs and tool calls, consumed by
 `uap harness analyze` to optimize agent execution from real traces.
 
-### Benchmark harness (`src/benchmarks/paired/`) — measuring the floor
+### Benchmark harness (`src/benchmarks/paired/`), measuring the floor
 
 **The break it prevents:** claims that a station helps are worthless without a
 controlled measurement. This harness toggles only the UAP scaffold and reports
@@ -444,7 +444,7 @@ decision loop defined normatively in [PROTOCOL.md](PROTOCOL.md#agent-decision-lo
 
 ## How `uap deliver` orchestrates
 
-This is the Build/QC station's inner mechanism — the part that refuses to pass
+This is the Build/QC station's inner mechanism, the part that refuses to pass
 work down the line until it actually runs green. `uap deliver "<instruction>"`
 runs `ConvergenceLoop.deliver()` (`src/delivery/convergence-loop.ts`). The
 staged flow:
@@ -464,44 +464,44 @@ detect gates ──▶ baseline check ──▶ protect files ──▶ ╔═�
                                                                    budget spent
 ```
 
-- **Verifier ladder** (`verifier-ladder.ts`) — derives gate rungs from
+- **Verifier ladder** (`verifier-ladder.ts`), derives gate rungs from
   `package.json` scripts (build → typecheck via `tsc --noEmit` → test → lint)
   and merges in **project-declared gates** from `delivery.gates[]` in
   `.uap.json` (each declared `cwd` is contained to the project root), runs each
   as a real command in a secret-stripped env, fails fast on required rungs.
   "Delivered" means all *required* rungs pass; lint is optional.
-- **Polyglot execution gate** (`execution-gate.ts`) — beyond Node: Python
+- **Polyglot execution gate** (`execution-gate.ts`), beyond Node: Python
   packages get a venv-aware import smoke test (`.venv/bin/python` is probed
   before the ambient interpreter), and native binaries are executed with
-  honest verdicts — a signal death fails, while deliberate exit codes,
+  honest verdicts, a signal death fails, while deliberate exit codes,
   timeouts, and not-executable-here are reported as passes/skips rather than
   fabricated evidence.
-- **Scoped rollback** (`snapshot.ts`) — keep-best rollbacks restore **only the
+- **Scoped rollback** (`snapshot.ts`), keep-best rollbacks restore **only the
   run's own write-set** (tracked per-tool-write plus a bash sweep of
   stat-moved paths), never the whole tree, so a rollback in a shared worktree
   can't silently revert another agent's work. Restore is realpath-contained
   to the project root; when the write-set is empty but rollback is warranted,
   the run fails loudly and preserves the snapshot instead of guessing.
-- **Config-driven model routing** — `delivery.model`, `delivery.routing`, and
+- **Config-driven model routing**, `delivery.model`, `delivery.routing`, and
   `delivery.criticality` in `.uap.json` steer the deliver model (precedence:
   CLI flag > config > criticality > env), and the acceptance judge follows the
   same resolution so the grader matches the builder.
-- **Explorer + ideation** (`explorer.ts`, `ideation.ts`) — best-of-N: generate
+- **Explorer + ideation** (`explorer.ts`, `ideation.ts`), best-of-N: generate
   N candidates with distinct strategy seeds, apply/verify/rollback each on the
   same baseline, commit only the winner. A model **judge** (`judge.ts`)
   tie-breaks candidates with equal gate scores.
-- **Critic** (`critic.ts`) — turns a failed turn's gate output into a
+- **Critic** (`critic.ts`), turns a failed turn's gate output into a
   file-scoped repair plan fed into the next turn (not a raw compiler dump).
-- **Escalation** (`escalation.ts`) — on score stagnation, climbs a cost ladder:
+- **Escalation** (`escalation.ts`), on score stagnation, climbs a cost ladder:
   widen exploration → enable critic → switch to a stronger model + raise budget.
-- **Protection** (`spec-imports.ts`, `integrity.ts`, `applier.ts`) — protects
+- **Protection** (`spec-imports.ts`, `integrity.ts`, `applier.ts`), protects
   pre-existing test/spec files and their transitive oracle imports, and
   byte-verifies protected files after each gate run, so the model can't satisfy
   a spec by rewriting what it asserts against.
-- **Auto / optimize** (`auto-optimizer.ts`) — by default, the run classifies
+- **Auto / optimize** (`auto-optimizer.ts`), by default, the run classifies
   task complexity and enables the matching aids automatically; `--optimize`
   enables every aid at once.
-- **Coordination + observability** (`run-coordinator.ts`, `halo-trace.ts`) —
+- **Coordination + observability** (`run-coordinator.ts`, `halo-trace.ts`),
   optionally registers the run as a coordination agent, heartbeats, queues
   applied files into the deploy batcher, and emits HALO spans.
 
@@ -513,7 +513,7 @@ ceiling (default 30, hard cap 50), and stops once progress stalls.
 
 ## See also
 
-- [PROTOCOL.md](PROTOCOL.md) — the harness↔UAP contract and agent loop
-- [../guides/DELIVERY_PIPELINE.md](../guides/DELIVERY_PIPELINE.md) — the end-to-end delivery-pipeline walkthrough
-- [../integrations/MCP_ROUTER.md](../integrations/MCP_ROUTER.md) — MCP Router setup
-- [../../CONTRIBUTING.md](../../CONTRIBUTING.md) — development workflow
+- [PROTOCOL.md](PROTOCOL.md), the harness↔UAP contract and agent loop
+- [../guides/DELIVERY_PIPELINE.md](../guides/DELIVERY_PIPELINE.md), the end-to-end delivery-pipeline walkthrough
+- [MCP Router guide](../guides/MCP_ROUTER.md), setup and verification
+- [../../CONTRIBUTING.md](../../CONTRIBUTING.md), development workflow

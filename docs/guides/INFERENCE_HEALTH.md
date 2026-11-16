@@ -7,7 +7,7 @@ The distinction is not academic. On 2026-09-21 a local llama.cpp server
 reported `active (running)` and GREEN from `uap doctor` for eighteen hours
 while its prefill throughput fell roughly eight-fold and five client requests
 blew a 1800-second deadline overnight. Nothing was down. Liveness checks had
-nothing to report, and the only visible symptom — slow turns — looked like the
+nothing to report, and the only visible symptom, slow turns, looked like the
 model being the model.
 
 ```bash
@@ -18,39 +18,42 @@ uap inference health --strict       # exit 1 on WARN or RED
 
 ## Two backends, auto-detected
 
-Since 2026-10-04 the local Qwen3.8 backend is the **strata serve layer**
-(one rail, a 131072-cell int8 pool, MTP speculative decoding, no systemd
-unit). The command fetches `/metrics` once and classifies the backend: a
+Today both exist on the box: the proxy's engine arm is a **llama.cpp
+server** (Qwen3.8-Flash-Next UD-IQ4_XS, the speedy v31 arm on port 8080),
+and the **strata serve layer** (one rail, a 131072-cell int8 pool, MTP
+speculative decoding, no systemd unit) carries the Swift 1.5 IQ3_S trial
+under `/home/cogtek/dev/strata`. The command fetches `/metrics` once and
+classifies the backend: a
 JSON document with an `engine` block is strata; Prometheus text with
 `llamacpp:` counters is a llama.cpp server. `--backend llamacpp|strata`
 forces the choice.
 
 The strata path reads two sources:
 
-- **`/metrics` (JSON)** — the `engine` block gives pool size, KV kind and
+- **`/metrics` (JSON)**, the `engine` block gives pool size, KV kind and
   reserve-aware free VRAM; `live` gives the in-flight request; `requests` is
   a bounded ring of completed requests (observed: 12) with real timestamps.
 - **the serve log** (`--strata-log` or `$UAP_STRATA_LOG`, e.g.
-  `/home/cogtek/dev/strata/strata-iq3_xxs.log`) — one `strata serve: prompt
+  `/home/cogtek/dev/strata/strata-iq3_xxs.log`), one `strata serve: prompt
   …` line per completed request, for the process's whole life. These lines
   carry **no timestamps**, so samples use a monotonic line-index clock: good
   enough for the early/recent trend split (the log is one process's life),
   never windowable by `--since`/`--until`. A replay therefore uses the
-  timestamped ring only, **filtered to the requested window** — an unfiltered
+  timestamped ring only, **filtered to the requested window**, an unfiltered
   ring would analyse the current process's last few requests under the
-  REPLAY banner — and honestly reports thin samples.
+  REPLAY banner, and honestly reports thin samples.
 
 Strata adds checks the llama.cpp path cannot have (its journal never logs
 decode rate):
 
 | Check | Code | Why it exists |
 | --- | --- | --- |
-| Decode throughput decay | `decode-decay` | Decode speed depends on prompt DEPTH, so samples bucket by depth — the same compare-like-with-like rule prefill uses. |
-| Prefix-cache failure | `cache-miss` | Strata reports reuse as a fact (`R reused`); under half the prompt served from cache means the conversation cache is not tracking. One honest 0% turn right after a client compaction does not fire it — the mean over the window must be low. |
+| Decode throughput decay | `decode-decay` | Decode speed depends on prompt DEPTH, so samples bucket by depth, the same compare-like-with-like rule prefill uses. |
+| Prefix-cache failure | `cache-miss` | Strata reports reuse as a fact (`R reused`); under half the prompt served from cache means the conversation cache is not tracking. One honest 0% turn right after a client compaction does not fire it, the mean over the window must be low. |
 | VRAM headroom | `vram-headroom` | The backend's own reserve-aware free-VRAM reading, catching another process eating the card from under it. |
 
 The 2026-10-04 bug worth remembering: an *inactive* systemd unit still
-reports its `ExecStart` to `systemctl`, and the old probe trusted it — the
+reports its `ExecStart` to `systemctl`, and the old probe trusted it, the
 dead gsq-rco unit's `-c 229376` printed as the live pool while strata served
 131072. Unit flags now count only when the unit is ACTIVE; `/slots` is the
 live geometry otherwise.
@@ -60,8 +63,8 @@ live geometry otherwise.
 | Check | Code | Why it exists |
 | --- | --- | --- |
 | Prefill throughput decay | `prefill-decay` | A long-lived process can get slower without failing. Only visible when samples are bucketed by prompt size. |
-| Checkpoint starvation | `checkpoint-starved` | `--ctx-checkpoints` is **per slot**. Too few, and the checkpoint cannot track a growing conversation, so the same prefix is re-prefilled every turn. (llama.cpp only — strata has no checkpoint allowance.) |
-| KV pinned at the VBR floor | `kv-at-floor` | The pool is saturated and the cache has silently dropped to its lowest quality tier. (llama.cpp VBR only — strata's int8 KV is a fixed tier, no floor to pin at.) |
+| Checkpoint starvation | `checkpoint-starved` | `--ctx-checkpoints` is **per slot**. Too few, and the checkpoint cannot track a growing conversation, so the same prefix is re-prefilled every turn. (llama.cpp only, strata has no checkpoint allowance.) |
+| KV pinned at the VBR floor | `kv-at-floor` | The pool is saturated and the cache has silently dropped to its lowest quality tier. (llama.cpp VBR only, strata's int8 KV is a fixed tier, no floor to pin at.) |
 | Decode throughput decay | `decode-decay` | Strata: same decay question for decode, bucketed by depth. |
 | Prefix-cache failure | `cache-miss` | Strata: the conversation cache re-reading most of the prompt. |
 | VRAM headroom | `vram-headroom` | Strata: the backend's own free-VRAM reading under the floor. |
@@ -76,16 +79,16 @@ every probe fails open and any that could not run is listed explicitly as
 
 `GREEN` means the sampled evidence is **present and nothing crossed a
 threshold**. An early draft required a finding to exist before the rollup
-could say GREEN — and since only multi-rail llama.cpp emits an info finding
+could say GREEN, and since only multi-rail llama.cpp emits an info finding
 (`shared-pool`), a healthy single-rail or strata stack read UNKNOWN,
 indistinguishable from a blind probe for monitors parsing `--json`.
 
-`UNKNOWN` requires *all* sampled signals to be missing — no usable throughput
+`UNKNOWN` requires *all* sampled signals to be missing, no usable throughput
 trend, no checkpoint or reuse samples, no KV or VRAM reading. Losing one of
 them does not suppress the rest. An **actionable finding always wins**:
 timeouts are counted from the proxy journal and can fire with none of the
 sampled signals present, and a RED finding must never be masked by an
-`UNKNOWN` rollup — which would let it pass `--strict` with exit 0.
+`UNKNOWN` rollup, which would let it pass `--strict` with exit 0.
 
 ## Why prompt-size bucketing matters
 
@@ -102,7 +105,7 @@ rather than guessing.
 Each bucket is split at **its own** median time, not the global one. That
 matters because agent conversations grow, so large prompts arrive late: on a
 live 6h journal the `15-30k` bucket had 2 samples before the global midpoint
-and 21 after, so the minimum-samples guard dropped it — while it had gone
+and 21 after, so the minimum-samples guard dropped it, while it had gone
 616 → 73 tok/s. An 8× collapse, invisible, with the report showing a benign
 `<5k` at 0.78 and emitting no finding at all. A bucket's own chronology is what
 "did this get slower" means for that prompt size.
@@ -112,7 +115,7 @@ it. Ranking by sample count instead would hide the problem: on the real
 incident window the `>30k` bucket had the most samples and sat at 0.52 (WARN),
 while `5-15k` had collapsed to 0.29 (RED). Reporting the fattest bucket
 understated the severity and flipped the remedy from *restart the server* to
-*watch it* — and a thin bucket collapsing tenfold produced no finding at all.
+*watch it*, and a thin bucket collapsing tenfold produced no finding at all.
 
 ## Replaying a past incident
 
@@ -136,19 +139,19 @@ RED     5 generation timeout(s) in the window — clients lost work
 ```
 
 Pass **both** bounds. With `--until` alone the start would otherwise default to
-the *currently running* process — which for any past incident is later than the
+the *currently running* process, which for any past incident is later than the
 window's end, so `journalctl` returns nothing and the report is a clean
 `UNKNOWN` with no hint that the window was backwards. The default is a relative
 `-24h` in that case, but an explicit `--since` is what you want.
 
-In this mode the live readings — uptime, `kv_bpv`, the unit's current flags —
+In this mode the live readings, uptime, `kv_bpv`, the unit's current flags,
 are **dropped, not shown**. They describe the process running *now*, not the
 one in the window. An early version did attribute the current
 `--ctx-checkpoints 4` to a window in which it had been `1`, and recommended
 the wrong remedy as a result.
 
 Strata replays have one extra rule: the ring is the only timestamped source,
-so it is **filtered to the window** — an early version analysed the current
+so it is **filtered to the window**, an early version analysed the current
 process's last dozen requests under the REPLAY banner. Draft records carry no
 timestamp, so a strata replay shows no acceptance rate, and an unparseable
 window expression is disclosed in `unverified (probe unavailable)` rather
@@ -172,9 +175,9 @@ GREEN   active, up 6m, 2 rail(s)
   no problems detected
 ```
 
-`pool ... shared` is deliberate wording. With a unified KV cache — which this
+`pool ... shared` is deliberate wording. With a unified KV cache, which this
 fork **forces** whenever VBR runs above one rail, rather than it being a flag
-you set — `-c` is one shared pool and **`-np` does not divide it**. `/slots`
+you set, `-c` is one shared pool and **`-np` does not divide it**. `/slots`
 reports the full `n_ctx` for every slot and any rail may address all of it. Two rails each
 believing they own the pool is an overcommit waiting to happen; the per-rail
 figure is what it *would* be if split evenly, not an allowance the server
@@ -182,7 +185,7 @@ enforces.
 
 `concurrency` is the honest test of whether an extra rail is earning anything.
 A reading of `1.000` means requests never actually overlapped, so the second
-rail bought nothing — which is a workload fact, not a server fault.
+rail bought nothing, which is a workload fact, not a server fault.
 
 ## Options
 
@@ -192,25 +195,25 @@ rail bought nothing — which is a workload fact, not a server fault.
 | `--proxy-unit <unit>` | systemd user unit for the proxy (timeout counting) |
 | `--url <url>` | server base URL (default `http://127.0.0.1:8080`) |
 | `--since <expr>` | `journalctl --since` window (default: the server process start) |
-| `--until <expr>` | `journalctl --until` bound — replay a past incident |
+| `--until <expr>` | `journalctl --until` bound, replay a past incident |
 | `--json` | machine-readable, with a pinned `reportVersion` |
 | `--strict` | exit 1 on WARN or RED, for CI and monitor loops |
 
 The default window is **the server process's own start**, because throughput
-decay is a property of one process — spanning a restart would manufacture a
+decay is a property of one process, spanning a restart would manufacture a
 cliff at the boundary. When `systemctl` is unavailable and that start time
 cannot be read, it falls back to `-24h`. If the window does end up spanning
 more than one server process, the report says so (`spans-restart`) rather than
 presenting the boundary as decay.
 
 In a replay (`--until`), the live readings are dropped from the analysis too,
-not merely hidden — including the unit's current `-np`/`-c`, which describe the
+not merely hidden, including the unit's current `-np`/`-c`, which describe the
 process running now rather than the one in the window. The `shared-pool` line
 therefore does not appear in a replay.
 
 ## Tuning checkpoints when KV sits at the floor
 
-`kv-at-floor` usually means the pool is saturated — and on this stack a common
+`kv-at-floor` usually means the pool is saturated, and on this stack a common
 cause is the checkpoint allowance, because checkpoints are charged to the SAME
 `--vbr-vram` budget as live context, at ~190 MiB each **per slot**:
 
@@ -229,13 +232,13 @@ bash scripts/set-ctx-checkpoints.sh 3 --now  # stage and restart
 ```
 
 There is no free direction. Raising it bought checkpoint recovery from 20% to
-69% of the reusable prefix on 2026-09-21 — roughly 32k tokens of prefill saved
-per turn — and cost KV quality, which settled at the 4.125 floor within six
+69% of the reusable prefix on 2026-09-21, roughly 32k tokens of prefill saved
+per turn, and cost KV quality, which settled at the 4.125 floor within six
 hours. `uap inference health` reports both sides: `reuse NN%` is the checkpoint
 value, `kv N.NNN bpv (floor …)` is the headroom it consumed.
 
 ## Related
 
-- [Capacity Policy](CAPACITY_POLICY.md) (`uap doctor`) — liveness and declared
+- [Capacity Policy](CAPACITY_POLICY.md) (`uap doctor`), liveness and declared
   budgets, including the `budget.execStartMustContain` flag-drift check.
-- [Local Models](LOCAL_MODELS.md) — the serving stack itself.
+- [Local Models](LOCAL_MODELS.md), the serving stack itself.

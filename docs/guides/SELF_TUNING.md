@@ -4,7 +4,7 @@ Raise a small model (e.g. qwen3.6) toward Opus-level output by tuning UAP's own
 flag surface with a closed, benchmark-validated loop. Where **Self-Harness**
 (`uap self-harness`) mines failure traces and rewrites proxy/scaffold knobs to
 fix *correctness* bugs, **Self-Tuning** (`uap tune`) optimizes the first-class
-settings surface — recipes, hands-free, memory, concurrency, proxy guardrails —
+settings surface, recipes, hands-free, memory, concurrency, proxy guardrails,
 against a *quality* signal.
 
 > Design: [`docs/design/LLM_SELF_TUNING_ANALYSIS.md`](../design/LLM_SELF_TUNING_ANALYSIS.md).
@@ -14,21 +14,21 @@ against a *quality* signal.
 A small model can't reliably judge its own output, and pass/fail on a task suite
 doesn't tell you how *good* the output is. Self-tuning adds:
 
-1. **A quality signal** (P0) — a multi-dimensional `QualityScore` (correctness,
+1. **A quality signal** (P0), a multi-dimensional `QualityScore` (correctness,
    quality, efficiency, tool-reliability, planning → composite 0-100), scored by
    a stronger **judge model** when configured, or deterministically from the run
    metrics otherwise.
-2. **An LLM-guided tuner** (P1) — a stronger model proposes small, interpretable
+2. **An LLM-guided tuner** (P1), a stronger model proposes small, interpretable
    flag changes given the quality history; when no judge is available a real
    **Gaussian-process Bayesian optimizer** (ARD kernel over the mixed
    numeric/enum/bool flag space, Expected-Improvement acquisition) picks the next
    config instead.
-3. **A closed loop** (P2) — every proposal is applied, validated by a paired A/B
+3. **A closed loop** (P2), every proposal is applied, validated by a paired A/B
    benchmark (candidate config vs current, quality-scored), and accepted only on
    a statistically-supported quality lift with no held-out regression.
-4. **Model profiles** (P3) — the best-known config per model family, persisted
+4. **Model profiles** (P3), the best-known config per model family, persisted
    and reused; bundled starters for qwen3.6 and Opus ship in the box.
-5. **Real-time adaptation** (P4) — per-session flag adjustments emitted from live
+5. **Real-time adaptation** (P4), per-session flag adjustments emitted from live
    signals (tool-failure spikes, quality dips, context pressure, RECON loops)
    over the one live channel the proxy honors mid-session.
 
@@ -79,7 +79,7 @@ matters when `recipes.recipe` is `fusion`/`auto`, which itself needs
 - **proxy guardrails**: `PROXY_RECON_CONVERGENCE_THRESHOLD`, `PROXY_LOOP_BREAKER`, `PROXY_STUCK_BREAK`
 
 All writes go through the same validation as `uap config set`, so an
-out-of-range proposal is clamped — it can never corrupt `.uap.json`. Rejected
+out-of-range proposal is clamped, it can never corrupt `.uap.json`. Rejected
 trials are rolled back to the exact prior bytes.
 
 ## Profiles
@@ -88,8 +88,8 @@ Accepted configs advance a versioned `TuningProfile` under
 `.uap/self-tuning/<model>.json`. Bundled starter profiles seed a fresh run and
 act as cross-model transfer priors:
 
-- **qwen3.6** — guardrail-heavy, judge-backed fusion, aggressive hands-free.
-- **Opus 4.8** — the quality upper bound (most guardrails relaxed).
+- **qwen3.6**, guardrail-heavy, judge-backed fusion, aggressive hands-free.
+- **Opus 4.8**, the quality upper bound (most guardrails relaxed).
 
 The runtime source of truth is the typed constants in
 `src/self-tuning/profiles/*.ts`; the sibling `*.json` files are human-readable
@@ -98,7 +98,7 @@ reference artifacts.
 ## Real-time adaptation (auto-on)
 
 The proxy freezes `PROXY_*` at startup and has no reload endpoint, so mid-session
-tuning rides a per-session **adaptation signal** file — the same mechanism as the
+tuning rides a per-session **adaptation signal** file, the same mechanism as the
 recipe signal. It is **on by default** and conservative: a signal is emitted only
 when a live signal actually breaches a threshold, so a nominal session behaves
 exactly as before.
@@ -113,7 +113,7 @@ Live signals map to hot-reloadable adjustments:
 
 ### Turning it off
 
-The reactor emitter is the effective master switch — with it off, no signal is
+The reactor emitter is the effective master switch, with it off, no signal is
 written, so the proxy has nothing to honor. Any of these opts out:
 
 ```bash

@@ -5,7 +5,7 @@
 
 ## Context
 
-AutoMode needs risk classification of tool calls **before dispatch** —
+AutoMode needs risk classification of tool calls **before dispatch**,
 ahead of the verb/regex heuristics in the client-side enforcer chain
 (`src/policies/enforcers/*.py`). The designed classifier is the TypeScript
 SYS1 head (`src/classify/`, PR #807, branch `feature/301-sys1-classifier`),
@@ -18,7 +18,7 @@ all.
 Two further constraints shaped the decision:
 
 1. The deterministic enforcers are the blocking floor and must stay exactly
-   as strict — any classifier output is **advisory only**.
+   as strict, any classifier output is **advisory only**.
 2. A wrong signal is asymmetric: a *missed* destructive call is the
    unacceptable error; a false positive costs one advisory log line.
 
@@ -43,12 +43,12 @@ blocks, never mutates the stream; `PROXY_AUTOMODE_RISK=off` hatch).
   the copy-divergence risk is a **drift-guard test**
   (`EnforcerParityDriftGuardTest` in `test_tool_risk.py`) that imports both
   modules and asserts the launcher sets, find-mutating semantics, and sed
-  `-i` semantics agree — divergence becomes a CI failure, not silent drift.
+  `-i` semantics agree, divergence becomes a CI failure, not silent drift.
 - **Deferred consumption.** For now the classification is consumed only by
   logs and telemetry. The follow-up that produces *production* calibration
   data is enforcer consumption plus a shadow-disagreement signal: run the
   scorer beside the enforcers, record where advisory and floor disagree,
-  and let that corpus — not hand-labeled fixtures alone — calibrate the
+  and let that corpus, not hand-labeled fixtures alone, calibrate the
   promoted head.
 - **Real promotion path.** The SYS1 head, when it lands, is a
   Python-resident model (or a local sidecar) behind the same

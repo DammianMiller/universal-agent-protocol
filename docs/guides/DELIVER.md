@@ -1,8 +1,8 @@
-# `uap deliver` — the delivery harness
+# `uap deliver`, the delivery harness
 
-> **🏭 Where this fits:** BUILD + QC/VERIFY — the two stations where a normal agentic workflow breaks hardest. Your agent writes plausible-but-wrong code (or empty, looping local-model output), then declares "done" on something that never compiled. **What it delivers:** a convergence loop that keeps working the code against your project's *real* gates — build, tests, lint, integration, even a dev deploy — and refuses to call it finished until they actually pass.
+> **🏭 Where this fits:** BUILD + QC/VERIFY, the two stations where a normal agentic workflow breaks hardest. Your agent writes plausible-but-wrong code (or empty, looping local-model output), then declares "done" on something that never compiled. **What it delivers:** a convergence loop that keeps working the code against your project's *real* gates, build, tests, lint, integration, even a dev deploy, and refuses to call it finished until they actually pass.
 
-`uap deliver` drives a model through a **convergence loop that iterates against your project's real completion gates until the work is actually delivered** — build green, tests passing, lint clean — not until the model *claims* it's done.
+`uap deliver` drives a model through a **convergence loop that iterates against your project's real completion gates until the work is actually delivered**, build green, tests passing, lint clean, not until the model *claims* it's done.
 
 Think of it as the quality-control station on your [delivery pipeline](./DELIVERY_PIPELINE.md): raw code goes in, and nothing leaves the line until it has been inspected against the real definition of done. It is UAP's answer to "the agent said it finished, but nothing compiles." Instead of a single shot, `deliver` runs an execute → verify → critique → iterate loop, feeding real gate failures back to the model and persisting until the gates pass or the run provably stalls.
 
@@ -16,11 +16,11 @@ uap deliver "implement the password reset flow"
 
 The loop lives in `src/delivery/` (15 modules). Each turn:
 
-1. **Explore & plan** — the model reads the relevant code and proposes a change. With best-of-N exploration enabled, several candidate approaches are generated and the most promising is taken (`explorer.ts`).
-2. **Apply** — the applier writes the proposed file changes (`applier.ts`). Pre-existing test files, gate configs, and the transitive imports of your spec files are **protected from being overwritten by default** — the model cannot "pass" by editing the tests. A runtime integrity guard hashes protected files and rejects tampering (`integrity.ts`, `spec-imports.ts`).
-3. **Verify** — the verifier ladder runs your real gates — build, typecheck, test, lint — and scores the turn (`verifier-ladder.ts`). Nothing counts as delivered until the required gates are green.
-4. **Critique & feed back** — failures are turned into structured guidance for the next turn (`critic.ts`); learned best-practice cards can be injected and recorded on success (`practice.ts`).
-5. **Iterate until delivered** — the loop continues. By default it **extends past `--max-turns` up to a ceiling**, stopping early only on genuine stagnation (no score improvement across several turns). On stagnation with `--escalate`, it widens exploration, adds a critic pass, and finally escalates to a stronger model (`escalation.ts`).
+1. **Explore & plan**, the model reads the relevant code and proposes a change. With best-of-N exploration enabled, several candidate approaches are generated and the most promising is taken (`explorer.ts`).
+2. **Apply**, the applier writes the proposed file changes (`applier.ts`). Pre-existing test files, gate configs, and the transitive imports of your spec files are **protected from being overwritten by default**, the model cannot "pass" by editing the tests. A runtime integrity guard hashes protected files and rejects tampering (`integrity.ts`, `spec-imports.ts`).
+3. **Verify**, the verifier ladder runs your real gates, build, typecheck, test, lint, and scores the turn (`verifier-ladder.ts`). Nothing counts as delivered until the required gates are green.
+4. **Critique & feed back**, failures are turned into structured guidance for the next turn (`critic.ts`); learned best-practice cards can be injected and recorded on success (`practice.ts`).
+5. **Iterate until delivered**, the loop continues. By default it **extends past `--max-turns` up to a ceiling**, stopping early only on genuine stagnation (no score improvement across several turns). On stagnation with `--escalate`, it widens exploration, adds a critic pass, and finally escalates to a stronger model (`escalation.ts`).
 
 ```
         ┌──────────── guidance file (optional) ───────────┐
@@ -45,26 +45,26 @@ echo "prefer RS256 and keep the existing /login route" >> ./guidance.txt
 For **huge, multi-epic builds**, `deliver` goes further: it decomposes the
 mission into a task DAG (the **blackboard orchestrator**, minimal fresh context
 per task) and, for epic-scale work, loops whole **epics as fresh sessions**
-until each is accepted. Combined with **hands-free persistence**, any model —
-local or frontier — runs the build to 100% without stopping. See
+until each is accepted. Combined with **hands-free persistence**, any model,
+local or frontier, runs the build to 100% without stopping. See
 **[The Orchestrator & Hands-Free Persistence](ORCHESTRATOR.md)**.
 
 ---
 
 ## Big builds: decompose → orchestrate → epics → contracts-first
 
-For a mission too large to hold in one context, `deliver` scales down the context each turn actually needs — this is what lets a small-context local model compose a system it could never see all at once.
+For a mission too large to hold in one context, `deliver` scales down the context each turn actually needs, this is what lets a small-context local model compose a system it could never see all at once.
 
 - **`--decompose`** splits the mission into sequential phases, each converged by its own loop (auto for long, complex instructions; `--no-decompose` forbids it).
-- **`--orchestrate`** runs those phases through the **blackboard orchestrator** with *minimal* per-task context — each task sees only its goal + its direct-dependency outputs. Implies `--decompose`.
-- **`--epics`** runs a massive mission as a sequence of **epics, each a fresh session** — only prior epics' summaries are injected, never their full code — looped until each is accepted (auto for very long missions; `--no-epics` disables).
-- **`--team-solve`** runs the mission through the **team-solve-deliver workflow**: team roles direct the convergence loop. A planner and two parallel ideators (minimal-change vs structural) produce an approach; the **solve** step runs the SAME posture decision as any other mission (epics → orchestrated → phased → single) with that approach enriching the instruction; a **fresh-context reviewer** judges the outcome against the plan; a review-seeded **repair** loop applies only what the review named; and a **gates-only verify** pass — the tiered ladder with no executor turns — decides the mission. **AUTO by default**: engages for high/critical-complexity missions only (the reliability ladder's hardest-tier row), stands down on self-gate, lazy-solved, and resumed runs. `--no-team-solve`, `UAP_DELIVER_TEAM_SOLVE=0`, or `.uap.json` `deliver.teamSolve: "off"` disable; `deliver.teamSolve: "on"` always engages. The role ledger (plan, proposals, repair brief) lands in `.uap/workflow-runs/<runId>/`. See [Workflows](WORKFLOWS.md) for the workflow format.
+- **`--orchestrate`** runs those phases through the **blackboard orchestrator** with *minimal* per-task context, each task sees only its goal + its direct-dependency outputs. Implies `--decompose`.
+- **`--epics`** runs a massive mission as a sequence of **epics, each a fresh session**, only prior epics' summaries are injected, never their full code, looped until each is accepted (auto for very long missions; `--no-epics` disables).
+- **`--team-solve`** runs the mission through the **team-solve-deliver workflow**: team roles direct the convergence loop. A planner and two parallel ideators (minimal-change vs structural) produce an approach; the **solve** step runs the SAME posture decision as any other mission (epics → orchestrated → phased → single) with that approach enriching the instruction; a **fresh-context reviewer** judges the outcome against the plan; a review-seeded **repair** loop applies only what the review named; and a **gates-only verify** pass, the tiered ladder with no executor turns, decides the mission. **AUTO by default**: engages for high/critical-complexity missions only (the reliability ladder's hardest-tier row), stands down on self-gate, lazy-solved, and resumed runs. `--no-team-solve`, `UAP_DELIVER_TEAM_SOLVE=0`, or `.uap.json` `deliver.teamSolve: "off"` disable; `deliver.teamSolve: "on"` always engages. The role ledger (plan, proposals, repair brief) lands in `.uap/workflow-runs/<runId>/`. See [Workflows](WORKFLOWS.md) for the workflow format.
 
-**Contracts-first** (on by default inside epic/decompose runs; `UAP_DELIVER_CONTRACTS=0` disables): the first epic plans the shared types, interfaces, and registry APIs the rest build against. Once accepted, its files are **locked read-only** so later epics build against frozen signatures and can't drift them. The public surface is *extracted and verified against emitted source* — only names proven present are recorded — which is what makes cross-module composition reliable without holding every module in context.
+**Contracts-first** (on by default inside epic/decompose runs; `UAP_DELIVER_CONTRACTS=0` disables): the first epic plans the shared types, interfaces, and registry APIs the rest build against. Once accepted, its files are **locked read-only** so later epics build against frozen signatures and can't drift them. The public surface is *extracted and verified against emitted source*, only names proven present are recorded, which is what makes cross-module composition reliable without holding every module in context.
 
-**Scaffold-then-fill** (on by default in phased runs; `UAP_DELIVER_SCAFFOLD=0` disables): a large phase is split into a **scaffold** phase that emits the compiling skeleton (complete public signatures, wired imports/exports, stub bodies — build/typecheck must pass) and a **fill** phase that implements the logic *without changing any signature*. The skeleton keeps the build green while the details land.
+**Scaffold-then-fill** (on by default in phased runs; `UAP_DELIVER_SCAFFOLD=0` disables): a large phase is split into a **scaffold** phase that emits the compiling skeleton (complete public signatures, wired imports/exports, stub bodies, build/typecheck must pass) and a **fill** phase that implements the logic *without changing any signature*. The skeleton keeps the build green while the details land.
 
-Interrupted a long run? **`--resume <id|latest>`** picks up a durable run from `.uap/deliver-runs` where it left off — but only one that has actually **stopped**.
+Interrupted a long run? **`--resume <id|latest>`** picks up a durable run from `.uap/deliver-runs` where it left off, but only one that has actually **stopped**.
 
 A mission outlives the tool call that launched it, so a caller whose own timeout
 fired is looking at a run that is still going, not a stopped one. **Do not resume
@@ -72,8 +72,8 @@ a live run**: resume *continues* a mission rather than attaching to it, and
 `latest` resolves to the running one, so it starts a second copy on the same
 tree. Follow it instead with **`uap deliver --await-run`** (or the `deliver` tool
 with `follow:true`), which takes no lock and starts nothing. Each poll reports
-`progress.health` — `starting` / `active` / `wedged`, derived from the run's
-heartbeat — plus `heartbeatAgeSec` and `phase`, so consecutive polls show whether
+`progress.health`, `starting` / `active` / `wedged`, derived from the run's
+heartbeat, plus `heartbeatAgeSec` and `phase`, so consecutive polls show whether
 it is moving. See [CLI.md](../reference/CLI.md#deliver) for the flags and exit
 codes.
 
@@ -94,32 +94,32 @@ uap deliver "trivial typo fix"           --no-auto     # disable dynamic optimiz
 
 ## Tiered validation gates (cheap-first)
 
-Real delivery is more than unit tests — it also has to integrate and deploy. `deliver` groups gates into **tiers** and runs them **cheapest-first**, only promoting to the next, more expensive tier once the prior one is green:
+Real delivery is more than unit tests, it also has to integrate and deploy. `deliver` groups gates into **tiers** and runs them **cheapest-first**, only promoting to the next, more expensive tier once the prior one is green:
 
 ```
 fast → integration → deploy-dev → │ commit │ → ci → deploy-staging → deploy-prod
 └──────── run locally ───────────┘          └──── verified by CI (the watcher) ────┘
 ```
 
-- **`fast`** — build, typecheck, unit tests, lint (the original ladder). Always on.
-- **`integration`** — `test:integration` / `test:e2e` scripts, or a pytest `integration` marker. **Auto-detected and on by default** (like lint); disable with `--no-integration`.
-- **`deploy-dev`** — a local dev deploy + smoke check: brings a `docker compose` stack up (or runs a `deploy:dev` / `smoke` script), health-checks it, then **always tears it down**. Opt-in with `--deploy-dev`. If docker is unavailable the tier is *skipped*, never failed.
+- **`fast`**, build, typecheck, unit tests, lint (the original ladder). Always on.
+- **`integration`**, `test:integration` / `test:e2e` scripts, or a pytest `integration` marker. **Auto-detected and on by default** (like lint); disable with `--no-integration`.
+- **`deploy-dev`**, a local dev deploy + smoke check: brings a `docker compose` stack up (or runs a `deploy:dev` / `smoke` script), health-checks it, then **always tears it down**. Opt-in with `--deploy-dev`. If docker is unavailable the tier is *skipped*, never failed.
 
-Because promotion is cheap-first, a turn that fails the build never pays for integration or deploy — the expensive tiers run only once the cheap ones pass.
+Because promotion is cheap-first, a turn that fails the build never pays for integration or deploy, the expensive tiers run only once the cheap ones pass.
 
-**Synthetic rungs don't stop promotion.** The self-gate is authored by the model and lands in `fast`, and it is *supposed* to stay red until the mission is done. If it stopped promotion, the execution gate, the user-path validator and the vision review would all be starved for the whole run — which is the steady state on a mature repo, since the self-gate is raised precisely when the project's own gates are green. So it is marked non-promotion-blocking: it still fails the ladder (it cannot be passed by ignoring it), it just no longer hides every real gate behind one script.
+**Synthetic rungs don't stop promotion.** The self-gate is authored by the model and lands in `fast`, and it is *supposed* to stay red until the mission is done. If it stopped promotion, the execution gate, the user-path validator and the vision review would all be starved for the whole run, which is the steady state on a mature repo, since the self-gate is raised precisely when the project's own gates are green. So it is marked non-promotion-blocking: it still fails the ladder (it cannot be passed by ignoring it), it just no longer hides every real gate behind one script.
 
-While a synthetic rung is red, the **infrastructure** tiers (`integration`, `deploy-dev`) are *deferred* rather than run every turn — a compose cycle and an ephemeral Postgres per turn buys a verdict that cannot change until the self-gate goes green. They are reported as `DEFERRED`, not as failures, and they run normally on the turn the self-gate passes. `runtime` and `final` are never deferred: they carry the "does it execute" and "does it behave" signals the unblocking exists to deliver. Set `UAP_LADDER_NO_COST_CEILING=1` to run the full ladder every turn regardless.
+While a synthetic rung is red, the **infrastructure** tiers (`integration`, `deploy-dev`) are *deferred* rather than run every turn, a compose cycle and an ephemeral Postgres per turn buys a verdict that cannot change until the self-gate goes green. They are reported as `DEFERRED`, not as failures, and they run normally on the turn the self-gate passes. `runtime` and `final` are never deferred: they carry the "does it execute" and "does it behave" signals the unblocking exists to deliver. Set `UAP_LADDER_NO_COST_CEILING=1` to run the full ladder every turn regardless.
 
 ### CI / deploy feedback loop
 
-The `ci`, `deploy-staging`, and `deploy-prod` tiers are **never run locally** — they are verified by CI after commit. With `--watch-ci`, once the local tiers are green `deliver`:
+The `ci`, `deploy-staging`, and `deploy-prod` tiers are **never run locally**, they are verified by CI after commit. With `--watch-ci`, once the local tiers are green `deliver`:
 
 1. commits the applied files and **pushes the current worktree branch** (never `master`/`main`, never force-push);
 2. resolves the CI run for that exact commit (matched by SHA) and watches it;
 3. on CI / deploy failure, feeds the **sanitized failure logs back into a fresh convergence pass** and re-converges (bounded by `--ci-passes`).
 
-`--until-deployed` implies `--watch-ci` and additionally requires the `deploy-staging` and `deploy-prod` jobs to be green before exiting 0 — so "delivered" means *deployed and verified*, not just "tests pass locally".
+`--until-deployed` implies `--watch-ci` and additionally requires the `deploy-staging` and `deploy-prod` jobs to be green before exiting 0, so "delivered" means *deployed and verified*, not just "tests pass locally".
 
 The bundled workflow [`.github/workflows/deploy-verify.yml`](../../.github/workflows/deploy-verify.yml) provides the `deploy-dev` / `deploy-staging` / `deploy-prod` jobs the watcher reads. Add `deploy:dev` / `deploy:staging` / `deploy:prod` and `smoke` npm scripts to your project and the no-op verification steps become real.
 
@@ -137,19 +137,19 @@ uap deliver "add the orders endpoint" --until-deployed
 
 ## Beyond build & test: proving it runs
 
-Green gates prove code *compiles and tests pass* — not that the artifact actually **runs**. `deliver` adds gates for that:
+Green gates prove code *compiles and tests pass*, not that the artifact actually **runs**. `deliver` adds gates for that:
 
-- **Execution gate** — auto-synthesized as a ladder rung whenever a runnable artifact is detected: it actually *runs* the thing (headless browser / vm-dom / child-process) and fails the turn on a runtime error, a blank canvas, or a static frame. Catches "declared done but never ran."
-- **Acceptance judge** (`--acceptance`) — after the objective gates pass, an LLM judges the spec's *behavioral completeness* from the code + runtime evidence and feeds any unmet requirements back so the loop finishes the spec. Pair it with **`--evaluator-model <preset>`** to have a *different* model judge than the one that implemented (separate generator from evaluator — the "barbell" strategy).
-- **Self-gate** — when a project has **no** detectable gates, `deliver` authors a task-specific acceptance gate as a fallback so there is always something to converge against (on by default; `--no-self-gate` disables, `--force-self-gate` authors one even when project gates exist).
+- **Execution gate**, auto-synthesized as a ladder rung whenever a runnable artifact is detected: it actually *runs* the thing (headless browser / vm-dom / child-process) and fails the turn on a runtime error, a blank canvas, or a static frame. Catches "declared done but never ran."
+- **Acceptance judge** (`--acceptance`), after the objective gates pass, an LLM judges the spec's *behavioral completeness* from the code + runtime evidence and feeds any unmet requirements back so the loop finishes the spec. Pair it with **`--evaluator-model <preset>`** to have a *different* model judge than the one that implemented (separate generator from evaluator, the "barbell" strategy).
+- **Self-gate**, when a project has **no** detectable gates, `deliver` authors a task-specific acceptance gate as a fallback so there is always something to converge against (on by default; `--no-self-gate` disables, `--force-self-gate` authors one even when project gates exist).
 
 ## Resilience: baseline-delta, migrations & repair escalation
 
 Long autonomous runs fail in predictable ways; `deliver` has a guard for each:
 
-- **Baseline-delta gating** — the full ladder is run **once at mission start**. Any required gate that is *already red at baseline* (a pre-existing failure the mission didn't cause) is demoted to non-blocking and annotated; only **new** regressions (green→red) block delivery. So a pre-existing broken lint or flaky test can't consume every attempt. On by default (`UAP_DELIVER_BASELINE_DELTA=0` or `.uap.json` `deliver.baselineDelta:false` to disable).
-- **Migration-validation gate** — when a `migrations/` dir with `.sql` files exists, a ladder rung runs the migrations against an **ephemeral throwaway Postgres container** before they can ship broken. Skips cleanly (never fails) when Docker/`sqlx-cli` isn't available.
-- **Repair escalation** — a circuit breaker for the compile-error death spiral: when the compile-error count *grows* across consecutive turns, the loop stops mission work and runs **one narrow "make it compile, change nothing else" pass** — in a fresh focused session, on the `--escalate-model` when configured — then resumes.
+- **Baseline-delta gating**, the full ladder is run **once at mission start**. Any required gate that is *already red at baseline* (a pre-existing failure the mission didn't cause) is demoted to non-blocking and annotated; only **new** regressions (green→red) block delivery. So a pre-existing broken lint or flaky test can't consume every attempt. On by default (`UAP_DELIVER_BASELINE_DELTA=0` or `.uap.json` `deliver.baselineDelta:false` to disable).
+- **Migration-validation gate**, when a `migrations/` dir with `.sql` files exists, a ladder rung runs the migrations against an **ephemeral throwaway Postgres container** before they can ship broken. Skips cleanly (never fails) when Docker/`sqlx-cli` isn't available.
+- **Repair escalation**, a circuit breaker for the compile-error death spiral: when the compile-error count *grows* across consecutive turns, the loop stops mission work and runs **one narrow "make it compile, change nothing else" pass**, in a fresh focused session, on the `--escalate-model` when configured, then resumes.
 
 ## Options
 
@@ -167,7 +167,7 @@ Long autonomous runs fail in predictable ways; `deliver` has a guard for each:
 
 | Flag | Purpose |
 |---|---|
-| `--executor <mode>` | Per-turn executor: `blind` (one completion), `agentic` (tool-using read/list/bash/write loop), or `auto` (agentic when there's repo context/gates to inspect) — default `auto` |
+| `--executor <mode>` | Per-turn executor: `blind` (one completion), `agentic` (tool-using read/list/bash/write loop), or `auto` (agentic when there's repo context/gates to inspect), default `auto` |
 | `--allow-bash` | Permit the agentic executor's `run_bash` tool when NOT under `uap sandbox` (off by default; auto-enabled under sandbox) |
 
 **Models & routing**
@@ -240,13 +240,13 @@ Long autonomous runs fail in predictable ways; `deliver` has a guard for each:
 ### `--keep-best` snapshots
 
 The pre-run snapshot lands on real disk under `~/.cache/uap/snapshots`
-(`UAP_SNAPSHOT_DIR` overrides; absolute paths only) — never `/tmp`, which is
+(`UAP_SNAPSHOT_DIR` overrides; absolute paths only), never `/tmp`, which is
 RAM-backed on many Linux systems. Derived directories (`.git`,
 `node_modules`, `target`, `.venv`, `dist`, `build`, …) are neither
 snapshotted nor touched by a rollback, at any depth. Secret-bearing files
 (`.env*`, `.npmrc`, `.netrc`, `*.pem`/`*.key`/`*.p12`/`*.pfx`, `id_rsa` &
 friends) follow the same symmetric contract: they are never copied into
-snapshot storage, and a rollback never reverts or deletes them — even inside
+snapshot storage, and a rollback never reverts or deletes them, even inside
 directories created after the snapshot. Committed env templates
 (`.env.example`/`.sample`/`.template`/`.dist`) are treated as source and roll
 back normally. Trees larger
@@ -271,8 +271,8 @@ uap deliver "add a healthcheck endpoint" --model qwen35-a3b --endpoint http://12
 
 ## Automatic routing & enforcement
 
-- **MCP `deliver` meta-tool** — harnesses with the MCP router can auto-route a coding task into `uap deliver` without a shell call (see [MCP Router](../integrations/MCP_ROUTER.md)).
-- **delivery-enforcement policy** — an optional policy gate that routes source edits through `deliver` rather than ad-hoc writes. It is a cooperative-agent guardrail, not a security boundary (see [Policies](POLICIES.md)).
+- **MCP `deliver` meta-tool**, harnesses with the MCP router can auto-route a coding task into `uap deliver` without a shell call (see [MCP Router](./MCP_ROUTER.md)).
+- **delivery-enforcement policy**, an optional policy gate that routes source edits through `deliver` rather than ad-hoc writes. It is a cooperative-agent guardrail, not a security boundary (see [Policies](POLICIES.md)).
 
 ---
 
@@ -282,7 +282,7 @@ uap deliver "add a healthcheck endpoint" --model qwen35-a3b --endpoint http://12
 uap deliver "add input validation to the signup form" --dry-run
 ```
 
-shows the gates UAP detected and the plan, without spending a single model token — the fastest way to confirm `deliver` understands your project's definition of done.
+shows the gates UAP detected and the plan, without spending a single model token, the fastest way to confirm `deliver` understands your project's definition of done.
 
 ---
 

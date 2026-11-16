@@ -1,10 +1,10 @@
-# Paired Benchmark Findings — When Does UAP Actually Help?
+# Paired Benchmark Findings, When Does UAP Actually Help?
 
-> **2026-09-02 replication available:** re-run on Qwen3.8-27B × UAP v1.224.x —
+> **2026-09-02 replication available:** re-run on Qwen3.8-27B × UAP v1.224.x:
 > the +20pp lift did not replicate. The stronger model moved the ceiling
 > (baseline 78%→94% on the same suite), and pooled across 146 raw-adapter
 > cells the gate loop is an exact wash: **82.9% vs 82.9%, Δ 0.0pp
-> [−5.5, +6.9]** — the CI excludes +20pp. UAP never significantly hurt
+> [−5.5, +6.9]**, the CI excludes +20pp. UAP never significantly hurt
 > accuracy on any surface; the one actionable regression is deliver-path
 > stop-criteria latency on slow local models. See
 > [the replication section](#2026-09-02-replication--qwen38-27b-dense--uap-v1224x).
@@ -13,7 +13,7 @@ Results from the controlled paired harness (`uap bench paired`, see
 [PAIRED_HARNESS.md](PAIRED_HARNESS.md)). These supersede earlier uncontrolled
 numbers and complete the story the [TBench Investigation](TBENCH_INVESTIGATION.md)
 started: every "UAP lift" measured without a controlled baseline turned out to be
-a confound. This is the rigorous version — same model, same tasks, same seeds,
+a confound. This is the rigorous version, same model, same tasks, same seeds,
 toggling **only** the UAP layer, with bootstrap confidence intervals on every
 delta.
 
@@ -32,7 +32,7 @@ delta.
 | **Non-agentic** (raw single-shot) | **+20pp** [CI +8, +32] | gate loop rescues failures the model can't self-catch |
 
 The headline implication: **UAP's gate value is real and large, but only over a
-baseline that doesn't already loop** — which is exactly the `uap deliver`
+baseline that doesn't already loop**, which is exactly the `uap deliver`
 (model-wrapping) case. When you are already driving a capable agentic harness,
 UAP's contribution shifts from *accuracy* to *efficiency, coordination, and
 never-regress*.
@@ -41,7 +41,7 @@ never-regress*.
 
 Five controlled runs against `ik-llama/qwen36-35b-a3b-iq4xs` (a 35B-A3B MoE).
 All paired, all with deterministic ground-truth `verifyCmd` scorers (no LLM
-judge). Metrics reported as a vector — correctness **and** tokens/turns/latency —
+judge). Metrics reported as a vector, correctness **and** tokens/turns/latency,
 each as a paired delta with a 95% bootstrap CI and a sign-flip permutation
 p-value. Correctness deltas additionally get a McNemar 2×2 ("fixed" vs
 "regressed").
@@ -54,7 +54,7 @@ p-value. Correctness deltas additionally get a McNemar 2×2 ("fixed" vs
 | 2 | real-gate-hard | 6 tasks × 8-arm ablation × 4 | 100% → 100% | +48.7k [13.9k, 93.3k] |
 | 3 | real-gate-gated | 5 edge-case tasks × 8-arm ablation × 4 | 100% → 100% | +25.2k (n.s.) |
 
-In every agentic run the **baseline already scored 100%** — there was no headroom
+In every agentic run the **baseline already scored 100%**, there was no headroom
 for UAP to improve accuracy. The per-component ablation (turning off gates /
 worktree / memory / experts / skills / patterns one at a time) found **no
 component with a Δsuccess confidence interval above zero**; the token deltas only
@@ -62,10 +62,10 @@ rank overhead.
 
 **Root cause:** opencode is itself an agentic harness that runs the in-repo
 tests and self-corrects by default. The UAP gate instruction is redundant on top
-of an agent that already self-verifies — and adding in-repo tests to give the
+of an agent that already self-verifies, and adding in-repo tests to give the
 "gate" something to run handed the same self-verification to the *baseline*.
 
-### 4. Non-agentic baseline (raw single-shot vs gate loop) — the decisive run
+### 4. Non-agentic baseline (raw single-shot vs gate loop), the decisive run
 
 To isolate **gate value**, the `raw` adapter calls the model's completion
 endpoint directly:
@@ -83,13 +83,13 @@ endpoint directly:
 | baseline (single-shot) | **78.0%** | 22% | 1,170 | 1.0 |
 | uap-full (gate loop) | **98.0%** | 2% | 2,242 | 1.3 |
 
-- **Correctness: +20.0pp** — 95% CI **[+8.0, +32.0]**, p=0.008 ✅
+- **Correctness: +20.0pp**, 95% CI **[+8.0, +32.0]**, p=0.008 ✅
 - **Gate value (McNemar):** 11 fixed, 1 regressed, **net +10** (p=0.006)
-- **Cost:** +1,072 tokens, +0.3 turns per task — cheap for a 20-point gain
+- **Cost:** +1,072 tokens, +0.3 turns per task, cheap for a 20-point gain
 
 When the baseline can't self-verify, it ships edge-case bugs 22% of the time. The
 gate loop catches and repairs 11 of them, cutting the error rate to 2%. The one
-"regressed" case is the honest caveat — once, the loop's rewrite broke something
+"regressed" case is the honest caveat, once, the loop's rewrite broke something
 single-shot happened to get right.
 
 ## What the tasks look like
@@ -112,13 +112,13 @@ from the hidden superset `verifyCmd` that remains the authoritative scorer.
 
 ## Methodology notes (and honest caveats)
 
-- **Paired design** removes between-task variance — the dominant noise source.
+- **Paired design** removes between-task variance, the dominant noise source.
   Deltas are bootstrap CIs (10k resamples, seeded for reproducibility) + a
   sign-flip permutation test. Single-arm point estimates are never claims.
 - **Small N + a single shared GPU.** Token/latency CIs are wide and latency is
   confounded by request queueing on one GPU; read the *correctness* and *token*
   deltas, not absolute latency. The +20pp result holds with N=50/arm and a CI
-  that excludes zero, but it is one model on five tasks — directional, not a
+  that excludes zero, but it is one model on five tasks, directional, not a
   universal constant.
 - **Ceiling effect** is why the agentic runs show 0pp: a 35B model in an
   agentic harness simply solves these self-contained algorithmic tasks. A weaker
@@ -128,15 +128,16 @@ from the hidden superset `verifyCmd` that remains the authoritative scorer.
   detached tree that keeps the pipe open. Fixed with a detached process-group
   spawn + group SIGKILL; subsequent runs completed 158–190/192 cleanly.
 
-## 2026-09-02 replication — Qwen3.8-27B (dense) × UAP v1.224.x
+## 2026-09-02 replication, Qwen3.8-27B (dense) × UAP v1.224.x
 
 Same paired design, re-run on the current production local stack:
 **Qwen3.8-27B** (dense qwen35-arch, UD-IQ4_XS, native draft-mtp on llama.cpp,
-131k ctx/slot × 2 slots, RTX 3090) against **UAP v1.224.x** — i.e. *after* the
+131k ctx/slot × 2 slots, RTX 3090) against **UAP v1.224.x**, i.e. *after* the
 quality-metrics gate (v1.223.0) and the deliver-pipeline hardening (v1.224.0)
-shipped. Plan: [qwen38-uap-retest-plan](../plans/qwen38-uap-retest-plan.md).
+shipped. The retest plan that framed this replication (2026-09-02) is
+archived in git history, `docs/plans/`.
 
-**Headline: the +20pp gate-loop lift did not replicate at that magnitude —
+**Headline: the +20pp gate-loop lift did not replicate at that magnitude,
 because the stronger model moved the ceiling.** On the identical gated suite
 the without-UAP baseline rose from 78% (qwen36 MoE) to **94%**, leaving almost
 no headroom; UAP fixed every remaining baseline failure and regressed none.
@@ -149,22 +150,22 @@ quantified below.
 |---|---|---|---|---|---|---|
 | E1 raw, `real-gate-gated`, 10 ep | 50 | 94.0% | **100%** | **+6.0pp [0, +14]**, p=0.25 | **3 / 0** | +272 tok (n.s.) |
 | E3a raw, `real-gate-heldout`, 3 ep | 51 | 78.4% | 78.4% | 0pp [−11.8, +11.8] | 5 / 5 | +1,044 tok [+101, +2,571] |
-| E3b raw, `real-gate-power`, 3 ep | 45 | 75.6% | 68.9% | −6.7pp [−20, +6.7], p=0.51 | 3 / 6 | +117 tok (n.s.; loop never fired — see below) |
+| E3b raw, `real-gate-power`, 3 ep | 45 | 75.6% | 68.9% | −6.7pp [−20, +6.7], p=0.51 | 3 / 6 | +117 tok (n.s.; loop never fired, see below) |
 | E2 opencode, `real-gate-hard`, 4 ep | 36 | 94.4% | 97.2% | +2.8pp [0, +8.3], p=1 | 1 / 0 | +52.0k tok [+20.8k, +86.8k], +1.2 turns |
 | E4 `uap deliver` (real pipeline), `real-gate-gated`, 5 ep | 25 | 68.0% | 60.0% | −8.0pp [−32, +16], p=0.75 | 4 / 6 | **+7.7 min/cell, p=0.0007** |
 
 **Pooled raw-adapter estimate (E1+E3a+E3b, 146 paired cells, 38 distinct
-tasks): 82.9% vs 82.9% — Δ 0.0pp, sign-flip 95% CI [−5.5, +6.9], p=1.0;
+tasks): 82.9% vs 82.9%, Δ 0.0pp, sign-flip 95% CI [−5.5, +6.9], p=1.0;
 McNemar 11 fixed / 11 regressed.** The CI now *excludes* the original +20pp:
 for this model, that lift is falsified, not replicated. (Pooled analysis:
 paired sign-flip bootstrap over the union of the three runs' records, seed 1,
-10k resamples — same method as the per-run reports.)
+10k resamples, same method as the per-run reports.)
 
 ### How to read it
 
 - **E1 (direct replication of the decisive qwen36 run):** same suite, same
   temp (0.6), same epochs. Baseline 78%→94% across model generations is the
-  story — Qwen3.8-27B one-shots most edge cases the older MoE missed. UAP's
+  story, Qwen3.8-27B one-shots most edge cases the older MoE missed. UAP's
   gate loop converted the remaining 3 baseline failures into passes with zero
   regressions: same sign as the original +20pp, smaller magnitude because the
   headroom shrank. CI touches 0 at n=50, so treat as directional.
@@ -173,7 +174,7 @@ paired sign-flip bootstrap over the union of the three runs' records, seed 1,
   loop's fixes (5) were exactly offset by rewrites that broke working
   single-shot answers (5). The +1,044-token overhead is real. Net accuracy
   claim on unseen tasks: **no measurable gain, no measurable harm**.
-- **E3b (power suite):** a different null mechanism — uap-full turns = 1.0
+- **E3b (power suite):** a different null mechanism, uap-full turns = 1.0
   exactly. On these tasks the model's solution passes the *visible* in-repo
   gate but fails the *hidden* verify superset, so the gate loop has nothing
   to catch and never iterates; the arms differ only by prompt-surface
@@ -190,7 +191,7 @@ paired sign-flip bootstrap over the union of the three runs' records, seed 1,
   one surface where UAP underperformed its own bare-turn baseline (−8pp, CI
   spans 0, underpowered at n=25). The mechanism is visible in the records:
   **29 of 50 cells hit the 21-minute cell timeout** (median treatment latency
-  = the cap), and every treatment mission ended in a not-delivered verdict —
+  = the cap), and every treatment mission ended in a not-delivered verdict,
   including 15 that had in fact written a verify-passing solution. The
   convergence loop does not stop in time on a slow local 27B: stop-criteria
   and acceptance-judge latency are calibrated for fast API models.
@@ -247,7 +248,7 @@ for the harness internals, adapters, and how to author a task.
 
 The accuracy-lift hypothesis is **falsified for the agentic-vs-agentic case** and
 **confirmed for the non-agentic case**. Use UAP's gate loop (`uap deliver`) when
-wrapping a model that won't self-verify — that is where the measurable accuracy
+wrapping a model that won't self-verify, that is where the measurable accuracy
 win lives. When you already run a strong agentic harness, value UAP for its
 efficiency (token savings), coordination (multi-agent file safety), and
 never-regress guarantees, not for first-pass accuracy.

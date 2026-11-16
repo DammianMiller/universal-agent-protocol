@@ -1,19 +1,25 @@
 # UAP CLI Reference
 
 > Complete command reference for the Universal Agent Protocol command-line interface (`uap`).
-> Version v2.31.0.
+> Version v2.51.0.
 
-> **🏭 Where this fits:** Every station — this is the control panel for the whole
+> **🏭 Where this fits:** Every station, this is the control panel for the whole
 > line. **What it delivers:** one binary that drives each stage of your
 > [delivery pipeline](../guides/DELIVERY_PIPELINE.md), from understanding the work
 > to shipping it safely, so you operate the factory from a single door.
 
-The `uap` binary is the single entry point for every UAP capability — the
+The `uap` binary is the single entry point for every UAP capability, the
 control panel for the whole line. From here you run project initialization, the
 tiered memory system (Intake/Feedback), the git worktree workflow (Isolation),
 multi-agent coordination (Line coordination), task management, the multi-model
 architecture (Prep/Routing), the MCP router, policy enforcement (cross-cutting),
 the delivery convergence loop (Build → QC/Verify), and platform hook management.
+
+Most of this machinery also runs without you: when a coding agent is connected,
+UAP's harness hooks enforce it automatically on the agent's tool calls (memory
+recall and writes, worktree isolation, policy blocks, output compression, gated
+delivery). This reference is the other half, the direct operator surface, every
+command you can run yourself.
 
 ```bash
 uap --help          # top-level command list
@@ -21,7 +27,7 @@ uap <command> --help    # subcommands + flags for a command
 uap --version           # print version
 ```
 
-Commands are lazy-loaded — each command module is imported only when its action
+Commands are lazy-loaded, each command module is imported only when its action
 runs, keeping `--help` fast.
 
 ## Command index
@@ -149,8 +155,8 @@ uap setup [options]
 | `-i, --interactive` | Run the guided wizard (the default) |
 
 The guided wizard (default) prompts for harnesses, memory tiers, coordination,
-patterns, policies, model provider/profile, hooks, and browser — with smart
-defaults from the environment — and persists the choices to `.uap.json`. Before
+patterns, policies, model provider/profile, hooks, and browser, with smart
+defaults from the environment, and persists the choices to `.uap.json`. Before
 any change it backs up agent instruction files to `.uap-backups/<date>/` and
 offers to extract custom sections into UAP policies/skills (see
 [Installation → Backup & custom-content extraction](../getting-started/INSTALLATION.md#backup--custom-content-extraction)).
@@ -300,7 +306,7 @@ Serialized landing of concurrent agent PRs. See
 |------------|-----------|---------|
 | `queue` | `-y, --yes`, `-n, --dry-run`, `-l, --limit <n>` (10), `--force` | Land PRs one at a time, re-syncing every PR each merge invalidates |
 
-Without `--yes` the command only prints its plan — merging is irreversible and
+Without `--yes` the command only prints its plan, merging is irreversible and
 unattended. `--force` lands PRs whose checks are not green.
 
 ```bash
@@ -361,7 +367,7 @@ uap expert-route "harden the payment webhook against replay attacks" -f src/paym
 ## `deliver`
 
 Convergence loop: iterate a model against real completion gates until delivery.
-Loop-until-delivered is ON by default — the loop extends past `--max-turns` to a
+Loop-until-delivered is ON by default, the loop extends past `--max-turns` to a
 ceiling and stops on stagnation. Dynamic optimization is also on by default: the
 task is classified and matching aids enable automatically.
 
@@ -404,9 +410,9 @@ uap deliver <instruction...> [options]
 | `--dry-run` | Show detected gates and plan without calling the model |
 | `--json` | Emit JSON result |
 | `--await-run` | Attach to the run already in flight and report its outcome. Read-only: takes no lock, writes no run state, starts nothing |
-| `--await-timeout <sec>` | Budget for `--await-run` (default 900, max 14400). An MCP caller is clamped to at most 45s — just under a client's ~60s request timeout |
+| `--await-timeout <sec>` | Budget for `--await-run` (default 900, max 14400). An MCP caller is clamped to at most 45s, just under a client's ~60s request timeout |
 | `--resume <id>` | CONTINUE a stopped run. Not the same as following: resuming a **live** run starts a second copy of it |
-| `--pending [file]` | Replay the edit intents the delivery gate recorded (`.uap/pending-deliver.jsonl`) by exact anchor — no model — then run the gates once |
+| `--pending [file]` | Replay the edit intents the delivery gate recorded (`.uap/pending-deliver.jsonl`) by exact anchor, no model, then run the gates once |
 
 A mission outlives the tool call that launched it, so a caller whose own timeout
 fires mid-run follows it rather than relaunching:
@@ -418,11 +424,11 @@ uap deliver --await-run --await-timeout 45 # one poll, then report and return
 
 Exit codes for `--await-run` are distinct because three of the four outcomes are
 not failures: **0** delivered · **1** the mission ended badly · **3** nothing was
-running *on this root* · **4** still running — the wait gave up, the mission did
+running *on this root* · **4** still running, the wait gave up, the mission did
 not.
 
 A **3** normally means "safe to launch". The exception is a launch that was just
-refused because an *overlapping* root holds the run: follow that root instead —
+refused because an *overlapping* root holds the run: follow that root instead,
 this one has nothing in flight and will keep answering 3.
 
 A `4` carries a `progress` object so consecutive polls can be compared. Always
@@ -432,24 +438,24 @@ could be attributed to the lock holder: `runElapsedSec`, `phase`.
 `health` is derived from how recently the run stamped its heartbeat, never
 asserted:
 
-- `"starting"` — it holds the lock but has not stamped a heartbeat yet.
-- `"active"` — it stamped within `wedgeAfterSec`. Note this means the process is
+- `"starting"`, it holds the lock but has not stamped a heartbeat yet.
+- `"active"`, it stamped within `wedgeAfterSec`. Note this means the process is
   *doing something*, not that the mission is getting closer: the heartbeat is
   stamped on every executor tool call, so a run spinning in a tool-call loop
   stays `"active"`. Cross-check `phase` and the run's `updatedAt`, which only
   move when a turn or phase completes.
-- `"wedged"` — silent past `UAP_DELIVER_WEDGE_TIMEOUT` (default 1800s, shared
+- `"wedged"`, silent past `UAP_DELIVER_WEDGE_TIMEOUT` (default 1800s, shared
   with the autoroute hook) and may be stuck.
 
 Single-flight is a property of the **subtree**, not of the lock path. A run also
 exits early when an older live run holds an *overlapping* (nested or identical)
 project root: `repo` and `repo/src/ext` edit the same files even though their
-`.uap/deliver.lock` paths differ. The refusal names the holder's root — follow
+`.uap/deliver.lock` paths differ. The refusal names the holder's root, follow
 *that* root, because following your own reports nothing in flight. Live runs
 register in `~/.uap/active-runs` (redirect with `UAP_ACTIVE_RUNS_DIR`).
 
 A wedged **lock** holder is reclaimed by the next launch. A resumed run holds no
-lock, so relaunching there does not reclaim it — it starts a second mission on
+lock, so relaunching there does not reclaim it, it starts a second mission on
 the same tree; keep following instead. Never kill a deliver run by hand: that
 discards the work it already finished and leaves the lock behind. If a run
 genuinely must stop, use the dashboard's Cancel control, which writes a
@@ -488,7 +494,7 @@ The trace file defaults to `$UAP_HALO_TRACE_PATH` or `.uap/halo/traces.jsonl`.
 
 ## `bench`
 
-Controlled paired benchmark — hold the base model + agent constant and toggle
+Controlled paired benchmark, hold the base model + agent constant and toggle
 UAP on/off over the same real-gate suite and seeds, then report paired deltas
 with confidence intervals, a McNemar gate-value 2×2, and a cost–accuracy Pareto.
 
@@ -514,7 +520,7 @@ Measured pace: the EWMA ETA for a (model, taskType,
 complexity) key, built **only** from this project's own recorded attempts
 (the ETA sample stream in the model-analytics store). Recent attempts weigh
 more (half-life in samples, default 10); the sample count, the spread, and
-the failure rate always travel with the number — a pace without provenance
+the failure rate always travel with the number, a pace without provenance
 is exactly the confident guess this replaces. Fewer than 3 successful
 attempts is **not an estimate**: the command says so instead of guessing.
 3–5 samples is `thin` (shown with the caveat); 6+ is `solid`. `--all` lists
@@ -526,7 +532,7 @@ instead of silently omitting them.
 | `--model <id>` | Model id (default: the active/executor model) |
 | `--taskType <t>` / `--complexity <c>` | Sample key (default `orchestrated`/`medium`) |
 | `--all` | Every key with history: estimates + too-thin keys by name (capped at the 50 most-active keys, truncation named); `--json` with `--all` emits `{keys, estimates, truncated}` |
-| `--limit <n>` / `--half-life <n>` | Sample window (default 50) / EWMA half-life in samples (default 10) — garbage input is refused loudly, never folded |
+| `--limit <n>` / `--half-life <n>` | Sample window (default 50) / EWMA half-life in samples (default 10), garbage input is refused loudly, never folded |
 | `--db <path>` | Pin the analytics DB path (odd layouts; the default is the project store) |
 | `--json` | Machine-readable: `{key, estimate}` for one key, `{keys, estimates, truncated}` for `--all` |
 
@@ -540,12 +546,12 @@ uap eta --all                          # every key; too-thin keys named, not hid
 ## `diff`
 
 Local diff view: what the agent changed around here, in one
-honest render — uncommitted rows (staged + unstaged vs HEAD) with per-file
+honest render, uncommitted rows (staged + unstaged vs HEAD) with per-file
 +N/-N and git status glyphs, untracked paths, honest totals, and unpushed
 commits vs the base with ahead/behind and aggregate deltas. Binary files
 render `±` (unknown), never `0`. Safe-git only: execFileSync argument
 arrays, a 5s timeout, and the stateful caches (fsmonitor, untrackedCache)
-defeated. Outside a repository it prints an explicit `git:` error line —
+defeated. Outside a repository it prints an explicit `git:` error line,
 never a stack trace, never silence.
 
 | Flag | Purpose |
@@ -565,7 +571,7 @@ uap diff --base origin/master          # against a different base
 
 Self-improving harness: mine model-specific failures from traces, propose a
 bounded, reversible modification (the "Mod" DSL), validate it with a real paired
-bench, and — with `--apply` — commit it and snapshot a versioned profile.
+bench, and, with `--apply`, commit it and snapshot a versioned profile.
 
 | Subcommand | Key flags | Purpose |
 |------------|-----------|---------|
@@ -586,7 +592,7 @@ See [Self-Harness (design)](../design/SELF_HARNESS.md).
 
 ## `tune`
 
-LLM self-tuning — raise a small model (e.g. qwen3.6) toward Opus-level output by
+LLM self-tuning, raise a small model (e.g. qwen3.6) toward Opus-level output by
 tuning UAP's own flag surface (recipes, hands-free, memory, concurrency, proxy
 guardrails) with a benchmark-validated closed loop. An LLM proposes small flag
 changes when a judge model is configured; otherwise a Gaussian-process Bayesian
@@ -614,8 +620,8 @@ See [LLM Self-Tuning](../guides/SELF_TUNING.md).
 
 ## `verify`
 
-Run the project's completion gates — including the **runtime execution gate**
-that actually runs the changed code — against the current files and report
+Run the project's completion gates, including the **runtime execution gate**
+that actually runs the changed code, against the current files and report
 pass/fail. This is what the Stop hook calls to block "done" on code that never
 ran.
 
@@ -640,7 +646,7 @@ uap verify --acceptance spec.md --strict
 
 ## `config`
 
-Inspect and change every UAP setting from one place — the single source of truth
+Inspect and change every UAP setting from one place, the single source of truth
 is `src/config/settings-registry.ts`, which also generates the
 [Configuration Reference](CONFIGURATION_REFERENCE.md).
 
@@ -681,7 +687,7 @@ work against it, and gate off-token colors / off-scale spacing.
 Reference-counted, session-scoped lifecycle for the local inference proxy (the
 Anthropic-compatible gateway in front of a local llama.cpp/Qwen). Hooks
 `ensure`/`release` it per session so it starts on demand and stops when the last
-session leaves — but it never kills a proxy that systemd manages or that other
+session leaves, but it never kills a proxy that systemd manages or that other
 sessions still use.
 
 `uap proxy [ensure | release | status | start | stop | restart | enable | disable | dashboard [on|off]]`
@@ -689,12 +695,12 @@ sessions still use.
 The **operational dashboard rides along**: `ensure`/`start` also start-or-adopt
 `uap dashboard serve` (default <http://localhost:3847>), so monitoring never needs
 a second command. `release` stops it when the last client leaves; `stop` shuts it
-down immediately (ownership only — it does not consult the client count). A
+down immediately (ownership only, it does not consult the client count). A
 dashboard you started yourself, or one serving a different project, is never
 touched. Opt out per project with `uap proxy dashboard off`, per `ensure`/`start`
 with `--no-dashboard`, or globally with `UAP_PROXY_DASHBOARD=0`.
 Ports/hosts: `UAP_DASH_PORT` (3847), `UAP_DASH_HOST` (localhost),
-`UAP_DASH_HEALTH_WAIT_MS` (10000) — these govern the ride-along, not
+`UAP_DASH_HEALTH_WAIT_MS` (10000), these govern the ride-along, not
 `uap dash serve`.
 
 | Flag | Purpose |
@@ -704,7 +710,7 @@ Ports/hosts: `UAP_DASH_PORT` (3847), `UAP_DASH_HOST` (localhost),
 | `--port <n>` | Proxy port (default 4000 / `$PROXY_PORT`) |
 | `--socket <path>` | `connect`: proxy AF_UNIX socket (default `$UAP_PROXY_SOCKET`) |
 | `--ready-file <path>` | `connect`: touch this file (with the bound port) once listening |
-| `--allow-anyone` | `connect`: REQUIRED consent — see the warning below |
+| `--allow-anyone` | `connect`: REQUIRED consent, see the warning below |
 | `--if-enabled` | No-op unless `.uap.json` `proxy.autostart` is true (hook-safe) |
 | `--no-dashboard` | Don't start the ride-along dashboard on this `ensure`/`start` |
 | `--quiet` / `--json` | Suppress output (hooks) / machine-readable status |
@@ -726,7 +732,7 @@ out the boot race.
 **Why `--allow-anyone` is required:** the 0600 socket exists so only the
 owning USER can reach the model path; the relay re-serves it on loopback
 TCP, and while it runs EVERY local user can reach the model path through
-it — the gate, inverted. The command refuses to start without the explicit
+it, the gate, inverted. The command refuses to start without the explicit
 flag, says so on stderr while it runs, and should be stopped when the work
 is done.
 
@@ -741,7 +747,7 @@ Toggle the long multi-turn deliver orchestrator (blackboard decomposition +
 epic controller for big autonomous builds). Persists to `.uap.json`
 (`deliver.orchestrate`).
 
-`uap orchestrator [on | off | auto | status]` — `auto` (default) engages it only
+`uap orchestrator [on | off | auto | status]`, `auto` (default) engages it only
 for large multi-epic work. See [Orchestrator & Hands-Free](../guides/ORCHESTRATOR.md).
 
 ---
@@ -766,7 +772,7 @@ See [Orchestrator & Hands-Free](../guides/ORCHESTRATOR.md).
 ## `workflow`
 
 Declarative workflows: a static `workflow.yaml` step DAG (agent | command |
-gate | loop) executed on the blackboard orchestrator — role-specialized steps
+gate | loop) executed on the blackboard orchestrator, role-specialized steps
 in fresh contexts talking through files, deterministic command verdicts,
 approval gates, resume at the step boundary. `loop` steps run through a
 caller-injected convergence loop (`uap deliver --team-solve` is the caller
@@ -815,7 +821,7 @@ uap challenge open --metric tps --rope-margin 4
 ## `sandbox`
 
 Run a command with a kernel-enforced workdir boundary (bubblewrap): only the
-current dir + scratch are writable, so writes outside fail at the kernel — the
+current dir + scratch are writable, so writes outside fail at the kernel, the
 boundary `--dangerously-skip-permissions` cannot bypass.
 
 ```bash
@@ -825,12 +831,12 @@ uap sandbox [--session <id>] [--net shared|off] -- <command> [args...]
 The `--` separator before the command is REQUIRED: without it, the sandbox's
 own flags (`--session`, `--net`, `--ttl`, `--reason`, `--json`) are parsed as
 sandbox options rather than passed through to the session command. The grant
-verbs are only intercepted when there is no `--` — `uap sandbox -- revoke …`
+verbs are only intercepted when there is no `--`, `uap sandbox -- revoke …`
 runs a binary named `revoke`, not the ledger verb.
 
 Bridge P4 authorities on top of the floor:
 
-- `--net off` — the kernel egress boundary: own network namespace with nothing
+- `--net off`, the kernel egress boundary: own network namespace with nothing
   up (no TCP, no DNS, not even loopback). For untrusted code, evals, and
   data-only work; a harness that needs the model fails loudly by design.
 - per-session writable holes from the consent ledger (reason REQUIRED, TTL
@@ -844,7 +850,7 @@ uap sandbox revoke <grantId>
 
   The grants listing states the ledger's tamper-evidence verdict (ADR 0011):
   a ledger that fails its out-of-checkout anchor check is stamped INTEGRITY
-  MISMATCH — rows are still listed but marked unverified, new grants are
+  MISMATCH, rows are still listed but marked unverified, new grants are
   refused, and a sandbox session opens ZERO grant-derived holes. With
   `--json` the alarm rides stderr so the data stays pure.
 
@@ -856,7 +862,7 @@ See [Sandbox](../guides/SANDBOX.md) and
 ## `react`
 
 Resolve the dynamic UAP capabilities (experts / skills / patterns) for a
-lifecycle event and emit JSON — the engine behind the per-prompt Reactor. Hook
+lifecycle event and emit JSON, the engine behind the per-prompt Reactor. Hook
 adapters pipe a JSON `ReactorContext` on stdin; the flags below are for manual
 invocation.
 
@@ -1101,7 +1107,7 @@ uap model select --save
 
 ## `mcp-router`
 
-MCP Router — hierarchical router for 98%+ token reduction. Exposes two meta-tools
+MCP Router, hierarchical router for 98%+ token reduction. Exposes two meta-tools
 (discover + execute) instead of every server's full tool list.
 
 | Subcommand | Key flags | Purpose |
@@ -1250,7 +1256,7 @@ uap quality check --file src/x.ts # single file (content may come from stdin —
 ```
 
 Escape hatch for agents: `UAP_QUALITY_GATE_OFF=1`. Regenerating the baseline is
-a deliberate act — do it only with reviewer sign-off.
+a deliberate act, do it only with reviewer sign-off.
 
 ---
 
@@ -1282,14 +1288,14 @@ uap self query "how do I run a controlled benchmark"
 ## `attention`
 
 The operator attention queue: the ask-instead-of-stop rail. When a
-decision is genuinely yours — a placement parked and waiting for a swap
-approval, a grant request, a blocking question — the agent records it here
+decision is genuinely yours, a placement parked and waiting for a swap
+approval, a grant request, a blocking question, the agent records it here
 with its context and a SAFE DEFAULT, and keeps working. The session-start hook
 shows what is waiting (plus what was auto-decided while you were away); `sweep`
 is the AFK auto-decider: anything whose grace window elapsed without an answer
 adopts its recorded safe default (logged, never silent), and anything without
 one ESCALATES instead of silently expiring. The decider only records its own
-adoption — the underlying system keeps its own lifecycle. One queue per
+adoption, the underlying system keeps its own lifecycle. One queue per
 checkout: the MAIN checkout's `.uap/attention.json` (the dashboard, the CLI,
 and session hooks in any worktree share it; `UAP_ATTENTION_QUEUE` pins it
 elsewhere). Fail-open, atomic, re-sanitized on load; `UAP_ATTENTION_OFF=1`
@@ -1297,8 +1303,8 @@ silences the rail end-to-end.
 
 | Subcommand | Key flags | Purpose |
 |------------|-----------|---------|
-| `list` | `--status <s>`, `--json` | What is waiting — OPEN items by default (pending + acknowledged + escalated); `--status` filters to one status (pending, acknowledged, decided, auto-decided, escalated; unknown values error) |
-| `ack <id>` | | Mark seen — the grace clock keeps running (seen ≠ answered) |
+| `list` | `--status <s>`, `--json` | What is waiting, OPEN items by default (pending + acknowledged + escalated); `--status` filters to one status (pending, acknowledged, decided, auto-decided, escalated; unknown values error) |
+| `ack <id>` | | Mark seen, the grace clock keeps running (seen ≠ answered) |
 | `decide <id> <decision>` | | Answer the ask (yours beats the decider) |
 | `sweep` | `--json` | Adopt recorded safe defaults for grace-elapsed items; escalate the rest |
 

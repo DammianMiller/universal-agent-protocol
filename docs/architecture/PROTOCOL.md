@@ -1,16 +1,16 @@
 # The UAP Protocol
 
-`v2.30.0`
+`v2.51.0`
 
-> **🏭 Where this fits:** Cross-cutting (the factory rulebook) — with no shared
+> **🏭 Where this fits:** Cross-cutting (the factory rulebook), with no shared
 > contract, each station's rules are guesswork and your agent slips broken work
 > past whichever gate it doesn't recognize. **What it delivers:** the normative
 > hook-and-gate contract that makes every station on the
-> [delivery pipeline](../guides/DELIVERY_PIPELINE.md) enforceable and portable —
+> [delivery pipeline](../guides/DELIVERY_PIPELINE.md) enforceable and portable,
 > the same rules apply whichever harness runs the line.
 
 This document specifies the **Universal Agent Protocol** itself: the contract
-between an AI agent harness and the UAP layer beneath it. It is normative —
+between an AI agent harness and the UAP layer beneath it. It is normative,
 where it says *MUST* / *SHOULD* / *MAY*, those carry their usual meaning. For an
 architectural tour of the components that implement this contract, see
 [OVERVIEW.md](OVERVIEW.md).
@@ -32,20 +32,20 @@ completion gates are the **QC/verify** station that stops "done"-on-broken-code.
 
 A conforming harness MUST provide UAP with:
 
-1. **A session-start interception point** — a place to run a script when an
+1. **A session-start interception point**, a place to run a script when an
    agent session begins, whose stdout is injected into the agent's context.
-2. **A pre-tool-use interception point** — a place to run a script *before*
+2. **A pre-tool-use interception point**, a place to run a script *before*
    each tool call, where a non-zero exit (specifically **exit code 2**) aborts
    the call.
 
 UAP, in return, guarantees:
 
-- Memory injection is **advisory and fail-open** — if hydration fails, the
+- Memory injection is **advisory and fail-open**, if hydration fails, the
   session proceeds without it. It never blocks an agent.
-- Policy enforcement is **fail-closed for REQUIRED policies** — a REQUIRED
+- Policy enforcement is **fail-closed for REQUIRED policies**, a REQUIRED
   violation blocks the call. RECOMMENDED / OPTIONAL policies only log.
 - Tool output routed through the MCP Router is **compressed, not altered in
-  meaning** — the model receives a faithful, smaller view of the same result.
+  meaning**, the model receives a faithful, smaller view of the same result.
 
 ### Supported interception points
 
@@ -77,9 +77,9 @@ hook, which MUST:
    this in the agent's context.
 2. **Clean stale state.** Deregister dead agents and release abandoned work
    claims so coordination state stays accurate.
-3. **Surface waiting decisions.** Sweep the operator attention queue —
+3. **Surface waiting decisions.** Sweep the operator attention queue,
    grace-elapsed asks adopt their recorded safe default (logged on the item,
-   never silent); asks with no safe default escalate — then emit a bounded
+   never silent); asks with no safe default escalate, then emit a bounded
    block of still-open asks (plus a while-you-were-away summary) into the
    session banner. Item text is rendered with an untrusted-data disclaimer;
    `UAP_ATTENTION_OFF=1` silences the rail end-to-end.
@@ -106,7 +106,7 @@ pre-tool-use(tool, args):
         allow                        # call proceeds (optionally via MCP Router)
 ```
 
-A gate verdict is binary — **allow** or **deny**. There is no "modify" verdict.
+A gate verdict is binary, **allow** or **deny**. There is no "modify" verdict.
 A denied call returns **exit code 2** (shell enforcers) or throws
 `PolicyViolationError` (in-process MCP gate). Post-tool-use hooks MAY run a
 build gate or backup reminder; pre/post-compact hooks preserve protocol context
@@ -135,12 +135,12 @@ and the short-term store / consolidator (record, promote).
                                                             ▼
 ```
 
-1. **READ** — read short-term memory for recent context (`uap memory query`).
-2. **QUERY** — semantic search of long-term memory for related learnings.
-3. **ACT** — classify the task, then execute via the appropriate tool
+1. **READ**, read short-term memory for recent context (`uap memory query`).
+2. **QUERY**, semantic search of long-term memory for related learnings.
+3. **ACT**, classify the task, then execute via the appropriate tool
    (Edit / Write / Bash / a routed MCP tool / `uap deliver`).
-4. **RECORD** — write observations to short-term memory.
-5. **PROMOTE** — promote significant learnings to long-term memory, **through
+4. **RECORD**, write observations to short-term memory.
+5. **PROMOTE**, promote significant learnings to long-term memory, **through
    the write-gate** (which scores and rejects low-quality memories).
 
 A learning is significant enough to PROMOTE when it changes future behavior:
@@ -154,7 +154,7 @@ transient debugging state, and secrets MUST NOT be promoted.
 
 The **isolation station.** All file edits MUST happen inside a git worktree
 under `.worktrees/NNN-<slug>/`. Edits to the project root are blocked by the
-worktree gate (`worktree_required.py`) — this is what keeps your agent off
+worktree gate (`worktree_required.py`), this is what keeps your agent off
 `master` and out of another agent's lane.
 
 ```bash
@@ -170,7 +170,7 @@ Rules:
 - All edit paths MUST be under `.worktrees/NNN-<slug>/`.
 - Version bumps MUST happen on the feature branch, never on `master`.
 - PRs open from the worktree branch against `master`.
-- This applies to **every** file type — `.ts`, `.md`, `.json`, `.sh`,
+- This applies to **every** file type, `.ts`, `.md`, `.json`, `.sh`,
   configs, tests, docs. There is no exemption for "small" or "docs-only"
   changes.
 
@@ -180,7 +180,7 @@ Rules:
 
 ## 5. Completion gates
 
-The **QC/verify station — the one everyone skips.** Claiming a code change is
+The **QC/verify station, the one everyone skips.** Claiming a code change is
 DONE is prohibited until all gates pass; this is where "the agent said done on a
 red build" gets caught. The gates are decomposed across policy enforcers and the
 `review`-stage policy logic in `policy-gate.ts` (auto-forced on completion /

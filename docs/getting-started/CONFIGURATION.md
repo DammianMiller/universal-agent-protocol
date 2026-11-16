@@ -1,8 +1,8 @@
 # Configuration
 
-> **🏭 Where this fits:** The control panel for the whole line — every station's knobs in one place. **What it delivers:** sensible defaults out of the box (via `uap setup`), and precise control when you want to tune how your [delivery pipeline](../guides/DELIVERY_PIPELINE.md) behaves.
+> **🏭 Where this fits:** The control panel for the whole line, every station's knobs in one place. **What it delivers:** sensible defaults out of the box (via `uap setup`), and precise control when you want to tune how your [delivery pipeline](../guides/DELIVERY_PIPELINE.md) behaves.
 
-Most of the time you won't touch any of this — `uap init` / `uap setup` write a
+Most of the time you won't touch any of this, `uap init` / `uap setup` write a
 working `.uap.json` and a `.uap/proxy.env` for you, and the wizard picks sensible
 defaults for every station on the line. But when you're ready to tune how your
 delivery line behaves, this is the page. UAP is configured through the
@@ -13,7 +13,7 @@ is picked up automatically.
 
 ## Project config: `.uap.json`
 
-`.uap.json` lives at the project root and is validated against a strict schema —
+`.uap.json` lives at the project root and is validated against a strict schema,
 unknown keys and bad types are rejected, so a typo fails loudly instead of
 silently doing the wrong thing. Every section is optional except `project`;
 defaults are applied for anything you omit.
@@ -90,7 +90,7 @@ paths.
 
 ### Qdrant configuration
 
-The default local provider talks to Qdrant at `http://localhost:6333` — the
+The default local provider talks to Qdrant at `http://localhost:6333`, the
 endpoint `uap setup` starts via docker-compose. Override it with
 `memory.longTerm.endpoint`.
 
@@ -154,7 +154,7 @@ they regressed small models. Notable fields:
 
 ## Model profiles
 
-UAP includes **7 execution profiles** — feature-flag presets tuned per model
+UAP includes **7 execution profiles**, feature-flag presets tuned per model
 family. They are auto-detected from the model id but can be forced via the
 `UAP_MODEL_PROFILE` environment variable:
 
@@ -185,7 +185,7 @@ compare, presets, select, export, health) and `uap dashboard models`.
 ## Environment variables
 
 These are the environment variables read by the code. You'll usually leave them
-alone — the wizard writes what's needed into `.uap/proxy.env` — but here's the
+alone, the wizard writes what's needed into `.uap/proxy.env`, but here's the
 full set for when you want to override something.
 
 ### Memory & Qdrant
@@ -240,7 +240,68 @@ full set for when you want to override something.
 `GITHUB_TOKEN` are read when the corresponding provider or GitHub-backed memory
 is configured.
 
+## Where every config file lives
+
+| File | Owner / where read | Purpose |
+|------|--------------------|---------|
+| `.uap.json` | `src/utils/config-loader.ts` (searched up to 3 parent dirs for worktrees) | Central UAP config, validated by `AgentContextConfigSchema` (`src/types/config.ts`). |
+| `.factory/patterns/index.json` | `src/coordination/pattern-router.ts` | Pattern catalogue / router source of truth. |
+| `mcp.json` (platform path; `~/.factory/mcp.json` on Linux) | `src/cli/setup-mcp-router.ts`, `src/mcp-router/config/parser.ts` | MCP router server registration; supports `~`, `%APPDATA%`, `%USERPROFILE%`, `${VAR:-default}`, `$env:VAR` expansion. |
+| `.codex/config.toml` | `src/cli/hooks.ts` | Codex CLI config + UAP MCP server section. |
+| `.claude/settings.local.json` / `.factory/settings.local.json` | `src/cli/hooks.ts` | Hook registration (Claude / Factory / VSCode). |
+| `.cursor/hooks.json` | `src/cli/hooks.ts` | Cursor hook definitions. |
+| `~/.hermes/config.yaml` | `src/cli/hooks.ts` | Hermes (global) hooks + `mcp_servers.uap` + skills bridge. |
+| `.uap/omp/settings.json` | `src/cli/hooks.ts` | Oh-My-Pi integration settings. |
+| `llama-server.conf` | `src/bin/llama-server-optimize.ts` | Generated llama-server config. |
+
+## `.uap.json` schema sketch (`src/types/config.ts`)
+
+Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
+`timeOptimization`, `attention`, plus droids/commands/template sections.
+
+```jsonc
+{
+  "project": { "name": "...", "description": "...", "defaultBranch": "main" },
+  "memory": {
+    "shortTerm": { "path": "./agents/data/memory/short_term.db", "maxEntries": 50 },
+    "longTerm": {
+      "provider": "qdrant",            // qdrant|github|qdrant-cloud|none
+      "collection": "agent_memory",
+      "embeddingModel": "all-MiniLM-L6-v2",
+      "endpoint": "localhost:6333"
+    },
+    "patternRag": {
+      "collection": "agent_patterns",
+      "embeddingModel": "all-MiniLM-L6-v2",
+      "vectorSize": 384,
+      "scoreThreshold": 0.35,
+      "topK": 2
+    }
+  },
+  "worktree": { "directory": ".worktrees", "branchPrefix": "feature/" }
+}
+```
+
+> **Embedding-model nuance.** The config default `embeddingModel` is
+> `all-MiniLM-L6-v2` (384-dim), but the runtime embedding provider prefers
+> nomic-embed-text via llama.cpp/Ollama (768-dim). Long-term collection vector
+> size is therefore 384 (MiniLM/compliance path) or 768 (cloud/nomic runtime)
+> depending on backend; pattern RAG is consistently 384.
+
+## Database & vector store locations
+
+Full schemas live in [`DATABASE_SCHEMA.md`](../reference/DATABASE_SCHEMA.md).
+In brief, SQLite databases live under `agents/data/memory/`,
+`agents/data/coordination/`, and `.uap/`; Qdrant runs as a local Docker
+container (`qdrant/qdrant:latest`, `uap-qdrant`, port 6333) or against a cloud
+endpoint. Every setting, its default, and a recommendation are listed live by
+the generated [Configuration
+Reference](../reference/CONFIGURATION_REFERENCE.md) (`uap config list`,
+`uap config explain <key>`).
+
 ## See also
 
 - [Installation](./INSTALLATION.md)
 - [Quickstart](./QUICKSTART.md)
+- [Configuration Reference](../reference/CONFIGURATION_REFERENCE.md), every
+  setting `uap config` exposes, generated from the registry

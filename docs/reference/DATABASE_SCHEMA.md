@@ -1,10 +1,10 @@
 # Database Schema Reference
 
-> Universal Agent Protocol (UAP) v2.30.0
+> Universal Agent Protocol (UAP) v2.51.0
 
-> **🏭 Where this fits:** Cross-cutting — the shop's records and shift log.
+> **🏭 Where this fits:** Cross-cutting, the shop's records and shift log.
 > **What it delivers:** the durable memory of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
-> — tasks, coordination, policies, and what the floor has learned — so nothing a
+>, tasks, coordination, policies, and what the floor has learned, so nothing a
 > station knows is lost when the session ends.
 
 These databases are the factory's paperwork: the job tickets, the coordination

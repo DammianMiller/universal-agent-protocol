@@ -1,13 +1,13 @@
 # Multi-Agent Coordination
 
-> UAP v1.224.0
+> UAP v2.51.0
 
-> **🏭 Where this fits:** LINE COORDINATION — the station where parallel agents on the [delivery pipeline](./DELIVERY_PIPELINE.md) quietly step on each other: two of them editing the same file, duplicating work, or deadlocking at merge. **What it delivers:** agents register, announce what they're about to touch, and check for overlaps *before* they start — so the line runs many workers at once and still stays conflict-free.
+> **🏭 Where this fits:** LINE COORDINATION, the station where parallel agents on the [delivery pipeline](./DELIVERY_PIPELINE.md) quietly step on each other: two of them editing the same file, duplicating work, or deadlocking at merge. **What it delivers:** agents register, announce what they're about to touch, and check for overlaps *before* they start, so the line runs many workers at once and still stays conflict-free.
 
 When multiple agents work a codebase in parallel, the expensive failure is two
 of them editing the same file at the same time and colliding at merge. UAP's
 coordination layer lets agents **register**, **announce** what they intend to
-work on, and **check for overlaps** before they start — so parallel work stays
+work on, and **check for overlaps** before they start, so parallel work stays
 conflict-free.
 
 The coordination modules live in
@@ -36,7 +36,7 @@ and routing/pattern helpers. The CLI entry points are
 
 ## The announce / overlaps workflow
 
-The recommended flow, printed by `uap agent register` itself — think of it as
+The recommended flow, printed by `uap agent register` itself, think of it as
 each worker calling out "I've got this one" before reaching for a part:
 
 ```bash
@@ -75,7 +75,7 @@ uap agent <action> [options]
 | Action       | Purpose | Required options |
 | ------------ | ------- | ---------------- |
 | `register`   | Register a new agent | `--name` |
-| `auto`       | Auto-register an agent that heartbeats (30s) and deregisters on exit | — (`--name` optional) |
+| `auto`       | Auto-register an agent that heartbeats (30s) and deregisters on exit |, (`--name` optional) |
 | `heartbeat`  | Send a liveness heartbeat | `--id` |
 | `status`     | Show one agent (`--id`) or all active agents + active work | — |
 | `announce`   | Announce work intent on a resource | `--id`, `--resource`, `--intent` |
@@ -89,11 +89,11 @@ uap agent <action> [options]
 Key options:
 
 - `--name`, `-i/--id`, `--capabilities` (comma-separated), `-w/--worktree`
-  (branch) — registration.
+  (branch), registration.
 - `--resource`, `--intent` (`editing|reviewing|refactoring|testing|documenting`),
-  `--description`, `--files` (comma-separated), `--minutes` — announcing work.
+  `--description`, `--files` (comma-separated), `--minutes`, announcing work.
 - `-c/--channel` (`broadcast|deploy|review|coordination`), `--message`,
-  `-t/--to`, `--priority` — messaging.
+  `-t/--to`, `--priority`, messaging.
 
 ```bash
 # Inspect everything currently in flight
@@ -133,7 +133,7 @@ Focused overlap checks and resolution.
 uap coordination <check|resolve> [options]
 ```
 
-### `check` — detect overlapping work
+### `check`, detect overlapping work
 
 ```bash
 uap coordination check [--agents <ids|names>] [-r|--resource <resource>] [-v] [--json]
@@ -142,7 +142,7 @@ uap coordination check [--agents <ids|names>] [-r|--resource <resource>] [-v] [-
 Filters active work by agent and/or resource, then reports overlaps with their
 conflict risk and suggestions. `--json` emits machine-readable output.
 
-### `resolve` — broadcast a resolution
+### `resolve`, broadcast a resolution
 
 ```bash
 uap coordination resolve <overlapId> [--action <assign|merge|delegate>] [--json]
@@ -158,7 +158,7 @@ uap coordination resolve src/server.ts --action merge
 
 ## Related
 
-- [Deploy Batching](./DEPLOY_BATCHING.md) — how coordinated commits/pushes are
+- [Deploy Batching](./DEPLOY_BATCHING.md), how coordinated commits/pushes are
   batched to avoid merge conflicts.
 - `uap deliver --coordinate` registers a convergence run with the coordination
   layer (announce + heartbeat + overlap detection); see

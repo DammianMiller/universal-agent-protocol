@@ -1,4 +1,4 @@
-# UAP System-1 Uplift Plan — 2026-09-18
+# UAP System-1 Uplift Plan, 2026-09-18
 
 Status: APPROVED for implementation (plan PR → implementation PRs)
 Scope decision: Wave 0 (all five) + Wave 1 (1.1–1.4). Backend decision: **local-only
@@ -29,9 +29,9 @@ proxy enforcer suite (deliver autoroute, gate evidence, confidence escalation,
 stuck-break), worktree/mission/checkpoint infrastructure, and local-first
 serving. Gaps, in leverage order:
 
-1. Every UAP decision point is either a heuristic or a full LLM call — no fast,
+1. Every UAP decision point is either a heuristic or a full LLM call, no fast,
    calibrated middle layer for routing, risk, stuckness, or compaction.
-2. Proxy compaction is summarization/threshold based — lossy.
+2. Proxy compaction is summarization/threshold based, lossy.
 3. Deliver gates check artifacts, not evidence-bound behavior specs.
 4. Technique selection in the decision loop is unquantified (no reliability/cost
    ladder).
@@ -53,7 +53,7 @@ serving. Gaps, in leverage order:
 - **Measured.** Every uplift lands with before/after numbers from UAP's own
   benchmark suites; claims without measurements do not merge.
 
-## 4. Wave 0 — quick wins (each lands as its own PR)
+## 4. Wave 0, quick wins (each lands as its own PR)
 
 ### 0.1 Reliability ladder in the decision loop
 - Add a measured technique-selection table to the CLAUDE.md decision loop
@@ -94,7 +94,7 @@ serving. Gaps, in leverage order:
 - Acceptance: the gsq-rco server and monitor are the reference
   implementations; policy file under `config/`; doc in `docs/guides/`.
 
-## 5. Wave 1 — the System-1 layer (each lands as its own PR)
+## 5. Wave 1, the System-1 layer (each lands as its own PR)
 
 ### 1.1 Semantic supervisor for deliver missions
 - New `uap supervise` loop watching `uap deliver` missions: 9 assessment
@@ -142,7 +142,7 @@ locally, and every Wave 1 consumer talks to it through one interface
 (`uap classify` / library call) so the backend can evolve without touching
 policy code.
 
-- **Training data:** UAP's own telemetry — `project_telemetry` events, gate
+- **Training data:** UAP's own telemetry, `project_telemetry` events, gate
   decisions and outcomes, escalation results, stuck/attractor events,
   deliver-mission histories, and incident records (e.g., the 2026-09-18 OOM
   timeline). Nobody else has UAP's decision-outcome pairs.
@@ -166,13 +166,13 @@ policy code.
 1. This plan (docs PR).
 2. Wave 0 PRs in order: 0.4 (evals infrastructure) → 0.2 (review pre-pass) →
    0.3 (visual gate) → 0.1 (ladder, needs bench runs) → 0.5 (capacity policy).
-3. Local classifier foundation (§6) — prerequisite for Wave 1.
+3. Local classifier foundation (§6), prerequisite for Wave 1.
 4. Wave 1 PRs: 1.1 → 1.2 → 1.3 → 1.4 (1.4 is independent and may parallel).
 
 ## 8. Risks and open questions
 
 - **Classifier quality is unproven** (Foreman says the same about Jev).
-  Mitigation: shadow mode first — classifier assesses, heuristics decide,
+  Mitigation: shadow mode first, classifier assesses, heuristics decide,
   divergence logged; promotion to active only after measured agreement.
 - **Compaction regressions are silent.** Mitigation: verbatim guarantee +
   reduction floor + fallback; replay fixtures from real sessions.
@@ -180,7 +180,7 @@ policy code.
   false-positive rate, or it will be bypassed (UAP_QUALITY_GATE_OFF exists for
   a reason).
 - **Scope.** Wave 0 items are independent; Wave 1 items share the classifier
-  PR — land it small (one dimension end-to-end) before generalizing.
+  PR, land it small (one dimension end-to-end) before generalizing.
 
 ## 9. Later waves (not approved yet; recorded for the roadmap)
 

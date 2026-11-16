@@ -41,7 +41,7 @@ vocabulary seeded from UAP's own telemetry language (the 2026-09-18 OOM
 timeline, gate outcomes), squashed through a logistic curve. CPU-only, no
 dependencies, no network, measured **p95 ≈ 0.02ms** against the 50ms budget.
 The trained-head slot (embedding + logistic/isotonic on nomic embeddings)
-inserts into `defaultBackend()` when a head ships — consumers don't change.
+inserts into `defaultBackend()` when a head ships, consumers don't change.
 
 ## Thresholds are policy, not model output
 
@@ -52,9 +52,9 @@ inserts into `defaultBackend()` when a head ships — consumers don't change.
 { "version": 1, "questions": { "escalation-risk": { "tau": 0.6, "confidenceFloor": 0.3 } } }
 ```
 
-- `tau` decides noul questions (`probability >= tau`) — noul only;
+- `tau` decides noul questions (`probability >= tau`), noul only;
   score/choice return their value directly, gated by `confidenceFloor`.
-- Below `confidenceFloor` the assessment carries `defer: true` — **the
+- Below `confidenceFloor` the assessment carries `defer: true`, **the
   heuristic decides**. That is the shadow-mode contract.
 
 Probability semantics per kind (consumers must rely on 0..1 ordering only):
@@ -66,7 +66,7 @@ approximations with true probabilities when it ships.
 
 `--shadow` appends to `.uap/classify-shadow.jsonl` (git-ignored, local-only,
 mode 0600). The record is `{v, ts, stateHash, wordCount, questions, result,
-heuristicDecision?}` — a SHA-256 of the state text, never the text itself,
+heuristicDecision?}`, a SHA-256 of the state text, never the text itself,
 so the log carries no raw-text surface (the hash is equality-revealing for
 low-entropy boilerplate states; acceptable for a local join key).
 `heuristicDecision` is the other half of the divergence loop: Wave 1
@@ -84,12 +84,12 @@ the thresholds that came from it.
 - **Baseline before head.** An untrained embedding+head is unproven; the
   deterministic baseline is the floor a head must beat on held-out shadow
   data before it serves policy.
-- **Empty states get zero confidence**, not a confident guess — a blind
+- **Empty states get zero confidence**, not a confident guess, a blind
   classifier must say so (same doctrine as `uap doctor`'s UNKNOWN).
 - **One GPU/CPU probe budget.** Assessments are synchronous and batched per
   call; Wave 1 consumers batch questions per state.
 - **The baseline is question-scoped, not question-blind.** It answers only
-  the built-in questions and rejects others with an error — a custom noul
+  the built-in questions and rejects others with an error, a custom noul
   question must not silently inherit the escalation vocabulary. The trained
   head is the generalizer.
 - **Kinship:** `src/models/complexity.ts` runs the same
@@ -98,6 +98,6 @@ the thresholds that came from it.
   lands, not drift apart.
 
 Scope note: this is the **foundation slice** of uplift §6. The acceptance
-items that need shadow data and consumers — calibration report committed,
-supervisor/compaction/AutoMode running against the backend — land with the
+items that need shadow data and consumers, calibration report committed,
+supervisor/compaction/AutoMode running against the backend, land with the
 Wave 1 PRs that wire those consumers.

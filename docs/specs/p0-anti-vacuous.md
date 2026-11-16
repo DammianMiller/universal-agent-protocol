@@ -1,4 +1,4 @@
-# SPEC: P0 deliver hardening — anti-vacuous floor + no-op acceptance rail + autoroute default off
+# SPEC: P0 deliver hardening, anti-vacuous floor + no-op acceptance rail + autoroute default off
 
 Exact, pre-reviewed operations. Apply VERBATIM. See
 docs/plans/deliver-hardening-plan-2026-07-13.md (A2 + C1 + C2 + D2).
@@ -7,7 +7,7 @@ docs/plans/deliver-hardening-plan-2026-07-13.md (A2 + C1 + C2 + D2).
 
 ## File 1: `src/delivery/convergence-loop.ts`
 
-### Op 1.1 — REPLACE
+### Op 1.1, REPLACE
 
 ```ts
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
@@ -23,7 +23,7 @@ import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js
 import { detectRungs, runLadder, tierOf } from './verifier-ladder.js';
 ```
 
-### Op 1.2 — REPLACE
+### Op 1.2, REPLACE
 
 ```ts
    * applied" optimization permanently scores such turns 0%.
@@ -51,7 +51,7 @@ WITH
   requireDiffForAcceptance?: boolean;
 ```
 
-### Op 1.3 — REPLACE
+### Op 1.3, REPLACE
 
 ```ts
   private readonly acceptanceGate?: AcceptanceGate;
@@ -71,7 +71,7 @@ WITH
   constructor(
 ```
 
-### Op 1.4 — REPLACE
+### Op 1.4, REPLACE
 
 ```ts
     this.acceptanceGate = seams.acceptanceGate;
@@ -121,7 +121,7 @@ WITH
   }
 ```
 
-### Op 1.5 — REPLACE
+### Op 1.5, REPLACE
 
 ```ts
   private async judgeAcceptance(ladder: LadderResult): Promise<{ ladder: LadderResult; acceptanceMet?: number }> {
@@ -156,7 +156,7 @@ WITH
     }
 ```
 
-### Op 1.6 — REPLACE
+### Op 1.6, REPLACE
 
 ```ts
       const baseline = (await this.judgeAcceptance(rawBaseline)).ladder;
@@ -168,7 +168,7 @@ WITH
       const baseline = (await this.judgeAcceptance(rawBaseline, { atBaseline: true })).ladder;
 ```
 
-### Op 1.7 — REPLACE
+### Op 1.7, REPLACE
 
 ```ts
     // Gate-integrity snapshot, taken AFTER the baseline ladder run so files
@@ -185,7 +185,7 @@ WITH
     // Gate-integrity snapshot, taken AFTER the baseline ladder run so files
 ```
 
-### Op 1.8 — REPLACE
+### Op 1.8, REPLACE
 
 ```ts
       const outcome = explorerSettings
@@ -213,7 +213,7 @@ WITH
 
 ## File 2: `src/cli/deliver.ts`
 
-### Op 2.1 — REPLACE
+### Op 2.1, REPLACE
 
 ```ts
 export function decideGateStrategy(opts: {
@@ -256,7 +256,7 @@ export function decideGateStrategy(opts: {
 }
 ```
 
-### Op 2.2 — REPLACE
+### Op 2.2, REPLACE
 
 ```ts
   epics?: boolean;
@@ -277,7 +277,7 @@ WITH
 }
 ```
 
-### Op 2.3 — REPLACE
+### Op 2.3, REPLACE
 
 ```ts
   let autoPlan: AutoPlan | undefined;
@@ -315,7 +315,7 @@ WITH
   }
 ```
 
-### Op 2.4 — REPLACE
+### Op 2.4, REPLACE
 
 ```ts
   const { acceptancePrimary, needsSelfGate, noGatesError } = decideGateStrategy({
@@ -367,7 +367,7 @@ WITH
   });
 ```
 
-### Op 2.5 — REPLACE
+### Op 2.5, REPLACE
 
 ```ts
     if (sg.vacuous) {
@@ -398,7 +398,7 @@ WITH
     } else {
 ```
 
-### Op 2.6 — REPLACE
+### Op 2.6, REPLACE
 
 ```ts
     // The agentic executor mutates the repo directly (no-op applier), so
@@ -421,7 +421,7 @@ WITH
 
 ## File 3: `src/bin/cli.ts`
 
-### Op 3.1 — REPLACE
+### Op 3.1, REPLACE
 
 ```ts
   .option('--force-self-gate', 'Author a task-specific acceptance gate even when project gates exist')
@@ -438,7 +438,7 @@ WITH
 
 ## File 4: `templates/hooks/deliver_autoroute.py`
 
-### Op 4.1 — REPLACE
+### Op 4.1, REPLACE
 
 ```python
 def _autoroute_enabled() -> bool:
@@ -464,7 +464,7 @@ def _autoroute_enabled() -> bool:
     return v in {"1", "on", "true", "yes"}
 ```
 
-### Op 4.2 — REPLACE
+### Op 4.2, REPLACE
 
 ```python
     intent = {"ts": int(time.time()), "tool": tool, "file_path": file_path, "hint": hint}

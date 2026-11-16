@@ -1,14 +1,14 @@
 # UAP Programmatic API Reference
 
-> Public API of the `@miller-tech/uap` package. Version v2.29.0.
+> Public API of the `@miller-tech/uap` package. Version v2.51.0.
 
-> **🏭 Where this fits:** Cross-cutting — the machine parts behind the line.
+> **🏭 Where this fits:** Cross-cutting, the machine parts behind the line.
 > **What it delivers:** when the `uap` CLI isn't the right shape for your job,
 > these exports let you wire UAP's memory, routing, coordination, and MCP
 > stations straight into your own tools and drive the [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
 > from your own code.
 
-If the CLI is the control panel, this is the parts bin — the same subsystems,
+If the CLI is the control panel, this is the parts bin, the same subsystems,
 exposed so you can bolt them into your own harness. Install and import:
 
 ```bash
@@ -49,9 +49,9 @@ function analyzeProject(projectPath?: string): Promise<ProjectAnalysis>;
 function generateClaudeMd(analysis: ProjectAnalysis, options?: GenerateOptions): string;
 ```
 
-- `analyzeProject` — inspect a project directory and return structured metadata
+- `analyzeProject`, inspect a project directory and return structured metadata
   (languages, frameworks, structure) used to drive context generation.
-- `generateClaudeMd` — render a CLAUDE.md document from an analysis result.
+- `generateClaudeMd`, render a CLAUDE.md document from an analysis result.
 
 ---
 
@@ -367,7 +367,7 @@ await runStdioServer({ configPath: './mcp.json', verbose: true });
 ## Coordination
 
 Imported from the package root (originating in `src/coordination/`). The main
-class is `CoordinationService` — agent registry, resource claims, work
+class is `CoordinationService`, agent registry, resource claims, work
 announcements, messaging, and deploy batching, all backed by SQLite.
 
 ```ts
@@ -480,9 +480,9 @@ function getTaskEventBus(): TaskEventBus;   // singleton
 
 The package re-exports its full type surface. Key barrels:
 
-- `export * from './types/index.js'` — core config and domain types.
-- `export * from './telemetry/index.js'` — telemetry types and helpers.
-- `export * from './policies/index.js'` — policy enforcement (`getPolicyGate`,
+- `export * from './types/index.js'`, core config and domain types.
+- `export * from './telemetry/index.js'`, telemetry types and helpers.
+- `export * from './policies/index.js'`, policy enforcement (`getPolicyGate`,
   `getPolicyMemoryManager`, `getPolicyToolRegistry`, and policy types).
 
 Multi-model types available from the root include `MultiModelConfig`,

@@ -2,7 +2,7 @@
 
 A watchdog loop for `uap deliver` missions. It observes a run, assesses nine
 dimensions, and applies a deterministic, reviewed policy. Models may only
-**assess** — the decision is never made by a model.
+**assess**, the decision is never made by a model.
 
 ```
 uap supervise [runId|latest] [--once] [--json] [--interval-ms N] [-d projectDir]
@@ -10,8 +10,8 @@ uap supervise [runId|latest] [--once] [--json] [--interval-ms N] [-d projectDir]
 
 - **Watch mode** (default): reassesses at most every `debounceMs` (5s,
   state-change triggered) and at least every `intervalMs` (30s, heartbeat).
-  STOP and FINISH end the watch; ESCALATE **keeps watching** — a paged human
-  may take a while — until the mission ends or 20 consecutive suppressed
+  STOP and FINISH end the watch; ESCALATE **keeps watching**, a paged human
+  may take a while, until the mission ends or 20 consecutive suppressed
   ESCALATE repeats go unanswered, at which point the watcher writes a final
   `escalation unanswered` event and detaches. Ctrl-C detaches the watcher at
   any time; the mission is unaffected. Watch mode exits 2 when the final
@@ -33,8 +33,8 @@ Nothing unbounded is ever read.
 
 **Path discipline.** Log reads lstat first and silently skip anything that is
 not a plain regular file (symlinks, FIFOs). Every directory the supervisor
-writes through — `.uap/supervise/<runId>` and, for the STOP file,
-`.uap/deliver-runs/<runId>` — is lstat'd and realpath-checked before use; a
+writes through, `.uap/supervise/<runId>` and, for the STOP file,
+`.uap/deliver-runs/<runId>`, is lstat'd and realpath-checked before use; a
 symlinked or non-directory path throws `SupervisorError` instead of writing
 outside the project.
 
@@ -48,7 +48,7 @@ and approve/confirm questions fire; declaratives like "Permission denied" or
 "approved the change" do not. Healthy summary lines like "0 failed" never
 count as error evidence.
 
-An optional classifier (SYS1 contract, injected structurally — see Decisions)
+An optional classifier (SYS1 contract, injected structurally, see Decisions)
 is asked only the built-in questions (`escalation-risk` noul, `action-class`
 choice). `escalation-risk=true` at probability ≥ `classifierTau` and
 confidence ≥ `classifierConfidenceMin` raises `off-track`; `action-class`
@@ -66,10 +66,10 @@ verification-pending → VERIFY · else CONTINUE.**
 
 | Action | Effect |
 | --- | --- |
-| `CONTINUE` | none — mission is within bounds |
+| `CONTINUE` | none, mission is within bounds |
 | `STOP` | writes the run's cooperative **STOP file** (`requestStop`). The deliver loop checkpoints and exits at its next turn boundary. **Never a signal, never a kill.** Outranks even human-need: an over-budget mission that is also waiting on a human is stopped, with the human-need recorded as `alsoEscalate` evidence. |
 | `RETRY` | consumes one retry from the budget (recorded; persists across processes) |
-| `VERIFY` | recorded prompt to verify; advisory. Never twice consecutively, and bounded by `maxVerify` — an unanswered verification falls into the stuck path (RETRY/ESCALATE) |
+| `VERIFY` | recorded prompt to verify; advisory. Never twice consecutively, and bounded by `maxVerify`, an unanswered verification falls into the stuck path (RETRY/ESCALATE) |
 | `FINISH` | records completion. Requires the authoritative `status: delivered`; a log tail claiming "mission complete" on a still-running mission never detaches supervision |
 | `ESCALATE` | event + console warning only; once per streak |
 
@@ -80,7 +80,7 @@ whatever its log tail contains.
 
 ## Oscillation guards
 
-- `VERIFY` can never fire twice consecutively — an intervening non-VERIFY
+- `VERIFY` can never fire twice consecutively, an intervening non-VERIFY
   action must re-arm it (policy-level, unit-tested).
 - `VERIFY` is budgeted: after `maxVerify` unanswered requests the mission is
   treated as stuck.
@@ -92,10 +92,10 @@ whatever its log tail contains.
 
 Per supervised run under `.uap/supervise/<runId>/`:
 
-- `state.json` — assessments count, retry/verify budgets spent, last action
+- `state.json`, assessments count, retry/verify budgets spent, last action
   (atomic tmp+rename writes, mode 0600). This is what makes the retry budget
   survive across separate `--once` invocations.
-- `events.jsonl` — one v-stamped record per cycle: action, reason, evidence,
+- `events.jsonl`, one v-stamped record per cycle: action, reason, evidence,
   and every dimension's value **with its source** (`heuristic` |
   `classifier`). File mode 0600.
 
@@ -110,14 +110,14 @@ Thresholds ship reviewed in `config/supervise-policy.json`:
 ```
 
 Loading is strict: a missing, corrupt, mis-versioned, or out-of-range file
-throws `SupervisorError` and the supervisor refuses to run — it never
+throws `SupervisorError` and the supervisor refuses to run, it never
 invents defaults. `UAP_SUPERVISE_POLICY` points at an alternate policy file (tests,
 staged rollouts).
 
 ## Decisions
 
 - **Budget authority is `max(policy, deliver budget)`.** The STOP threshold
-  for elapsed time is `max(maxMinutes, runBudgetMinutes(projectRoot))` — an
+  for elapsed time is `max(maxMinutes, runBudgetMinutes(projectRoot))`, an
   operator who raised a mission's budget (`UAP_DELIVER_MAX_MINUTES` or
   `.uap.json delivery.maxRunMinutes`) must not be overruled by the
   supervisor's static 120. A *lower* operator budget needs no supervisor
@@ -126,15 +126,15 @@ staged rollouts).
   lands in PR #807; importing unmerged code would break the build the moment
   either branch moves. Until #807 merges, `ClassifierLike` mirrors its shape,
   only the built-in question names are ever sent (the #807 baseline throws on
-  custom names), and `recordShadow` wiring is deferred — the per-dimension
+  custom names), and `recordShadow` wiring is deferred, the per-dimension
   `source` field in `events.jsonl` is the seam it will write through. When
   #807 lands: replace the interface with the real import, reconcile the
   `noul`/`choice` kind vocabulary, and wire shadow recording.
 - **STOP outranks ESCALATE.** A mission past its iteration budget stops even
-  when it is also blocked on a human — stopping is the safer default and the
+  when it is also blocked on a human, stopping is the safer default and the
   human-need survives as `alsoEscalate` evidence in the ledger.
 - **FINISH requires authoritative state.** Only `status: delivered` ends
   supervision; success-shaped log lines are evidence, never proof.
 - **Escalations are bounded.** Twenty unanswered ESCALATE repeats detach the
-  watcher with a final ledger event — supervision that nobody reads must not
+  watcher with a final ledger event, supervision that nobody reads must not
   run forever.

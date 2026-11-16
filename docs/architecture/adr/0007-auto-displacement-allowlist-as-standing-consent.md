@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-09
 - Spec: `docs/specs/operator-model-placement.md` §4.4.1, §6 (phase-4 note)
-- Supersedes: none — extends ADR 0006's core invariant ("never evict without
+- Supersedes: none, extends ADR 0006's core invariant ("never evict without
   explicit operator confirmation") to the request-driven case.
 
 ## Context
@@ -27,13 +27,13 @@ already trust.
 2. **Displacement auto-enforces only for models on an explicit allowlist**,
    recorded by `uap models auto --allow-displace <model> --yes`. The allowlist
    IS the explicit operator confirmation the core invariant requires:
-   - standing, not per-event — the `--yes` gate prints exactly what is being
-     consented to ("UNLOADS the current resident(s) — the minimal set that
-     makes room, re-evaluated at load time — and loads the requested one
+   - standing, not per-event, the `--yes` gate prints exactly what is being
+     consented to ("UNLOADS the current resident(s), the minimal set that
+     makes room, re-evaluated at load time, and loads the requested one
      WITHOUT an operator prompt between them");
-   - deliberate — nothing enters it by default, and a bare `--allow-displace`
+   - deliberate, nothing enters it by default, and a bare `--allow-displace`
      without `--yes` records nothing;
-   - auditable and revocable — the file is plain JSON in `~/.uap`, per-model
+   - auditable and revocable, the file is plain JSON in `~/.uap`, per-model
      removal via `--disallow-displace`, whole feature off via `--disable`.
 3. **The consent subject is the model being LOADED, not the victim.** Victims
    are dynamic: enforcement re-derives the minimal eviction set and
@@ -54,7 +54,7 @@ already trust.
   can be loaded by any gated client request while the resident is evicted
   without a prompt. `uap models auto` (status) is the audit surface.
 - "Never displacement" in the phase table was amended to "never displacement
-  by default" — the reasoning lives in the spec §6 phase-4 note and here.
+  by default", the reasoning lives in the spec §6 phase-4 note and here.
 - The proxy stays dumb (reason strings only); the controller remains the
   single decision-maker, and the policy file is the single authority
   (independent of `PROXY_PLACEMENT_MODE`).
@@ -74,6 +74,6 @@ the machine:
   every gated request served, an unwatched resident's clock starts at first
   observation (arming never evicts the already-idle), and unknown endpoint
   state (`ss` unable to answer) is a refusal to unload, never a guess.
-- The stop reuses the operator's full `unloadPlacement` machinery — the
+- The stop reuses the operator's full `unloadPlacement` machinery, the
   standing consent covers WHEN, and the drain/in-flight/rollback guards
   still bound it per-event.

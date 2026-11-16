@@ -1,14 +1,8 @@
 # Contributing to UAP
 
-Thanks for contributing to the Universal Agent Protocol. This guide covers the
-development setup, the worktree workflow, the completion gates every change must
-pass, and the PR process. The gates here are not aspirational — many are
-enforced at runtime by UAP's own policy hooks, so the smoothest path is to
-follow the workflow exactly.
+Thanks for contributing to the Universal Agent Protocol. This guide covers the development setup, the worktree workflow, the completion gates every change must pass, and the PR process. The gates here are not aspirational. Many are enforced at runtime by UAP's own policy hooks, so the smoothest path is to follow the workflow exactly.
 
-For architecture, read [docs/architecture/OVERVIEW.md](docs/architecture/OVERVIEW.md);
-for the protocol UAP enforces, read
-[docs/architecture/PROTOCOL.md](docs/architecture/PROTOCOL.md).
+For architecture, read [docs/architecture/OVERVIEW.md](docs/architecture/OVERVIEW.md). For the protocol UAP enforces, read [docs/architecture/PROTOCOL.md](docs/architecture/PROTOCOL.md).
 
 ---
 
@@ -21,19 +15,19 @@ git clone https://github.com/DammianMiller/universal-agent-protocol.git
 cd universal-agent-protocol
 
 npm install        # install dependencies
-npm run build      # compile TypeScript (tsc) → dist/
-npm test           # run the test suite (530 vitest test files)
+npm run build      # compile TypeScript (tsc) into dist/
+npm test           # run the test suite (548 vitest test files)
 ```
 
 Common scripts (from `package.json`):
 
 | Script | What it does |
 |--------|--------------|
-| `npm run build` | `tsc` — compile to `dist/` |
-| `npm run dev` | `tsc --watch` — incremental rebuilds |
-| `npm test` | `vitest` — run all 530 vitest test files |
-| `npm run test:ci` | `vitest run` — non-watch test run for CI |
-| `npm run test:enforcers` | Python enforcer/proxy suite (84 modules under `tools/agents/tests/`, 1,398 tests) |
+| `npm run build` | `tsc`, compiles to `dist/` |
+| `npm run dev` | `tsc --watch`, incremental rebuilds |
+| `npm test` | `vitest`, runs all 548 test files |
+| `npm run test:ci` | `vitest run`, non-watch run for CI |
+| `npm run test:enforcers` | Python enforcer and proxy suite (89 modules under `tools/agents/tests/`, about 1,490 tests) |
 | `npm run test:coverage` | tests with V8 coverage |
 | `npm run bench` | benchmark suite (`vitest.bench.config.ts`) |
 | `npm run lint` | `eslint src --ext .ts` |
@@ -46,28 +40,25 @@ Common scripts (from `package.json`):
 | `npm run verify-uap` | verify UAP compliance (`scripts/maintenance/verify-compliance.sh`) |
 | `npm run version:patch \| :minor \| :major` | bump version via `scripts/version-bump.sh` |
 
-Type-checking is part of the build (`tsc`); for a check without emit use
-`npx tsc --noEmit`.
+Type-checking is part of the build (`tsc`). For a check without emit, use `npx tsc --noEmit`.
 
 ---
 
 ## The worktree workflow
 
-**All edits MUST happen inside a git worktree under `.worktrees/NNN-<slug>/`.**
-Editing files in the project root is blocked by the worktree policy gate. This
-applies to every file type — source, tests, docs, configs.
+**All edits MUST happen inside a git worktree under `.worktrees/NNN-<slug>/`.** Editing files in the project root is blocked by the worktree policy gate. This applies to every file type: source, tests, docs, configs.
 
 ```bash
 uap worktree ensure --strict     # exit 0 confirms you're inside a worktree
 uap worktree create <slug>       # auto-numbered branch + worktree if not
 # ... make your changes inside .worktrees/NNN-<slug>/ ...
-uap worktree pr                  # open a PR from the worktree branch → master
+uap worktree pr                  # open a PR from the worktree branch to master
 uap worktree finish              # clean up after the PR merges
 ```
 
 Rules:
 
-- Branch and commit **only** inside the worktree.
+- Branch and commit only inside the worktree.
 - Open PRs from the worktree branch against `master`.
 - Run the version bump on the **feature branch**, never on `master`.
 
@@ -77,30 +68,15 @@ Read-only work (analysis, diagnostics, queries) does not require a worktree.
 
 ## Completion gates
 
-A change is not done until **all** of these pass. Verify before claiming
-completion; CI and UAP's policy enforcers check them too.
+A change is not done until **all** of these pass. Verify before claiming completion; CI and UAP's policy enforcers check them too.
 
-1. **New tests** — add test cases (vitest, under `test/`) covering the changed
-   behavior. Aim for at least two cases per behavioral change.
-2. **Tests pass** — `npm test` with no failures. A handful of skips is
-   expected and deliberate:
-   - **Root-only trust tests** (11, in `test/cli/policy-gate-liveness.test.ts`
-     and `test/cli/policy-gate-operator-overrides.test.ts`): the property
-     under test is that only a ROOT-owned file is trusted, and a non-root
-     process cannot mint that fixture by construction — so the trusted-file
-     cases are `it.runIf(IS_ROOT)`. They stay skipped in every non-root run
-     (including CI); run them deliberately with
-     `sudo npx vitest run test/cli/policy-gate-liveness.test.ts test/cli/policy-gate-operator-overrides.test.ts`.
-     The user-owned-refusal case (the actual security property) runs
-     everywhere.
-   - **The dashboard performance-panel stub** (1, in
-     `test/optimization-sweep-3.test.ts`): the render half is `it.skip` with
-     a `TODO(dashboard-uplift)` — the panel is not yet ported into a
-     web/dash tab module. The data-service half of the intent stays green.
-3. **Build** — `npm run build` succeeds with zero errors.
-4. **Lint & type-check** — `npm run lint` and `npx tsc --noEmit` pass cleanly.
-5. **Version bump** — bump via the scripts below (no manual edits to
-   `package.json`):
+1. **New tests.** Add test cases (vitest, under `test/`) covering the changed behavior. Aim for at least two cases per behavioral change.
+2. **Tests pass.** `npm test` with no failures. A handful of skips is expected and deliberate:
+   - **Root-only trust tests** (in `test/cli/policy-gate-liveness.test.ts` and `test/cli/policy-gate-operator-overrides.test.ts`): the property under test is that only a ROOT-owned file is trusted, and a non-root process cannot mint that fixture by construction. The trusted-file cases are `it.runIf(IS_ROOT)`, so they stay skipped in every non-root run, including CI. Run them deliberately with `sudo npx vitest run test/cli/policy-gate-liveness.test.ts test/cli/policy-gate-operator-overrides.test.ts`. The user-owned-refusal case, which is the actual security property, runs everywhere.
+   - **The dashboard performance-panel stub** (in `test/optimization-sweep-3.test.ts`): the render half is `it.skip` with a `TODO(dashboard-uplift)` because the panel is not yet ported into a web/dash tab module. The data-service half of the intent stays green.
+3. **Build.** `npm run build` succeeds with zero errors.
+4. **Lint and type-check.** `npm run lint` and `npx tsc --noEmit` pass cleanly.
+5. **Version bump.** Bump via the scripts below; never edit `package.json` by hand:
 
    ```bash
    npm run version:patch   # fix, chore, refactor, docs, test, style, ci
@@ -108,11 +84,9 @@ completion; CI and UAP's policy enforcers check them too.
    npm run version:major   # breaking changes (feat! or BREAKING CHANGE)
    ```
 
-6. **Self-review** — review the diff for correctness, no debug code, no secrets,
-   no unresolved TODOs.
+6. **Self-review.** Review the diff for correctness, no debug code, no secrets, no unresolved TODOs.
 
-A fast way to drive a change through gates 2–4 automatically is the convergence
-loop:
+A fast way to drive a change through gates 2 to 4 is the convergence loop:
 
 ```bash
 uap deliver "implement <change>"   # iterates a model against the real gates
@@ -124,8 +98,7 @@ See [docs/architecture/OVERVIEW.md](docs/architecture/OVERVIEW.md#how-uap-delive
 
 ## Commit conventions
 
-Use [Conventional Commits](https://www.conventionalcommits.org/). The prefix
-determines the version bump:
+Use [Conventional Commits](https://www.conventionalcommits.org/). The prefix determines the version bump:
 
 | Prefix | Meaning | Bump |
 |--------|---------|------|
@@ -149,19 +122,18 @@ docs(architecture): rewrite protocol spec
 1. Work inside a worktree (`uap worktree create <slug>`).
 2. Make changes; keep the build green between edits.
 3. Pass all completion gates (above) and bump the version on the branch.
-4. For non-trivial changes, run parallel review (correctness, security,
-   architecture) before opening the PR; note any skipped review in the PR body.
+4. For non-trivial changes, run parallel review (correctness, security, architecture) before opening the PR. Note any skipped review in the PR body.
 5. Open the PR against `master` (`uap worktree pr`).
 6. Ensure CI is green; address review feedback.
-7. After merge, `uap worktree finish` to clean up.
+7. After merge, run `uap worktree finish` to clean up.
 
 ---
 
 ## Project layout
 
 ```
-src/           34 subsystems, 434 TypeScript modules (see docs/architecture/OVERVIEW.md)
-test/          530 vitest test files
+src/           35 subsystems, 454 TypeScript modules (see docs/architecture/OVERVIEW.md)
+test/          548 vitest test files
 docs/          architecture, integrations, getting-started, reference
 web/           web dashboard
 tools/         agent tooling, including the Python enforcer/proxy tests
@@ -175,5 +147,4 @@ scripts/       setup, version-bump, maintenance
 config/        model profiles and defaults
 ```
 
-Questions or proposals: open an issue at
-https://github.com/DammianMiller/universal-agent-protocol/issues
+Questions or proposals: open an issue at https://github.com/DammianMiller/universal-agent-protocol/issues

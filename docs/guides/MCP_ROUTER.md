@@ -1,8 +1,8 @@
 # MCP Router
 
-> UAP v1.224.0
+> UAP v2.51.0
 
-> **🏭 Where this fits:** CROSS-CUTTING — keeping the context window lean at every station of the [delivery pipeline](./DELIVERY_PIPELINE.md). In a normal agentic workflow every tool call dumps its full result into context, so mostly-irrelevant output crowds out the details your agent actually needs. **What it delivers:** a proxy that compresses tool output before it reaches the model — up to 98% fewer tokens on large results — so the agent keeps room for real work and you spend less per session.
+> **🏭 Where this fits:** CROSS-CUTTING, keeping the context window lean at every station of the [delivery pipeline](./DELIVERY_PIPELINE.md). In a normal agentic workflow every tool call dumps its full result into context, so mostly-irrelevant output crowds out the details your agent actually needs. **What it delivers:** a proxy that compresses tool output before it reaches the model, up to 98% fewer tokens on large results, so the agent keeps room for real work and you spend less per session.
 
 The MCP Router is a token-optimizing proxy that sits between an AI harness and
 its MCP tool servers. It is implemented as 11 modules under
@@ -30,7 +30,7 @@ a strategy based on output size and whether the call supplied an *intent*:
 |-------------|----------|--------|
 | ≤ 5 KB | **Pass through** unchanged | `passthrough` |
 | 5–10 KB | **Head + tail** smart truncation | `truncated` |
-| ≥ 10 KB **with intent** | **FTS5 index-then-search** — return only matching snippets | `indexed` |
+| ≥ 10 KB **with intent** | **FTS5 index-then-search**, return only matching snippets | `indexed` |
 | ≥ 10 KB without intent | Head + tail smart truncation | `truncated` |
 
 The exact thresholds are `5120` bytes (truncation) and `10240` bytes
@@ -41,7 +41,7 @@ The exact thresholds are `5120` bytes (truncation) and `10240` bytes
 When an output is large and the agent describes what it is looking for (an
 `intent`), the compressor:
 
-1. **Chunks** the content by structure — markdown headings first, then
+1. **Chunks** the content by structure, markdown headings first, then
    blank-line paragraphs, then fixed-size line blocks as a fallback.
 2. Builds an **in-memory SQLite FTS5** virtual table (`porter` tokenizer) over
    the chunks.
@@ -58,15 +58,15 @@ finally to plain truncation.
 Native tokenizers can choke on pathological input, so the compressor defends
 against it:
 
-- **Null-byte sanitization** — embedded `\0` bytes are stripped before insertion
+- **Null-byte sanitization**, embedded `\0` bytes are stripped before insertion
   to avoid tokenizer crashes.
-- **Per-chunk cap** — chunks are limited to **8 KB** (`MAX_CHUNK_BYTES`) to avoid
+- **Per-chunk cap**, chunks are limited to **8 KB** (`MAX_CHUNK_BYTES`) to avoid
   stressing the porter tokenizer on inputs with no word boundaries (base64 blobs,
   minified JS, double-serialized JSON).
-- **Index ceiling** — outputs above **2 MB** (`MAX_INDEX_BYTES`) skip FTS5
+- **Index ceiling**, outputs above **2 MB** (`MAX_INDEX_BYTES`) skip FTS5
   entirely and fall back to truncation, since the native tokenizer can segfault on
   very large unbroken inputs.
-- **Null/exotic results** — `null`/`undefined` results collapse to an empty
+- **Null/exotic results**, `null`/`undefined` results collapse to an empty
   string; BigInt and circular values are coerced safely rather than producing
   `"[object Object]"`.
 
@@ -159,10 +159,10 @@ This command ([`src/cli/setup-mcp-router.ts`](../../src/cli/setup-mcp-router.ts)
 configures **Claude Code**, **Factory.AI**, **VSCode**, and **Cursor**. It writes
 a `router` server into each harness's MCP config:
 
-- **Claude Code** — `~/.claude/settings.json`
-- **Factory.AI** — `~/.factory/mcp.json`
-- **VSCode** — `~/.vscode/mcp.json`
-- **Cursor** — `~/.cursor/settings.json`
+- **Claude Code**, `~/.claude/settings.json`
+- **Factory.AI**, `~/.factory/mcp.json`
+- **VSCode**, `~/.vscode/mcp.json`
+- **Cursor**, `~/.cursor/settings.json`
 
 The entry it installs looks like:
 
@@ -179,7 +179,7 @@ The entry it installs looks like:
 ```
 
 When a harness already has MCP servers configured, `mcp-setup` migrates them
-behind the router (preserving the originals in a backup field) — pass `--force` to
+behind the router (preserving the originals in a backup field), pass `--force` to
 skip the confirmation prompt. After setup it validates the install by running
 `uap mcp-router list`.
 
@@ -187,7 +187,7 @@ skip the confirmation prompt. After setup it validates the install by running
 
 For the common case where a tool returns a large, mostly-irrelevant payload and
 the agent supplies an intent, the router returns only the 3 best-matching
-snippets — **up to 98% fewer tokens** than the raw output. Small outputs (≤5 KB)
+snippets, **up to 98% fewer tokens** than the raw output. Small outputs (≤5 KB)
 pass through untouched, so there is no penalty for the common small-result case.
 Per-session savings are tracked in
 [`session-stats.ts`](../../src/mcp-router/session-stats.ts) and surfaced via
@@ -195,3 +195,25 @@ Per-session savings are tracked in
 
 See also the [Memory guide](./MEMORY.md) for reducing token spend on persistent
 context rather than tool output.
+
+## Verifying it works
+
+```bash
+uap mcp-router list       # should enumerate tools from your downstream servers
+uap mcp-router stats      # shows tool-hiding savings + per-output compression
+uap hooks doctor          # confirms gate/router wiring across harnesses
+```
+
+If `list` is empty, the router found no downstream MCP configs, confirm your
+harness still has its original MCP servers defined (they are migrated into
+the router's view, not deleted) and re-run `uap mcp-setup`.
+
+## Notes
+
+- The documented design target for tool hiding is ~75,000 tokens of tool
+  definitions collapsed to ~700 (`src/mcp-router/index.ts`,
+  `src/mcp-router/server.ts`); per-output FTS5 savings are computed live for
+  each call and reported by `uap mcp-router stats`.
+- The router reads downstream MCP configs from Claude Desktop, Cursor, VSCode,
+  Claude Code CLI, Factory.AI, and a local `mcp.json`, expands `~`/env vars,
+  skips disabled servers, and refuses to reference itself.

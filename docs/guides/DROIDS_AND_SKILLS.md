@@ -1,21 +1,21 @@
 # Droids and Skills
 
-> Applies to UAP **v1.224.0**
+> Applies to UAP **v2.51.0**
 
-> **🏭 Where this fits:** PREP/ROUTING — this is the station where a
+> **🏭 Where this fits:** PREP/ROUTING, this is the station where a
 > generalist agent takes the wrong approach on specialist work: reviewing
 > security like a linter, refactoring without an architect's eye. **What it
 > delivers:** the right specialist station gets put in front of your model
-> *before* it starts — a security auditor for auth work, a language expert for
-> the language at hand — so the approach is right from the first line.
+> *before* it starts, a security auditor for auth work, a language expert for
+> the language at hand, so the approach is right from the first line.
 
 UAP ships two complementary extension mechanisms that decide *who* and *how* at
 the prep stage of your [delivery pipeline](./DELIVERY_PIPELINE.md):
 
-- **Droids** — markdown-defined specialist agents (a reviewer, a language
+- **Droids**, markdown-defined specialist agents (a reviewer, a language
   expert, an architect). Each droid is a focused persona with its own tools and
   instructions.
-- **Skills** — reusable workflows that any agent can load on demand (a coding
+- **Skills**, reusable workflows that any agent can load on demand (a coding
   protocol, a navigation technique, a memory operation).
 
 Droids answer *"who should do this?"*; skills answer *"how is this done?"*. A
@@ -45,7 +45,7 @@ You are a specialized assistant for my-droid tasks.
 Describe what this droid should do and how it should respond.
 ```
 
-A real droid carries richer frontmatter — for example `security-auditor`:
+A real droid carries richer frontmatter, for example `security-auditor`:
 
 ```markdown
 ---
@@ -67,14 +67,14 @@ skills:
 
 Frontmatter fields used by UAP:
 
-- `name` — **required**, unique across droids. Used to reference the droid.
-- `description` — **required**, at least 5 characters. Shown in listings and
+- `name`, **required**, unique across droids. Used to reference the droid.
+- `description`, **required**, at least 5 characters. Shown in listings and
   used by the expert router for capability matching.
-- `model` — `inherit` (use the caller's routed model) or a specific model id.
-- `tools` — the tool allowlist the droid may use.
-- `coordination` — optional; declares channels, claim semantics
+- `model`, `inherit` (use the caller's routed model) or a specific model id.
+- `tools`, the tool allowlist the droid may use.
+- `coordination`, optional; declares channels, claim semantics
   (`exclusive` / `shared`), and deploy batching for multi-droid runs.
-- `skills` — optional; skills the droid loads for its domain.
+- `skills`, optional; skills the droid loads for its domain.
 
 Droids are invoked as subagents, e.g.
 `Task(subagent_type: "security-auditor", prompt: "...")`.
@@ -84,22 +84,22 @@ Droids are invoked as subagents, e.g.
 UAP ships **38 droids** in `.factory/droids/`. They cluster into a few
 categories:
 
-- **Language experts** — `python-pro`, `typescript-node-expert`,
+- **Language experts**, `python-pro`, `typescript-node-expert`,
   `javascript-pro`, `go-pro`, `rust-pro`
-- **Reviewers** — `code-quality-reviewer`, `code-quality-guardian`,
+- **Reviewers**, `code-quality-reviewer`, `code-quality-guardian`,
   `security-code-reviewer`, `performance-reviewer`, `test-coverage-reviewer`,
   `documentation-accuracy-reviewer`, `architect-reviewer`
-- **Architects & planners** — `strategic-architect`, `tactical-architect`,
+- **Architects & planners**, `strategic-architect`, `tactical-architect`,
   `implementation-planner`, `product-strategist`, `ideation-expert`
-- **Security & compliance** — `security-auditor`, `compliance-officer`,
+- **Security & compliance**, `security-auditor`, `compliance-officer`,
   `dependency-auditor`
-- **Quality & testing** — `qa-expert`, `test-strategist`, `test-plan-writer`,
+- **Quality & testing**, `qa-expert`, `test-strategist`, `test-plan-writer`,
   `refactoring-specialist`, `debug-expert`
-- **Performance & cost** — `performance-optimizer`, `cost-engineer`,
+- **Performance & cost**, `performance-optimizer`, `cost-engineer`,
   `harness-optimizer`, `terminal-bench-optimizer`
-- **Ops & infrastructure** — `sysadmin-expert`, `observability-engineer`,
+- **Ops & infrastructure**, `sysadmin-expert`, `observability-engineer`,
   `incident-responder`, `release-manager`
-- **Domain specialists** — `api-designer`, `cli-design-expert`,
+- **Domain specialists**, `api-designer`, `cli-design-expert`,
   `accessibility-tester`, `documentation-expert`, `ml-training-expert`
 
 Run `uap droids list` to see the live set across all sources.
@@ -158,18 +158,18 @@ with frontmatter (`name`, `version`, `compatibility`) and the workflow body.
 
 UAP ships **37 skills** in `.factory/skills/`, including:
 
-- **Coordination & workflow** — `uap-coordination`, `uap-tasks`,
+- **Coordination & workflow**, `uap-coordination`, `uap-tasks`,
   `uap-worktree`, `worktree-workflow`, `parallel-expert-review`, `batch-review`
-- **Memory & context** — `uap-memory`, `memory-management`,
+- **Memory & context**, `uap-memory`, `memory-management`,
   `scripts-preload-memory`, `session-context-preservation-droid`
-- **Navigation & analysis** — `codebase-navigator`, `git-forensics`,
+- **Navigation & analysis**, `codebase-navigator`, `git-forensics`,
   `uap-patterns`, `compression`
-- **Engineering** — `typescript-node-expert`, `polyglot`, `cli-design-expert`,
+- **Engineering**, `typescript-node-expert`, `polyglot`, `cli-design-expert`,
   `llama-cpp-worker`, `infra-worker`, `service-config`
-- **Iteration & benchmarking** — `near-miss`, `near-miss-iteration`,
+- **Iteration & benchmarking**, `near-miss`, `near-miss-iteration`,
   `adversarial`, `terminal-bench`, `terminal-bench-strategies`
-- **Product & demos** — `record-walkthroughs`, `design-system`
-- **Hooks** — `hooks-session-start`, `hooks-pre-compact`, `scripts-tool-router`
+- **Product & demos**, `record-walkthroughs`, `design-system`
+- **Hooks**, `hooks-session-start`, `hooks-pre-compact`, `scripts-tool-router`
 
 ### `uap skill` CLI
 
@@ -209,5 +209,5 @@ overwritten).
 
 ## See also
 
-- [Multi-Model Routing](./MULTI_MODEL.md) — the models that droids and skills
+- [Multi-Model Routing](./MULTI_MODEL.md), the models that droids and skills
   run on, and how tasks are routed to them.

@@ -1,6 +1,6 @@
 # The Inference Proxy
 
-UAP ships a local **inference proxy** — an Anthropic-Messages-compatible gateway
+UAP ships a local **inference proxy**, an Anthropic-Messages-compatible gateway
 that sits in front of a local llama.cpp/Qwen backend, translates between the
 Anthropic wire format and llama's OpenAI-compatible API, and applies a layer of
 **reliability guardrails** on the way through. It's what lets a Claude-native
@@ -16,17 +16,17 @@ the "keep a small model from wedging" logic lives.
 
 ## What it does
 
-- **Protocol translation** — accepts Anthropic `POST /v1/messages` and forwards
+- **Protocol translation**, accepts Anthropic `POST /v1/messages` and forwards
   OpenAI-style requests to the local rail (`LLAMA_CPP_BASE`, e.g.
   `http://localhost:8080/v1`), streaming and tool-calls included.
-- **Reliability guardrails** — detects and breaks the failure modes a small
+- **Reliability guardrails**, detects and breaks the failure modes a small
   local model falls into (act/review loops, "I'm stuck" spirals, endless
   exploration with no deliverable) so a run terminates instead of burning turns.
-- **Context management** — scales token counts so the client compacts *before*
+- **Context management**, scales token counts so the client compacts *before*
   the local rail overflows, and prunes as a backstop.
-- **Graceful degradation under load** — pool saturation returns a proper
+- **Graceful degradation under load**, pool saturation returns a proper
   Anthropic `529 overloaded_error` with `retry-after` rather than failing hard.
-- **Serving recipes** — optional confidence/fusion escalation to a stronger
+- **Serving recipes**, optional confidence/fusion escalation to a stronger
   judge model, plus per-request routing from the reactor and the self-tuning
   real-time adaptor.
 
@@ -44,7 +44,7 @@ the "keep a small model from wedging" logic lives.
 ### Ollama-compatible surface (`PROXY_OLLAMA_PORT`, default 11434)
 
 The same proxy also serves the Ollama wire protocol on a **second port**
-(default `11434`, Ollama's well-known port — the one Ollama-native tooling
+(default `11434`, Ollama's well-known port, the one Ollama-native tooling
 auto-discovers and cannot be re-pointed). Set `PROXY_OLLAMA_PORT=0` to disable
 it (do that on a box running a real Ollama, which owns 11434); if the port is
 busy at startup the surface disables itself and the Anthropic/OpenAI surface
@@ -53,20 +53,20 @@ carries on unaffected.
 | Route | Purpose |
 |---|---|
 | `GET /api/version` | Ollama discovery handshake |
-| `GET /api/tags` | Model list — backend-served ids only (the Anthropic-protocol Claude ids are not leaked here) |
+| `GET /api/tags` | Model list, backend-served ids only (the Anthropic-protocol Claude ids are not leaked here) |
 | `POST /api/show` | Model card (404s unknown ids like real Ollama) |
 | `GET /api/ps` | Running-model list (the backend stays loaded; capacity policy owns that) |
-| `POST /api/chat` | Chat — messages, options, tools (OpenAI tool schema) |
-| `POST /api/generate` | Text generation — prompt + optional system |
+| `POST /api/chat` | Chat, messages, options, tools (OpenAI tool schema) |
+| `POST /api/generate` | Text generation, prompt + optional system |
 
 Every request runs the **full guardrail path** (admission control, rail
 budgeting, loop detection, tool narrowing, malformed-tool retry, context
-pruning) — an Ollama client gets the same treatment an Anthropic client does.
+pruning), an Ollama client gets the same treatment an Anthropic client does.
 The tradeoff matches the OpenAI-compatible surface: streaming is buffered
 through the guardrails, then emitted as Ollama NDJSON (one content line plus a
 final `done: true` line), not token-by-token.
 
-Options map only where they survive both translation hops — `temperature`,
+Options map only where they survive both translation hops, `temperature`,
 `top_p`, `top_k`, `stop`, and `num_predict` → `max_tokens`. Everything else is
 dropped honestly rather than accepted and silently ignored: Ollama's
 `format` (structured output) is not carried by the underlying pipeline yet
@@ -78,13 +78,13 @@ features with no local equivalent.
 Two auth behaviors to know about when `PROXY_AUTH_TOKEN` is set: the
 discovery routes above stay unauthenticated (Ollama clients probe them before
 any credential could be presented), but `POST /api/chat`, `POST /api/generate`
-and `POST /api/show` gate exactly like `/v1/messages` — and since most
+and `POST /api/show` gate exactly like `/v1/messages`, and since most
 Ollama-native tooling has no way to configure a bearer token, auth-on
 realistically means Ollama clients stop at a 401. On the default loopback
 deployment (no token) everything works.
 
 If the port is busy at startup (typically a real Ollama), the surface
-disables itself and the Anthropic/OpenAI surface carries on unaffected — the
+disables itself and the Anthropic/OpenAI surface carries on unaffected, the
 error lands in this proxy's journal. The reverse ordering has the opposite
 signature: if this proxy binds 11434 first, a later-started real Ollama is the
 one that fails to bind, and its error shows up in Ollama's logs, not ours.
@@ -95,7 +95,7 @@ one that fails to bind, and its error shows up in Ollama's logs, not ours.
 
 The proxy is **reference-counted and session-scoped**. Hooks call `ensure` when a
 session starts and `release` when it ends, so it starts on demand and stops when
-the last session leaves — but it **never** kills a proxy that systemd manages or
+the last session leaves, but it **never** kills a proxy that systemd manages or
 that other sessions are still using.
 
 ```
@@ -122,7 +122,7 @@ uap proxy [ensure | release | status | start | stop | restart | enable | disable
 
 ### Ride-along dashboard
 
-**The operational dashboard starts with the proxy** — no second command. `ensure`
+**The operational dashboard starts with the proxy**, no second command. `ensure`
 and `start` also start-or-adopt `uap dashboard serve` (default
 <http://localhost:3847>), concurrently with the proxy so session start isn't
 serialized behind two health waits. Teardown follows ownership: a dashboard **we**
@@ -138,13 +138,13 @@ you to run `uap dash serve` manually.
 | host | `proxy.dashboard.host` / `UAP_DASH_HOST` | `localhost` |
 | startup wait | `UAP_DASH_HEALTH_WAIT_MS` | `10000` |
 
-Env wins over config. These govern the **ride-along** only — `uap dash serve`
+Env wins over config. These govern the **ride-along** only, `uap dash serve`
 still takes its own `--port`/`--host`.
 
 **Identification.** Liveness is `GET /health`, which returns
 `{"ok":true,"service":"uap-dashboard","port":…,"root":"<project dir>"}`. UAP adopts
 a dashboard only when that marker is present *and* `root` matches the current
-project — a dashboard is per-project (every panel reads its own working
+project, a dashboard is per-project (every panel reads its own working
 directory), even though the proxy client registry is per-user. A dashboard from an
 older UAP has no `/health`; it is recognised by its `UAP Dashboard` page title and
 adopted as-is, since it cannot state which project it serves.
@@ -159,7 +159,7 @@ uap proxy start --no-dashboard
 than only while you run it by hand, the page carrying the policy-mutation token is
 served same-origin only, WebSocket upgrades require a same-origin `Origin`, and the
 token is not echoed into the ride-along log. Binding beyond loopback
-(`UAP_DASH_HOST`) is reported with a warning — set `UAP_DASHBOARD_TOKEN` if you do.
+(`UAP_DASH_HOST`) is reported with a warning, set `UAP_DASHBOARD_TOKEN` if you do.
 
 **How it's managed.** When available, the proxy runs as the systemd unit
 `uap-anthropic-proxy.service`, reading its environment from
@@ -178,12 +178,12 @@ visible rather than silently degrading to defaults.
 | Env (default) | Behavior |
 |---|---|
 | `UAP_PROXY_ENV_FILE` (unset) | Explicit path to a proxy.env, tried before the walk |
-| `UAP_PROXY_ENV_AUTOLOAD` (**on**) | Set to `0` to make *importing* the proxy module inert — it then mutates no process environment. Used by the Python test suite so tests assert shipped defaults rather than the developer's config. Does not affect a server run |
+| `UAP_PROXY_ENV_AUTOLOAD` (**on**) | Set to `0` to make *importing* the proxy module inert, it then mutates no process environment. Used by the Python test suite so tests assert shipped defaults rather than the developer's config. Does not affect a server run |
 | `PROXY_ALLOW_UNAUTHENTICATED_BIND` (**off**) | The proxy **refuses to start** on a non-loopback `PROXY_HOST` when `PROXY_AUTH_TOKEN` is empty, because the auth middleware treats an empty token as "no auth configured" and would leave every route open on the LAN. Set to `1` only if an open listener is genuinely intended |
 
 PID reuse is defended with a `/proc/<pid>`
 start-time token so `release` never kills an unrelated process that inherited an
-old pid. Everything hook-driven **fails open** — if the proxy won't start, the
+old pid. Everything hook-driven **fails open**, if the proxy won't start, the
 agent just runs without it.
 
 ```bash
@@ -198,7 +198,7 @@ uap proxy enable           # let session hooks autostart it
 
 - **Loopback by default.** The proxy binds `127.0.0.1` (`PROXY_HOST`). This is
   deliberate: an unauthenticated `0.0.0.0` listener would let any host on your
-  LAN drive the local model — and reach any cloud passthrough — so local-only is
+  LAN drive the local model, and reach any cloud passthrough, so local-only is
   the safe default.
 - **Shared-secret auth for LAN exposure.** To run it as a shared service, set
   `PROXY_HOST=0.0.0.0` **and** a `PROXY_AUTH_TOKEN`. With a token set, every model
@@ -213,7 +213,7 @@ uap proxy enable           # let session hooks autostart it
 
 ## Reliability guardrails
 
-These are the heart of the proxy — the logic that keeps a weaker model from
+These are the heart of the proxy, the logic that keeps a weaker model from
 wedging. Most are **on by default** and tuned via `PROXY_*` env vars (persisted
 in `.uap/proxy.env` or the systemd EnvironmentFile). The high-signal knobs are in
 the [Configuration Reference](../reference/CONFIGURATION_REFERENCE.md); the full
@@ -225,12 +225,12 @@ set is below.
 |---|---|---|
 | **Loop-breaker** | `PROXY_LOOP_BREAKER` (on) | Detects act/review cycles + no-progress streaks and releases `tool_choice` to `auto` so the model can actually terminate |
 | **Stuck-break** | `PROXY_STUCK_BREAK` (on) | When the model self-reports "stuck in a loop" or hammers a rate-limited host, forces a terminal turn |
-| **Error-loop** | `PROXY_ERROR_LOOP` (on), `PROXY_ERROR_LOOP_THRESHOLD` (3), `PROXY_ERROR_LOOP_HARD_LIMIT` (3) | The SAME tool-result error recurring despite varied edits: inject a STOP directive naming the failure — a KNOWN FIX when the class has one (the shared class table: hallucinated skill names, edit-anchor mismatches, identical old/new strings, truncated whole-file writes, policy blocks (where the remedy names the policy layer and never endorses error-named commands), HTTP 404s, missing DB credentials, missing pgcrypto), else the class-matched diagnose remedy. Directives ride the transcript tail as a user-role turn, carry an untrusted-tool-output caveat, and yield to recon-convergence — the 2026-09-24 opencode+qwen log shows 20 hard stops where three system-top re-read directives were ignored en route to each. After HARD_LIMIT ignored directives the session hard-fails (400); a fresh human user turn re-arms. Yields to lockstep when lockstep owns the shape |
+| **Error-loop** | `PROXY_ERROR_LOOP` (on), `PROXY_ERROR_LOOP_THRESHOLD` (3), `PROXY_ERROR_LOOP_HARD_LIMIT` (3) | The SAME tool-result error recurring despite varied edits: inject a STOP directive naming the failure, a KNOWN FIX when the class has one (the shared class table: hallucinated skill names, edit-anchor mismatches, identical old/new strings, truncated whole-file writes, policy blocks (where the remedy names the policy layer and never endorses error-named commands), HTTP 404s, missing DB credentials, missing pgcrypto), else the class-matched diagnose remedy. Directives ride the transcript tail as a user-role turn, carry an untrusted-tool-output caveat, and yield to recon-convergence, the 2026-09-24 opencode+qwen log shows 20 hard stops where three system-top re-read directives were ignored en route to each. After HARD_LIMIT ignored directives the session hard-fails (400); a fresh human user turn re-arms. Yields to lockstep when lockstep owns the shape |
 | **Deferral-break** | `PROXY_DEFERRAL_BREAK` (on) | The inverse: a no-tool turn that *defers* work ("I need more exploration cycles") is forced to act on the next turn |
 | **Recon-convergence** | `PROXY_RECON_CONVERGENCE_THRESHOLD` (40) | After N tool-using turns with **no** write/deliverable, inject "stop exploring, produce the deliverable"; escalates to stripping tools if it persists (0 disables) |
 | **Hard-finalize** | `PROXY_HARD_FINALIZE_TURNS` (40) | Absolute turn cap before a forced finalize |
-| **MANDATE-DELIVER** | `PROXY_MANDATE_DELIVER` (on) | On the delivery-enforcer block marker, pin `tool_choice` to `deliver` so the next turn *must* route through the gated path — makes routing binding for weak models |
-| **Lockstep escalation** | `PROXY_LOCKSTEP_BREAK` (on), `PROXY_LOCKSTEP_PIVOT_AT` (2), `PROXY_LOCKSTEP_HARD_AT` (4) | The identical tool call failing with the identical error: inject a pivot directive at streak 2, a final warning one fire later, then hard-fail the session (400) at streak 4 instead of drifting (both directives always precede the stop, so it lands at `max(HARD_AT, PIVOT_AT+2)`). Directives ride the transcript tail as a user-role turn (the salient position; the 2026-10-07 ledger showed system-top directives ignored twice) and carry a KNOWN FIX line for recurring error classes (hallucinated skill names, invalid todo statuses, interrupted calls, edit-anchor mismatches, truncated writes, policy blocks, HTTP 404s, missing DB credentials, missing pgcrypto). Each tier appends to the loop-incident ledger (`UAP_LOOP_INCIDENTS`, default `~/.config/uap/loop-incidents.jsonl`, ~3 records per episode, no rotation) for `uap loops` to inspect and hand to `uap ideate`/`uap deliver`; `uap loops --steer` distills the recurring classes into session-start context — shell harnesses read it from `session-start.sh`, opencode from the plugin's `session.created` handler — so a fresh session never re-enters a logged loop. A fresh human user turn re-arms the guard. Signatures anchor on the decisive traceback line — never the content-free header or exit-code wrapper that unrelated failures share — error tokens glued into larger names (openobserve-error-scan) never count, and a Read payload with no `is_error` flag is content, not failure; the DOUBLING-DOWN pivot rides the same tail placement. Disarmed if `PROXY_ERROR_LOOP=off` or `PROXY_DOUBLING_BREAK=off` (their trackers feed it) |
+| **MANDATE-DELIVER** | `PROXY_MANDATE_DELIVER` (on) | On the delivery-enforcer block marker, pin `tool_choice` to `deliver` so the next turn *must* route through the gated path, makes routing binding for weak models |
+| **Lockstep escalation** | `PROXY_LOCKSTEP_BREAK` (on), `PROXY_LOCKSTEP_PIVOT_AT` (2), `PROXY_LOCKSTEP_HARD_AT` (4) | The identical tool call failing with the identical error: inject a pivot directive at streak 2, a final warning one fire later, then hard-fail the session (400) at streak 4 instead of drifting (both directives always precede the stop, so it lands at `max(HARD_AT, PIVOT_AT+2)`). Directives ride the transcript tail as a user-role turn (the salient position; the 2026-10-07 ledger showed system-top directives ignored twice) and carry a KNOWN FIX line for recurring error classes (hallucinated skill names, invalid todo statuses, interrupted calls, edit-anchor mismatches, truncated writes, policy blocks, HTTP 404s, missing DB credentials, missing pgcrypto). Each tier appends to the loop-incident ledger (`UAP_LOOP_INCIDENTS`, default `~/.config/uap/loop-incidents.jsonl`, ~3 records per episode, no rotation) for `uap loops` to inspect and hand to `uap ideate`/`uap deliver`; `uap loops --steer` distills the recurring classes into session-start context, shell harnesses read it from `session-start.sh`, opencode from the plugin's `session.created` handler, so a fresh session never re-enters a logged loop. A fresh human user turn re-arms the guard. Signatures anchor on the decisive traceback line, never the content-free header or exit-code wrapper that unrelated failures share, error tokens glued into larger names (openobserve-error-scan) never count, and a Read payload with no `is_error` flag is content, not failure; the DOUBLING-DOWN pivot rides the same tail placement. Disarmed if `PROXY_ERROR_LOOP=off` or `PROXY_DOUBLING_BREAK=off` (their trackers feed it) |
 
 ### Context & compaction
 
@@ -239,8 +239,8 @@ set is below.
 | `PROXY_CONTEXT_WINDOW` (0 = auto) | Explicit local context window; 0 derives it from the live rail |
 | `PROXY_COUNT_TOKENS_SCALE` (auto) | Scales the reported token count so the client auto-compacts before the local rail overflows |
 | `PROXY_CONTEXT_PRUNE_THRESHOLD` (0.85) / `PROXY_CONTEXT_PRUNE_TARGET_FRACTION` (0.50) | Backstop pruning: prune at 85% of the window, land the session at ~50% |
-| `PROXY_PRUNE_SPIRAL_STREAK` (3) / `PROXY_PRUNE_SPIRAL_EPSILON` (0.01) | Prune circuit breaker fires only on a RISING post-prune floor (3 consecutive prunes each >1 point higher). A flat floor above the threshold is fixed system+tools overhead, not a death spiral — the breaker is held |
-| `PROXY_FINAL_ANSWER_CHARS` (800; deprecated env alias `PROXY_END_TURN_FINAL_CHARS`) | Content reaching this many characters is a legitimate final answer: the unexpected-end-turn retry is skipped and the client's loop ends naturally (thinking-runaway stalls have empty content). Also exempts a `required` tool turn returning such content from the `required_tool_miss` streak, retries, and forced-tool dampener; keeps the stream-path `malformed_tool_streak` from counting it; and stops the recon-convergence no-write streak from advancing on it — a finished model's summary is a completion, not a miss. Content matching the deferral phrases ("I need more cycles…") stays retried even when long — a capitulation is not a final answer. 0 = always retry |
+| `PROXY_PRUNE_SPIRAL_STREAK` (3) / `PROXY_PRUNE_SPIRAL_EPSILON` (0.01) | Prune circuit breaker fires only on a RISING post-prune floor (3 consecutive prunes each >1 point higher). A flat floor above the threshold is fixed system+tools overhead, not a death spiral, the breaker is held |
+| `PROXY_FINAL_ANSWER_CHARS` (800; deprecated env alias `PROXY_END_TURN_FINAL_CHARS`) | Content reaching this many characters is a legitimate final answer: the unexpected-end-turn retry is skipped and the client's loop ends naturally (thinking-runaway stalls have empty content). Also exempts a `required` tool turn returning such content from the `required_tool_miss` streak, retries, and forced-tool dampener; keeps the stream-path `malformed_tool_streak` from counting it; and stops the recon-convergence no-write streak from advancing on it, a finished model's summary is a completion, not a miss. Content matching the deferral phrases ("I need more cycles…") stays retried even when long, a capitulation is not a final answer. 0 = always retry |
 
 ### Connection health & backpressure
 
@@ -248,10 +248,10 @@ set is below.
 |---|---|
 | `PROXY_MAX_CONNECTIONS` (20) | httpx pool size; a large pool + 529 backoff absorbs connection churn gracefully |
 | `PROXY_UPSTREAM_RETRY_MAX` (3) / `PROXY_UPSTREAM_RETRY_DELAY_SECS` (5) | Transient-failure retry budget for upstream calls, on both the buffered and the streaming path. Values below 1 are clamped to 1 |
-| **503 "Loading model"** (no toggle) | llama-server answers 503 while a GGUF is still being mapped. Both paths treat it as transient: wait for `/health` (up to 60s), then retry. A wait that times out surfaces the 503 rather than stacking another — so a cold start costs at most ~60s of extra latency per attempt, not `RETRY_MAX × 60s` of dead air |
-| **529 backpressure** (no toggle) | A pool timeout returns HTTP **529 `overloaded_error`** with `retry-after` — pure graceful degradation, not a hard failure |
+| **503 "Loading model"** (no toggle) | llama-server answers 503 while a GGUF is still being mapped. Both paths treat it as transient: wait for `/health` (up to 60s), then retry. A wait that times out surfaces the 503 rather than stacking another, so a cold start costs at most ~60s of extra latency per attempt, not `RETRY_MAX × 60s` of dead air |
+| **529 backpressure** (no toggle) | A pool timeout returns HTTP **529 `overloaded_error`** with `retry-after`, pure graceful degradation, not a hard failure |
 | `PROXY_CLOSEWAIT_REAP_INTERVAL` (0 = **off**) | Opt-in CLOSE-WAIT reaper (pool self-heal); off by default because pool-swap churn can harm a saturated upstream |
-| `PROXY_TOOL_NARROWING` (**off**) | Opt-in: drop cycling/banned tools from the set on loops — always keeps the Bash/WebFetch/Agent escape hatch + write tools (a floor invariant that never strands the agent) |
+| `PROXY_TOOL_NARROWING` (**off**) | Opt-in: drop cycling/banned tools from the set on loops, always keeps the Bash/WebFetch/Agent escape hatch + write tools (a floor invariant that never strands the agent) |
 
 > **Off-by-default knobs to know:** `PROXY_TOOL_NARROWING`, the CLOSE-WAIT reaper
 > (`PROXY_CLOSEWAIT_REAP_INTERVAL=0`), `PROXY_POOL_SWAP_ON_SATURATION`, and the
@@ -261,8 +261,8 @@ set is below.
 
 ## Serving recipes & escalation
 
-The proxy can run a bounded **micro-agent recipe** in front of the local model —
-escalating low-confidence or hard turns to a stronger **judge** model — behind
+The proxy can run a bounded **micro-agent recipe** in front of the local model,
+escalating low-confidence or hard turns to a stronger **judge** model, behind
 the same single model API. It is **off by default and fails open**.
 
 | Env (default) | Meaning |
@@ -273,7 +273,7 @@ the same single model API. It is **off by default and fails open**.
 | `PROXY_FUSION_N` (3) | Candidates the fusion recipe samples before the judge picks/merges (2–6) |
 | `PROXY_ESCALATE_MODEL` / `PROXY_ESCALATE_ENDPOINT` / `PROXY_ESCALATE_API_KEY` | The stronger judge backend |
 
-A judge-dependent recipe requires a judge **distinct from** the primary model —
+A judge-dependent recipe requires a judge **distinct from** the primary model,
 a same-model "qwen judging qwen" setup downgrades to `single` unless
 `PROXY_ALLOW_SELF_JUDGE=1`. The judge model id is configured on the harness side
 via `recipes.judge.model` (see the [recipes settings](../reference/CONFIGURATION_REFERENCE.md));
@@ -285,10 +285,10 @@ Because the proxy freezes its `PROXY_*` env at startup and has no reload
 endpoint, two features steer it **per request** via small signal files (each a
 best-effort read, TTL ~180s, never fatal):
 
-- **Recipe signal** — the harness [Reactor](../design/UAP_REACTOR.md) writes its
+- **Recipe signal**, the harness [Reactor](../design/UAP_REACTOR.md) writes its
   per-prompt routing decision to `~/.cache/uap/recipe-signals/`; the proxy prefers
   that fresh signal over re-deriving complexity itself.
-- **Adaptation signal** — the [LLM self-tuning](SELF_TUNING.md) real-time adaptor
+- **Adaptation signal**, the [LLM self-tuning](SELF_TUNING.md) real-time adaptor
   writes per-session adjustments (escalate / recipe / recon threshold / force
   synthesis) to `~/.cache/uap/adaptation-signals/`. Consumed when
   `PROXY_REALTIME_ADAPT` is on (**auto-on**; opt out with `0`).
@@ -311,5 +311,5 @@ The curated high-impact subset is documented in the
 the exhaustive list lives as module-level constants in `anthropic_proxy.py`.
 
 > **Note:** the upstream backend default in the checked-in scripts
-> (`LLAMA_CPP_BASE`) points at a specific host/port — always set it (or your
+> (`LLAMA_CPP_BASE`) points at a specific host/port, always set it (or your
 > model's `endpoint`) to your own llama.cpp/Qwen server.
