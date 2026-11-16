@@ -53,6 +53,15 @@ BASE_MODEL="$DROID_ANTHROPIC_BASE_MODEL"
 CHAT_BASE_MODEL="$DROID_CHAT_BASE_MODEL"
 PIN27="$DROID_LOCAL_27B_PIN"
 NAME27="$DROID_LOCAL_27B_DISPLAY"
+PING="$DROID_LOCAL_GEMMA_PIN"
+NAMEG="$DROID_LOCAL_GEMMA_DISPLAY"
+GEMMA_BASE="$DROID_GEMMA_BASE_MODEL"
+# The gemma listing's geometry, read from the installer itself so these
+# assertions never transcribe them (the same one-contract rule as the rest
+# of the suite).
+GCTX=$(grep -oP '^GEMMA_CTX=\K[0-9]+' "$HERE/sync-local-agent-configs.sh")
+GOUT=$(grep -oP '^GEMMA_OUT=\K[0-9]+' "$HERE/sync-local-agent-configs.sh")
+[ -n "$GCTX" ] && [ -n "$GOUT" ] || { echo "sandbox: cannot read GEMMA_CTX/GEMMA_OUT from the installer"; exit 1; }
 # Sourcing is side-effect free — snapshot it HERE, before the installer
 # run below legitimately creates the (sandbox-redirected) lock file.
 CONTRACT_CLEAN=$([ ! -e "$DROID_SYNC_LOCK" ] && echo clean || echo dirty)
@@ -226,9 +235,16 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=1; }
 
 # 0. shared Droid sync contract — names + installer structure
 bash -n "$CONTRACT" && ok "contract: valid bash" || bad "contract: bash -n failed"
-for V in MODELS_ONLY REPO_ROOT PROJECT_FACTORY_SET DROID_ANTHROPIC_BASE_MODEL DROID_CHAT_BASE_MODEL DROID_LOCAL_27B_PIN DROID_LOCAL_27B_DISPLAY DROID_SYNC_LOCK; do
+for V in MODELS_ONLY REPO_ROOT PROJECT_FACTORY_SET DROID_ANTHROPIC_BASE_MODEL DROID_CHAT_BASE_MODEL DROID_LOCAL_27B_PIN DROID_LOCAL_27B_DISPLAY DROID_LOCAL_GEMMA_PIN DROID_LOCAL_GEMMA_DISPLAY DROID_SYNC_LOCK; do
   [ -n "${!V:-}" ] && ok "contract: $V defined" || bad "contract: $V undefined"
 done
+# The gemma base model is DELIBERATELY empty by default (the Factory catalog
+# carries no Gemma built-in), so the non-empty rule above cannot apply to it —
+# assert it is defined (set), and when it IS set, the registry block below
+# keeps it from ever being a local wire id.
+[ "${DROID_GEMMA_BASE_MODEL+x}" = x ] \
+  && ok "contract: DROID_GEMMA_BASE_MODEL defined (empty by design)" \
+  || bad "contract: DROID_GEMMA_BASE_MODEL undefined"
 # Sourcing must be side-effect free: no lock file, no repo config writes.
 [ "$CONTRACT_CLEAN" = "clean" ] && ok "contract: sourcing creates no lock file" || bad "contract: sourcing wrote $DROID_SYNC_LOCK"
 # REPO_ROOT must resolve to the checkout the script lives in, not $PWD.
@@ -274,6 +290,26 @@ adv = [a for a in (fam.get("advertises") or []) if isinstance(a, str)]
 assert pin in adv, f"pin {pin} not in the 27B family's advertises: {adv}"
 assert pin not in (reg.get("retired_local_aliases") or []), \
     f"pin {pin} is still retired — a listed family id must not be drift"
+PY
+# The gemma listing pin must be an id the registry's gemma-4-31b family
+# advertises (same fail-closed rule as the 27B pin), and the gemma base
+# model must never be a local wire id when set — the empty default encodes
+# "the Factory catalog has no Gemma built-in".
+python3 - "$REPO_ROOT/config/model-registry.json" "$PING" "$GEMMA_BASE" <<'PY' \
+  && ok "contract: DROID_LOCAL_GEMMA_PIN is advertised by the gemma-4-31b family" \
+  || bad "contract: DROID_LOCAL_GEMMA_PIN is not a gemma-4-31b advertises id"
+import json, sys
+reg = json.load(open(sys.argv[1])); pin = sys.argv[2]; gbase = sys.argv[3]
+fam = (reg.get("models") or {}).get("gemma-4-31b") or {}
+adv = [a for a in (fam.get("advertises") or []) if isinstance(a, str)]
+assert pin in adv, f"pin {pin} not in the gemma family's advertises: {adv}"
+assert pin not in (reg.get("retired_local_aliases") or []), \
+    f"pin {pin} is still retired — a listed family id must not be drift"
+if gbase:
+    advertised = {a for f in (reg.get("models") or {}).values()
+                  for a in (f.get("advertises") or [])}
+    assert gbase not in advertised and gbase not in (reg.get("retired_local_aliases") or []), \
+        f"gemma base model is a local wire id: {gbase}"
 PY
 # The bodies live in the installer (the contract stays stub-free — no dead
 # code), so assert them textually against it.
@@ -371,10 +407,11 @@ assert len(cloud) == 1, "cloud entry vanished"
 assert cloud[0]["base_url"] == "http://localhost:8317", "8317 host not fixed"
 assert cloud[0]["api_key"] == "local", "cloud entry key clobbered"
 PY
-python3 - "$SANDBOX/.factory/settings.json" settings "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$BASE_MODEL" "$CHAT_BASE_MODEL" <<PY && ok "factory/settings.json: anthropic route + baseModelId + no force-add" || bad "factory/settings.json: assertions failed"
+python3 - "$SANDBOX/.factory/settings.json" settings "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$BASE_MODEL" "$CHAT_BASE_MODEL" "$PING" "$GCTX" "$GOUT" <<PY && ok "factory/settings.json: anthropic route + baseModelId + no force-add" || bad "factory/settings.json: assertions failed"
 import json, sys
 d = json.load(open(sys.argv[1]))
 alias, tok, ctx, pool, base_model, chat_base = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7], sys.argv[8]
+pin_g, ctx_g, out_g = sys.argv[9], int(sys.argv[10]), int(sys.argv[11])
 models = d["customModels"]
 import re as _re
 M27 = _re.compile(r"^custom:Qwen[\d.]+-27B-UAP-local-\d+$")
@@ -397,6 +434,21 @@ assert k["baseUrl"] == "http://127.0.0.1:4000/v1", k.get("baseUrl")
 assert k["apiKey"] == tok, "marker entry left on the stale token"
 assert k.get("baseModelId") == chat_base, \
     f"marker entry baseModelId wrong: {k.get('baseModelId')}"
+# the gemma family listing was ADDED (add-if-missing) with the arm's own
+# geometry: marker id, no vision (no mmproj), no baseModelId while the
+# Factory catalog carries no Gemma built-in
+MG = _re.compile(r"^custom:gemma-4[\w.-]*-UAP-local-\d+$")
+gmark = [m for m in models if isinstance(m.get("id"), str) and MG.match(m["id"])]
+assert len(gmark) == 1, f"expected the one gemma listing, got {len(gmark)}"
+g = gmark[0]
+assert g["model"] == pin_g, f"gemma listing converged away: {g.get('model')}"
+assert g["displayName"] == "Gemma 4 31B (UAP local)", g.get("displayName")
+assert g["baseUrl"] == "http://127.0.0.1:4000/v1", g.get("baseUrl")
+assert g["apiKey"] == tok, "gemma listing not on the scoped token"
+assert g["noImageSupport"] is True, "gemma listing claims vision (arm has no mmproj)"
+assert g["maxContextLimit"] == ctx_g, f"gemma listing ctx wrong: {g.get('maxContextLimit')}"
+assert g["maxOutputTokens"] == out_g, f"gemma listing output wrong: {g.get('maxOutputTokens')}"
+assert "baseModelId" not in g, "gemma listing gained a baseModelId — catalog has no Gemma built-in"
 entries = [m for m in models if m.get("model") == alias]
 # the ex-qwen35 anthropic-shape entry keeps the Messages ROOT (no /v1), gains
 # baseModelId, keeps its own apiKey, and is session-sized
@@ -471,10 +523,11 @@ assert not any(str(m.get("id", "")).startswith("custom:Qwen3.8-UAP-local-") for 
     "canonical entry added although local entries exist"
 PY
 # the project settings had NO local entry — it must have GAINED the canonical
-python3 - "$PSET" project "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$CHAT_BASE_MODEL" "$PIN27" <<PY && ok "project settings: gained the canonical entry (add-if-missing)" || bad "project settings: add-if-missing failed"
+python3 - "$PSET" project "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$CHAT_BASE_MODEL" "$PIN27" "$PING" "$GCTX" "$GOUT" <<PY && ok "project settings: gained the canonical entry (add-if-missing)" || bad "project settings: add-if-missing failed"
 import json, sys
 d = json.load(open(sys.argv[1]))
 alias, tok, ctx, pool, chat_base, pin27 = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7], sys.argv[8]
+pin_g, ctx_g, out_g = sys.argv[9], int(sys.argv[10]), int(sys.argv[11])
 models = d["customModels"]
 # the cloud router entry is untouched
 assert models[0]["model"] == "gpt-5.1" and models[0]["apiKey"] == "router-key", "cloud entry clobbered"
@@ -502,6 +555,20 @@ assert f["maxContextLimit"] == ctx, "27B entry not session-sized"
 assert f.get("baseModelId") == chat_base, \
     f"27B entry baseModelId wrong: {f.get('baseModelId')}"
 assert f["displayName"] == "Qwen3.8 27B (UAP local)", f.get("displayName")
+# the gemma family listing rides along too (three families in every picker)
+import re as _re2
+g27 = [m for m in models if m.get("model") == pin_g]
+assert len(g27) == 1, f"expected exactly one gemma family entry, got {len(g27)}"
+ge = g27[0]
+assert _re2.match(r"^custom:gemma-4[\w.-]*-UAP-local-\d+$", ge["id"]), ge["id"]
+assert ge["id"] == f"custom:{pin_g}-UAP-local-3" and ge["index"] == 3, (ge.get("id"), ge.get("index"))
+assert ge["baseUrl"] == "http://127.0.0.1:4000/v1", ge["baseUrl"]
+assert ge["apiKey"] == tok, "gemma entry not on the scoped token"
+assert ge["maxContextLimit"] == ctx_g, "gemma entry not sized to the arm's window"
+assert ge["maxOutputTokens"] == out_g, "gemma entry output cap wrong"
+assert ge["noImageSupport"] is True, "gemma entry claims vision (arm has no mmproj)"
+assert "baseModelId" not in ge, "gemma entry gained a baseModelId — catalog has no Gemma built-in"
+assert ge["displayName"] == "Gemma 4 31B (UAP local)", ge.get("displayName")
 PY
 
 # 4. codex — additive, converging, loadable, idempotent
@@ -566,9 +633,10 @@ else
   rc3=$?
   bad "MODELS_ONLY: run failed (rc $rc3)"
 fi
-python3 - "$S3/.factory/settings.json" "$PSET3" "$ALIAS" "$CTX" "$BASE_MODEL" "$CHAT_BASE_MODEL" "$PIN27" <<PY && ok "MODELS_ONLY: converged user + project settings" || bad "MODELS_ONLY: assertions failed"
+python3 - "$S3/.factory/settings.json" "$PSET3" "$ALIAS" "$CTX" "$BASE_MODEL" "$CHAT_BASE_MODEL" "$PIN27" "$PING" "$GCTX" "$GOUT" <<PY && ok "MODELS_ONLY: converged user + project settings" || bad "MODELS_ONLY: assertions failed"
 import json, sys
 alias, ctx, base_model, chat_base, pin27 = sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6], sys.argv[7]
+pin_g, ctx_g, out_g = sys.argv[8], int(sys.argv[9]), int(sys.argv[10])
 u = json.load(open(sys.argv[1]))["customModels"]
 assert any(m.get("model") == alias for m in u), "user settings not migrated"
 a = [m for m in u if m.get("model") == alias][0]
@@ -580,11 +648,19 @@ u27 = [m for m in u if m.get("model") == pin27]
 assert len(u27) == 1, f"user settings missing the 27B listing: {len(u27)}"
 assert u27[0].get("baseModelId") == chat_base, "27B listing missing baseModelId"
 assert u27[0]["maxContextLimit"] == ctx, "27B listing not session-sized"
+# ...and the third family with it: the gemma listing, the hook's exact mode
+ug = [m for m in u if m.get("model") == pin_g]
+assert len(ug) == 1, f"user settings missing the gemma listing: {len(ug)}"
+assert ug[0]["noImageSupport"] is True, "gemma listing claims vision"
+assert ug[0]["maxContextLimit"] == ctx_g, "gemma listing not sized to the arm's window"
+assert "baseModelId" not in ug[0], "gemma listing gained a baseModelId"
 p = json.load(open(sys.argv[2]))["customModels"]
 assert any(m.get("model") == alias for m in p), "project settings did not gain the canonical entry"
 p27 = [m for m in p if m.get("model") == pin27]
-assert len(p) == 2 and len(p27) == 1, \
-    f"project settings expected canonical + 27B, got {len(p)} entries ({len(p27)} x 27B)"
+assert len(p) == 3 and len(p27) == 1, \
+    f"project settings expected canonical + 27B + gemma, got {len(p)} entries ({len(p27)} x 27B)"
+pg = [m for m in p if m.get("model") == pin_g]
+assert len(pg) == 1 and pg[0]["noImageSupport"] is True, "project settings missing the gemma listing"
 PY
 [ ! -e "$S3/.config/uap/anthropic-proxy.env" ] && ok "MODELS_ONLY: no proxy env created" || bad "MODELS_ONLY: created the proxy env"
 [ ! -e "$S3/.codex/config.toml" ]              && ok "MODELS_ONLY: no codex config created" || bad "MODELS_ONLY: wrote codex config"
