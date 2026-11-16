@@ -331,13 +331,28 @@ round 3 (exit 0); a stalled model plateaus, escalates on round 3, and
 cuts exhausted with the gap documented (exit 2). bench-score drives the
 same loop in tests. 15 tests; suite 6563 green.
 
-**1.3 Proxy target-contract injection plus per-class sampling profiles.**
-Acceptance: the executor prompt carries the contract; the sampling profile
-switches by class.
+**1.3 Proxy target-contract injection plus per-class sampling profiles —
+SHIPPED (PR #905, v2.59.0).** `src/quality/tier-contract.ts`: the tier
+contract is a compact, deterministic prompt block — measured axes with
+thresholds and fail directions, per-side fix directives, the evidence
+guard, the class sampling profile — read from the same store the gates
+read, so prompt and gate cannot drift. `withTierContract` composes it;
+`ClassSpec.sampling` declares the profile (precision classes cold at
+temperature 0.2, generative warm at 0.8/top_p 0.95); the tier ladder
+hands the contract to its generator (additive 4th argument) so a
+model-backed generator carries it in every candidate's executor prompt;
+CLI `uap quality contract --tier <k>` prints the block. Live: the voxel
+0.4 tier renders its real 7-axis contract — the prompt block that would
+have saved a smaller model the failed-round discovery. The proxy-side
+request rewriting (uap-omni) is recorded as the seam: this module is the
+repo-side half. Acceptance met (executor prompt carries the contract;
+sampling switches by class). 12 tests; suite 6575 green.
 
 **1.4 Tier-aware quality-model placement.** When an uplift loop needs the 27B
 arm, placement follows the existing switch doctrine; this item makes the need
-explicit and scheduled rather than ad hoc. Owner: the fleet operator.
+explicit and scheduled rather than ad hoc. Owner: the fleet operator (the
+switch windows are an operator decision; the ladder's `onEscalate` firing is
+the recorded signal for it).
 
 ### Wave 2, measured fleet economics (recorded, not yet approved)
 
@@ -363,7 +378,9 @@ explicit and scheduled rather than ad hoc. Owner: the fleet operator.
    class registry, degenerate guards) — **#903 (v2.57.0)**.
 6c. Wave 1.2 tier ladder (best-of-N, plateau escalation, honest cut) —
    **#904 (v2.58.0)**.
-7. Wave 1 in order 1.3, then 1.4 with the operator (1.1, 1.2 shipped).
+6d. Wave 1.3 tier contract + per-class sampling profiles — **#905 (v2.59.0)**.
+7. Wave 1 remaining: 1.4 with the operator (the `onEscalate` signal is
+   recorded; the placement decision is the operator's).
 8. Wave 2 once Wave 0 and Wave 1 measurements exist.
 
 ## 7. Risks and open questions
