@@ -227,17 +227,45 @@ voxel-pagoda copy — the no-escalation run blocks pre-turn
 reports `⚖ generator≠evaluator: gen=qwen35-a3b eval=qwen38-27b` with the
 P39 critic form requested on every judged turn; 23 new tests.
 
-**0.4 Reference run: uplift the voxel pagoda to the Fable-High tier.**
-Gap-directed passes ordered by severity, one axis per pass, a critic round per
-pass, and the existing gates (8 tests, capability floor, visual gate) kept
-green. Acceptance targets on canonical views: distinct colors >= 850, glow >=
-0.02, dark <= 0.08, edge >= 0.05, contrast within 0.19 to 0.26, and no
-capability regression. The PR carries the before/after vector table. First
-directives, in severity order: palette ramps and wider per-voxel tone variation
-for vocabulary; the emissive set from 143 glow voxels toward roughly tenfold
-plus bloom tuning for glow; hemisphere lift and black lightening for dark;
-mid-ground props, foreground silhouettes, and the hero three-quarter camera
-preset for edge; one exposure and tone-map pass for contrast.
+**0.4 Reference run: uplift the voxel pagoda to the Fable-High tier — SHIPPED.**
+Two deliver runs (qwen35-a3b; run 2: 6 turns, best 80% of gates, not
+delivered) established the loop, then 12 measured surgical passes driven by
+`uap quality gap` against the derived tier closed all seven axes on every
+visual-gate capture. Frozen contract held: build.mjs, tests/, package.json
+byte-identical to baseline (the run's two added test shims were removed);
+`npm test` 8/8 throughout; visual gate green on every pass. Before/after
+vectors on the canonical t2 capture (tier `visual-scene/fable-high`,
+tolerance 0.75 of the Fable 5.2 High anchors):
+
+| axis      | before | tier                | after  |
+|-----------|--------|---------------------|--------|
+| colors12  | 662    | >= 743.6            | 1506   |
+| edgeFrac  | 0.0566 | >= 0.0877           | 0.0901 |
+| glowFrac  | 0.0019 | >= 0.0231           | 0.0350 |
+| darkFrac  | 0.2407 | <= 0.0714           | 0.0016 |
+| contrast  | 0.3482 | [0.160, 0.284]      | 0.1913 |
+| valMean   | 0.5710 | >= 0.4987           | 0.8323 |
+| satMean   | 0.3303 | [0.230, 0.409]      | 0.2644 |
+
+Findings recorded for the generalization waves:
+- **Degenerate-capture Goodhart.** The run's lighting stack (bloom strength
+  1.25 at threshold 0.58, hemisphere 2.15, ambient 0.62) blew the frame to
+  ~99% white in every browser; the tier read the wash as passing glow/val and
+  failing everything else, so the loop steered against a symptom. A
+  near-degenerate frame should itself be a gate failure (valMean > ~0.97
+  sanity check) — Wave 1 candidate.
+- **The composer chain applies no tone mapping.** `EffectComposer` without an
+  `OutputPass` never runs the renderer's ACES/exposure; HDR sky values clip
+  to white at the 8-bit target. Tone-mapping-based uplift levers are
+  decorative in such a pipeline — the effective levers were LDR color
+  choices, bloom strength/threshold, and lighting intensities.
+- **The model-authored fallback probe had a false premise.** It asserted
+  `engine === 'canvas2d'` in a harness whose software WebGL does construct
+  contexts (the readback proof passes there); the probe never ran in the
+  original baseline (R11 was unprobed). Fixed to drive the page's own
+  `?fb=1` force-fallback switch, which exercises the real fallback path.
+- **npm test was blind to the rendered regression** (source-property tests);
+  the visual gate + tier vectors caught what the suite could not.
 
 **0.5 Deliver tier gate — SHIPPED (PR #901, v2.56.0).** First-class gate,
 shadow mode first, promotion to blocking after the measured false-positive
@@ -286,7 +314,8 @@ explicit and scheduled rather than ad hoc. Owner: the fleet operator.
 2. 0.1 extractor and anchors — **#898 (v2.53.0)**.
 3. 0.2 tier and gap compiler — **#899 (v2.54.0)**.
 4. 0.3 critic wiring — **#900 (v2.55.0)**.
-5. 0.4 the pagoda reference run, the measured proof — in flight.
+5. 0.4 the pagoda reference run, the measured proof — **shipped** (see the
+   vector table above).
 6. 0.5 the deliver gate, shadow first, then blocking — **#901 (v2.56.0)**.
 7. Wave 1 in order 1.1, 1.2, 1.3; 1.4 with the operator.
 8. Wave 2 once Wave 0 and Wave 1 measurements exist.
