@@ -150,7 +150,15 @@ export class WebInteractionDriver implements InteractionDriver {
               `probe tried to navigate off-origin (${step.url}); interaction probes may only drive the artifact under test`
             );
           }
-          await b.goto(step.url);
+          // The manifest can only express PATHS relative to the served
+          // artifact (it cannot know the harness's ephemeral port), but the
+          // browser's navigate rejects a relative URL outright (CDP:
+          // "Cannot navigate to invalid URL"). The driver owns the server
+          // origin, so it resolves the join itself — after the same-origin
+          // check, which applies the same resolution, so what was checked is
+          // exactly what is navigated to.
+          if (!this.server) throw new Error('web driver not started');
+          await b.goto(new URL(step.url, this.server.url).href);
           await b.waitForLoadState('load');
         }
         return;
