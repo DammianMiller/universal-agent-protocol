@@ -211,11 +211,21 @@ severity-ordered with worst-first directives (darkFrac: "lighten the blacks
 FIRST"), exit 2. Fail-closed seams: no-tier, stale-tier (extractor version
 drift), unreadable captures.
 
-**0.3 Fresh-critic wiring.** The 27B quality arm wired as critic and escalation
-model (config plus placement discipline; the switch doctrine is respected);
-exec and judge distinct enforced for tier-relevant classes; the fixed-form
-critic prompt. Acceptance: a deliver run reports distinct=YES with a critic
-report in the P39 form.
+**0.3 Fresh-critic wiring — SHIPPED (PR #900, v2.55.0).** The 27B quality arm
+(`qwen38-27b`) wired as critic and escalation model through the existing
+`UAP_ESCALATE_MODEL` seam (`resolveJudgePlan`'s escalation rung — no new
+switch, stale presets fail soft, collisions never fake distinctness);
+exec and judge distinct enforced for tier-relevant classes
+(`resolveCriticEnforcement`: projects with derived tiers refuse a
+self-verifying generator pre-turn, exit 2, the fix named in the message;
+the simple-task judge skip no longer exempts them — found live); the
+fixed-form critic prompt (`src/delivery/critic-form.ts`: verdict yes/no,
+at most five ranked faults, blocking-or-minor, advisory above the
+deterministic tier gate). Acceptance: verified in a sandboxed
+voxel-pagoda copy — the no-escalation run blocks pre-turn
+(`✗ fresh-critic contract violated …`, exit 2) and the escalation run
+reports `⚖ generator≠evaluator: gen=qwen35-a3b eval=qwen38-27b` with the
+P39 critic form requested on every judged turn; 23 new tests.
 
 **0.4 Reference run: uplift the voxel pagoda to the Fable-High tier.**
 Gap-directed passes ordered by severity, one axis per pass, a critic round per
