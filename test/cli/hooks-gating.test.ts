@@ -42,9 +42,9 @@ describe('policy-gate parity', () => {
       expect(row.scriptPresent, t).toBe(true);
       expect(row.wired, t).toBe(true);
     }
-    // opencode wiring is the throw-to-block plugin hook
+    // opencode wiring is the throw-to-block plugin hook (V2: ctx.tool.hook)
     const plugin = readFileSync(join(proj, '.opencode/plugin/uap-session-hooks.ts'), 'utf-8');
-    expect(plugin).toContain('tool.execute.before');
+    expect(plugin).toContain('ctx.tool.hook("execute.before"');
   });
 
   it('reports codex as MCP-gated and forgecode as advisory (harness limits)', async () => {
