@@ -1,7 +1,8 @@
-import type { Plugin } from '@opencode-ai/plugin';
+import type { Plugin } from '@opencode/plugin';
+import { exec } from 'node:child_process';
 
 /**
- * Layer 2: UAP Enforcement Plugin for OpenCode (v1.0.0)
+ * Layer 2: UAP Enforcement Plugin for OpenCode (v2.0.0, opencode V2 API)
  *
  * ARCHITECTURE: PREPEND-NOT-REPLACE
  * The loop breaker PREPENDS warning messages to commands but NEVER replaces them.
@@ -22,43 +23,139 @@ import type { Plugin } from '@opencode-ai/plugin';
  * 3. Telemetry:
  *    - Logs all tool calls to /tmp/uap-telemetry.jsonl
  */
-export const UapEnforce: Plugin = async ({ $ }) => {
-  const recentFingerprints: string[] = [];
-  const recentOutputHashes: string[] = [];
-  const MAX_HISTORY = 20;
-  const LOOP_THRESHOLD = 3;
 
-  // Escape hatch: track consecutive loop warnings
-  let consecutiveLoopWarnings = 0;
-  const ESCAPE_HATCH_THRESHOLD = 3;
+// Inline Bun.$-compatible shell helper (self-contained artifact: this file
+// is distributed standalone into agent deployments). Interpolated values are
+// single-quoted; `.nothrow()` keeps non-zero exits as results.
+interface ShellResult {
+  stdout: Buffer;
+  stderr: Buffer;
+  exitCode: number;
+}
+const shellQuote = (value: unknown): string => "'" + String(value).replace(/'/g, "'\\''") + "'";
+class ShellRun implements PromiseLike<ShellResult> {
+  private nothrowFlag = false;
+  private readonly promise: Promise<ShellResult>;
+  constructor(command: string) {
+    this.promise = new Promise<ShellResult>((resolve, reject) => {
+      exec(command, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+        const rawCode = (err as { code?: unknown } | null)?.code;
+        const exitCode = typeof rawCode === 'number' ? rawCode : err ? 127 : 0;
+        const res: ShellResult = { stdout: Buffer.from(stdout ?? ''), stderr: Buffer.from(stderr ?? ''), exitCode };
+        if (exitCode !== 0 && !this.nothrowFlag) {
+          reject(new Error('command exited ' + exitCode + ': ' + command.slice(0, 200)));
+        } else {
+          resolve(res);
+        }
+      });
+    });
+  }
+  nothrow(): this {
+    this.nothrowFlag = true;
+    return this;
+  }
+  quiet(): this {
+    return this;
+  }
+  then<TResult1 = ShellResult, TResult2 = never>(
+    onfulfilled?: ((value: ShellResult) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
+  ): Promise<TResult1 | TResult2> {
+    return this.promise.then(onfulfilled, onrejected);
+  }
+}
+const $ = (strings: TemplateStringsArray, ...values: unknown[]): ShellRun => {
+  let command = '';
+  for (let i = 0; i < strings.length; i++) {
+    command += strings[i];
+    if (i < values.length) command += shellQuote(values[i]);
+  }
+  return new ShellRun(command);
+};
 
-  // Pending warning: queued from write/read loops, prepended to next bash call
-  let pendingWarning: string | null = null;
+const plugin: Plugin.Plugin = {
+  id: 'uap-enforce',
+  async setup(ctx) {
+    let totalToolCalls = 0;
+    const SOFT_BUDGET = 30;
 
-  // Track write content hashes
-  const recentWriteHashes: string[] = [];
+    const TELEMETRY_PATH = '/tmp/uap-telemetry.jsonl';
 
-  let totalToolCalls = 0;
-  const SOFT_BUDGET = 30;
+    const simpleHash = (s: string): string => {
+      let h = 0;
+      for (let i = 0; i < Math.min(s.length, 2000); i++) {
+        h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+      }
+      return String(h);
+    };
 
-  const TELEMETRY_PATH = '/tmp/uap-telemetry.jsonl';
+    const recentFingerprints: string[] = [];
+    const recentOutputHashes: string[] = [];
+    const MAX_HISTORY = 20;
+    const LOOP_THRESHOLD = 3;
 
-  const simpleHash = (s: string): string => {
-    let h = 0;
-    for (let i = 0; i < Math.min(s.length, 2000); i++) {
-      h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    // Escape hatch: track consecutive loop warnings
+    let consecutiveLoopWarnings = 0;
+    const ESCAPE_HATCH_THRESHOLD = 3;
+
+    // Pending warning: queued from write/read loops, prepended to next bash call
+    let pendingWarning: string | null = null;
+
+    // Track write content hashes
+    const recentWriteHashes: string[] = [];
+
+    // Write initial telemetry entry
+    await $`echo '{"event":"plugin_loaded","version":"2.0.0","ts":"'$(date -Iseconds)'"}' >> ${TELEMETRY_PATH}`
+      .quiet()
+      .nothrow();
+
+    // --- Policy-aware tool descriptions (Layer 3, V2) ---
+    // Inject active REQUIRED policy constraints into tool descriptions so
+    // the LLM is aware of rules before making tool calls. V2 transforms must
+    // be synchronous and replayable: load the policy list ONCE in setup,
+    // capture it, and append inside the transform callback.
+    let policySuffix = '';
+    try {
+      const result = await $`node dist/bin/policy.js list --category code 2>/dev/null`
+        .quiet()
+        .nothrow();
+      if (result.exitCode === 0 && result.stdout) {
+        const policyText = result.stdout.toString().trim();
+        if (policyText && policyText.includes('REQUIRED')) {
+          policySuffix =
+            '\n\n[UAP Policy Constraints: ' +
+            policyText
+              .split('\n')
+              .filter((l: string) => l.includes('REQUIRED'))
+              .map((l: string) => l.trim())
+              .join('; ')
+              .slice(0, 300) +
+            ']';
+        }
+      }
+    } catch {
+      // Fail silently - policy injection is best-effort
     }
-    return String(h);
-  };
+    if (policySuffix) {
+      await ctx.tool.transform((editor) => {
+        for (const t of editor.list()) {
+          if (!t.description.includes('[UAP Policy Constraints:')) {
+            editor.update(t.id, (tool) => {
+              tool.description = tool.description + policySuffix;
+            });
+          }
+        }
+      });
+    }
 
-  // Write initial telemetry entry
-  await $`echo '{"event":"plugin_loaded","version":"1.0.0","ts":"'$(date -Iseconds)'"}' >> ${TELEMETRY_PATH}`
-    .quiet()
-    .nothrow();
-
-  return {
-    'tool.execute.before': async (input, output) => {
+    await ctx.tool.hook('execute.before', async (event) => {
       totalToolCalls++;
+
+      const args = (event.input || {}) as {
+        command?: string;
+        content?: string;
+        filePath?: string;
+      };
 
       // NOTE: a transparent "run `uap deliver` on the first edit" trigger was
       // trialed here and REMOVED. Benchmarking showed it net-harmful: it ran a
@@ -71,8 +168,8 @@ export const UapEnforce: Plugin = async ({ $ }) => {
 
       // --- Worktree enforcement (Layer 4) ---
       // Warn when file writes happen outside a worktree
-      if ((input.tool === 'write' || input.tool === 'edit') && output.args?.filePath) {
-        const filePath = String(output.args.filePath);
+      if ((event.tool === 'write' || event.tool === 'edit') && args.filePath) {
+        const filePath = String(args.filePath);
         const isInWorktree = filePath.includes('.worktrees/') || filePath.includes('/.worktrees/');
         if (!isInWorktree) {
           try {
@@ -93,7 +190,7 @@ export const UapEnforce: Plugin = async ({ $ }) => {
               await $`echo ${JSON.stringify(
                 JSON.stringify({
                   event: 'worktree_warning',
-                  tool: input.tool,
+                  tool: event.tool,
                   file: filePath.slice(0, 200),
                   reason: 'multi-agent file write outside worktree',
                   ts: new Date().toISOString(),
@@ -115,9 +212,9 @@ export const UapEnforce: Plugin = async ({ $ }) => {
       // Check all UAP policies before allowing tool execution.
       // Uses the uap-policy CLI for cross-runtime compatibility.
       try {
-        const argsJson = JSON.stringify(output.args || {}).slice(0, 1000);
+        const argsJson = JSON.stringify(args || {}).slice(0, 1000);
         const result =
-          await $`node dist/bin/policy.js check --operation ${input.tool} --args ${argsJson} 2>/dev/null`
+          await $`node dist/bin/policy.js check --operation ${event.tool} --args ${argsJson} 2>/dev/null`
             .quiet()
             .nothrow();
 
@@ -128,7 +225,7 @@ export const UapEnforce: Plugin = async ({ $ }) => {
             await $`echo ${JSON.stringify(
               JSON.stringify({
                 event: 'policy_blocked',
-                tool: input.tool,
+                tool: event.tool,
                 reason: policyOutput.slice(0, 200),
                 ts: new Date().toISOString(),
               })
@@ -136,12 +233,15 @@ export const UapEnforce: Plugin = async ({ $ }) => {
               .quiet()
               .nothrow();
 
-            if (input.tool === 'bash') {
-              output.args.command = [
-                `echo "[UAP-POLICY] BLOCKED: Operation '${input.tool}' violated a REQUIRED policy."`,
-                `echo "[UAP-POLICY] ${policyOutput.replace(/"/g, '\\"').slice(0, 200)}"`,
-                `echo "[UAP-POLICY] You must comply with the policy before retrying."`,
-              ].join(' && ');
+            if (event.tool === 'bash') {
+              event.input = {
+                ...args,
+                command: [
+                  `echo "[UAP-POLICY] BLOCKED: Operation '${event.tool}' violated a REQUIRED policy."`,
+                  `echo "[UAP-POLICY] ${policyOutput.replace(/"/g, '\\"').slice(0, 200)}"`,
+                  `echo "[UAP-POLICY] You must comply with the policy before retrying."`,
+                ].join(' && '),
+              };
               return;
             }
             // For non-bash tools, log but allow through (policy gate in MCP router
@@ -151,7 +251,7 @@ export const UapEnforce: Plugin = async ({ $ }) => {
       } catch {
         // Policy check failed (CLI not built, DB not initialized, etc.)
         // Fail open: allow the tool call but log the failure
-        await $`echo '{"event":"policy_check_error","tool":"${input.tool}","ts":"'$(date -Iseconds)'"}' >> ${TELEMETRY_PATH}`
+        await $`echo '{"event":"policy_check_error","tool":"${event.tool}","ts":"'$(date -Iseconds)'"}' >> ${TELEMETRY_PATH}`
           .quiet()
           .nothrow();
       }
@@ -161,26 +261,29 @@ export const UapEnforce: Plugin = async ({ $ }) => {
       // stripping tools after HARD_BUDGET requests. The plugin just logs warnings.
       // Do NOT replace commands here - that creates infinite loops when
       // tool_choice="required" forces another call.
-      if (totalToolCalls === SOFT_BUDGET && input.tool === 'bash') {
-        const original = output.args?.command || '';
-        output.args.command = [
-          'echo "[UAP-ENFORCE] WARNING: 30 tool calls used. WRAP UP your solution NOW."',
-          original,
-        ].join(' && ');
+      if (totalToolCalls === SOFT_BUDGET && event.tool === 'bash') {
+        const original = args?.command || '';
+        event.input = {
+          ...args,
+          command: [
+            'echo "[UAP-ENFORCE] WARNING: 30 tool calls used. WRAP UP your solution NOW."',
+            original,
+          ].join(' && '),
+        };
         return;
       }
 
       // --- Inject pending warning from write/read loop into this bash call ---
-      if (pendingWarning && input.tool === 'bash') {
-        const original = output.args?.command || '';
-        output.args.command = `echo "${pendingWarning}" && ${original}`;
+      if (pendingWarning && event.tool === 'bash') {
+        const original = args?.command || '';
+        event.input = { ...args, command: `echo "${pendingWarning}" && ${original}` };
         pendingWarning = null;
         // Don't return -- still check for loops on this call
       }
 
       // --- Fingerprint-based loop detection ---
-      const argsStr = JSON.stringify(output.args || {});
-      const fingerprint = `${input.tool}:${argsStr.length > 500 ? simpleHash(argsStr) : argsStr}`;
+      const argsStr = JSON.stringify(args || {});
+      const fingerprint = `${event.tool}:${argsStr.length > 500 ? simpleHash(argsStr) : argsStr}`;
 
       const matches = recentFingerprints.filter((f) => f === fingerprint);
       if (matches.length >= LOOP_THRESHOLD) {
@@ -192,16 +295,16 @@ export const UapEnforce: Plugin = async ({ $ }) => {
           recentFingerprints.length = 0;
           recentWriteHashes.length = 0;
           consecutiveLoopWarnings = 0;
-          await $`echo '{"event":"escape_hatch","tool":"${input.tool}","count":${loopCount}}' >> ${TELEMETRY_PATH}`
+          await $`echo '{"event":"escape_hatch","tool":"${event.tool}","count":${loopCount}}' >> ${TELEMETRY_PATH}`
             .quiet()
             .nothrow();
           // Let this call through completely clean
           return;
         }
 
-        if (input.tool === 'bash') {
+        if (event.tool === 'bash') {
           // PREPEND warning with SEARCH SUGGESTION, then run the ACTUAL command
-          const original = output.args?.command || '';
+          const original = args?.command || '';
           const warning = [
             `echo "[UAP-ENFORCE] LOOP WARNING (${loopCount}x): Same command repeated."`,
             `echo "[UAP-ENFORCE] Try a DIFFERENT approach. Hints:"`,
@@ -210,24 +313,24 @@ export const UapEnforce: Plugin = async ({ $ }) => {
             `echo "[UAP-ENFORCE]   - If output is wrong, read the test/verifier first"`,
             `echo "[UAP-ENFORCE]   - Check /app/tmp/web_research.txt for pre-fetched hints"`,
           ].join(' && ');
-          output.args.command = `${warning} && ${original}`;
+          event.input = { ...args, command: `${warning} && ${original}` };
           await $`echo '{"event":"loop_warn_bash","count":${loopCount}}' >> ${TELEMETRY_PATH}`
             .quiet()
             .nothrow();
-        } else if (input.tool === 'write' || input.tool === 'edit') {
+        } else if (event.tool === 'write' || event.tool === 'edit') {
           // LET THE WRITE THROUGH but queue a warning for the next bash call
           pendingWarning = `[UAP-ENFORCE] WRITE LOOP (${loopCount}x): You wrote identical content. Try a DIFFERENT approach. Read the test/verifier to understand expected format.`;
           await $`echo '{"event":"loop_warn_write","count":${loopCount}}' >> ${TELEMETRY_PATH}`
             .quiet()
             .nothrow();
-          // DO NOT modify output -- let the write execute
-        } else if (input.tool === 'read') {
+          // DO NOT modify input -- let the write execute
+        } else if (event.tool === 'read') {
           // LET THE READ THROUGH but queue a warning
           pendingWarning = `[UAP-ENFORCE] READ LOOP (${loopCount}x): You read the same file ${loopCount} times. Move on to the next step.`;
           await $`echo '{"event":"loop_warn_read","count":${loopCount}}' >> ${TELEMETRY_PATH}`
             .quiet()
             .nothrow();
-          // DO NOT modify output -- let the read execute
+          // DO NOT modify input -- let the read execute
         }
       } else {
         // Not a loop -- reset consecutive warning counter
@@ -235,8 +338,8 @@ export const UapEnforce: Plugin = async ({ $ }) => {
       }
 
       // --- Content-aware write dedup ---
-      if (input.tool === 'write' && output.args?.content) {
-        const contentHash = simpleHash(output.args.content);
+      if (event.tool === 'write' && args?.content) {
+        const contentHash = simpleHash(args.content);
         const contentMatches = recentWriteHashes.filter((h) => h === contentHash);
         if (contentMatches.length >= 3) {
           // Queue warning but LET THE WRITE THROUGH
@@ -256,41 +359,12 @@ export const UapEnforce: Plugin = async ({ $ }) => {
       if (recentFingerprints.length > MAX_HISTORY) {
         recentFingerprints.shift();
       }
-    },
+    });
 
-    // --- Policy-aware tool descriptions (Layer 3) ---
-    // Inject active REQUIRED policy constraints into tool descriptions
-    // so the LLM is aware of rules before making tool calls.
-    'tool.definition': async (_input, output) => {
-      try {
-        const result = await $`node dist/bin/policy.js list --category code 2>/dev/null`
-          .quiet()
-          .nothrow();
-
-        if (result.exitCode === 0 && result.stdout) {
-          const policyText = result.stdout.toString().trim();
-          if (policyText && policyText.includes('REQUIRED')) {
-            const suffix =
-              '\n\n[UAP Policy Constraints: ' +
-              policyText
-                .split('\n')
-                .filter((l: string) => l.includes('REQUIRED'))
-                .map((l: string) => l.trim())
-                .join('; ')
-                .slice(0, 300) +
-              ']';
-            if (output.description) {
-              output.description = output.description + suffix;
-            }
-          }
-        }
-      } catch {
-        // Fail silently - policy injection is best-effort
-      }
-    },
-
-    'tool.execute.after': async (input, _output) => {
-      const outputStr = typeof _output?.output === 'string' ? _output.output : '';
+    await ctx.tool.hook('execute.after', async (event) => {
+      const result = (event as { result?: { content?: unknown } }).result;
+      const outputStr =
+        event.status === 'completed' && typeof result?.content === 'string' ? result.content : '';
 
       // Output-based loop detection
       if (outputStr.length > 0) {
@@ -302,22 +376,29 @@ export const UapEnforce: Plugin = async ({ $ }) => {
       }
 
       // Telemetry
+      const args = (event.input || {}) as {
+        command?: string;
+        filePath?: string;
+        url?: string;
+      };
       const entry = {
         event: 'tool_call',
-        tool: input.tool,
+        tool: event.tool,
         n: totalToolCalls,
         ts: new Date().toISOString(),
         args_preview:
-          typeof input.args?.command === 'string'
-            ? input.args.command.slice(0, 200)
-            : typeof input.args?.filePath === 'string'
-              ? input.args.filePath
-              : typeof input.args?.url === 'string'
-                ? input.args.url.slice(0, 200)
+          typeof args?.command === 'string'
+            ? args.command.slice(0, 200)
+            : typeof args?.filePath === 'string'
+              ? args.filePath
+              : typeof args?.url === 'string'
+                ? args.url.slice(0, 200)
                 : '...',
       };
 
       await $`echo ${JSON.stringify(JSON.stringify(entry))} >> ${TELEMETRY_PATH}`.quiet().nothrow();
-    },
-  };
+    });
+  },
 };
+
+export default plugin;
