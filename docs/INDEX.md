@@ -3,7 +3,7 @@
 The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap`), the discipline layer that turns a talented but unreliable AI coding agent into a dependable member of your software delivery line. 454 TypeScript modules across 35 subsystems, 548 vitest suites (~6,450 tests) plus a ~1,490-test Python enforcer and proxy suite, 76 top-level CLI commands plus subcommands, 34 executable policy enforcers, 9 supported agent harnesses.
 
 > **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
-> [`documentation/`](../documentation/architecture.md): architecture, flows, permissions
+> [`system/`](system/architecture.md): architecture, flows, permissions
 > (including trust boundaries and enforcement gaps), variables/secrets, scheduled work, and
 > embedded automation. Start there for an honest map of what's enforced vs. documented.
 
@@ -76,6 +76,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 |---|---|
 | [Overview](architecture/OVERVIEW.md) | System architecture as the delivery-line floor plan; subsystems, tool-call flow |
 | [Protocol](architecture/PROTOCOL.md) | The harness↔UAP contract, hook lifecycle, decision loop |
+| [System reference (code-verified)](system/architecture.md) | The reverse-engineered, implementation-accurate set: [architecture](system/architecture.md), [flows](system/flows.md), [permissions & trust boundaries](system/permissions.md), [variables/secrets](system/variables.md), [tests](system/tests.md), [automation](system/automation.md), [cron](system/cron.md) — the honest map of what's enforced vs. documented |
 | [Reactor (auto-apply)](design/UAP_REACTOR.md) | Dynamic experts/skills/patterns injected per prompt across harnesses; the assist vs enforce model, per-harness wiring |
 | [Self-Harness](design/SELF_HARNESS.md) | Self-improving harness (shipped as `uap self-harness`): autonomous mine→propose→validate loop over a bounded Mod DSL; cross-model transfer, online mining |
 | [LLM Self-Tuning (analysis)](design/LLM_SELF_TUNING_ANALYSIS.md) | The design behind `uap tune`: quality signal, LLM-guided + Gaussian-process flag search, closed-loop validation, model profiles, real-time adaptation |

@@ -109,6 +109,13 @@ read -r MODEL_ALIAS CTX_SESSION CTX_POOL RAILS <<< "$GEOMETRY"
 [[ "$MODEL_ALIAS" =~ ^[A-Za-z0-9._/-]+$ ]] \
   || die "profile .model is not a plain model id: $MODEL_ALIAS"
 
+# The gemma family's own serving geometry (the llama.cpp arm): the fit-probed
+# window is 49152 and llama.cpp counts prompt AND output inside that window,
+# so the Droid-side caps follow the BYOK rule — window minus output. The
+# 16k session margin matches what CTX_SESSION keeps below the qwen pool.
+GEMMA_CTX=32768
+GEMMA_OUT=16384
+
 backup() { # <file>
   [ -f "$1" ] || { note "absent, will create: $1"; return 0; }
   if [ "$DRY_RUN" = "1" ]; then note "DRY: backup $1"; return 0; fi
@@ -154,13 +161,18 @@ sync_droid_models() { # <file> <create: 0|1>
     python3 - "$f" "$PROXY_URL" "$DIRECT_URL" "$MODEL_ALIAS" \
               "$DROID_ANTHROPIC_BASE_MODEL" "$DROID_CHAT_BASE_MODEL" \
               "$CTX_SESSION" "$CTX_POOL" "$MAX_OUTPUT" "$create" \
-              "$DROID_LOCAL_27B_PIN" "$DROID_LOCAL_27B_DISPLAY" <<'PY' || { note "WARN: $f could not be synced"; return 0; }
+              "$DROID_LOCAL_27B_PIN" "$DROID_LOCAL_27B_DISPLAY" \
+              "$DROID_LOCAL_GEMMA_PIN" "$DROID_LOCAL_GEMMA_DISPLAY" \
+              "$DROID_GEMMA_BASE_MODEL" "$GEMMA_CTX" "$GEMMA_OUT" \
+    <<'PY' || { note "WARN: $f could not be synced"; return 0; }
 import json, os, re, shutil, sys, tempfile
 
-path, proxy, direct, alias, base_model, chat_base, ctx_s, ctx_p, out, create, pin27, name27 = sys.argv[1:13]
+path, proxy, direct, alias, base_model, chat_base, ctx_s, ctx_p, out, create, \
+    pin27, name27, pin_g, name_g, gemma_base, ctx_g, out_g = sys.argv[1:18]
 token = os.environ.get("UAP_SYNC_TOKEN", "not-needed")
 dry = os.environ.get("DRY_RUN", "0") == "1"
 ctx_s, ctx_p, out = int(ctx_s), int(ctx_p), int(out)
+ctx_g, out_g = int(ctx_g), int(out_g)
 
 # Retired local ids: every arm this box has served since 2026-09. A client
 # still pinned to one is the exact drift this sync exists to converge. They
@@ -187,10 +199,20 @@ FLEET = {a for _fam in (_reg.get("models") or {}).values()
 # the entry; the marker rule below still protects any existing one).
 fam27 = (_reg.get("models") or {}).get("qwen3.8-27b") or {}
 ADV27 = [a for a in (fam27.get("advertises") or []) if isinstance(a, str)]
+# The THIRD local family the pickers list: the registry's gemma-4-31b
+# family (the llama.cpp QAT+MTP arm). Same fail-closed rule — the pin must
+# be an id that family advertises, else the listing is silently not added.
+famg = (_reg.get("models") or {}).get("gemma-4-31b") or {}
+ADVG = [a for a in (famg.get("advertises") or []) if isinstance(a, str)]
 # The marker id the sync stamps on its 27B family listing — the stake that
 # distinguishes a DELIBERATE listing (never converged) from a stale pin
 # (always converged), the same job the canon regex does for the alias entry.
 marker27 = re.compile(r"^custom:Qwen[\d.]+-27B-UAP-local-\d+$")
+# The gemma family's marker — same job as the 27B stake: family-shaped so an
+# era change of the pin (a future config id) still exempts the DELIBERATE
+# listing this sync wrote, while a plain-id gemma pin (no marker) is the
+# same drift class as any stale fleet pin and converges onto the alias.
+markerg = re.compile(r"^custom:gemma-4[\w.-]*-UAP-local-\d+$")
 
 def spell(camel):
     if camel:
@@ -257,6 +279,19 @@ for key in keys:
             if camel and not m.get("baseModelId"):
                 m["baseModelId"] = chat_base
                 changed.append(f"{label} [baseModelId={chat_base}]")
+            continue
+        # Deliberate gemma family listing: same maintain-never-migrate rule
+        # as the 27B marker. baseModelId is stamped only when the gemma base
+        # variable is non-empty — the Factory catalog carries no Gemma
+        # built-in, so the entry ships without one (Droid's unrecognized-model
+        # path applies) and stamping a wrong-family built-in would pin
+        # another family's reasoning conventions onto the arm.
+        if isinstance(mid, str) and markerg.match(mid):
+            if m.get(AK) != token:
+                setf(m, AK, token, label, "apiKey", changed)
+            if camel and gemma_base and not m.get("baseModelId"):
+                m["baseModelId"] = gemma_base
+                changed.append(f"{label} [baseModelId={gemma_base}]")
             continue
         base = m.get(BK)
         base = base if isinstance(base, str) else ""
@@ -363,6 +398,11 @@ for key in keys:
                          if isinstance(models[i].get("id"), str) and marker27.match(models[i]["id"])),
                         None)
         if keep is None:
+            # A gemma-marker member gets the same stake preference.
+            keep = next((i for i in idxs
+                         if isinstance(models[i].get("id"), str) and markerg.match(models[i]["id"])),
+                        None)
+        if keep is None:
             keep = idxs[-1]
         for i in idxs:
             if i != keep:
@@ -421,6 +461,36 @@ for key in keys:
         }
         models.append(entry27)
         changed.append(f"{entry27['id']} [27B family entry added]")
+
+    # The gemma family listing rides alongside both: the registry's
+    # gemma-4-31b family (the llama.cpp QAT+MTP arm). Same chat route and
+    # token as the other families, but the arm's OWN geometry: noImageSupport
+    # is true (the arm has no mmproj — the qwen listings carry vision), the
+    # caps are the arm's 48k window minus output (llama.cpp counts both in
+    # ctx), and baseModelId is written only when a Gemma built-in exists in
+    # the Factory catalog (it does not — an honest omission beats a
+    # wrong-family mapping). Fail-closed on the registry like the 27B pin.
+    if (camel and create == "1" and pin_g in ADVG and not any(
+        isinstance(m, dict) and m.get("model") == pin_g for m in models
+    )):
+        nums_g = []
+        for m in models:
+            if isinstance(m, dict) and isinstance(m.get("id"), str):
+                mt = re.search(r"(\d+)$", m["id"])
+                if mt:
+                    nums_g.append(int(mt.group(1)))
+        ig = (max(nums_g) + 1) if nums_g else 0
+        entry_g = {
+            "model": pin_g, "id": f"custom:{pin_g}-UAP-local-{ig}", "index": ig,
+            "baseUrl": f"{proxy}/v1", "apiKey": token,
+            "displayName": name_g,
+            "noImageSupport": True, "provider": "generic-chat-completion-api",
+            "maxOutputTokens": out_g, "maxContextLimit": ctx_g,
+        }
+        if gemma_base:
+            entry_g["baseModelId"] = gemma_base
+        models.append(entry_g)
+        changed.append(f"{entry_g['id']} [gemma family entry added]")
 
 # Dead favorites: a modelFavorites pin on a UAP-local custom id that no
 # longer exists (qwen35-era ids whose entries the migration above converged

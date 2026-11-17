@@ -93,6 +93,30 @@ _UAP_DROID_SYNC_CONTRACTS_LOADED=1
 : "${DROID_LOCAL_27B_PIN:=Qwen3.8-27B}"
 : "${DROID_LOCAL_27B_DISPLAY:=Qwen3.8 27B (UAP local)}"
 
+# DROID_LOCAL_GEMMA_PIN / DROID_LOCAL_GEMMA_DISPLAY — the THIRD local family
+# the Droid pickers list alongside the live Flash-Next alias and the 27B
+# family: the registry's gemma-4-31b family (the llama.cpp QAT+MTP arm —
+# same :4000/:8080 endpoints, the engine serves whichever arm is switched
+# live, so the entry is a FAMILY LISTING, not a route switch; when placement
+# turns on, the pin is registry-matchable). Same rules as the 27B pin: the
+# pin must be an id that family advertises — checked against
+# config/model-registry.json at sync time, fail-closed to skip-adding. A
+# camelCase entry carrying the gemma marker id
+# (custom:gemma-4…-UAP-local-N) is a DELIBERATE listing: the convergence
+# loop never repoints or renames it.
+: "${DROID_LOCAL_GEMMA_PIN:=gemma-4-31b-qat-ud-q4_k-xl-mtp}"
+: "${DROID_LOCAL_GEMMA_DISPLAY:=Gemma 4 31B (UAP local)}"
+
+# DROID_GEMMA_BASE_MODEL — the Factory BUILT-IN written into baseModelId of
+# the gemma listing, "" by default: the Factory catalog carries NO Gemma
+# built-in (its Google section is Gemini-only), so the honest entry ships
+# WITHOUT baseModelId — Droid's unrecognized-model path applies (per-model
+# defaultReasoningEffort) instead of a wrong-family mapping; stamping a
+# Gemini built-in here would pin Gemini reasoning conventions onto a Gemma
+# arm. Empty means the entry and its marker-maintain branch both omit the
+# field; set it only if the catalog ever gains a Gemma family.
+: "${DROID_GEMMA_BASE_MODEL:=}"
+
 # DROID_SYNC_LOCK — lock file serialising concurrent Droid config writes
 # (session-start hook + manual installer run + a second Droid window).
 # Without it two writers read-modify-write the same JSON and one set of
@@ -123,7 +147,8 @@ fi
 #   Reads from the caller's scope: MODEL_ALIAS, PROXY_URL, DIRECT_URL,
 #   CTX_SESSION, CTX_POOL, MAX_OUTPUT, DROID_ANTHROPIC_BASE_MODEL,
 #   DROID_CHAT_BASE_MODEL, DROID_LOCAL_27B_PIN, DROID_LOCAL_27B_DISPLAY,
-#   PROXY_TOKEN (via UAP_SYNC_TOKEN env), DRY_RUN.
+#   DROID_LOCAL_GEMMA_PIN, DROID_LOCAL_GEMMA_DISPLAY, DROID_GEMMA_BASE_MODEL,
+#   GEMMA_CTX, GEMMA_OUT, PROXY_TOKEN (via UAP_SYNC_TOKEN env), DRY_RUN.
 #   Migration rules (idempotent; no change => file left byte-identical):
 #     * entries whose model is a RETIRED local id — already the live alias,
 #       a FLEET wire id (any registry advertises entry) pointed at this
@@ -132,9 +157,11 @@ fi
 #       the compat names collide with real cloud ids, so a cloud-router
 #       entry carrying one survives untouched);
 #     * a camelCase entry whose id carries the 27B marker
-#       (custom:Qwen…-27B-UAP-local-N) is a DELIBERATE family listing:
-#       it is skipped by the convergence loop (only baseModelId is
-#       stamped when absent) and is preferred over non-marker members
+#       (custom:Qwen…-27B-UAP-local-N) or the gemma marker
+#       (custom:gemma-4…-UAP-local-N) is a DELIBERATE family listing:
+#       it is skipped by the convergence loop (only apiKey is refreshed,
+#       and baseModelId is stamped when absent AND that family's base-model
+#       variable is non-empty) and is preferred over non-marker members
 #       in its dedupe group;
 #     * route by existing shape: baseUrl with :8080 -> direct strata route
 #       (pool-sized); :4000 WITHOUT /v1 -> Anthropic Messages root (proxy
@@ -148,11 +175,16 @@ fi
 #     * cloud models (anything else, including the :8317 router entries) are
 #       deliberate user choices and are never repointed;
 #     * a settings.json with NO local entry after migration gains the
-#       canonical proxy entry (add-if-missing), and gains the 27B family
+#       canonical proxy entry (add-if-missing), gains the 27B family
 #       entry (model=DROID_LOCAL_27B_PIN on the proxy chat route, marker
 #       id, baseModelId) when the pin is an id the registry's qwen3.8-27b
-#       family advertises — the two-family listing: Flash-Next live alias
-#       + the 27B family, side by side in every picker;
+#       family advertises, and gains the gemma family entry
+#       (model=DROID_LOCAL_GEMMA_PIN on the proxy chat route, marker id,
+#       noImageSupport=true — the arm has no mmproj — caps GEMMA_CTX/
+#       GEMMA_OUT, baseModelId only when DROID_GEMMA_BASE_MODEL is set)
+#       when the pin is an id the registry's gemma-4-31b family
+#       advertises — the three-family listing: Flash-Next live alias +
+#       the 27B family + the gemma family, side by side in every picker;
 #     * the 192.168.1.165:8317 split-brain host is fixed everywhere;
 #     * writes are atomic (tmp file in the same directory + os.replace),
 #       under the flock, with backups taken by the caller's backup().
