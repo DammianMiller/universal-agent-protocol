@@ -3090,11 +3090,29 @@ def _is_tool_choice_required_unsupported(status_code: int, error_text: str) -> b
     caught without a capability map. Disjoint from the llama.cpp shapes:
     a grammar failure says 'failed to parse grammar', never 'not supported'
     + 'tool_choice'.
+
+    The swift-mk (qwen-warp) family refuses the forced turn one step
+    removed: its vLLM-derived API layer maps tool_choice='required' onto an
+    internal structured_outputs sampling flag, which its own mk-core
+    allowlist then rejects — a 400 that never says 'tool_choice':
+      swift-mk engine does not support structured_outputs (supported
+      sampling: temperature, ...) (parameter=structured_outputs, value=set)
+    Observed live 2026-11-17 on the :8080 warp arm: 13 of 16 state-machine
+    forced-'required' turns 400'd this way and each surfaced to the client
+    as a retryable-looking 529 because this latch never fired (the text has
+    neither 'tool_choice' nor the exact phrase 'not supported' — only
+    'does not support structured_outputs'). An unsupported
+    structured_outputs parameter on a 400 is the same 'this engine cannot
+    take forced tool use' signal, so it latches here too.
     """
     if status_code != 400:
         return False
     text = (error_text or "").lower()
-    return "tool_choice" in text and "not supported" in text
+    if "tool_choice" in text and "not supported" in text:
+        return True
+    return "structured_outputs" in text and (
+        "not support" in text or "unsupported" in text
+    )
 
 
 def _maybe_relax_unsupported_tool_choice(

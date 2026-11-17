@@ -35,6 +35,16 @@ proxy = _load()
 
 YASAKANI_400 = 'tool_choice "required" is not supported; use "auto" or "none"'
 PEG_500 = "Failed to parse input at pos 42: <|tool_call>call:{bad"
+# Live 2026-11-17, qwen-warp (swift-mk) arm on :8080: the engine's vLLM-derived
+# layer maps forced tool_choice='required' onto an internal structured_outputs
+# flag that its own mk-core allowlist then rejects — with no 'tool_choice' in
+# the text. 13 of 16 forced turns failed this way, each surfacing to the client
+# as a retryable-looking 529 because the relax latch never fired.
+SWIFTMK_400 = (
+    "swift-mk engine does not support structured_outputs (supported sampling: "
+    "temperature, top_p, top_k <= 64, min_p, presence_penalty) "
+    "(parameter=structured_outputs, value=set)"
+)
 
 
 class ToolChoiceRequiredCapabilityTests(unittest.TestCase):
@@ -61,6 +71,22 @@ class ToolChoiceRequiredCapabilityTests(unittest.TestCase):
             )
         )
 
+    def test_detector_matches_the_swiftmk_structured_outputs_400_shape(self):
+        # The refusal arrives one step removed: no 'tool_choice' anywhere in
+        # the text, only the engine rejecting the structured_outputs flag its
+        # own layer derived FROM the forced choice.
+        self.assertTrue(
+            proxy._is_tool_choice_required_unsupported(400, SWIFTMK_400)
+        )
+
+    def test_detector_matches_a_paraphrased_structured_outputs_refusal(self):
+        # Text-keyed, not literal: other wordings of the same refusal count.
+        self.assertTrue(
+            proxy._is_tool_choice_required_unsupported(
+                400, "unsupported parameter: 'structured_outputs' for this engine"
+            )
+        )
+
     def test_detector_is_case_insensitive_and_text_keyed(self):
         self.assertTrue(
             proxy._is_tool_choice_required_unsupported(
@@ -81,6 +107,10 @@ class ToolChoiceRequiredCapabilityTests(unittest.TestCase):
             (200, YASAKANI_400),
             (400, ""),
             (400, None),
+            # structured_outputs MENTIONED without being refused is not a
+            # capability signal (e.g. an informational notice).
+            (400, "structured_outputs enabled for guided decoding"),
+            (500, SWIFTMK_400),  # right text, wrong code
         ):
             self.assertFalse(
                 proxy._is_tool_choice_required_unsupported(status, text),
@@ -97,6 +127,31 @@ class ToolChoiceRequiredCapabilityTests(unittest.TestCase):
         self.assertTrue(retry)
         self.assertEqual(body["tool_choice"], "auto")
         self.assertFalse(proxy.TOOL_CHOICE_REQUIRED_SUPPORTED)  # latched off
+
+    def test_relax_latches_off_on_the_swiftmk_structured_outputs_400(self):
+        # The live warp-arm sequence: forced turn -> engine 400 on
+        # structured_outputs -> relax this turn to 'auto', latch the
+        # capability off so every later force degrades BEFORE it is sent.
+        body = {"model": "m", "tools": [{}], "tool_choice": "required"}
+        retry = proxy._maybe_relax_unsupported_tool_choice(
+            body, 400, SWIFTMK_400, "guarded non-stream"
+        )
+        self.assertTrue(retry)
+        self.assertEqual(body["tool_choice"], "auto")
+        self.assertFalse(proxy.TOOL_CHOICE_REQUIRED_SUPPORTED)  # latched off
+
+    def test_relax_ignores_structured_outputs_when_the_choice_is_not_forced(self):
+        # A structured_outputs failure on an already-auto body is NOT a
+        # forced-tool-use capability signal (e.g. a client-sent param the
+        # engine rejects): no relax, no latch — the error surfaces as-is.
+        body = {"tools": [{}], "tool_choice": "auto"}
+        self.assertFalse(
+            proxy._maybe_relax_unsupported_tool_choice(
+                body, 400, SWIFTMK_400, "stream"
+            )
+        )
+        self.assertEqual(body["tool_choice"], "auto")
+        self.assertTrue(proxy.TOOL_CHOICE_REQUIRED_SUPPORTED)  # untouched
 
     def test_relax_also_handles_the_object_choice_shapes(self):
         # {"type": "any"} (Anthropic any) and a pinned function both relax.
