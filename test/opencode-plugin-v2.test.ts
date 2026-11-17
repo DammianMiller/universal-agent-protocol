@@ -135,10 +135,17 @@ describe('opencode V2 plugin definition contract', () => {
     expect(init).not.toContain('@opencode-ai/plugin');
   });
 
-  it('.opencode/package.json pins the SDK that matches the installed opencode', () => {
-    const pkg = JSON.parse(
-      readFileSync(join(PLUGIN_DIR, '..', 'package.json'), 'utf-8')
-    ) as { dependencies: Record<string, string> };
+  it('.opencode/package.json pins the current SDK (when present: untracked local state)', async () => {
+    // .opencode/package.json is DELIBERATELY untracked (.opencode/.gitignore
+    // lists it): each machine's `uap hooks install`/`uap init` writes the
+    // pin from the tracked generator seams (asserted above). CI checkouts
+    // have no such file — the generator tests carry the contract there.
+    const { existsSync } = await import('fs');
+    const pkgPath = join(PLUGIN_DIR, '..', 'package.json');
+    if (!existsSync(pkgPath)) return;
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as {
+      dependencies: Record<string, string>;
+    };
     expect(pkg.dependencies['@opencode/plugin']).toBe('2.3.0');
     expect(pkg.dependencies['@opencode-ai/plugin']).toBeUndefined();
   });
