@@ -14,7 +14,12 @@
     "qwen38-gsq-rco-27b",
     "qwen3.8-flash-next-iq3_s",
     "swift-1.5-iq3_s",
-    "Qwen3.8-27B-EXL3-3.5bpw"
+    "Qwen3.8-27B-EXL3-3.5bpw",
+    "qwen3.8-flash-next-unsloth-ud-iq4_xs-v31",
+    "qwen3.8-flash-next-speedy-ud-iq4_xs-v31",
+    "qwen3.8-flash-next-unsloth-ud-q3_k_xl",
+    "abliterated-iq2_xs",
+    "abliterated-iq3_s"
   ],
   "models": {
     "qwen3.6-27b": {
@@ -54,7 +59,7 @@
       "engine": "strata",
       "unit": "uap-strata-server",
       "service": "strata-server",
-      "launch": "/home/cogtek/dev/strata/run-unsloth-ud-iq4_xs-v31.sh",
+      "launch": "/home/cogtek/dev/strata/run-iq3_s.sh",
       "endpoint": "http://127.0.0.1:8080",
       "task_affinity": [
         "code",
@@ -66,17 +71,65 @@
         ]
       },
       "configs": {
+        "strata-iq3_s": {
+          "status": "unmeasured",
+          "engine": "strata",
+          "unit": "uap-strata-server",
+          "note": "The :8080 default arm since 2026-11-17 (operator-directed switch from the unsloth v31 default, with same-day removal of the other flash-next quants) - the PRISTINE base-model quant: ISTA-DASLab GSQ-RCO IQ3_S of Qwen3.8-Flash-Next, 2 shards, both sha256-verified by setup.py against the Hub LFS oids at the pinned rev (shard 2 is the 28.8 GB tier-shared PLE n-gram table, byte-identical across the GSQ-RCO tiers, hardlinked at install from the since-removed abliterated-IQ3_S copy - zero re-download). Install (as run): setup.py --setup --family qwen --model IQ3_S --yes --no-start --data-dir /home/cogtek/models/strata-data --context 131072 --vision cpu --kv int8 --vram-reserve-mib 3072 --drafter mtp; pack strata-data/packs/iq3_s (tools/iq_pack.py: 1079 tensors, 302 native, arena 1.43 GiB), mtp/rt draft head + data/expert-profile.bin reused. Config strata-iq3_s.json carries the fleet IQ3_S posture with two hand corrections to setup's choices per this box's OOM doctrine (the 11-11 evening log in uap-strata-server.service): --resident-budget-gib 40 RESTORED (setup wanted all experts in RAM - never full-pin on this co-tenant box) and --ple-io ram REMOVED (the 29 GB table stays SSD-backed, page-cache reclaimable). Spec 12 / spec-min-p 0.70 / mtp_max 8 MTP per live /metrics 2026-11-17; pcie-frac 0.35, adapt 1/80/0.97, env STRATA_PF_FUSED=1, drafting mtp pinned, int8 KV resident 32768, mmproj vision, 131k pool. Advertises qwen3.8-flash-next-gsq-rco-iq3_s at /v1/models - deliberately NOT the historical qwen3.8-flash-next-iq3_s, which stays in retired_local_aliases. Unit uap-strata-server.service (OOMPolicy=continue doctrine). Switch: ~/.config/uap/model-switch.sh strata (revert: any arm; the removed sets re-fetch via their registry pins). Run `uap models measure` against it before placement loads it (fail-closed).",
+          "files": [
+            {
+              "path": "/home/cogtek/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+              "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+              "rev": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+              "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+              "bytes": 54817524224,
+              "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+              "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+              "rev": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+              "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+              "bytes": 28800138432,
+              "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+            }
+          ]
+        },
+        "speedy-iq3_s": {
+          "status": "unmeasured",
+          "engine": "speedy",
+          "unit": "uap-speedy-server",
+          "note": "The flash-next ENGINE A/B arm on the IQ3_S set - switched 2026-11-17 in the same operator round that made the strata IQ3_S arm the default (the unsloth v31 set it served since 2026-11-15 was removed the same day): DevDock-AI/Speedy 0.4.7 (master 36e827fe, a measured/tuned fork of Strata v0.2.7.1 for Flash-Next on RTX 30-class cards; built at ~/dev/speedy/build/strata, CUDA 13.4 from ~/cuda-13.4 + host gcc-13, CMAKE_CUDA_ARCHITECTURES=86 native sm_86 SASS) serving the SAME ISTA-DASLab GSQ-RCO IQ3_S 2-shard set as the strata-iq3_s default - pack packs/iq3_s, mtp/rt and the GGUF shards below are all REUSED (zero new weight disk), so the ENGINE is the only variable between the arms. Config speedy-iq3_s.json = the fork's v31 production preset flag-for-flag (conversation-cache 8192 MiB, adapt-async 1 / adapt-swaps 80, pool-affinity measure, draft_vocab en, reasoning medium / 16k budget, the fork's tuned env block) with the IQ3_S deltas: pack/native/--ple-gguf (shard 2) + tokenizer paths repointed, spec 8 / spec-min-p 0.70 (drafting parity with the strata IQ3_S arm; the fork reports spec window 8, mtp_max 8 per live /metrics 2026-11-17), env STRATA_PF_FUSED=1 added, drafting mtp pinned, int8 KV resident 32768, vram-reserve 3072, --resident-budget-gib 40 (never full-pin - the 10-28 OOM doctrine). Advertises qwen3.8-flash-next-speedy-gsq-rco-iq3_s at /v1/models. Unit uap-speedy-server.service (inference-panel id speedy; OOMPolicy=continue strata-arm doctrine). Switch: ~/.config/uap/model-switch.sh speedy (revert: strata or any arm). The fork's upstream measured gains are NOT inherited - unmeasured on this 3090 until `uap models measure` records it (fail-closed).",
+          "files": [
+            {
+              "path": "/home/cogtek/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+              "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+              "rev": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+              "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+              "bytes": 54817524224,
+              "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"
+            },
+            {
+              "path": "/home/cogtek/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+              "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+              "rev": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+              "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+              "bytes": 28800138432,
+              "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+            }
+          ]
+        },
         "strata-swift-iq3_s": {
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-swift-server",
-          "note": "Swift 1.5 (UkisAI reasoning-efficient Flash-Next post-train) GSQ-RCO IQ3_S on the strata engine; A/B trial vs strata-iq3_s since 2026-10-17 with identical tuning (spec 8/0.70, vram-reserve 3072, int8 KV resident 32768, 131k). Weights: ukisai Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, sha256-verified, PLE table in shard 1 (setup-detected); pack strata-data/packs/swift-iq3_s; config strata-swift-iq3_s.json behind uap-strata-server.service (revert: point the unit --config back at strata-iq3_s.json, daemon-reload, restart). Run `uap models measure` to record this machine's footprint before it can load (fail-closed). Trial evidence: /home/cogtek/dev/strata/bench/results/2026-10-17-swift-iq3s-trial/."
+          "note": "Swift 1.5 (UkisAI reasoning-efficient Flash-Next post-train) GSQ-RCO IQ3_S on the strata engine; A/B trial vs strata-iq3_s since 2026-10-17 with identical tuning (spec 8/0.70, vram-reserve 3072, int8 KV resident 32768, 131k). Weights: ukisai Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, sha256-verified, PLE table in shard 1 (setup-detected); pack strata-data/packs/swift-iq3_s; config strata-swift-iq3_s.json behind uap-strata-server.service (revert: point the unit --config back at strata-iq3_s.json, daemon-reload, restart). Run `uap models measure` to record this machine's footprint before it can load (fail-closed). Trial evidence: /home/cogtek/dev/strata/bench/results/2026-10-17-swift-iq3s-trial/. WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default): the local shards + pack are deleted; this pinned manifest is the re-fetch path (`uap models ensure` restores them before a switch to this arm)."
         },
         "strata-abliterated-iq2_xs": {
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-abliterated-server",
-          "note": "The :8080 default arm 2026-10-28 -> 2026-11-11, then AGAIN since 2026-11-13 (the operator switched the fleet back from the v31 default; DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; config strata-abliterated-iq2_xs.json, unit uap-strata-abliterated-server.service, spec 12 / spec-min-p 0.7 / mtp_max 8 MTP per live /metrics 2026-11-13; switch away: ~/.config/uap/model-switch.sh strata|strata-swift). Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28).",
+          "note": "The :8080 default arm 2026-10-28 -> 2026-11-11, then AGAIN since 2026-11-13 (the operator switched the fleet back from the v31 default; DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; config strata-abliterated-iq2_xs.json, unit uap-strata-abliterated-server.service, spec 12 / spec-min-p 0.7 / mtp_max 8 MTP per live /metrics 2026-11-13; switch away: ~/.config/uap/model-switch.sh strata|strata-swift). Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28). WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default): the local shards + pack are deleted; this pinned manifest is the re-fetch path (`uap models ensure` restores them before a switch to this arm).",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
@@ -98,7 +151,7 @@
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-abliterated-iq3_s-server",
-          "note": "The DavidAU abliterated Flash-Next IQ3_S tier — the :8080 default 2026-10-23 -> 2026-10-28 (adopted over the Swift 1.5 arm on the same-day A/B), moved to the IQ2_XS tier in the 2026-10-28 kernel-OOM fix (full-pin 53.7 GB anon RSS; the low-RAM --resident-budget-gib 20 posture ships in strata-abliterated-iq3_s.json, and engine 0.1.59.1 supports the flag), re-staged 2026-11-14 as a switchable panel arm. Config strata-abliterated-iq3_s.json, unit uap-strata-abliterated-iq3_s-server.service, pack strata-data/packs/abliterated-iq3_s; advertises abliterated-iq3_s at /v1/models; switch: ~/.config/uap/model-switch.sh strata-abliterated-iq3_s (revert: strata | strata-abliterated). Run `uap models measure` against it before placement loads it (fail-closed). Raw GGUF shards declared here: the pack is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the release's tiers (the tier-shared digest also pinned in strata-abliterated-iq2_xs). Provenance is pinned (repo + rev, from feature/386): bytes + sha256 are the HF LFS oids, verified against the local pair at the 2026-10-23 adoption and re-verified against the repo digests 2026-11-14, so `uap models ensure` can re-fetch and verify from this pin.",
+          "note": "The DavidAU abliterated Flash-Next IQ3_S tier — the :8080 default 2026-10-23 -> 2026-10-28 (adopted over the Swift 1.5 arm on the same-day A/B), moved to the IQ2_XS tier in the 2026-10-28 kernel-OOM fix (full-pin 53.7 GB anon RSS; the low-RAM --resident-budget-gib 20 posture ships in strata-abliterated-iq3_s.json, and engine 0.1.59.1 supports the flag), re-staged 2026-11-14 as a switchable panel arm. Config strata-abliterated-iq3_s.json, unit uap-strata-abliterated-iq3_s-server.service, pack strata-data/packs/abliterated-iq3_s; advertises abliterated-iq3_s at /v1/models; switch: ~/.config/uap/model-switch.sh strata-abliterated-iq3_s (revert: strata | strata-abliterated). Run `uap models measure` against it before placement loads it (fail-closed). Raw GGUF shards declared here: the pack is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the release's tiers (the tier-shared digest also pinned in strata-abliterated-iq2_xs). Provenance is pinned (repo + rev, from feature/386): bytes + sha256 are the HF LFS oids, verified against the local pair at the 2026-10-23 adoption and re-verified against the repo digests 2026-11-14, so `uap models ensure` can re-fetch and verify from this pin. WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default): the local shards + pack are deleted; this pinned manifest is the re-fetch path.",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
@@ -122,7 +175,7 @@
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-unsloth-q3_k_xl-server",
-          "note": "The unsloth IQ3_S-CLASS arm — user-directed 2026-11-14: unsloth/Qwen3.8-Flash-Next-GGUF ships NO IQ3_S tier; its 3-bit ladder is UD-IQ3_XXS (3.0 bpw, 83.6 GB) and UD-Q3_K_XL (3.5 bpw, 89.5 GB), and UD-Q3_K_XL is the same bpw class as the fleet's IQ3_S arms — the tier staged here. Set: the 4-shard UD-Q3_K_XL release at rev 39e6e4a8 (Better UD 3.1 quants); shards 1-3 downloaded (10.9 MB + 49.7 GB + 10.9 GB, sha256 = the HF LFS oids); shard 4 is NOT the set's native 28.8 GB IQ4_NL engram but the Q8_0 engram (engram/Qwen3.8-Flash-Next-engram-Q8_0.gguf_file, 54.4 GB, upstream oid e3d76a27...) restamped split.no=3/count=4 via unsloth's set_split.py and HARDLINKED from the v31 set's shard 4 — zero extra disk, the measured-best table (+19-22% long-prompt decode vs IQ4_NL, the 11-13 swap round); the sha256 below is the LOCAL post-restamp hash (what the .done marker verifies), same as the v31 set's shard-4 marker. Config strata-unsloth-ud-q3_k_xl.json — the v31 posture flag-for-flag (spec 4 window auto-negotiates 12/4, spec-min-p 0.5, --mtp mtp/rt, int8 KV resident 32768, 131k ctx, --vision shared mmproj, vram-reserve 3072) with --resident-budget-gib 40 (the Q3_K_XL expert set is smaller than v31's — more headroom; never full-pin, see the 10-28 OOM doctrine in uap-strata-abliterated-server.service). Pack packs/unsloth-ud-q3_k_xl (tools/iq_pack.py, from the set). Unit uap-strata-unsloth-q3_k_xl-server.service (OOMPolicy=continue doctrine), advertises qwen3.8-flash-next-unsloth-ud-q3_k_xl at /v1/models. Switch: model-switch.sh strata-unsloth-q3_k_xl (revert: strata or any arm). Run `uap models measure` against it before placement loads it (fail-closed).",
+          "note": "The unsloth IQ3_S-CLASS arm — user-directed 2026-11-14: unsloth/Qwen3.8-Flash-Next-GGUF ships NO IQ3_S tier; its 3-bit ladder is UD-IQ3_XXS (3.0 bpw, 83.6 GB) and UD-Q3_K_XL (3.5 bpw, 89.5 GB), and UD-Q3_K_XL is the same bpw class as the fleet's IQ3_S arms — the tier staged here. Set: the 4-shard UD-Q3_K_XL release at rev 39e6e4a8 (Better UD 3.1 quants); shards 1-3 downloaded (10.9 MB + 49.7 GB + 10.9 GB, sha256 = the HF LFS oids); shard 4 is NOT the set's native 28.8 GB IQ4_NL engram but the Q8_0 engram (engram/Qwen3.8-Flash-Next-engram-Q8_0.gguf_file, 54.4 GB, upstream oid e3d76a27...) restamped split.no=3/count=4 via unsloth's set_split.py and HARDLINKED from the v31 set's shard 4 — zero extra disk, the measured-best table (+19-22% long-prompt decode vs IQ4_NL, the 11-13 swap round); the sha256 below is the LOCAL post-restamp hash (what the .done marker verifies), same as the v31 set's shard-4 marker. Config strata-unsloth-ud-q3_k_xl.json — the v31 posture flag-for-flag (spec 4 window auto-negotiates 12/4, spec-min-p 0.5, --mtp mtp/rt, int8 KV resident 32768, 131k ctx, --vision shared mmproj, vram-reserve 3072) with --resident-budget-gib 40 (the Q3_K_XL expert set is smaller than v31's — more headroom; never full-pin, see the 10-28 OOM doctrine in uap-strata-abliterated-server.service). Pack packs/unsloth-ud-q3_k_xl (tools/iq_pack.py, from the set). Unit uap-strata-unsloth-q3_k_xl-server.service (OOMPolicy=continue doctrine), advertises qwen3.8-flash-next-unsloth-ud-q3_k_xl at /v1/models. Switch: model-switch.sh strata-unsloth-q3_k_xl (revert: strata or any arm). Run `uap models measure` against it before placement loads it (fail-closed). WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default): the local shards + pack are deleted; this pinned manifest is the re-fetch path (`uap models ensure` restores them before a switch to this arm).",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00004.gguf",
@@ -162,7 +215,7 @@
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-server",
-          "note": "The :8080 default arm 2026-11-11 -> 2026-11-13 (the PRISTINE base-model quant: Unsloth Dynamic v3.1 UD-IQ4_XS Qwen3.8-Flash-Next, 4 shards; config strata-unsloth-ud-iq4_xs-v31.json, spec 12 / spec-min-p 0.5 / mtp_max 4 MTP, 40 GiB resident expert budget + SSD streaming, int8 KV resident 32768, mmproj vision, 131k pool); the fleet switched back to strata-abliterated-iq2_xs on 2026-11-13, kept switchable via ~/.config/uap/model-switch.sh strata. Raw GGUF shards declared here: the pack (strata-data/packs/unsloth-ud-iq4_xs-v31) is derived from them by tools/iq_pack.py (see its conversions.json) and rebuilds from these files. Provenance is pinned (repo + repo-subfolder `file` + `rev`, from feature/376): bytes + sha256 below are the download-time .done markers, verified against shard 1 on 2026-11-12, so `uap models ensure` can re-fetch and verify from this pin.",
+          "note": "The :8080 default arm 2026-11-11 -> 2026-11-13 (the PRISTINE base-model quant: Unsloth Dynamic v3.1 UD-IQ4_XS Qwen3.8-Flash-Next, 4 shards; config strata-unsloth-ud-iq4_xs-v31.json, spec 12 / spec-min-p 0.5 / mtp_max 4 MTP, 40 GiB resident expert budget + SSD streaming, int8 KV resident 32768, mmproj vision, 131k pool); the fleet switched back to strata-abliterated-iq2_xs on 2026-11-13, kept switchable via ~/.config/uap/model-switch.sh strata. Raw GGUF shards declared here: the pack (strata-data/packs/unsloth-ud-iq4_xs-v31) is derived from them by tools/iq_pack.py (see its conversions.json) and rebuilds from these files. Provenance is pinned (repo + repo-subfolder `file` + `rev`, from feature/376): bytes + sha256 below are the download-time .done markers, verified against shard 1 on 2026-11-12, so `uap models ensure` can re-fetch and verify from this pin. WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default - the set this config served as the default 2026-11-11 -> 2026-11-17): the local shards + pack are deleted; this pinned manifest is the re-fetch path.",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
@@ -202,7 +255,7 @@
           "status": "unmeasured",
           "engine": "speedy",
           "unit": "uap-speedy-server",
-          "note": "The flash-next ENGINE A/B arm — user-directed 2026-11-15: DevDock-AI/Speedy 0.4.7 (master 36e827fe), a measured/tuned fork of Strata v0.2.7.1 (Niko1221/Strata, MIT; the fork's own additions under the Speedy Personal & Non-Commercial License v1.0) built for Qwen3.8-Flash-Next on RTX 30-class cards, serving the SAME Unsloth Dynamic v3.1 UD-IQ4_XS 4-shard set as the strata-unsloth-ud-iq4_xs-v31 default — pack packs/unsloth-ud-iq4_xs-v31, MTP draft head mtp/rt and the GGUF shards below are all REUSED from strata-data (zero new weight disk), so the ENGINE is the only variable between the two arms. Built at ~/dev/speedy/build/strata (CUDA 13.4 from ~/cuda-13.4 + host gcc-13, CMAKE_CUDA_ARCHITECTURES=86 native sm_86 SASS, STRATA_MMQ_KQUANTS + STRATA_MMQ_TQ_OVERLAY + STRATA_NATIVE_EXPERTS + STRATA_Q6K_EXPERTS per the fork's docs/BUILD-LINUX.md); serve layer and config schema = the strata family (serve/server.py --engine strata, so /health, /v1/models, tool calls and the GGUF-embedded chat template behave like every strata arm, plus the fork's STRATA_TOOLCALL_REPAIR=1 malformed tool-call repair from 0.4.5). Config speedy-unsloth-ud-iq4_xs-v31.json = the fork's 1x UD-IQ4_XS production preset (conversation-cache 8192 MiB, adapt-async 1 / adapt-swaps 80, pool-affinity measure, draft_vocab en, reasoning medium / 16k budget, the fork's tuned env block) with the fleet posture deltas: 131k ctx (the fork's 229K-native and 1M tiers are later tuning rounds), int8 KV resident 32768, vram-reserve 3072 (desktop co-tenancy), --resident-budget-gib 40 (never full-pin — the 10-28 OOM doctrine). Advertises qwen3.8-flash-next-speedy-ud-iq4_xs-v31 at /v1/models. Unit uap-speedy-server.service (inference-panel id speedy; OOMPolicy=continue strata-arm doctrine). Switch: ~/.config/uap/model-switch.sh speedy (revert: strata or any arm). The fork's upstream measured gains (2x RTX 3080-class vs Strata 0.1.45 on their reference rig — the upstream engine-release numbering, a different line than this fleet's 0.1.59.1 — IQ4_XS: prefill +156%, decode +55%) are NOT inherited — unmeasured on this 3090 until `uap models measure` records it (fail-closed).",
+          "note": "The flash-next ENGINE A/B arm — user-directed 2026-11-15: DevDock-AI/Speedy 0.4.7 (master 36e827fe), a measured/tuned fork of Strata v0.2.7.1 (Niko1221/Strata, MIT; the fork's own additions under the Speedy Personal & Non-Commercial License v1.0) built for Qwen3.8-Flash-Next on RTX 30-class cards, serving the SAME Unsloth Dynamic v3.1 UD-IQ4_XS 4-shard set as the strata-unsloth-ud-iq4_xs-v31 default — pack packs/unsloth-ud-iq4_xs-v31, MTP draft head mtp/rt and the GGUF shards below are all REUSED from strata-data (zero new weight disk), so the ENGINE is the only variable between the two arms. Built at ~/dev/speedy/build/strata (CUDA 13.4 from ~/cuda-13.4 + host gcc-13, CMAKE_CUDA_ARCHITECTURES=86 native sm_86 SASS, STRATA_MMQ_KQUANTS + STRATA_MMQ_TQ_OVERLAY + STRATA_NATIVE_EXPERTS + STRATA_Q6K_EXPERTS per the fork's docs/BUILD-LINUX.md); serve layer and config schema = the strata family (serve/server.py --engine strata, so /health, /v1/models, tool calls and the GGUF-embedded chat template behave like every strata arm, plus the fork's STRATA_TOOLCALL_REPAIR=1 malformed tool-call repair from 0.4.5). Config speedy-unsloth-ud-iq4_xs-v31.json = the fork's 1x UD-IQ4_XS production preset (conversation-cache 8192 MiB, adapt-async 1 / adapt-swaps 80, pool-affinity measure, draft_vocab en, reasoning medium / 16k budget, the fork's tuned env block) with the fleet posture deltas: 131k ctx (the fork's 229K-native and 1M tiers are later tuning rounds), int8 KV resident 32768, vram-reserve 3072 (desktop co-tenancy), --resident-budget-gib 40 (never full-pin — the 10-28 OOM doctrine). Advertises qwen3.8-flash-next-speedy-ud-iq4_xs-v31 at /v1/models. Unit uap-speedy-server.service (inference-panel id speedy; OOMPolicy=continue strata-arm doctrine). Switch: ~/.config/uap/model-switch.sh speedy (revert: strata or any arm). The fork's upstream measured gains (2x RTX 3080-class vs Strata 0.1.45 on their reference rig — the upstream engine-release numbering, a different line than this fleet's 0.1.59.1 — IQ4_XS: prefill +156%, decode +55%) are NOT inherited — unmeasured on this 3090 until `uap models measure` records it (fail-closed). WEIGHTS REMOVED 2026-11-17 (operator request, the same round that switched both arms to the ISTA-DASLab base IQ3_S set): the local shards + pack are deleted; this pinned manifest is the re-fetch path.",
           "files": [
             {
               "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
@@ -240,13 +293,8 @@
         }
       },
       "advertises": [
-        "qwen3.8-flash-next-unsloth-ud-iq4_xs-v31",
-        "qwen3.8-flash-next-unsloth-ud-q3_k_xl",
-        "qwen3.8-flash-next-speedy-ud-iq4_xs-v31",
-        "abliterated-iq2_xs",
-        "abliterated-iq3_s",
-        "qwen3.8-flash-next-iq3_s",
-        "swift-1.5-iq3_s",
+        "qwen3.8-flash-next-gsq-rco-iq3_s",
+        "qwen3.8-flash-next-speedy-gsq-rco-iq3_s",
         "gpt-5.1-codex"
       ]
     },
