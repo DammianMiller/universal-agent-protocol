@@ -59,7 +59,7 @@ const measuredLocal = {
           unit: 'uap-strata-server',
           resident_gpu_mib: 21812,
           host_rss_mib: 52857,
-          context_pool_cells: 131072,
+          context_pool_cells: 196608,
           kv_resident_cells: 32768,
           kv_kind: 'int8',
           kv_mib_per_1k_cells: 12.2,
@@ -76,7 +76,7 @@ const policy = {
   services: [
     {
       name: 'strata-server',
-      http: { url: 'http://127.0.0.1:8080', kind: 'strata' as const, metricsMustMatch: { kv: 'int8', max_context: 131072 } },
+      http: { url: 'http://127.0.0.1:8080', kind: 'strata' as const, metricsMustMatch: { kv: 'int8', max_context: 196608 } },
       headroom: { gpuMinFreeMiB: 200 },
     },
     {
@@ -155,8 +155,8 @@ describe('configCostMiB', () => {
   });
 
   it('scales marginal KV beyond the resident pool', () => {
-    // 21812 + 81920/1000 × 12.2 = 21812 + 999.424
-    expect(configCostMiB(measured, 114688)).toBeCloseTo(22811.424, 2);
+    // 21812 + 147456/1000 × 12.2 = 21812 + 1798.9632
+    expect(configCostMiB(measured, 180224)).toBeCloseTo(23610.9632, 2);
   });
 
   it('returns null — refuse, not guess — beyond the pool with no kv rate', () => {
@@ -174,7 +174,7 @@ describe('validateRegistry', () => {
     const llamaCfg = loaded.registry.models['qwen3.8-27b'].configs['llama-mtp'] as { service?: string };
     llamaCfg.service = 'strata-server';
     const findings = validateRegistry(loaded.registry, policy);
-    // The measured entry agrees with the policy: kv int8, max_context 131072.
+    // The measured entry agrees with the policy: kv int8, max_context 196608.
     expect(findings.filter((f) => f.severity === 'error')).toEqual([]);
     // Unmeasured configs with a service link cannot be cross-checked.
     expect(findings.some((f) => f.severity === 'warning' && /cannot cross-check/.test(f.message))).toBe(true);
