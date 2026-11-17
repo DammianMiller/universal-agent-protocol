@@ -112,5 +112,101 @@ class UpstreamModelAliasTests(unittest.TestCase):
         self.assertIsNone(self._ids({"data": [{"id": "x"}]}, status_code=503))
 
 
+class ServedIds404RefreshTests(unittest.TestCase):
+    """`_maybe_refresh_served_ids_on_404`: recover from a stale ids cache.
+
+    The cache is process-lifetime, so after an arm switch it still names the
+    evicted arm. The upstream answers a request carrying the old id with
+        HTTP 404  The model old-arm-id does not exist.
+                    Valid aliases: qwen3.8-27b
+    and the recovery is: clear the cache, re-fetch, re-reconcile, retry once.
+    """
+
+    def setUp(self):
+        self._saved_client = proxy.http_client
+        self._saved_placement = proxy.PROXY_PLACEMENT_MODE
+        proxy._upstream_model_ids = None
+        proxy.PROXY_PLACEMENT_MODE = "off"  # reconcile must not be skipped
+
+    def tearDown(self):
+        proxy.http_client = self._saved_client
+        proxy._upstream_model_ids = None
+        proxy.PROXY_PLACEMENT_MODE = self._saved_placement
+
+    def _prime_stale_cache(self, stale_ids):
+        proxy._upstream_model_ids = list(stale_ids)
+
+    def _serve_models(self, payload):
+        proxy.http_client = _FakeClient(payload)
+
+    def test_stale_404_clears_refetches_rewrites_and_retries(self):
+        self._prime_stale_cache(["old-arm-id"])
+        self._serve_models({"data": [{"id": "qwen3.8-27b", "aliases": []}]})
+        body = {"model": "old-arm-id"}
+        retry = asyncio.run(
+            proxy._maybe_refresh_served_ids_on_404(
+                body,
+                404,
+                'The model old-arm-id does not exist. Valid aliases: qwen3.8-27b',
+                "non-stream",
+            )
+        )
+        self.assertTrue(retry)
+        self.assertEqual(body["model"], "qwen3.8-27b")
+        # The cache now reflects the LIVE arm, not the evicted one.
+        self.assertEqual(proxy._upstream_model_ids, ["qwen3.8-27b"])
+
+    def test_non_404_or_aliasless_bodies_are_not_this_failure(self):
+        self._prime_stale_cache(["old-arm-id"])
+        self._serve_models({"data": [{"id": "qwen3.8-27b", "aliases": []}]})
+        body = {"model": "old-arm-id"}
+        for status, text in (
+            (400, "tool_choice required not supported"),
+            (500, "The model old-arm-id does not exist. Valid aliases: x"),
+            (404, "model 'x' not found"),  # no served-alias listing
+            (404, "unrelated not found"),
+        ):
+            self.assertFalse(
+                asyncio.run(
+                    proxy._maybe_refresh_served_ids_on_404(
+                        dict(body), status, text, "stream"
+                    )
+                ),
+                (status, text),
+            )
+
+    def test_a_real_404_does_not_retry(self):
+        # The re-fetched ids still serve the requested id: the 404 was not
+        # staleness (e.g. a slot hiccup) — a retry would 404 identically.
+        self._prime_stale_cache(["stale-entry"])
+        self._serve_models({"data": [{"id": "served-id", "aliases": []}]})
+        body = {"model": "served-id"}
+        retry = asyncio.run(
+            proxy._maybe_refresh_served_ids_on_404(
+                body, 404,
+                "The model served-id does not exist. Valid aliases: served-id",
+                "strict-stream",
+            )
+        )
+        self.assertFalse(retry)
+        self.assertEqual(body["model"], "served-id")  # untouched
+
+    def test_no_ids_after_refetch_means_no_retry(self):
+        self._prime_stale_cache(["old-arm-id"])
+        # The fake client answers a non-200: discovery yields nothing.
+        proxy.http_client = _FakeClient({"data": []}, status_code=503)
+        body = {"model": "old-arm-id"}
+        retry = asyncio.run(
+            proxy._maybe_refresh_served_ids_on_404(
+                body,
+                404,
+                'The model old-arm-id does not exist. Valid aliases: x',
+                "non-stream",
+            )
+        )
+        self.assertFalse(retry)
+        self.assertEqual(body["model"], "old-arm-id")
+
+
 if __name__ == "__main__":
     unittest.main()

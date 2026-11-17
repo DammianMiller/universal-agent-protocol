@@ -1919,6 +1919,53 @@ async def _upstream_model_ids_cached() -> list[str] | None:
         return None
 
 
+async def _maybe_refresh_served_ids_on_404(
+    openai_body: dict,
+    status_code: int,
+    error_text: str,
+    source: str,
+) -> bool:
+    """Recover a request 404'd by a STALE served-ids cache, then say "retry".
+
+    The ids cache is process-lifetime, so after an arm switch the cached ids
+    still name the EVICTED arm. _reconcile_wire_model then either rewrites to
+    a dead id or leaves a stale-era id alone, and the upstream answers:
+      HTTP 404  The model abliterated-iq2_xs does not exist.
+                Valid aliases: qwen3.8-27b
+    Every 404 that names the model as unservable AND lists what IS served is
+    that staleness signature. Clear the cache, re-fetch, re-reconcile the
+    body; when the rewrite actually changed the id, the caller retries ONCE.
+    A re-fetch that leaves the id unchanged is a REAL 404 — no retry (the
+    second attempt would 404 identically), no log spam.
+    """
+    global _upstream_model_ids
+    if status_code != 404:
+        return False
+    text = (error_text or "").lower()
+    if "alias" not in text:
+        return False
+    if not ("does not exist" in text or "not found" in text):
+        return False
+    _upstream_model_ids = None
+    ids = await _upstream_model_ids_cached()
+    if not ids:
+        return False
+    before = openai_body.get("model")
+    await _reconcile_wire_model(openai_body)
+    after = openai_body.get("model")
+    if after == before:
+        return False
+    logger.warning(
+        "SERVED-IDS REFRESH (%s): upstream 404 '%s' against a stale ids "
+        "cache — model %r rewritten to %r after re-fetch, retrying once",
+        source,
+        (error_text or "")[:120],
+        before,
+        after,
+    )
+    return True
+
+
 async def _reconcile_wire_model(openai_body: dict) -> None:
     """Point a locally-served request at a model the backend will answer to.
 
@@ -4168,24 +4215,46 @@ async def _maybe_recheck_context_window() -> None:
     _last_ctx_recheck_ts = now
     if http_client is None:
         return
+    slots_url = LLAMA_CPP_BASE.replace("/v1", "/slots")
+    n_ctx = 0
     try:
-        slots_url = LLAMA_CPP_BASE.replace("/v1", "/slots")
         resp = await http_client.get(slots_url, timeout=2.0)
         if resp.status_code == 200:
             slots = resp.json()
             if slots and isinstance(slots, list):
                 n_ctx = slots[0].get("n_ctx", 0)
-                if n_ctx > 0:
-                    _context_window_measured = True
-                if n_ctx > 0 and n_ctx != default_context_window:
-                    old = default_context_window
-                    default_context_window = n_ctx
-                    for mon in session_monitors.values():
-                        mon.context_window = n_ctx
-                    logger.warning(
-                        "Context window changed: %d → %d (upstream server restarted?)",
-                        old, n_ctx,
-                    )
+    except Exception:
+        pass  # Non-critical, will retry next interval
+    if n_ctx <= 0:
+        # /slots is the llama.cpp surface; engines that don't implement it
+        # (vLLM-class arms answer a plain-200 /health instead) left the
+        # window undetected, and every consumer fell back to the 131,072
+        # env default — smaller than the real rail, so sessions over-pruned
+        # at ~70% of the context they were given. Read /health before
+        # giving up: llama.cpp-style {n_ctx: N} or the strata family's
+        # {max_context: N} both count.
+        try:
+            resp = await http_client.get(
+                LLAMA_CPP_BASE.replace("/v1", "/health"), timeout=2.0
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict):
+                    n_ctx = int(data.get("n_ctx") or data.get("max_context") or 0)
+        except Exception:
+            pass  # Non-critical, will retry next interval
+    try:
+        if n_ctx > 0:
+            _context_window_measured = True
+        if n_ctx > 0 and n_ctx != default_context_window:
+            old = default_context_window
+            default_context_window = n_ctx
+            for mon in session_monitors.values():
+                mon.context_window = n_ctx
+            logger.warning(
+                "Context window changed: %d → %d (upstream server restarted?)",
+                old, n_ctx,
+            )
     except Exception:
         pass  # Non-critical, will retry next interval
 
@@ -16536,6 +16605,32 @@ async def messages(request: Request):
                         pass  # fall through to next handler
             if strict_resp.status_code != 200:
                 error_text = strict_resp.text[:1000]
+                # Capability relax (strict-stream path): an engine without
+                # native tool_choice='required' support (the yasakani family)
+                # 400s the first forced guarded turn — the SAME 400 the
+                # non-stream and stream paths already recover from. Without
+                # this handler the forced-tool streaming path alone would
+                # wedge every session on it. Relax to 'auto', latch the
+                # capability, retry once.
+                if _maybe_relax_unsupported_tool_choice(
+                    strict_body,
+                    strict_resp.status_code,
+                    error_text,
+                    "strict-stream",
+                ):
+                    try:
+                        strict_resp = await _post_with_generation_timeout(
+                            client,
+                            f"{LLAMA_CPP_BASE}/chat/completions",
+                            strict_body,
+                            {"Content-Type": "application/json"},
+                        )
+                    except ClientGoneError:
+                        raise  # control flow: never swallow into a broad handler
+                    except Exception:
+                        pass  # fall through to next handler
+            if strict_resp.status_code != 200:
+                error_text = strict_resp.text[:1000]
                 if _maybe_disable_grammar_for_tools_error(
                     strict_body,
                     strict_resp.status_code,
@@ -16565,6 +16660,25 @@ async def messages(request: Request):
                             status_code=529,
                             media_type="application/json",
                         )
+
+            if strict_resp.status_code != 200:
+                error_text = strict_resp.text[:1000]
+                # Stale served-ids recovery (strict-stream path): the guarded
+                # buffered path takes the same arm-switch 404 as the others.
+                if await _maybe_refresh_served_ids_on_404(
+                    strict_body, strict_resp.status_code, error_text, "strict-stream"
+                ):
+                    try:
+                        strict_resp = await _post_with_generation_timeout(
+                            client,
+                            f"{LLAMA_CPP_BASE}/chat/completions",
+                            strict_body,
+                            {"Content-Type": "application/json"},
+                        )
+                    except ClientGoneError:
+                        raise  # control flow: never swallow into a broad handler
+                    except Exception:
+                        pass  # fall through to next handler
 
             if strict_resp.status_code != 200:
                 error_text = strict_resp.text[:1000]
@@ -16867,6 +16981,31 @@ async def messages(request: Request):
                 error_body = await resp.aread()
                 await resp.aclose()
                 error_text = error_body.decode("utf-8", errors="replace")[:1000]
+            # Stale served-ids recovery (stream path): same 404-staleness
+            # signature as the non-stream path — refresh the ids cache,
+            # re-reconcile the wire model, retry once.
+            if await _maybe_refresh_served_ids_on_404(
+                openai_body, resp.status_code, error_text, "stream"
+            ):
+                resp = await client.send(
+                    client.build_request(
+                        "POST",
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        json=openai_body,
+                        headers={"Content-Type": "application/json"},
+                    ),
+                    stream=True,
+                )
+                setattr(resp, "_uap_client", client)
+                if resp.status_code == 200:
+                    return StreamingResponse(
+                        stream_anthropic_response(resp, model, monitor, body),
+                        media_type="text/event-stream",
+                    )
+                # fall through if still failing
+                error_body = await resp.aread()
+                await resp.aclose()
+                error_text = error_body.decode("utf-8", errors="replace")[:1000]
             if _maybe_disable_grammar_for_tools_error(
                 openai_body,
                 resp.status_code,
@@ -17019,6 +17158,25 @@ async def messages(request: Request):
                 openai_body, resp.status_code, error_text, "non-stream"
             )
             if relaxed:
+                try:
+                    resp = await _post_with_generation_timeout(
+                        client,
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        openai_body,
+                        {"Content-Type": "application/json"},
+                    )
+                except ClientGoneError:
+                    raise  # control flow: never swallow into a broad handler
+                except Exception:
+                    pass  # fall through
+        if resp.status_code != 200:
+            error_text = resp.text[:1000]
+            # Stale served-ids recovery (non-stream path): a 404 that names
+            # the model unservable and lists the served aliases means the ids
+            # cache predates an arm switch. Refresh + re-reconcile + retry once.
+            if await _maybe_refresh_served_ids_on_404(
+                openai_body, resp.status_code, error_text, "non-stream"
+            ):
                 try:
                     resp = await _post_with_generation_timeout(
                         client,
