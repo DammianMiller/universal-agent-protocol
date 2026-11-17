@@ -839,8 +839,8 @@ program
 program
   .command('quality')
   .description('Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types')
-  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile | derive | gap | ladder | contract')
-  .argument('[target]', 'Positional target file (check), anchor class (anchor), or tier class (derive)')
+  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile | derive | gap | ladder | contract | publish')
+  .argument('[target]', 'Positional target file (check), anchor class (anchor), tier class (derive), or tier key (publish)')
   .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
   .option('--json', 'Emit machine-readable JSON')
   .option('--files <list>', 'Comma-separated relative file list to scan')
@@ -857,7 +857,7 @@ program
   .option('--candidates <n>', 'Candidates per ladder round (default: 3)')
   .option('--plateau-rounds <n>', 'Rounds without improvement before the ladder escalates (default: 2)')
   .action(async (subcommand, target, options) => {
-    if ((subcommand === 'anchor' || subcommand === 'derive') && target) options.target = target;
+    if ((subcommand === 'anchor' || subcommand === 'derive' || subcommand === 'publish') && target) options.target = target;
     else if (target && !options.file) options.file = target;
     const cmd = await lazy.quality();
     await cmd(subcommand, options);
