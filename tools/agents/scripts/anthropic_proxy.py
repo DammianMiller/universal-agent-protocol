@@ -1919,6 +1919,53 @@ async def _upstream_model_ids_cached() -> list[str] | None:
         return None
 
 
+async def _maybe_refresh_served_ids_on_404(
+    openai_body: dict,
+    status_code: int,
+    error_text: str,
+    source: str,
+) -> bool:
+    """Recover a request 404'd by a STALE served-ids cache, then say "retry".
+
+    The ids cache is process-lifetime, so after an arm switch the cached ids
+    still name the EVICTED arm. _reconcile_wire_model then either rewrites to
+    a dead id or leaves a stale-era id alone, and the upstream answers:
+      HTTP 404  The model abliterated-iq2_xs does not exist.
+                Valid aliases: qwen3.8-27b
+    Every 404 that names the model as unservable AND lists what IS served is
+    that staleness signature. Clear the cache, re-fetch, re-reconcile the
+    body; when the rewrite actually changed the id, the caller retries ONCE.
+    A re-fetch that leaves the id unchanged is a REAL 404 — no retry (the
+    second attempt would 404 identically), no log spam.
+    """
+    global _upstream_model_ids
+    if status_code != 404:
+        return False
+    text = (error_text or "").lower()
+    if "alias" not in text:
+        return False
+    if not ("does not exist" in text or "not found" in text):
+        return False
+    _upstream_model_ids = None
+    ids = await _upstream_model_ids_cached()
+    if not ids:
+        return False
+    before = openai_body.get("model")
+    await _reconcile_wire_model(openai_body)
+    after = openai_body.get("model")
+    if after == before:
+        return False
+    logger.warning(
+        "SERVED-IDS REFRESH (%s): upstream 404 '%s' against a stale ids "
+        "cache — model %r rewritten to %r after re-fetch, retrying once",
+        source,
+        (error_text or "")[:120],
+        before,
+        after,
+    )
+    return True
+
+
 async def _reconcile_wire_model(openai_body: dict) -> None:
     """Point a locally-served request at a model the backend will answer to.
 
@@ -2649,6 +2696,19 @@ def _load_tool_call_grammar(path: str) -> str:
 
 TOOL_CALL_GBNF = _load_tool_call_grammar(PROXY_TOOL_CALL_GRAMMAR_PATH)
 TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE = True
+# Capability latch: the live upstream engine accepts tool_choice 'auto'|'none'
+# but NOT 'required' (or a function pin). The YASAKANI/yasaheni engine (the
+# yasakani arm) rejects both with HTTP 400:
+#   {"error": {"message": "tool_choice \"required\" is not supported; use
+#    \"auto\" or \"none\"", "type": "invalid_request_error", "code": 400}}
+# While every TOOL STATE MACHINE act-phase force drove llama.cpp-family engines
+# to act, against this engine each forced turn 400s and the client session dies
+# (observed live 2026-11-15: state machine forced required -> engine 400 ->
+# proxy 529 -> the Droid client "cannot connect"). Flipped to False by
+# _maybe_relax_unsupported_tool_choice on the first such 400; from then on
+# every force site degrades to 'auto' BEFORE the request is sent (no repeated
+# 400 round-trips). Same latch pattern as TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE.
+TOOL_CHOICE_REQUIRED_SUPPORTED = True
 
 
 def _load_thinking_grammar(path: str) -> str:
@@ -3016,6 +3076,76 @@ def _relax_tool_choice_for_gemma4_peg_retry(request_body: dict, source: str) -> 
         )
         return True
     return False
+
+
+def _is_tool_choice_required_unsupported(status_code: int, error_text: str) -> bool:
+    """Detect an engine that does not implement tool_choice='required' AT ALL.
+
+    The YASAKANI/yasaheni engine (the yasakani arm) validates the field and
+    rejects every non-auto/none value, naming the field in the error:
+      HTTP 400  tool_choice "required" is not supported; use "auto" or "none"
+    A function pin ({"type": "function", ...}) draws the same class of refusal
+    (it is stricter than 'required'). Deliberately keyed on the ERROR TEXT,
+    not on an arm registry, so any future engine with the same limitation is
+    caught without a capability map. Disjoint from the llama.cpp shapes:
+    a grammar failure says 'failed to parse grammar', never 'not supported'
+    + 'tool_choice'.
+    """
+    if status_code != 400:
+        return False
+    text = (error_text or "").lower()
+    return "tool_choice" in text and "not supported" in text
+
+
+def _maybe_relax_unsupported_tool_choice(
+    request_body: dict,
+    status_code: int,
+    error_text: str,
+    source: str,
+) -> bool:
+    """On an upstream 400 that names tool_choice as unsupported, relax the
+    choice to 'auto' and latch the capability off process-wide so later forced
+    turns degrade before they are sent. Returns True when the caller should
+    retry the POST. Mirrors _maybe_disable_grammar_for_tools_error."""
+    global TOOL_CHOICE_REQUIRED_SUPPORTED
+    if not _is_tool_choice_required_unsupported(status_code, error_text):
+        return False
+    choice = request_body.get("tool_choice")
+    if choice in ("auto", "none", None):
+        return False
+    request_body["tool_choice"] = "auto"
+    if TOOL_CHOICE_REQUIRED_SUPPORTED:
+        TOOL_CHOICE_REQUIRED_SUPPORTED = False
+        logger.warning(
+            "TOOL CHOICE CAPABILITY: upstream does not support "
+            "tool_choice='required' (HTTP 400: %s). Degrading this turn and "
+            "ALL future forced-'required' turns to 'auto' for this proxy "
+            "process (%s).",
+            (error_text or "")[:160],
+            source,
+        )
+    else:
+        logger.info(
+            "tool_choice relaxed 'required'->'auto' before retry (upstream "
+            "capability, %s)",
+            source,
+        )
+    return True
+
+
+def _force_tool_choice_required(openai_body: dict) -> str:
+    """The one force-site choke point: set the steering force
+    tool_choice='required', degraded to 'auto' when the live upstream engine
+    cannot take 'required' (latched by _maybe_relax_unsupported_tool_choice).
+    Returns the applied value so callers can log it truthfully."""
+    applied = "required" if TOOL_CHOICE_REQUIRED_SUPPORTED else "auto"
+    openai_body["tool_choice"] = applied
+    if applied == "auto":
+        logger.info(
+            "tool_choice force degraded to 'auto' (upstream engine has no "
+            "'required' support)"
+        )
+    return applied
 
 
 def _maybe_disable_grammar_for_tools_error(
@@ -4085,24 +4215,46 @@ async def _maybe_recheck_context_window() -> None:
     _last_ctx_recheck_ts = now
     if http_client is None:
         return
+    slots_url = LLAMA_CPP_BASE.replace("/v1", "/slots")
+    n_ctx = 0
     try:
-        slots_url = LLAMA_CPP_BASE.replace("/v1", "/slots")
         resp = await http_client.get(slots_url, timeout=2.0)
         if resp.status_code == 200:
             slots = resp.json()
             if slots and isinstance(slots, list):
                 n_ctx = slots[0].get("n_ctx", 0)
-                if n_ctx > 0:
-                    _context_window_measured = True
-                if n_ctx > 0 and n_ctx != default_context_window:
-                    old = default_context_window
-                    default_context_window = n_ctx
-                    for mon in session_monitors.values():
-                        mon.context_window = n_ctx
-                    logger.warning(
-                        "Context window changed: %d → %d (upstream server restarted?)",
-                        old, n_ctx,
-                    )
+    except Exception:
+        pass  # Non-critical, will retry next interval
+    if n_ctx <= 0:
+        # /slots is the llama.cpp surface; engines that don't implement it
+        # (vLLM-class arms answer a plain-200 /health instead) left the
+        # window undetected, and every consumer fell back to the 131,072
+        # env default — smaller than the real rail, so sessions over-pruned
+        # at ~70% of the context they were given. Read /health before
+        # giving up: llama.cpp-style {n_ctx: N} or the strata family's
+        # {max_context: N} both count.
+        try:
+            resp = await http_client.get(
+                LLAMA_CPP_BASE.replace("/v1", "/health"), timeout=2.0
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict):
+                    n_ctx = int(data.get("n_ctx") or data.get("max_context") or 0)
+        except Exception:
+            pass  # Non-critical, will retry next interval
+    try:
+        if n_ctx > 0:
+            _context_window_measured = True
+        if n_ctx > 0 and n_ctx != default_context_window:
+            old = default_context_window
+            default_context_window = n_ctx
+            for mon in session_monitors.values():
+                mon.context_window = n_ctx
+            logger.warning(
+                "Context window changed: %d → %d (upstream server restarted?)",
+                old, n_ctx,
+            )
     except Exception:
         pass  # Non-critical, will retry next interval
 
@@ -5740,6 +5892,39 @@ async def _client_gone() -> bool:
 _admitted_sessions: "OrderedDict[str, float]" = OrderedDict()
 _admission_cond: "asyncio.Condition | None" = None
 
+# 2026-11-16 admission fairness: sessions with a LIVE request are never
+# force-evict victims. The admission LRU is ordered by last-REQUEST-arrival
+# (a refresh happens only when a NEW request reaches admission), so a session
+# whose current turn is admitted-and-generating sits at the eviction front by
+# construction — it has no new request to refresh with. Under sustained
+# over-subscription the wait-timeout force-admits evict exactly these
+# mid-turn sessions within seconds of their admission (live-observed
+# 2026-11-16 10:29-10:34: the interactive droid client force-admitted at
+# 10:33:32, force-evicted 10s later, zero turn progress while 4 concurrent
+# deliver sessions cycled the single hot slot). Busy is a count (a request
+# may hold several concurrent funnel frames, e.g. guardrail retries), marked
+# at admission success inside _ensure_session_admitted and released in
+# _post_with_retry's finally. Single-threaded asyncio: plain dict ops are
+# atomic between await points.
+_admitted_busy: dict[str, int] = {}
+
+
+def _mark_admitted_busy(session_id: str | None) -> None:
+    """Record that this session has a live request past admission."""
+    if session_id:
+        _admitted_busy[session_id] = _admitted_busy.get(session_id, 0) + 1
+
+
+def _release_admitted_busy(session_id: str | None) -> None:
+    """Drop one live-request hold; forget the session at zero."""
+    if not session_id:
+        return
+    n = _admitted_busy.get(session_id, 0) - 1
+    if n > 0:
+        _admitted_busy[session_id] = n
+    else:
+        _admitted_busy.pop(session_id, None)
+
 
 def _slot_endpoint_base() -> str:
     """Base URL for llama-server's /slots endpoint (LLAMA_CPP_BASE without /v1)."""
@@ -5924,8 +6109,16 @@ async def _ensure_session_admitted(session_id: str | None) -> None:
 
     Sticky: admission persists across a session's turns and is released only by
     idle-TTL pruning. A new session over the limit queues (waits) rather than
-    evicting a hot session. On wait-timeout it force-admits, evicting the LRU,
-    to avoid a hard stall (graceful degrade to pre-admission behaviour).
+    evicting a hot session. On wait-timeout it force-admits, evicting an idle
+    admitted session, to avoid a hard stall (graceful degrade to pre-admission
+    behaviour). Fairness (2026-11-16): a session with a LIVE request
+    (_admitted_busy) is never chosen as the eviction victim — the LRU is
+    ordered by last-request-arrival, so without this guard the session whose
+    turn is mid-generation is structurally always the front victim and
+    over-subscribed load livelocks it (admit -> evict within seconds -> wait
+    another full timeout -> repeat, zero turn progress). On success the
+    session is marked busy here; _post_with_retry's finally releases it (its
+    ONLY caller — any future caller MUST release in a finally).
     No-op when disabled or when there is no session id."""
     global _admission_cond
     if not PROXY_SESSION_ADMISSION or not session_id:
@@ -5951,21 +6144,38 @@ async def _ensure_session_admitted(session_id: str | None) -> None:
                     )
                 # A refresh/new admit may have pruned idle sessions; wake peers.
                 cond.notify_all()
+                # This session now has a live request in the funnel; protect
+                # it from being picked as the next force-evict victim.
+                _mark_admitted_busy(session_id)
                 return
             # Hot set full and this session isn't in it.
             if deadline is not None and now >= deadline:
                 evicted = "-"
+                evicted_busy = False
                 if _admitted_sessions:
-                    evicted = next(iter(_admitted_sessions))  # LRU = oldest front
+                    # Fairness: prefer the oldest IDLE victim (no live
+                    # request). Busy sessions are skipped so a mid-turn
+                    # generation is never the one evicted; if every admitted
+                    # session is busy, fall back to the old LRU front so the
+                    # waiter still makes progress (bounded by each request's
+                    # own generation timeout, not forever).
+                    idle = [
+                        sid for sid in _admitted_sessions
+                        if sid not in _admitted_busy
+                    ]
+                    evicted = idle[0] if idle else next(iter(_admitted_sessions))
+                    evicted_busy = not idle
                     _admitted_sessions.pop(evicted, None)
                 _admitted_sessions[session_id] = now
                 logger.warning(
                     "SESSION ADMISSION: wait timeout (%ds), force-admitted %s "
-                    "(evicted LRU %s) — sustained over-subscription (>%d hot sessions)",
+                    "(evicted %s %s) — sustained over-subscription (>%d hot sessions)",
                     int(PROXY_SESSION_ADMISSION_WAIT_TIMEOUT), session_id[:12],
+                    "LRU-all-busy" if evicted_busy else "idle-LRU",
                     evicted[:12], PROXY_SESSION_ADMISSION_LIMIT,
                 )
                 cond.notify_all()
+                _mark_admitted_busy(session_id)
                 return
             waited = True
             timeout = PROXY_SESSION_ADMISSION_POLL
@@ -6098,32 +6308,40 @@ async def _post_with_retry(
     # concurrency slot away from a live one, and never queues behind one either.
     if await _client_gone():
         raise ClientGoneError("client disconnected before upstream call")
-    await _ensure_session_admitted(_current_request_session.get())
+    # Session id captured once: admission marks the busy-hold on success and
+    # the finally below releases it on EVERY exit path after admission —
+    # including the concurrency queue-timeout raise — so a live request is
+    # never left looking idle (it would become the force-evict victim).
+    _session_id = _current_request_session.get()
+    await _ensure_session_admitted(_session_id)
     # Placement target: the admission gate set this per request (or it is
     # None, which _semaphore_for maps to the legacy default bucket).
     _placement_target = _current_placement_target.get()
-    acquired = await _acquire_upstream_slot(_placement_target)
-    if not acquired:
-        logger.warning(
-            "CONCURRENCY: queue timeout (%ds) exceeded waiting for upstream slot",
-            int(PROXY_CONCURRENCY_QUEUE_TIMEOUT),
-        )
-        raise httpx.RemoteProtocolError(
-            f"Upstream concurrency queue timed out after {int(PROXY_CONCURRENCY_QUEUE_TIMEOUT)}s "
-            f"(limit={PROXY_CONCURRENCY_LIMIT})",
-            request=None,
-        )
-    # In-flight view (spec §4.6 step 2): registered one level down, in
-    # DisconnectAwareClient.send — the choke point every call site shares
-    # (this function is only ONE of several paths to the model; guardrail
-    # and recipe passes post directly).
     try:
-        # Inside the serialized section: swap the upstream slot's KV state to
-        # this request's session if needed (no-op when disabled or unchanged).
-        await _ensure_slot_for_session(client, _current_request_session.get())
-        return await _post_with_retry_inner(client, url, payload, headers)
+        acquired = await _acquire_upstream_slot(_placement_target)
+        if not acquired:
+            logger.warning(
+                "CONCURRENCY: queue timeout (%ds) exceeded waiting for upstream slot",
+                int(PROXY_CONCURRENCY_QUEUE_TIMEOUT),
+            )
+            raise httpx.RemoteProtocolError(
+                f"Upstream concurrency queue timed out after {int(PROXY_CONCURRENCY_QUEUE_TIMEOUT)}s "
+                f"(limit={PROXY_CONCURRENCY_LIMIT})",
+                request=None,
+            )
+        # In-flight view (spec §4.6 step 2): registered one level down, in
+        # DisconnectAwareClient.send — the choke point every call site shares
+        # (this function is only ONE of several paths to the model; guardrail
+        # and recipe passes post directly).
+        try:
+            # Inside the serialized section: swap the upstream slot's KV state to
+            # this request's session if needed (no-op when disabled or unchanged).
+            await _ensure_slot_for_session(client, _current_request_session.get())
+            return await _post_with_retry_inner(client, url, payload, headers)
+        finally:
+            _release_upstream_slot(_placement_target)
     finally:
-        _release_upstream_slot(_placement_target)
+        _release_admitted_busy(_session_id)
 
 
 # How often to re-check the caller while an upstream generation is in flight.
@@ -9184,7 +9402,7 @@ def _maybe_inject_deferral_break(openai_body: dict, monitor: "SessionMonitor") -
     # already pinned to a specific tool by an earlier guard.
     has_tools = bool(openai_body.get("tools"))
     if has_tools and openai_body.get("tool_choice") in (None, "auto"):
-        openai_body["tool_choice"] = "required"
+        _force_tool_choice_required(openai_body)
     monitor.deferral_break_fires += 1
     directive = (
         "\n\nCONTINUE AUTONOMOUSLY (" + reason + "). You do NOT need more "
@@ -9334,7 +9552,7 @@ def _pin_tool_choice_to(openai_body: dict, tool_name: str) -> bool:
     if not pinned:
         return False
     openai_body["tools"] = pinned
-    openai_body["tool_choice"] = "required"
+    _force_tool_choice_required(openai_body)
     return True
 
 
@@ -9624,7 +9842,7 @@ def _maybe_inject_recon_convergence(
                 ]
                 if stripped:
                     openai_body["tools"] = kept
-                    openai_body["tool_choice"] = "required"
+                    _force_tool_choice_required(openai_body)
                     openai_body.pop("grammar", None)
 
     logger.warning(
@@ -10151,7 +10369,7 @@ def build_openai_request(
                 state_reason,
             )
         elif state_choice == "required":
-            openai_body["tool_choice"] = "required"
+            applied_choice = _force_tool_choice_required(openai_body)
             monitor.consecutive_forced_count += 1
             monitor.no_progress_streak = (
                 0 if last_user_has_tool_result else monitor.no_progress_streak + 1
@@ -10230,7 +10448,8 @@ def build_openai_request(
                         "CYCLE BREAK: cannot narrow tools — all tools are cycling, keeping original set",
                     )
             logger.info(
-                "tool_choice forced to 'required' by TOOL STATE MACHINE (phase=%s reason=%s forced_budget=%d)",
+                "tool_choice forced to '%s' by TOOL STATE MACHINE (phase=%s reason=%s forced_budget=%d)",
+                applied_choice,
                 monitor.tool_turn_phase,
                 state_reason,
                 monitor.tool_state_forced_budget_remaining,
@@ -10244,9 +10463,10 @@ def build_openai_request(
             # 'auto' correctly without needing the force, and the force
             # triggers malformed-JSON emissions on Gemma 4 cold turns.
             if has_tools and n_msgs == 1 and PROXY_FORCE_TOOL_CHOICE_ON_COLD_START:
-                openai_body["tool_choice"] = "required"
+                applied_choice = _force_tool_choice_required(openai_body)
                 logger.info(
-                    "tool_choice forced to 'required' on first turn (reason=%s n_msgs=%d cold_start_fix=true)",
+                    "tool_choice forced to '%s' on first turn (reason=%s n_msgs=%d cold_start_fix=true)",
+                    applied_choice,
                     state_reason,
                     n_msgs,
                 )
@@ -10262,22 +10482,24 @@ def build_openai_request(
             monitor.no_progress_streak = 0
             logger.warning("tool_choice set to 'auto' by LOOP BREAKER")
         elif _last_assistant_was_text_only(anthropic_body):
-            openai_body["tool_choice"] = "required"
+            applied_choice = _force_tool_choice_required(openai_body)
             monitor.consecutive_forced_count += 1
             monitor.no_progress_streak = (
                 0 if last_user_has_tool_result else monitor.no_progress_streak + 1
             )
             logger.info(
-                "tool_choice forced to 'required' (last assistant was text-only)"
+                "tool_choice forced to '%s' (last assistant was text-only)",
+                applied_choice,
             )
         elif has_tool_results and n_msgs > 2:
-            openai_body["tool_choice"] = "required"
+            applied_choice = _force_tool_choice_required(openai_body)
             monitor.consecutive_forced_count += 1
             monitor.no_progress_streak = (
                 0 if last_user_has_tool_result else monitor.no_progress_streak + 1
             )
             logger.info(
-                "tool_choice forced to 'required' (active agentic loop with tool results)"
+                "tool_choice forced to '%s' (active agentic loop with tool results)",
+                applied_choice,
             )
         else:
             monitor.consecutive_forced_count = 0
@@ -13062,7 +13284,9 @@ def _should_retry_for_completion_contract(
 def _build_completion_contract_retry_body(openai_body: dict, monitor: SessionMonitor) -> dict:
     retry_body = copy.deepcopy(openai_body)
     retry_body["stream"] = False
-    retry_body["tool_choice"] = "required"
+    # Capability choke point: required on engines that support it, degraded
+    # to 'auto' (with a nudge appended below) on engines that 400 on it.
+    _force_tool_choice_required(retry_body)
     blockers = ", ".join(monitor.completion_blockers) or "remaining_work"
     retry_instruction = (
         "The task is not complete yet. Continue the agentic loop with exactly one valid tool call. "
@@ -13454,7 +13678,9 @@ async def _apply_unexpected_end_turn_guardrail(
     )
 
     retry_body = dict(openai_body)
-    retry_body["tool_choice"] = "required"
+    # Capability choke point (see _force_tool_choice_required): avoids the
+    # 400-wedge on engines without native tool_choice='required'.
+    _force_tool_choice_required(retry_body)
     retry_body["stream"] = False
     # Thinking runaway defeats tool_choice=required: with reasoning enabled the
     # model can burn the whole retry budget in <think> and return end_turn
@@ -16379,6 +16605,32 @@ async def messages(request: Request):
                         pass  # fall through to next handler
             if strict_resp.status_code != 200:
                 error_text = strict_resp.text[:1000]
+                # Capability relax (strict-stream path): an engine without
+                # native tool_choice='required' support (the yasakani family)
+                # 400s the first forced guarded turn — the SAME 400 the
+                # non-stream and stream paths already recover from. Without
+                # this handler the forced-tool streaming path alone would
+                # wedge every session on it. Relax to 'auto', latch the
+                # capability, retry once.
+                if _maybe_relax_unsupported_tool_choice(
+                    strict_body,
+                    strict_resp.status_code,
+                    error_text,
+                    "strict-stream",
+                ):
+                    try:
+                        strict_resp = await _post_with_generation_timeout(
+                            client,
+                            f"{LLAMA_CPP_BASE}/chat/completions",
+                            strict_body,
+                            {"Content-Type": "application/json"},
+                        )
+                    except ClientGoneError:
+                        raise  # control flow: never swallow into a broad handler
+                    except Exception:
+                        pass  # fall through to next handler
+            if strict_resp.status_code != 200:
+                error_text = strict_resp.text[:1000]
                 if _maybe_disable_grammar_for_tools_error(
                     strict_body,
                     strict_resp.status_code,
@@ -16408,6 +16660,25 @@ async def messages(request: Request):
                             status_code=529,
                             media_type="application/json",
                         )
+
+            if strict_resp.status_code != 200:
+                error_text = strict_resp.text[:1000]
+                # Stale served-ids recovery (strict-stream path): the guarded
+                # buffered path takes the same arm-switch 404 as the others.
+                if await _maybe_refresh_served_ids_on_404(
+                    strict_body, strict_resp.status_code, error_text, "strict-stream"
+                ):
+                    try:
+                        strict_resp = await _post_with_generation_timeout(
+                            client,
+                            f"{LLAMA_CPP_BASE}/chat/completions",
+                            strict_body,
+                            {"Content-Type": "application/json"},
+                        )
+                    except ClientGoneError:
+                        raise  # control flow: never swallow into a broad handler
+                    except Exception:
+                        pass  # fall through to next handler
 
             if strict_resp.status_code != 200:
                 error_text = strict_resp.text[:1000]
@@ -16497,7 +16768,9 @@ async def messages(request: Request):
                 retry_body["temperature"] = 0.1
                 retry_body["stream"] = False
                 if has_tools:
-                    retry_body["tool_choice"] = "required"
+                    # Capability choke point: degrade to 'auto' on engines
+                    # without native required support instead of a 400.
+                    _force_tool_choice_required(retry_body)
                     logger.warning("DEGENERATE RETRY: retrying with tool_choice=required max_tokens=8192")
                 else:
                     logger.warning("DEGENERATE RETRY: retrying text-only with max_tokens=2048 temp=0.1")
@@ -16678,6 +16951,61 @@ async def messages(request: Request):
                 error_body = await resp.aread()
                 await resp.aclose()
                 error_text = error_body.decode("utf-8", errors="replace")[:1000]
+            # Capability relax (stream path): an engine without native
+            # tool_choice='required' 400s the first forced turn; relax to
+            # 'auto' and retry once before failing the client request. The
+            # latch makes this a once-per-process diagnosis, not a per-turn
+            # retry tax.
+            if _maybe_relax_unsupported_tool_choice(
+                openai_body,
+                resp.status_code,
+                error_text,
+                "stream",
+            ):
+                resp = await client.send(
+                    client.build_request(
+                        "POST",
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        json=openai_body,
+                        headers={"Content-Type": "application/json"},
+                    ),
+                    stream=True,
+                )
+                setattr(resp, "_uap_client", client)
+                if resp.status_code == 200:
+                    return StreamingResponse(
+                        stream_anthropic_response(resp, model, monitor, body),
+                        media_type="text/event-stream",
+                    )
+                # fall through if still failing
+                error_body = await resp.aread()
+                await resp.aclose()
+                error_text = error_body.decode("utf-8", errors="replace")[:1000]
+            # Stale served-ids recovery (stream path): same 404-staleness
+            # signature as the non-stream path — refresh the ids cache,
+            # re-reconcile the wire model, retry once.
+            if await _maybe_refresh_served_ids_on_404(
+                openai_body, resp.status_code, error_text, "stream"
+            ):
+                resp = await client.send(
+                    client.build_request(
+                        "POST",
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        json=openai_body,
+                        headers={"Content-Type": "application/json"},
+                    ),
+                    stream=True,
+                )
+                setattr(resp, "_uap_client", client)
+                if resp.status_code == 200:
+                    return StreamingResponse(
+                        stream_anthropic_response(resp, model, monitor, body),
+                        media_type="text/event-stream",
+                    )
+                # fall through if still failing
+                error_body = await resp.aread()
+                await resp.aclose()
+                error_text = error_body.decode("utf-8", errors="replace")[:1000]
             if _maybe_disable_grammar_for_tools_error(
                 openai_body,
                 resp.status_code,
@@ -16826,8 +17154,29 @@ async def messages(request: Request):
             relaxed = (
                 _is_gemma4_peg_parse_failure(resp.status_code, error_text)
                 and _relax_tool_choice_for_gemma4_peg_retry(openai_body, "non-stream")
+            ) or _maybe_relax_unsupported_tool_choice(
+                openai_body, resp.status_code, error_text, "non-stream"
             )
             if relaxed:
+                try:
+                    resp = await _post_with_generation_timeout(
+                        client,
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        openai_body,
+                        {"Content-Type": "application/json"},
+                    )
+                except ClientGoneError:
+                    raise  # control flow: never swallow into a broad handler
+                except Exception:
+                    pass  # fall through
+        if resp.status_code != 200:
+            error_text = resp.text[:1000]
+            # Stale served-ids recovery (non-stream path): a 404 that names
+            # the model unservable and lists the served aliases means the ids
+            # cache predates an arm switch. Refresh + re-reconcile + retry once.
+            if await _maybe_refresh_served_ids_on_404(
+                openai_body, resp.status_code, error_text, "non-stream"
+            ):
                 try:
                     resp = await _post_with_generation_timeout(
                         client,
@@ -16956,7 +17305,9 @@ async def messages(request: Request):
         if was_degenerate and openai_body.get("tools"):
             logger.warning("DEGENERATE RETRY (stream): retrying with tool_choice=required max_tokens=8192")
             retry_body = dict(openai_body)
-            retry_body["tool_choice"] = "required"
+            # Capability choke point: degrade to 'auto' on engines without
+            # native required support instead of a hard 400.
+            _force_tool_choice_required(retry_body)
             # See non-stream site: 2048 starves thinking + tool args.
             retry_body["max_tokens"] = 8192
             retry_body["temperature"] = 0.1
