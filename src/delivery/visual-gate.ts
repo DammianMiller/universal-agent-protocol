@@ -631,7 +631,16 @@ export function judgePage(
       );
     }
   } else if (report.expectsAnimation) {
-    problems.push('page source expects a canvas animation but no canvas was found in the DOM');
+    // No canvas, but the page source uses requestAnimationFrame. rAF is the
+    // standard clock for SVG/DOM animations too, so the absence of a canvas is
+    // NOT evidence of a broken render — the measurable question is whether the
+    // page actually moved between samples. Motion at/above the floor passes;
+    // only a genuinely static render fails, and the message says so.
+    if (report.motionRatio < minMotion) {
+      problems.push(
+        'page uses requestAnimationFrame but the render is not animating (no measurable motion between samples)'
+      );
+    }
   }
   return problems;
 }
