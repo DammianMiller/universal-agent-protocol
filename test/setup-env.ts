@@ -40,3 +40,21 @@ if (process.env.UAP_MODEL_LEASE === undefined) {
 if (process.env.UAP_FOLLOW_POLL_DIR === undefined) {
   process.env.UAP_FOLLOW_POLL_DIR = join(tmpdir(), `uap-test-follow-polls-${process.pid}`);
 }
+
+/**
+ * Tier resolution must never inherit the operator's REAL fleet-global store.
+ *
+ * resolveTiers() reads UAP_TIER_STORE (else ~/.uap/quality/tiers.json) so a
+ * published fleet tier applies to every project — the auto-apply feature. In
+ * the test sandbox that inheritance is contamination: any test asserting a
+ * fresh project's known-tier list or a no-tier seam sees the LIVE store
+ * instead (observed the day the feature shipped: publishing
+ * visual-scene/fable-high to the real fleet store reddened 8 tests across 3
+ * files that never mention tiers). Tests that exercise the global store
+ * itself pass their own env or set UAP_TIER_STORE explicitly
+ * (test/quality/tier-autoapply.test.ts). The path below never exists, so the
+ * default is an empty global — resolveTiers fails soft to the project view.
+ */
+if (process.env.UAP_TIER_STORE === undefined) {
+  process.env.UAP_TIER_STORE = join(tmpdir(), `uap-test-no-fleet-tiers-${process.pid}.json`);
+}
