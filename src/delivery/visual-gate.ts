@@ -587,8 +587,35 @@ export function motionBetween(a: string[] | undefined, b: string[] | undefined):
   return changed / a.length;
 }
 
-/** Pure verdict for one page from its observations — unit-testable. Optional
- * thresholds (project visual targets) tighten the built-in floors. */
+/**
+ * Pure verdict for one page from its observations — unit-testable. Optional
+ * thresholds (project visual targets) tighten the built-in floors.
+ *
+ * SIGNATURE   judgePage(report: Omit<PageVisualReport, 'problems'>,
+ *             targets: { minDistinctColors?, maxDominantRatio?, minMotionRatio? } = {})
+ * RETURNS     string[] — the page's PROBLEMS; an EMPTY array means the page is
+ *             visually sound. There is no boolean here (that is VisualVerdict.
+ *             passed), so callers/tests treat `problems.length === 0` as PASS.
+ *
+ * BRANCHES (evaluation order — pinned by test/delivery/judge-page-motion.test.ts):
+ *   1. !report.loaded              → ['page did not load'] and EARLY RETURN.
+ *   2. failedRequests.length > 0   → "<n> external resource(s) FAILED to load: …"
+ *   3. runtimeErrors.length > 0    → "uncaught runtime error(s) during observation: …"
+ *   4. hasCanvas:
+ *        a. below the color/dominance floor → "canvas renders below the visual floor (…)"
+ *        b. expectsAnimation && motionRatio < minMotion →
+ *           'page uses requestAnimationFrame but motion is X% (< Y% required) —
+ *            the scene is not animating enough'
+ *   5. !hasCanvas && expectsAnimation && motionRatio < minMotion →
+ *        'page uses requestAnimationFrame but the render is not animating
+ *         (no measurable motion between samples)'
+ *      A missing canvas is NOT itself a failure (rAF drives SVG/DOM animation too);
+ *      with expectsAnimation=false no motion is required at all.
+ *
+ * MOTION FLOOR  minMotion = Math.max(MIN_MOTION_RATIO /* 0.02 *\/,
+ *   targets.minMotionRatio ?? 0) — project targets can only RAISE it, and the
+ *   comparison is strict `<` (0.02 passes, 0.01 fails).
+ */
 export function judgePage(
   report: Omit<PageVisualReport, 'problems'>,
   targets: { minDistinctColors?: number; maxDominantRatio?: number; minMotionRatio?: number } = {}
