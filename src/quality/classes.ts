@@ -84,9 +84,18 @@ const VISUAL_AXES: Record<string, AxisSpec> = {
     },
   },
   glowFrac: {
-    direction: 'min',
+    // Banded (live finding, voxel-pagoda-speedy-uap-max): a luminous wash —
+    // a saturated orange sky/fog covering a third of the frame — measured
+    // glowFrac 9-15x the Fable anchors and PASSED, because the axis was
+    // min-only ("more glow is more presence"). Glow is frame COVERAGE: too
+    // much is a wash symptom exactly like too little is a dead scene. The
+    // anchors set the register on both sides. Already-derived tiers keep
+    // gapping on their stored thresholds unchanged (the store is policy);
+    // re-derive to pick up the band.
+    direction: 'band',
     directives: {
       low: 'emissive coverage: expand the glow voxel set and brighten emissives (windows, lantern fire, water sparkle), then lower the bloom threshold or raise strength',
+      high: 'glow register: the frame is a luminous wash, not a lit scene — mute the bright saturated masses (sky, fog, hot palette) toward the anchor band before touching emissives; coverage past the band measured the wash, not the lights',
     },
   },
   darkFrac: {

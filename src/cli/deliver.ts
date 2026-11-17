@@ -26,7 +26,7 @@ import {
   resolveCriticEnforcement,
   formatVerificationProvenance,
 } from '../delivery/verification-provenance.js';
-import { loadTiers } from '../quality/tiers.js';
+import { resolveTiers } from '../quality/tiers.js';
 import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
@@ -3145,7 +3145,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // mode), and an explicit UAP_DELIVER_ALLOW_SELF_JUDGE=1 remains the
   // documented operator opt-out.
   const criticEnforcement = resolveCriticEnforcement({
-    tierRelevant: Object.keys(loadTiers(projectRoot).tiers).length > 0,
+    // resolveTiers: a published fleet-global tier makes the run tier-relevant
+    // too (auto-apply) — the bar follows the work, not the anchors' project.
+    tierRelevant: Object.keys(resolveTiers(projectRoot).tiers).length > 0,
     distinct: judgeDistinct,
     allowSelfJudge,
     generatorId: model.id,
