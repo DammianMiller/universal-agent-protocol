@@ -36,6 +36,7 @@ import { runInteractionGate } from './interaction-gate.js';
 import type { ProbeMode } from './interaction/types.js';
 import { resolveFidelity } from './fidelity.js';
 import { buildUserPathsNote } from './user-validation.js';
+import { formatTierGateLine, resolveTierGateMode, runTierGate } from '../quality/tier-gate.js';
 import {
   appendEvidenceEvent,
   assessDeliveryEvidence,
@@ -96,6 +97,8 @@ export interface MissionAcceptanceDeps {
   userPathsNote?: typeof buildUserPathsNote;
   /** Ask the judge for the P39 fixed-form critic report (deliver sets this when the judge is distinct). */
   criticForm?: boolean;
+  /** Quality-tier gate (0.5): measure the visual gate's captures against derived tiers. */
+  tierGate?: typeof runTierGate;
 }
 
 /**
@@ -152,6 +155,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
   const capBaseline = deps.capabilityBaseline ?? readCapabilityBaseline;
   const capCurrent = deps.capabilityCurrent ?? readCapabilityCurrent;
   const userPathsNote = deps.userPathsNote ?? buildUserPathsNote;
+  const tierGateRunner = deps.tierGate ?? runTierGate;
   // eslint-disable-next-line no-console
   const note = deps.note ?? ((line: string): void => console.log(line));
   return async (root, gateCtx) => {
@@ -175,6 +179,10 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     const fidelity = resolveFidelity(root);
     let visualNote = '';
     let capabilityAdvisory = '';
+    // Quality-tier gate (0.5) input: the captures observed THIS turn (the
+    // visual gate's last screenshot per page), collected wherever the visual
+    // gate ran so the tier gate can measure in every mode.
+    let tierCaptures: string[] = [];
     // Evidence-gate (B/D) inputs: the interaction/visual outcomes observed on
     // THIS turn, hoisted so the judge-pass audit at the end can see what
     // actually ran regardless of which branch ran it.
@@ -268,6 +276,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
             return { passed: false, feedback: structuralFeedback(visual) };
           }
           visualNote = visualRuntimeNote(visual);
+          tierCaptures = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
           // Fidelity-max: the loop must converge against the SAME aesthetic bar
           // verify enforces, or "delivered" and "verified" diverge (run Y).
           // Runs in primary mode (always, as before) and in secondary mode under
@@ -313,8 +322,28 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
           return { passed: false, feedback: structuralFeedback(visual) };
         }
         visualNote = visualRuntimeNote(visual);
+        tierCaptures = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
       }
     }
+    // Quality-tier gate (0.5, shadow-first): measure the observed captures
+    // against the project's derived tiers. Deterministic — it runs BEFORE the
+    // judge call, so a below-tier artifact in block mode is refused DONE
+    // without spending the judge turn, and its gap report feeds the loop with
+    // the same worst-first directives `uap quality gap` prints. Shadow mode
+    // (the default) assesses and notes; only UAP_TIER_GATE=block refuses.
+    const tierGateResult = tierGateRunner({
+      projectRoot: root,
+      captures: tierCaptures,
+      mode: resolveTierGateMode(process.env),
+    });
+    if (!tierGateResult.pass) {
+      return { passed: false, feedback: tierGateResult.feedback ?? `TIER GATE — below tier (see ${formatTierGateLine(tierGateResult)})` };
+    }
+    // Silence the non-events: an operator who turned the gate off, and
+    // tier-less projects, must not see a line on every acceptance turn.
+    const tierGateSilent =
+      tierGateResult.skipped === 'gate off (UAP_TIER_GATE=off)' || tierGateResult.skipped === 'no derived tiers';
+    if (!tierGateSilent) note(formatTierGateLine(tierGateResult));
     const resolvedSpec = deps.specs.resolve(root);
     const uvNote = userPathsNote(root);
     // Delivery-evidence gate (B) + over-claim metric (D): a judge (or churn
