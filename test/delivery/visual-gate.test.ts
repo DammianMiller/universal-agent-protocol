@@ -562,3 +562,80 @@ describe('START_POINTER dismisses intro overlays so the judge grades the app, no
     expect(START_POINTER).toMatch(/tagName === 'CANVAS' \|\| el\.tagName === 'BODY' \|\| el\.tagName === 'HTML'/);
   });
 });
+
+/**
+ * REGRESSION — docs/visual/merge-gate.html (ADR-0004's visual, committed Oct 3)
+ * was falsely failed by the stop gate with:
+ *
+ *   'page source expects a canvas animation but no canvas was found in the DOM'
+ *
+ * The premise was wrong: requestAnimationFrame is the standard clock for SVG/DOM
+ * animation too, so the absence of a <canvas> is not evidence of a broken
+ * render. judgePage now asks the measurable question in that branch — did the
+ * render actually move between samples? — and only a genuinely static render
+ * fails, with a message that says so.
+ */
+describe('judgePage — canvas-less pages that use requestAnimationFrame (merge-gate.html regression)', () => {
+  const NON_CANVAS_MESSAGE =
+    'page uses requestAnimationFrame but the render is not animating (no measurable motion between samples)';
+  const REMOVED_MESSAGE = 'page source expects a canvas animation but no canvas was found in the DOM';
+
+  const page = (over: Record<string, unknown> = {}) => ({
+    file: 'merge-gate.html',
+    loaded: true,
+    hasCanvas: false,
+    distinctColors: 40,
+    dominantRatio: 0.4,
+    motionRatio: 0,
+    expectsAnimation: true,
+    runtimeErrors: [] as string[],
+    failedRequests: [] as string[],
+    screenshots: [] as string[],
+    ...over,
+  });
+
+  it('fails a canvas-less rAF page that never moves, with the motion message', () => {
+    expect(judgePage(page({ motionRatio: 0 }))).toContain(NON_CANVAS_MESSAGE);
+  });
+
+  it('fails a canvas-less rAF page below the motion floor', () => {
+    expect(judgePage(page({ motionRatio: 0.001 }))).toContain(NON_CANVAS_MESSAGE);
+  });
+
+  it('never emits the removed "no canvas was found in the DOM" message', () => {
+    for (const motionRatio of [0, 0.001, 0.019, 0.02, 0.2, 1]) {
+      const joined = judgePage(page({ motionRatio })).join('\n');
+      expect(joined).not.toContain(REMOVED_MESSAGE);
+      expect(joined).not.toContain('no canvas was found in the DOM');
+    }
+  });
+
+  it('passes an animating SVG/DOM page (the merge-gate.html shape)', () => {
+    expect(judgePage(page({ motionRatio: 0.12 }))).toEqual([]);
+  });
+
+  it('passes a canvas-less rAF page exactly at the motion floor', () => {
+    expect(judgePage(page({ motionRatio: 0.02 }))).toEqual([]);
+  });
+
+  it('honours a project-raised motion floor for canvas-less pages', () => {
+    expect(judgePage(page({ motionRatio: 0.05 }), { minMotionRatio: 0.1 })).toContain(NON_CANVAS_MESSAGE);
+  });
+
+  it('leaves a canvas-less page that never promised animation unjudged', () => {
+    expect(judgePage(page({ motionRatio: 0, expectsAnimation: false }))).toEqual([]);
+  });
+
+  it('keeps the canvas branch and its messages unchanged', () => {
+    const canvas = { hasCanvas: true, distinctColors: 12, dominantRatio: 0.5, expectsAnimation: true };
+    const staticCanvas = judgePage(page({ ...canvas, motionRatio: 0 })).join('\n');
+    expect(staticCanvas).toContain('not animating enough');
+    expect(staticCanvas).not.toContain(NON_CANVAS_MESSAGE);
+    expect(staticCanvas).not.toContain(REMOVED_MESSAGE);
+    const blankCanvas = judgePage(
+      page({ ...canvas, distinctColors: 0, dominantRatio: 1, motionRatio: 0.5 })
+    ).join('\n');
+    expect(blankCanvas).toContain('canvas renders below the visual floor');
+    expect(judgePage(page({ ...canvas, motionRatio: 0.3 }))).toEqual([]);
+  });
+});

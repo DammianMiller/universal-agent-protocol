@@ -92,7 +92,11 @@ describe('unexpected-end-turn guardrail retry', () => {
     const fnStart = contents.indexOf('async def _apply_unexpected_end_turn_guardrail');
     expect(fnStart).toBeGreaterThan(-1);
     const fnBody = contents.slice(fnStart, fnStart + 4000);
-    expect(fnBody).toContain('retry_body["tool_choice"] = "required"');
+    // The retry is forced through the capability choke point (epic 400): it
+    // applies 'required' when the live engine supports it and degrades to
+    // 'auto' once the engine has 400'd the field (latched process-wide) —
+    // a direct 'required' literal here would re-wedge those engines.
+    expect(fnBody).toContain('_force_tool_choice_required(retry_body)');
     expect(fnBody).toContain('retry_body["stream"] = False');
     // thinking-off must land on the retry body BEFORE the grammar application
     // and upstream POST, not leak onto the caller's original request body
