@@ -20,6 +20,7 @@
  */
 import { GapReport, gapReport, GapResult } from './tiers.js';
 import { classOfTierKey, resolveClass } from './classes.js';
+import { tierContractText } from './tier-contract.js';
 
 /** One candidate artifact for a round. The id is stable (ranking tiebreak + trace). */
 export interface TierLadderCandidate {
@@ -82,11 +83,15 @@ export interface TierLadderConfig {
    * Produce the round's candidate artifacts. `round` is 1-based;
    * `previousBest` is the prior round's survivor (null on round 1). An empty
    * result cuts the ladder with `cut-no-candidates` — never guess a pass.
+   * `contract` (Wave 1.3) is the tier contract text — the executor prompt
+   * carries it so the model climbs toward the bar instead of discovering it
+   * through failed rounds. Null when the tier carries no thresholds.
    */
   generate: (
     round: number,
     previousBest: TierLadderCandidate | null,
     history: TierLadderRound[],
+    contract: string | null,
   ) => Promise<TierLadderCandidate[]> | TierLadderCandidate[];
   /** Round ceiling (default 4 — the attempt-farm guard from the plan). */
   maxRounds?: number;
@@ -156,6 +161,9 @@ export async function runTierLadder(config: TierLadderConfig): Promise<TierLadde
   // A probe 'unreadable' result here is expected (empty artifact path): the
   // probe exists only to fail closed on unknown/stale tier keys early.
   const cls = classOfTierKey(config.tierKey);
+  // Wave 1.3: the contract the executor prompt carries — resolved once,
+  // from the same store the gates read, so prompt and gate cannot drift.
+  const contract = tierContractText(config.projectRoot, config.tierKey);
 
   const rounds: TierLadderRound[] = [];
   let previousBest: TierLadderCandidate | null = null;
@@ -165,7 +173,7 @@ export async function runTierLadder(config: TierLadderConfig): Promise<TierLadde
   let escalationFired = false;
 
   for (let round = 1; round <= maxRounds; round++) {
-    const allGenerated = await config.generate(round, previousBest, rounds);
+    const allGenerated = await config.generate(round, previousBest, rounds, contract);
     // The N cap is enforced here, not trusted to the generator (the
     // attempt-farm guard: every candidate costs a model call + a measurement).
     const generated = allGenerated.slice(0, candidatesPerRound);

@@ -28,6 +28,7 @@ import { scanContent } from '../quality/scanner.js';
 import { TierVector } from '../quality/tier.js';
 import { resolveClass, storeArtifactAnchor } from '../quality/classes.js';
 import { TierLadderCandidate, runTierLadder } from '../quality/tier-ladder.js';
+import { classSamplingProfile, tierContractText, tierKeysFor } from '../quality/tier-contract.js';
 import { DEFAULT_TOLERANCE, deriveTier, gapReport } from '../quality/tiers.js';
 
 export interface QualityOptions {
@@ -85,6 +86,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       return gapCmd(dir, options);
     case 'ladder':
       return ladderCmd(dir, options);
+    case 'contract':
+      return contractCmd(dir, options);
     default:
       console.log(chalk.bold('uap quality — quality-metrics gate\n'));
       console.log('  init                Write .uap/quality-metrics.json (activates the gate)');
@@ -99,6 +102,7 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  derive <class>      Derive a tier from a class\'s anchors (--name, --tolerance)');
       console.log('  gap --file <f>      Gap an artifact against a tier (--tier <class/name>); exit 2 below tier');
       console.log('  ladder --rounds-dir Rank harvested best-of-N rounds against a tier (--tier); escalation + honest cut');
+      console.log('  contract --tier <k>  Print the tier contract (the injectable executor-prompt block)');
       console.log(chalk.dim('  Classes: visual-scene (PNG), api-behavior (API transcript JSON), bench-score (bench results JSON)'));
   }
 }
@@ -506,6 +510,11 @@ async function ladderCmd(dir: string, options: QualityOptions): Promise<void> {
       ? chalk.green(`  ✓ ${result.summary}`)
       : chalk.red(`  ✗ ${result.summary}`);
     console.log(chalk.bold(`\n  ${head}`));
+    const contract = tierContractText(dir, options.tier);
+    if (contract) {
+      const axes = contract.split('\n').filter((l) => l.startsWith('- ')).length;
+      console.log(chalk.dim(`    contract carried by the executor prompt: ${axes} axis(es) · sampling ${classSamplingProfile(options.tier.split('/')[0] ?? '')?.temperature ?? 'executor default'}`));
+    }
     for (const r of result.rounds) {
       const best = r.best ? `best ${r.best}` : 'no measurable candidate';
       const esc = r.escalated ? chalk.yellow(' · ↑ escalation fired') : '';
@@ -521,4 +530,35 @@ async function ladderCmd(dir: string, options: QualityOptions): Promise<void> {
     }
   }
   if (result.outcome !== 'tier-reached') process.exitCode = 2;
+}
+
+/**
+ * `uap quality contract --tier <class/name>` — print the tier contract: the
+ * measured axes with thresholds, the failure directives, the evidence guard,
+ * and the class sampling profile. This is the block an executor prompt
+ * carries (Wave 1.3: the model climbs toward the bar, not through failed gates).
+ */
+function contractCmd(dir: string, options: QualityOptions): void {
+  if (!options.tier) {
+    const known = tierKeysFor(dir);
+    console.log(chalk.yellow('  Usage: uap quality contract --tier <class/name>'));
+    if (known.length > 0) console.log(chalk.dim(`    known tiers: ${known.join(', ')}`));
+    process.exitCode = 2;
+    return;
+  }
+  const contract = tierContractText(dir, options.tier);
+  if (!contract) {
+    const known = tierKeysFor(dir);
+    console.log(chalk.red(`  ✗ unknown tier '${options.tier}'`));
+    console.log(chalk.dim(`    known: ${known.length ? known.join(', ') : '(none — derive one first: uap quality derive <class>)'}`));
+    process.exitCode = 2;
+    return;
+  }
+  const cls = options.tier.split('/')[0] ?? options.tier;
+  const sampling = classSamplingProfile(cls);
+  console.log(chalk.bold(`\n  tier contract: ${options.tier}`));
+  console.log(contract.split('\n').map((l) => `    ${l}`).join('\n'));
+  if (!sampling) {
+    console.log(chalk.dim('\n    sampling: no class profile declared — the executor keeps its own default'));
+  }
 }

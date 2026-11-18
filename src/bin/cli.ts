@@ -839,7 +839,7 @@ program
 program
   .command('quality')
   .description('Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types')
-  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile | derive | gap | ladder')
+  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile | derive | gap | ladder | contract')
   .argument('[target]', 'Positional target file (check), anchor class (anchor), or tier class (derive)')
   .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
   .option('--json', 'Emit machine-readable JSON')
