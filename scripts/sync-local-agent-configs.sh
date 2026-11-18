@@ -684,14 +684,17 @@ set_kv() { # <key> <value>
 }
 set_kv PROXY_CONCURRENCY_LIMIT "$RAILS"
 set_kv UAP_MODEL_SLOTS "$RAILS"
-# THIS is the setting that actually protects the shared pool.
-# PROXY_CONCURRENCY_LIMIT gates in-flight REQUESTS; the admission limit gates
-# distinct SESSIONS holding KV. It shipped at 4 (matching an older --parallel 4)
-# and its own comment says to keep it equal to the slot count "so >slots
-# sessions queue instead of evicting each other". Left at 4 against 2 rails,
-# four hot sessions x 114688 = 458752 cells would be admitted against a 229376
-# pool — the exact overcommit the per-session cap exists to prevent.
-set_kv PROXY_SESSION_ADMISSION_LIMIT "$RAILS"
+# PROXY_CONCURRENCY_LIMIT above gates in-flight REQUESTS; the admission
+# limit gates distinct SESSIONS holding KV. OPERATOR DECISION 2026-11-18:
+# admission installs 4 on EVERY arm (the 2026-11-17 queue-depth override,
+# made the durable default instead of a post-sync re-apply). The trade is
+# accepted overcommit of the session-cap arithmetic (4 hot sessions x the
+# 114688 window demand 458752 cells of the 131072 pool on this arm): the
+# admission machinery handles contention — idle sessions prune at the 90s
+# TTL and a waiter force-admits at 300s by evicting the LRU admission — so
+# this is a queue-depth preference, not a pool budget. The runtime default
+# in tools/agents/scripts/anthropic_proxy.py matches (fallback "4").
+set_kv PROXY_SESSION_ADMISSION_LIMIT "4"
 # Fallback ONLY. Do not mistake this for a cap: _maybe_recheck_context_window
 # overwrites default_context_window (and every live monitor) with the /slots
 # value on its next tick. It matters only if detection cannot reach the server.

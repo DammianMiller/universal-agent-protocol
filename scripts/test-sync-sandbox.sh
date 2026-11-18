@@ -101,7 +101,7 @@ cat > "$SANDBOX/.config/uap/anthropic-proxy.env" <<'EOF'
 PROXY_PORT=4000
 PROXY_CONCURRENCY_LIMIT=1
 UAP_MODEL_SLOTS=1
-PROXY_SESSION_ADMISSION_LIMIT=4
+PROXY_SESSION_ADMISSION_LIMIT=2
 PROXY_CONTEXT_WINDOW=229376
 PROXY_LOG_LEVEL=INFO
 EOF
@@ -323,7 +323,7 @@ grep -q 'os.replace'           "$INSTALLER" && ok "installer: atomic config writ
 env_f="$SANDBOX/.config/uap/anthropic-proxy.env"
 grep -q "^PROXY_CONCURRENCY_LIMIT=$RAILS$"      "$env_f" && ok "proxy: concurrency -> $RAILS"      || bad "proxy: concurrency not $RAILS"
 grep -q "^UAP_MODEL_SLOTS=$RAILS$"              "$env_f" && ok "proxy: model slots -> $RAILS"      || bad "proxy: slots not $RAILS"
-grep -q "^PROXY_SESSION_ADMISSION_LIMIT=$RAILS$" "$env_f" && ok "proxy: admission -> $RAILS (pool guard)" || bad "proxy: admission limit not $RAILS"
+grep -q "^PROXY_SESSION_ADMISSION_LIMIT=4$" "$env_f" && ok "proxy: admission -> 4 (operator default 2026-11-18)" || bad "proxy: admission limit not 4"
 grep -q "^PROXY_CONTEXT_WINDOW=$CTX$"    "$env_f" && ok "proxy: fallback window $CTX (profile cap)" || bad "proxy: fallback window wrong"
 grep -q '^PROXY_LOG_LEVEL=INFO$'           "$env_f" && ok "proxy: unrelated keys preserved" || bad "proxy: clobbered other keys"
 [ "$(grep -c '^PROXY_CONCURRENCY_LIMIT=' "$env_f")" = "1" ] && ok "proxy: no duplicate keys" || bad "proxy: duplicated key"
