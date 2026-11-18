@@ -20,7 +20,7 @@ uap inference health --strict       # exit 1 on WARN or RED
 
 Today both exist on the box: the proxy's engine arm is a **llama.cpp
 server** (Qwen3.8-Flash-Next UD-IQ4_XS, the speedy v31 arm on port 8080),
-and the **strata serve layer** (one rail, a 131072-cell int8 pool, MTP
+and the **strata serve layer** (one rail, a 196608-cell int8 pool, MTP
 speculative decoding, no systemd unit) carries the Swift 1.5 IQ3_S trial
 under `/home/cogtek/dev/strata`. The command fetches `/metrics` once and
 classifies the backend: a

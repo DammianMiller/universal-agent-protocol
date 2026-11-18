@@ -122,8 +122,12 @@ class LocalAdvisoryTest(unittest.TestCase):
             #    real os.environ — and that file sets UAP_DELIVER_LOCAL_MODE.
             #    So this test's result depended on whether a proxy-importing
             #    module ran before it in the same process.
+            #  - UAP_ENFORCE_DELIVERY: same leak class, hit live 2026-11-17 —
+            #    test_proxy_env_loader loads the operator env (escalate) and
+            #    every advisory-expecting case below then blocked (rc 2),
+            #    because escalate counts as a blocking mode.
             for k in ("ANTHROPIC_BASE_URL","UAP_DELIVER_LOCAL_ADVISORY","UAP_DELIVER_ACTIVE",
-                      "UAP_DELIVER_BYPASS","UAP_DELIVER_LOCAL_MODE"): e.pop(k, None)
+                      "UAP_DELIVER_BYPASS","UAP_DELIVER_LOCAL_MODE","UAP_ENFORCE_DELIVERY"): e.pop(k, None)
             e.update(extra_env)
             p = _sp.run([_sys.executable, str(_ENF), "--operation","Write","--args",_json.dumps({"file_path":str(f)})], capture_output=True, text=True, env=e)
             return p.returncode, _json.loads(p.stdout) if p.stdout.strip() else {}
@@ -147,8 +151,9 @@ class LocalModeTest(unittest.TestCase):
             root = _Path(td); (root/".git").mkdir()
             f = root/"src"/"a.ts"; f.parent.mkdir(parents=True); f.write_text("x")
             e = dict(_os.environ); e["UAP_REPO_ROOT"]=str(root)
-            # See the note in LocalAdvisoryTest._run — same ambient-bypass leak.
-            for k in ("ANTHROPIC_BASE_URL","UAP_DELIVER_LOCAL_ADVISORY","UAP_DELIVER_LOCAL_MODE","UAP_DELIVER_ACTIVE","UAP_DELIVER_BYPASS"): e.pop(k, None)
+            # See the note in LocalAdvisoryTest._run — same ambient-bypass leak
+            # (incl. UAP_ENFORCE_DELIVERY, added 2026-11-17).
+            for k in ("ANTHROPIC_BASE_URL","UAP_DELIVER_LOCAL_ADVISORY","UAP_DELIVER_LOCAL_MODE","UAP_DELIVER_ACTIVE","UAP_DELIVER_BYPASS","UAP_ENFORCE_DELIVERY"): e.pop(k, None)
             e.update(env)
             p = _sp.run([_sys.executable, str(_ENF), "--operation","Write","--args",_json.dumps({"file_path":str(f)})], capture_output=True, text=True, env=e)
             return p.returncode, _json.loads(p.stdout) if p.stdout.strip() else {}
