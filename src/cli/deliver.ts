@@ -27,6 +27,7 @@ import {
   formatVerificationProvenance,
 } from '../delivery/verification-provenance.js';
 import { resolveTiers } from '../quality/tiers.js';
+import { tierContractText, tierKeysFor } from '../quality/tier-contract.js';
 import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
@@ -3588,6 +3589,28 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       /* contract injection is a best-effort completeness aid */
     }
   }
+  // Quality-tier contract (Wave 1.3, wired): every tier this project resolves
+  // (project store over the fleet-global store) rides the executor prompt from
+  // turn 1 — the measured axes, their bands, and the per-axis directive for
+  // each failing side — so the model builds TO the digitized bar instead of
+  // discovering it through gate failures. Fail-soft: an aid, never a blocker;
+  // tier-less projects are unaffected (tierKeysFor is empty and nothing is
+  // injected). This closes the seam the wave left open: the contract existed
+  // (uap quality contract) but no executor path injected it.
+  try {
+    const tierKeys = tierKeysFor(projectRoot);
+    const blocks = tierKeys
+      .map((k) => tierContractText(projectRoot, k))
+      .filter((s): s is string => Boolean(s && s.trim()));
+    if (blocks.length > 0) {
+      loopConfig.tierContract = blocks.join('\n\n');
+      console.log(
+        chalk.dim(`  tier contract: ${tierKeys.join(', ')} injected into the executor prompt`)
+      );
+    }
+  } catch {
+    /* tier contract injection is a best-effort quality aid */
+  }
   // Say up front when the task names files this run cannot reach. Refusing the
   // path at edit time (safePath) does not stop the model wanting the file, and
   // its fallback — creating a same-named file INSIDE the root — is allowed and
@@ -4434,6 +4457,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           // blind, e.g. a canvas-only UI with no DOM handles, and only later turns
           // — which do get the contract — can recover it).
           acceptanceContract: loopConfig.acceptanceContract,
+          tierContract: loopConfig.tierContract,
           onIteration: (record) => { updateDeliverHeartbeat(projectRoot); printProgress(record); },
         },
         executor,

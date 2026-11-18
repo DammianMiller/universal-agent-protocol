@@ -106,6 +106,16 @@ export interface PromptContext {
    */
   acceptanceContract?: string;
   /**
+   * Quality-tier contract (Wave 1.3, wired): the digitized quality bar for every
+   * tier the project resolves (project store over the fleet-global store) —
+   * measured axes, thresholds, and the per-axis directive for each failing side,
+   * derived up front by the CLI via quality/tier-contract. Injected every turn
+   * like `acceptanceContract`: the executor builds TO the bar from turn 1
+   * instead of discovering it through gate failures. Null for tier-less
+   * projects (never invent a bar).
+   */
+  tierContract?: string;
+  /**
    * MIPRO (S8/3a): tuner-selected prompt-fragment variants (fragmentId→variantId,
    * from promptSelectionFromConfig). When absent the prompt is IDENTICAL to the
    * hand-authored default; when present, non-frozen fragments (e.g. executor.tone)
@@ -476,6 +486,16 @@ export interface ConvergenceConfig {
    */
   acceptanceContract?: string;
   /**
+   * Quality-tier contract (Wave 1.3, wired): the digitized quality bar for
+   * every tier the project resolves (project store over the fleet-global
+   * store), derived up front by the CLI via quality/tier-contract
+   * (tierContractText/tierKeysFor) and injected into every executor prompt —
+   * the measured axes, thresholds, and per-axis directives — so the model
+   * builds TO the bar from turn 1. Optional; carried forward like
+   * acceptanceContract. Null for tier-less projects (never invent a bar).
+   */
+  tierContract?: string;
+  /**
    * Persist until delivered (full autonomy): keep iterating past `maxTurns`
    * until every required gate passes, the `maxTurnsCeiling` is reached, or
    * progress stalls (no score improvement for several consecutive turns).
@@ -750,6 +770,12 @@ function contractSection(acceptanceContract?: string): string[] {
   return ['', acceptanceContract.trim()];
 }
 
+/** The digitized quality bar rides beside the acceptance contract, every turn. */
+function tierContractSection(tierContract?: string): string[] {
+  if (!tierContract || !tierContract.trim()) return [];
+  return [tierContract.trim()];
+}
+
 /** Default prompt strategy: lean contract + structured retry context. */
 export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   // 3a: source the FROZEN output contract through the binding so it is always the
@@ -771,10 +797,10 @@ export const defaultPromptBuilder: PromptBuilder = (ctx) => {
     // variable and added the tuner-selected tone section; 580 appends the
     // up-front acceptance contract. Both apply — the contract goes last so the
     // concrete journeys sit closest to the task.
-    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract)].join('\n');
+    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ...tierContractSection(ctx.tierContract)].join('\n');
   }
 
-  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ''];
+  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ...tierContractSection(ctx.tierContract), ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   // Error-anchored steering: the files the failing gates NAMED go at the very
@@ -1659,6 +1685,7 @@ export class ConvergenceLoop {
         guidance,
         autonomous: this.config.autonomous,
         acceptanceContract: this.config.acceptanceContract,
+        tierContract: this.config.tierContract,
         promptSelection: this.config.promptSelection,
       });
 

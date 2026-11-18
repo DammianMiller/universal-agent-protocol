@@ -10,6 +10,7 @@
  */
 
 import { detectRungs, runTieredLadder, tierOf, type GateRung, type GateTier, type LadderResult } from '../delivery/verifier-ladder.js';
+import { formatTierGateLine, resolveTierGateMode, runTierGate } from '../quality/tier-gate.js';
 import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runVisualGate, discoverEntryPages, type VisualVerdict } from '../delivery/visual-gate.js';
 import { runInteractionGate, interactionSummary } from '../delivery/interaction-gate.js';
@@ -376,6 +377,38 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   if (fidelity.max && visual?.skipped) {
     visualReport += '\n⚠ max fidelity: entry pages exist but no headless browser was available — visual verification could not run (fail-closed).';
   }
+  // Quality-tier gate (quality-tier uplift 0.5, wired into the verify/stop-gate
+  // path): measure the visual gate's captures against every tier the project
+  // resolves (project store over the fleet-global store — a published global
+  // tier reaches projects that never derived one). Shadow-first: the default
+  // assesses and reports; UAP_TIER_GATE=block refuses below tier (exit 1 with
+  // the worst-first directives), UAP_TIER_GATE=off silences. This closes the
+  // second seam of the wave: the gate rode only the mission-acceptance turn,
+  // so agent-driven delivers judged by THIS path were never measured against
+  // the digitized bar (live case: the voxel-pagoda run, 5/7 axes below the
+  // fable-high tier with no tier line in its verdict).
+  let tierBlocks = false;
+  if (visual && !visual.skipped) {
+    try {
+      const tierGate = runTierGate({
+        projectRoot: dir,
+        captures: visual.pages.flatMap((pg) => pg.screenshots.slice(-1)),
+        mode: resolveTierGateMode(process.env),
+      });
+      // Silence the non-events (same doctrine as mission-acceptance): an
+      // operator who turned the gate off, and tier-less projects, must not see
+      // a line on every verify.
+      const tierGateSilent =
+        tierGate.skipped === 'gate off (UAP_TIER_GATE=off)' || tierGate.skipped === 'no derived tiers';
+      if (!tierGateSilent) visualReport += `\n${formatTierGateLine(tierGate)}`;
+      if (tierGate.mode === 'block' && !tierGate.pass) {
+        tierBlocks = true;
+        if (tierGate.feedback) visualReport += `\n${tierGate.feedback}`;
+      }
+    } catch {
+      /* tier measurement is fail-open in verify: a broken extractor must not fail a run */
+    }
+  }
   // Vision aesthetic review. Standard: advisory (adds context to the report).
   // Max: BLOCKING — a rendered UI that scores below fidelity.visionMinScore is a
   // real failure. Bridges the resolved vision endpoint/model into the env the
@@ -492,6 +525,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     visualBlocks && 'visual/behavioral render',
     visionBlocks && 'aesthetic score',
     baselineBlocks && 'visual regression',
+    tierBlocks && 'below quality tier',
     capabilityBlocks && 'capability regression',
     acceptanceBlocks && 'acceptance criteria',
   ].filter(Boolean) as string[];
@@ -520,6 +554,9 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // visionBlocks (max fidelity, low aesthetic score) and baselineBlocks (visual
   // regression drift) gate the same way.
   if ((visualBlocks || visionBlocks || baselineBlocks) && exitCode === 0) exitCode = 1;
+  // A below-tier artifact in UAP_TIER_GATE=block mode gates the same way — the
+  // operator pinned the bar explicitly, so refusing DONE here is the point.
+  if (tierBlocks && exitCode === 0) exitCode = 1;
   // A behavioural failure is a REAL failure — the artifact ran and did not do
   // what it promised — so it gates like broken code rather than failing open.
   if (interactionBlocks && exitCode === 0) exitCode = 1;
