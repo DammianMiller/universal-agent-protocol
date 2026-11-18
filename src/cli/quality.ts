@@ -16,9 +16,9 @@
  * the same thresholds and baseline this CLI enforces at commit/CI time.
  */
 import chalk from 'chalk';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { spawnSync } from 'child_process';
-import { isAbsolute, relative } from 'path';
+import { isAbsolute, join, relative } from 'path';
 import {
   QualityConfig, configPath, defaultConfig, loadQualityConfig, writeDefaultConfig,
 } from '../quality/config.js';
@@ -27,6 +27,7 @@ import { buildReport, changedFiles, QualityReport } from '../quality/report.js';
 import { scanContent } from '../quality/scanner.js';
 import { TierVector } from '../quality/tier.js';
 import { resolveClass, storeArtifactAnchor } from '../quality/classes.js';
+import { TierLadderCandidate, runTierLadder } from '../quality/tier-ladder.js';
 import { DEFAULT_TOLERANCE, deriveTier, gapReport } from '../quality/tiers.js';
 
 export interface QualityOptions {
@@ -47,6 +48,14 @@ export interface QualityOptions {
   tolerance?: string;
   /** Outcome class for the profile subcommand (default: visual-scene). */
   class?: string;
+  /** Rounds directory for the ladder subcommand (roundNN/ subdirectories). */
+  roundsDir?: string;
+  /** Round ceiling for the ladder subcommand. */
+  maxRounds?: string;
+  /** Candidates per round for the ladder subcommand. */
+  candidates?: string;
+  /** Rounds without improvement before the ladder escalates. */
+  plateauRounds?: string;
 }
 
 function resolveDir(o: QualityOptions): string {
@@ -74,6 +83,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       return deriveCmd(dir, options);
     case 'gap':
       return gapCmd(dir, options);
+    case 'ladder':
+      return ladderCmd(dir, options);
     default:
       console.log(chalk.bold('uap quality — quality-metrics gate\n'));
       console.log('  init                Write .uap/quality-metrics.json (activates the gate)');
@@ -87,6 +98,7 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  profile --file <f>  Measure one artifact into a deterministic vector (--class)');
       console.log('  derive <class>      Derive a tier from a class\'s anchors (--name, --tolerance)');
       console.log('  gap --file <f>      Gap an artifact against a tier (--tier <class/name>); exit 2 below tier');
+      console.log('  ladder --rounds-dir Rank harvested best-of-N rounds against a tier (--tier); escalation + honest cut');
       console.log(chalk.dim('  Classes: visual-scene (PNG), api-behavior (API transcript JSON), bench-score (bench results JSON)'));
   }
 }
@@ -423,4 +435,90 @@ function gapCmd(dir: string, options: QualityOptions): void {
     console.log(`\n    ${report.failing} of ${report.axes.length} axes below tier${report.worst ? ` · worst: ${report.worst}` : ''}`);
   }
   if (!report.pass) process.exitCode = 2;
+}
+
+/* ─── Tier ladder (Wave 1.2): best-of-N rounds, escalation, honest cut ────── */
+
+/** Round directories `roundNN` sorted numerically; files within sorted by name. */
+function discoverRounds(roundsRoot: string): string[] {
+  if (!existsSync(roundsRoot)) return [];
+  const out: Array<{ n: number; dir: string }> = [];
+  for (const entry of readdirSync(roundsRoot)) {
+    const m = /^round(\d+)$/.exec(entry);
+    if (!m) continue;
+    const full = join(roundsRoot, entry);
+    if (statSync(full).isDirectory()) out.push({ n: Number(m[1]), dir: full });
+  }
+  return out.sort((a, b) => a.n - b.n).map((x) => x.dir);
+}
+
+function ladderInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const v = raw === undefined ? fallback : Number(raw);
+  if (!Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(v)));
+}
+
+/**
+ * `uap quality ladder --tier <class/name> --rounds-dir <dir>` — rank harvested
+ * best-of-N candidate artifacts against a tier, round by round: each
+ * roundNN/ subdirectory holds that round's N variants (the operator's model
+ * runs, saved to disk). The best survivor per round is measured, the ladder
+ * fires on a plateau, and exhaustion below tier cuts with the gap documented.
+ */
+async function ladderCmd(dir: string, options: QualityOptions): Promise<void> {
+  if (!options.roundsDir || !options.tier) {
+    console.log(chalk.yellow('  Usage: uap quality ladder --tier <class/name> --rounds-dir <dir> [--max-rounds N] [--candidates N] [--plateau-rounds K]'));
+    process.exitCode = 2;
+    return;
+  }
+  const roundsRoot = isAbsolute(options.roundsDir) ? options.roundsDir : join(dir, options.roundsDir);
+  const roundDirs = discoverRounds(roundsRoot);
+  if (roundDirs.length === 0) {
+    console.log(chalk.red(`  ✗ ${roundsRoot} — no roundNN/ subdirectories (round01/, round02/, … each holding that round's candidate artifacts)`));
+    process.exitCode = 2;
+    return;
+  }
+  const maxRounds = ladderInt(options.maxRounds, roundDirs.length, 1, roundDirs.length);
+  const candidates = ladderInt(options.candidates, 3, 1, 8);
+  const plateauRounds = ladderInt(options.plateauRounds, 2, 1, maxRounds);
+
+  const candidatesOf = (roundDir: string): TierLadderCandidate[] => {
+    if (!existsSync(roundDir)) return [];
+    return readdirSync(roundDir)
+      .filter((f) => statSync(join(roundDir, f)).isFile())
+      .sort()
+      .map((f) => ({ id: f, artifactPath: join(roundDir, f) }));
+  };
+
+  const result = await runTierLadder({
+    projectRoot: dir,
+    tierKey: options.tier,
+    maxRounds,
+    candidatesPerRound: candidates,
+    plateauRounds,
+    generate: (round) => candidatesOf(roundDirs[round - 1] ?? ''),
+  });
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    const head = result.outcome === 'tier-reached'
+      ? chalk.green(`  ✓ ${result.summary}`)
+      : chalk.red(`  ✗ ${result.summary}`);
+    console.log(chalk.bold(`\n  ${head}`));
+    for (const r of result.rounds) {
+      const best = r.best ? `best ${r.best}` : 'no measurable candidate';
+      const esc = r.escalated ? chalk.yellow(' · ↑ escalation fired') : '';
+      const cut = r.cut ? chalk.red(` · cut: ${r.cut.reason}`) : '';
+      console.log(`    round ${String(r.round).padStart(2, '0')}  ${r.candidates.length} candidate(s) · ${best}${esc}${cut}`);
+    }
+    if (result.finalGap) {
+      const gap = result.finalGap;
+      console.log(chalk.dim(`    final: ${gap.failing} of ${gap.axes.length} axes below tier${gap.worst ? ` · worst: ${gap.worst}` : ''}`));
+      for (const a of gap.axes.filter((x) => x.status === 'fail').slice(0, 5)) {
+        console.log(`      ${chalk.red('✗')} ${a.axis} ${a.value} → ${a.directive ?? 'below tier'}`);
+      }
+    }
+  }
+  if (result.outcome !== 'tier-reached') process.exitCode = 2;
 }
