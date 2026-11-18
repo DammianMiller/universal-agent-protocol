@@ -291,7 +291,7 @@ describe('the shipped policy declares the strata backend', () => {
   it('has the strata-server entry with the load-bearing numbers pinned', () => {
     const strata = policy.services.find((s) => s.name === 'strata-server');
     expect(strata?.http).toBeDefined();
-    expect(strata?.http?.metricsMustMatch).toEqual({ kv: 'int8', max_context: 131072 });
+    expect(strata?.http?.metricsMustMatch).toEqual({ kv: 'int8', max_context: 196608 });
     // 200, not 600: strata fills the card by design (steady state ~245 MiB
     // free measured 2026-10-04) and carries its own --vram-reserve-mib 1200.
     // A 600 floor would be permanently RED and get ignored.
