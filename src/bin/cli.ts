@@ -851,6 +851,7 @@ program
   .option('--tier <key>', 'Tier key class/name (gap subcommand)')
   .option('--name <name>', 'Tier name (derive subcommand, default: default)')
   .option('--tolerance <n>', 'Multiplicative tolerance floor (derive subcommand, default: 0.75)')
+  .option('--class <cls>', 'Outcome class for profile (visual-scene | api-behavior | bench-score)')
   .action(async (subcommand, target, options) => {
     if ((subcommand === 'anchor' || subcommand === 'derive') && target) options.target = target;
     else if (target && !options.file) options.file = target;

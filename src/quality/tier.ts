@@ -59,8 +59,16 @@ export interface TierVector {
   glowFrac: number;
   darkFrac: number;
   colors12: number;
-  hueHist: number[];
-  dominant: DominantColor[];
+  hueHist?: number[];
+  dominant?: DominantColor[];
+  /**
+   * The class-generic metric map (Wave 1.1). Visual vectors carry the seven
+   * visual axes here (same values as the named fields); other outcome classes
+   * (api-behavior, bench-score) carry their own axes. Optional so pre-1.1
+   * stored anchors and tiers keep deriving and gapping unchanged — readers
+   * fall back to the legacy named fields.
+   */
+  scalars?: Record<string, number>;
 }
 
 export interface AnchorRecord {
@@ -258,12 +266,22 @@ export function extractTierVector(pngPath: string): TierVector | null {
   if (!img) return null;
   const rgb = canonicalRgb(img);
   const sha256 = createHash('sha256').update(readFileSync(pngPath)).digest('hex');
+  const visual = axes(rgb);
   return {
     extractorVersion: TIER_EXTRACTOR_VERSION,
     canonicalWidth: CANONICAL_WIDTH,
     canonicalHeight: CANONICAL_HEIGHT,
     sha256,
-    ...axes(rgb),
+    ...visual,
+    scalars: {
+      colors12: visual.colors12,
+      edgeFrac: visual.edgeFrac,
+      glowFrac: visual.glowFrac,
+      darkFrac: visual.darkFrac,
+      contrast: visual.contrast,
+      valMean: visual.valMean,
+      satMean: visual.satMean,
+    },
   };
 }
 
@@ -281,13 +299,27 @@ export function anchorDir(projectRoot: string, cls: string): string {
 export function storeAnchor(projectRoot: string, cls: string, pngPath: string): AnchorRecord | null {
   const vector = extractTierVector(pngPath);
   if (!vector) return null;
-  const raw = basename(pngPath);
+  return storeAnchorRecord(projectRoot, cls, pngPath, vector);
+}
+
+/**
+ * Persist an ALREADY-EXTRACTED vector as an anchor (Wave 1.1: the class
+ * registry extracts for non-visual classes, then stores through this seam).
+ * Same layout, same policies as `storeAnchor`.
+ */
+export function storeAnchorRecord(
+  projectRoot: string,
+  cls: string,
+  artifactPath: string,
+  vector: TierVector,
+): AnchorRecord {
+  const raw = basename(artifactPath);
   const name = sanitize(raw.replace(/\.[A-Za-z0-9]+$/, '')) || 'anchor';
   const dir = anchorDir(projectRoot, cls);
   const imageDir = join(dir, 'images');
   mkdirSync(imageDir, { recursive: true });
   const imagePath = join(imageDir, raw);
-  copyFileSync(pngPath, imagePath);
+  copyFileSync(artifactPath, imagePath);
   const record: AnchorRecord = { cls, name, imagePath, vector, profilePath: join(dir, `${name}.profile.json`) };
   writeFileSync(record.profilePath, `${JSON.stringify(record, null, 2)}\n`);
   return record;
@@ -298,8 +330,14 @@ export interface StoredAnchor {
   vector: TierVector;
 }
 
-/** Load the anchor profiles of a class at the CURRENT extractor version (older versions are skipped — stale evidence fails closed). */
-export function listAnchors(projectRoot: string, cls: string): StoredAnchor[] {
+/** Load the anchor profiles of a class at the expected extractor version (older
+ * versions are skipped — stale evidence fails closed). Defaults to the visual
+ * extractor's version; non-visual classes pass their own (Wave 1.1). */
+export function listAnchors(
+  projectRoot: string,
+  cls: string,
+  expectedVersion = TIER_EXTRACTOR_VERSION,
+): StoredAnchor[] {
   const dir = anchorDir(projectRoot, cls);
   if (!existsSync(dir)) return [];
   const out: StoredAnchor[] = [];
@@ -308,7 +346,7 @@ export function listAnchors(projectRoot: string, cls: string): StoredAnchor[] {
     const path = join(dir, entry);
     try {
       const parsed = JSON.parse(readFileSync(path, 'utf8')) as { vector?: TierVector };
-      if (parsed.vector && parsed.vector.extractorVersion === TIER_EXTRACTOR_VERSION) {
+      if (parsed.vector && parsed.vector.extractorVersion === expectedVersion) {
         out.push({ path, vector: parsed.vector });
       }
     } catch {

@@ -13,7 +13,7 @@
  * deliveries; ladder-only runs are not yet observed (promotion work).
  */
 
-import { extractTierVector } from './tier.js';
+import { classOfTierKey, resolveClass } from './classes.js';
 import { compileGap, GapReport, loadTiers } from './tiers.js';
 
 export type TierGateMode = 'off' | 'shadow' | 'block';
@@ -75,8 +75,13 @@ export function runTierGate(opts: {
   const gaps: Array<{ tier: string; report: GapReport }> = [];
   for (const key of tierKeys) {
     const tier = store.tiers[key];
+    // The tier's class selects its extractor (Wave 1.1): a visual-scene tier
+    // reads PNG captures, an api-behavior tier reads API transcripts. A
+    // capture of the wrong shape does not decode and is skipped below — the
+    // gate never cross-reads an artifact into another class's axes.
+    const extract = resolveClass(classOfTierKey(key)).extract;
     for (const capture of opts.captures) {
-      const vector = extractTierVector(capture);
+      const vector = extract(capture);
       if (!vector) continue; // undecodable capture — `uap quality gap` names it; here we measure what decodes
       const report = compileGap(vector, tier, capture);
       reports.push({
