@@ -15,7 +15,7 @@
  * seam) is recorded as a seam: this module is the repo-side half.
  */
 import { classOfTierKey, resolveClass, SamplingProfile } from './classes.js';
-import { loadTiers, TierProfile } from './tiers.js';
+import { resolveTiers, TierProfile } from './tiers.js';
 
 /** The class's declared sampling profile; null = executor keeps its default. */
 export function classSamplingProfile(cls: string): SamplingProfile | null {
@@ -24,9 +24,9 @@ export function classSamplingProfile(cls: string): SamplingProfile | null {
   return resolveClass(cls).sampling ?? null;
 }
 
-/** Load one tier profile by key. Null when the project carries no such tier. */
+/** Load one tier profile by key. Null when neither project nor fleet store carries it. */
 export function loadTierByKey(projectRoot: string, tierKey: string): TierProfile | null {
-  const store = loadTiers(projectRoot);
+  const store = resolveTiers(projectRoot);
   return store.tiers[tierKey] ?? null;
 }
 
@@ -84,9 +84,9 @@ export function withTierContract(prompt: string, projectRoot: string, tierKey: s
   return `${prompt}\n\n${contract}`;
 }
 
-/** Tier keys present in a project's store, optionally filtered by class prefix. */
+/** Tier keys visible to a project (project + fleet-global), optionally filtered by class. */
 export function tierKeysFor(projectRoot: string, cls?: string): string[] {
-  const store = loadTiers(projectRoot);
+  const store = resolveTiers(projectRoot);
   return Object.keys(store.tiers)
     .filter((k) => (cls ? classOfTierKey(k) === cls : true))
     .sort();

@@ -14,7 +14,7 @@
  */
 
 import { classOfTierKey, resolveClass } from './classes.js';
-import { compileGap, GapReport, loadTiers } from './tiers.js';
+import { compileGap, GapReport, resolveTiers } from './tiers.js';
 
 export type TierGateMode = 'off' | 'shadow' | 'block';
 
@@ -63,10 +63,12 @@ export function runTierGate(opts: {
   /** PNG captures (the visual gate's screenshots). */
   captures: string[];
   mode: TierGateMode;
-  load?: typeof loadTiers;
+  load?: typeof resolveTiers;
 }): TierGateResult {
   if (opts.mode === 'off') return { mode: 'off', skipped: 'gate off (UAP_TIER_GATE=off)', reports: [], pass: true };
-  const store = (opts.load ?? loadTiers)(opts.projectRoot);
+  // resolveTiers: project tiers over the fleet-global store (auto-apply) —
+  // a published global tier reaches projects that never derived one.
+  const store = (opts.load ?? resolveTiers)(opts.projectRoot);
   const tierKeys = Object.keys(store.tiers);
   if (tierKeys.length === 0) return { mode: opts.mode, skipped: 'no derived tiers', reports: [], pass: true };
   if (opts.captures.length === 0) return { mode: opts.mode, skipped: 'no captures', reports: [], pass: true };

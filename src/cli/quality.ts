@@ -29,7 +29,7 @@ import { TierVector } from '../quality/tier.js';
 import { resolveClass, storeArtifactAnchor } from '../quality/classes.js';
 import { TierLadderCandidate, runTierLadder } from '../quality/tier-ladder.js';
 import { classSamplingProfile, tierContractText, tierKeysFor } from '../quality/tier-contract.js';
-import { DEFAULT_TOLERANCE, deriveTier, gapReport } from '../quality/tiers.js';
+import { DEFAULT_TOLERANCE, deriveTier, gapReport, loadTiers, saveGlobalTier } from '../quality/tiers.js';
 
 export interface QualityOptions {
   projectDir?: string;
@@ -88,6 +88,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       return ladderCmd(dir, options);
     case 'contract':
       return contractCmd(dir, options);
+    case 'publish':
+      return publishCmd(dir, options);
     default:
       console.log(chalk.bold('uap quality — quality-metrics gate\n'));
       console.log('  init                Write .uap/quality-metrics.json (activates the gate)');
@@ -103,6 +105,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  gap --file <f>      Gap an artifact against a tier (--tier <class/name>); exit 2 below tier');
       console.log('  ladder --rounds-dir Rank harvested best-of-N rounds against a tier (--tier); escalation + honest cut');
       console.log('  contract --tier <k>  Print the tier contract (the injectable executor-prompt block)');
+      console.log('  publish <class/name> Copy a project tier into the fleet-global store — it then auto-applies');
+      console.log('                      (UAP_TIER_STORE or ~/.uap/quality/tiers.json; project tiers override on collision)');
       console.log(chalk.dim('  Classes: visual-scene (PNG), api-behavior (API transcript JSON), bench-score (bench results JSON),'));
       console.log(chalk.dim('  doc-style (Markdown). Anchors are project-local, gitignored, measuring-only (P39).'));
   }
@@ -565,4 +569,41 @@ function contractCmd(dir: string, options: QualityOptions): void {
   if (!sampling) {
     console.log(chalk.dim('\n    sampling: no class profile declared — the executor keeps its own default'));
   }
+}
+
+/**
+ * `uap quality publish <class/name>` — copy a project-derived tier into the
+ * fleet-global store (UAP_TIER_STORE or ~/.uap/quality/tiers.json). The
+ * published tier then auto-applies: every project's tier gate, contract
+ * composer, and gap resolution see it through resolveTiers (project tiers
+ * still override on key collision). Publishing is the explicit opt-in —
+ * the global store does not exist until an operator does this.
+ */
+function publishCmd(dir: string, options: QualityOptions): void {
+  const key = options.tier || options.target;
+  if (!key || !key.includes('/')) {
+    console.log(chalk.yellow('  Usage: uap quality publish <class/name>'));
+    console.log(chalk.dim('    Copies the tier from this project\'s store into the fleet-global store;'));
+    console.log(chalk.dim('    every project then resolves it (project tiers override on collision).'));
+    process.exitCode = 2;
+    return;
+  }
+  // The project store only — publishing reads what THIS project derived
+  // (never the global store itself: re-publishing a borrowed tier is a no-op
+  // at best and laundering at worst).
+  const tier = loadTiers(dir).tiers[key];
+  if (!tier) {
+    const known = tierKeysFor(dir);
+    console.log(chalk.red(`  ✗ tier '${key}' is not in this project's store`));
+    console.log(chalk.dim(`    known here: ${known.length ? known.join(', ') : '(none — derive one first: uap quality derive <class>)'}`));
+    console.log(chalk.dim('    (a fleet-global tier can be published by the project that derived it)'));
+    process.exitCode = 2;
+    return;
+  }
+  const path = saveGlobalTier(tier);
+  console.log(chalk.green(`  ✓ published tier ${key} to the fleet-global store`));
+  console.log(chalk.dim(`    ${path}`));
+  console.log(chalk.dim(`    every project now resolves it — tier gate (shadow), contract, and gap — until a`));
+  console.log(chalk.dim(`    project derives its own '${key}' (project policy overrides on collision).`));
+  console.log(chalk.dim('    anchor paths stay absolute (machine-local); re-derive on the deriving machine.'));
 }

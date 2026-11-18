@@ -18,6 +18,7 @@
  * never silently compared (stale evidence fails closed).
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { listAnchors, TierVector } from './tier.js';
 import { classOfTierKey, extractorVersionFor, resolveClass } from './classes.js';
@@ -113,6 +114,72 @@ export function saveTier(projectRoot: string, tier: TierProfile): string {
   const store = loadTiers(projectRoot);
   store.tiers[tier.key] = tier;
   const path = tiersPath(projectRoot);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(store, null, 2)}\n`);
+  return path;
+}
+
+/* ───────── Fleet-global tier store (auto-apply) ──────────────────────────
+ *
+ * Tiers are project-local by derivation, but a fleet operator wants the bar
+ * to apply where the WORK is, not where the anchors live: a fresh project
+ * with no derived tiers gets the deliver gates' "no derived tiers" skip and
+ * the executor never sees the contract (found live: voxel-pagoda-speedy-uap-max
+ * was generated with no tier machinery touching it — the counterfactual).
+ *
+ * The global store (~/.uap/quality/tiers.json, or UAP_TIER_STORE) is
+ * OPT-IN: it exists only after an operator publishes a tier into it
+ * (`uap quality publish <class/name>`), and publishing is an explicit,
+ * reviewable act. resolveTiers() merges global-behind-project — every read
+ * site (the deliver tier gate, the contract composer, the gap CLI, the
+ * tier-relevance switch) resolves through it, so a published tier applies
+ * automatically to every project on the machine. Project tiers win on key
+ * collision: the local policy file stays authoritative where it exists.
+ * saveTier never writes global — derivation stays project-local, publishing
+ * stays deliberate (saveTier reads loadTiers, the project-only view, so a
+ * published global tier is never copied back into a project's policy file).
+ */
+
+/** The fleet-global tier store path: UAP_TIER_STORE, else ~/.uap/quality/tiers.json. */
+export function globalTiersPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.UAP_TIER_STORE || join(homedir(), '.uap', 'quality', 'tiers.json');
+}
+
+function readStoreFile(path: string): TierStore {
+  if (!existsSync(path)) return emptyStore();
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<TierStore>;
+    if (parsed.version === 1 && parsed.tiers && typeof parsed.tiers === 'object') {
+      return { version: 1, tiers: parsed.tiers as Record<string, TierProfile> };
+    }
+  } catch {
+    /* malformed store — empty, callers fail closed */
+  }
+  return emptyStore();
+}
+
+/** The fleet-global store alone (opt-in; empty until an operator publishes). */
+export function loadGlobalTiers(env: NodeJS.ProcessEnv = process.env): TierStore {
+  return readStoreFile(globalTiersPath(env));
+}
+
+/**
+ * The effective tier store: project tiers over the fleet-global store.
+ * This is the read site the deliver tier gate, contract composer, gap CLI,
+ * and tier-relevance switch all resolve through — the auto-apply seam.
+ */
+export function resolveTiers(projectRoot: string, env: NodeJS.ProcessEnv = process.env): TierStore {
+  const project = loadTiers(projectRoot);
+  const global = loadGlobalTiers(env);
+  if (Object.keys(global.tiers).length === 0) return project;
+  return { version: 1, tiers: { ...global.tiers, ...project.tiers } };
+}
+
+/** Publish a tier into the fleet-global store (the explicit auto-apply act). */
+export function saveGlobalTier(tier: TierProfile, env: NodeJS.ProcessEnv = process.env): string {
+  const store = loadGlobalTiers(env);
+  store.tiers[tier.key] = tier;
+  const path = globalTiersPath(env);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(store, null, 2)}\n`);
   return path;
@@ -263,7 +330,7 @@ export type GapResult =
 
 /** Measure an artifact and gap it against a stored tier. Fails closed on every seam. */
 export function gapReport(projectRoot: string, capturePath: string, tierKey: string): GapResult {
-  const store = loadTiers(projectRoot);
+  const store = resolveTiers(projectRoot);
   const tier = store.tiers[tierKey];
   if (!tier) return { kind: 'no-tier', known: Object.keys(store.tiers) };
   const cls = classOfTierKey(tier.key);

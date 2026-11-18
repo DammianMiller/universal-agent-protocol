@@ -43,7 +43,8 @@ describe('deriveTier: thresholds from anchor medians', () => {
     expect(tier?.extractorVersion).toBe(TIER_EXTRACTOR_VERSION);
     // medians of (red, black): colors 1, edge 0, glow 0.5, dark 0.5, contrast 0, val 0.5, sat 0.5
     expect(tier?.thresholds.colors12).toEqual({ min: 0.75 });
-    expect(tier?.thresholds.glowFrac).toEqual({ min: 0.375 });
+    // glowFrac is BANDed (the uap-max wash finding): 0.5 * 0.75 and 0.5 / 0.75
+    expect(tier?.thresholds.glowFrac).toEqual({ min: 0.375, max: 0.66667 });
     expect(tier?.thresholds.darkFrac).toEqual({ max: 0.66667 });
     expect(tier?.thresholds.contrast).toEqual({ min: 0, max: 0 });
     expect(tier?.thresholds.valMean).toEqual({ min: 0.375 });
