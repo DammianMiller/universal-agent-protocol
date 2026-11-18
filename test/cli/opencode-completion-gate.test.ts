@@ -17,7 +17,7 @@ describe('opencode plugin — completion gate (hard-block false "done")', () => 
 
   it('gates the todowrite completion signal', () => {
     expect(plugin).toContain('COMPLETION GATE');
-    expect(plugin).toMatch(/input\.tool === "todowrite"/);
+    expect(plugin).toMatch(/event\.tool === "todowrite"/);
     expect(plugin).toMatch(/every\(\(t\) => t && t\.status === "completed"\)/);
   });
 
