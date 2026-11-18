@@ -5772,9 +5772,15 @@ _PLACEMENT_MAX_TARGETS = 8
 PROXY_SESSION_ADMISSION = os.environ.get(
     "PROXY_SESSION_ADMISSION", "off"
 ).lower() not in {"", "0", "off", "false", "no"}
-# Max distinct hot sessions. Default = the concurrency limit (= llama slots).
+# Max distinct hot sessions. Default 4 (operator decision 2026-11-18): the
+# admission limit is a QUEUE-DEPTH knob, not a KV budget — sessions prune
+# after PROXY_SESSION_ADMISSION_IDLE_TTL and waiters force-admit past
+# PROXY_SESSION_ADMISSION_WAIT_TIMEOUT by evicting the LRU admission — and
+# the operator prefers 4 concurrent missions over 1. Before that decision
+# the fallback was the concurrency limit (= llama slots), which serialized
+# every mission-deliver run behind a single hot session on one-rail arms.
 PROXY_SESSION_ADMISSION_LIMIT = int(
-    os.environ.get("PROXY_SESSION_ADMISSION_LIMIT", str(PROXY_CONCURRENCY_LIMIT))
+    os.environ.get("PROXY_SESSION_ADMISSION_LIMIT", "4")
 )
 # Seconds a session may be idle (no request) before its admission is pruned,
 # freeing a slot for a waiting session. Tune ABOVE typical inter-turn gaps so an
