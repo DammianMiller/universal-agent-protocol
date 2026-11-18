@@ -839,17 +839,20 @@ program
 program
   .command('quality')
   .description('Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types')
-  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile')
-  .argument('[target]', 'Positional target file (check) or anchor class (anchor) — same as --file')
+  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile | derive | gap')
+  .argument('[target]', 'Positional target file (check), anchor class (anchor), or tier class (derive)')
   .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
   .option('--json', 'Emit machine-readable JSON')
   .option('--files <list>', 'Comma-separated relative file list to scan')
   .option('--staged', 'Scan only files changed vs the upstream base')
   .option('--changed', 'Scope mutate/check to changed files (default for mutate)')
   .option('--update', 'Regenerate the ratchet baseline (baseline subcommand)')
-  .option('-f, --file <path>', 'Target file (check; PNG to measure for anchor/profile)')
+  .option('-f, --file <path>', 'Target file (check; PNG to measure for anchor/profile/gap)')
+  .option('--tier <key>', 'Tier key class/name (gap subcommand)')
+  .option('--name <name>', 'Tier name (derive subcommand, default: default)')
+  .option('--tolerance <n>', 'Multiplicative tolerance floor (derive subcommand, default: 0.75)')
   .action(async (subcommand, target, options) => {
-    if (subcommand === 'anchor' && target) options.target = target;
+    if ((subcommand === 'anchor' || subcommand === 'derive') && target) options.target = target;
     else if (target && !options.file) options.file = target;
     const cmd = await lazy.quality();
     await cmd(subcommand, options);
