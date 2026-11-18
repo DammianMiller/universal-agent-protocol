@@ -23,8 +23,10 @@ import type { ApplyResult } from '../delivery/applier.js';
 import { createModelJudge } from '../delivery/judge.js';
 import {
   resolveJudgePlan,
+  resolveCriticEnforcement,
   formatVerificationProvenance,
 } from '../delivery/verification-provenance.js';
+import { loadTiers } from '../quality/tiers.js';
 import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
@@ -2552,6 +2554,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     generatorId: model.id,
     generatorProvider: ModelPresets[presetId as keyof typeof ModelPresets]?.provider,
     allowSelfJudge,
+    // Quality-tier uplift (0.3): the escalation arm is the fresh critic for
+    // generators that would otherwise self-verify (local fleet runs). Second
+    // chance only — an evaluator that already resolved distinct wins above.
+    escalateModelId: cfgEscalateModel,
     distinctJudgeId: reviewJudgeId,
     hasPreset: (id) => Boolean(ModelPresets[id as keyof typeof ModelPresets]),
   });
@@ -2598,6 +2604,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(
         chalk.cyan(
           `⚖ generator≠evaluator (auto distinct acceptance judge): gen=${model.id} judge=${jModel.id}`
+        )
+      );
+    }
+  } else if (judgePlan.reason === 'escalation-judge') {
+    // Quality-tier uplift (0.3): no distinct evaluator resolved, but the
+    // operator configured the escalation arm — that model is the fresh
+    // critic. This is the path that turns the reference run's
+    // exec==judge (distinct=NO) into distinct=YES on the local fleet,
+    // through the existing UAP_ESCALATE_MODEL seam (no new switch).
+    const jModel = resolveModel(judgeModelId);
+    const jClient = new OpenAICompatClient();
+    gateAuthorExecutor = async (prompt) =>
+      (await jClient.complete(jModel, prompt, { temperature: 0 })).content;
+    acceptanceJudgeExecutor = async (prompt) =>
+      (await jClient.complete(jModel, prompt, { temperature: 0, jsonResponse: true })).content;
+    if (!options.dryRun) {
+      console.log(
+        chalk.cyan(
+          `⚖ generator≠evaluator (escalation critic): gen=${model.id} judge=${jModel.id}`
         )
       );
     }
@@ -3122,6 +3147,34 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   if (skipJudgeForSimple && !options.dryRun) {
     console.log(chalk.cyan('⚖ acceptance: judge skipped for simple task (objective/self-gate covers it)'));
   }
+  // Fresh-critic enforcement (quality-tier uplift 0.3). A project that has
+  // derived quality tiers has digitized its bar; the reference run taught the
+  // exact failure of a self-verifying generator against a digitized bar
+  // (exec==judge, distinct=NO). When the acceptance judge will run in such a
+  // project and the plan resolved no distinct critic, stop the run BEFORE any
+  // build turns are spent — the fix is configuration, not another attempt.
+  // The simple-task judge skip does NOT exempt a tier-relevant run: the tier
+  // bar does not shrink with task complexity, and a skipped judge leaves the
+  // self-gate authored by the generator — the same self-grading under a
+  // different name (found live: a tier-relevant uplift run slipped the gate
+  // via the simple-task path). --dryRun warns instead of blocking (inspection
+  // mode), and an explicit UAP_DELIVER_ALLOW_SELF_JUDGE=1 remains the
+  // documented operator opt-out.
+  const criticEnforcement = resolveCriticEnforcement({
+    tierRelevant: Object.keys(loadTiers(projectRoot).tiers).length > 0,
+    distinct: judgeDistinct,
+    allowSelfJudge,
+    generatorId: model.id,
+  });
+  if (criticEnforcement.blocked && options.acceptance) {
+    if (options.dryRun) {
+      console.log(chalk.yellow(`⚠ dry-run: ${criticEnforcement.message}`));
+    } else {
+      console.log(chalk.red(criticEnforcement.message!));
+      process.exitCode = 2;
+      return;
+    }
+  }
   // Phased missions re-point the judge at the current phase's goal — judging
   // phase 1 against the FULL mission would fail every phase by construction.
   // Per-root specs, write evidence, and churn breakers live in the registry
@@ -3139,6 +3192,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         primary: acceptancePrimary,
         specs,
         judgeExecutor: acceptanceJudgeExecutor,
+        // P39 fixed-form critic — requested exactly when the judge is a
+        // FRESH critic (distinct from the generator). Self-verifying runs
+        // never get the form: a critic report authored by the builder is
+        // theater (enforcement above already refuses that for tiers).
+        ...(judgeDistinct ? { criticForm: true } : {}),
         note: (line) => console.log(chalk.yellow(`  ${line}`)),
       })
     : undefined;

@@ -17,6 +17,7 @@ import { lstatSync, readdirSync, readFileSync, realpathSync } from 'fs';
 import { execSync } from 'child_process';
 import { basename, join, relative, dirname } from 'path';
 import type { LoopExecutor } from './convergence-loop.js';
+import { CRITIC_FORM_SECTION, formatCriticReport, parseCriticReport, type CriticReport } from './critic-form.js';
 
 export interface AcceptanceCriterion {
   requirement: string;
@@ -31,6 +32,8 @@ export interface AcceptanceResult {
   criteria: AcceptanceCriterion[];
   /** Set when the model output could not be parsed (fail-open → passed:true). */
   parseError?: string;
+  /** P39 fixed-form critic report, present only when criticForm was requested. */
+  critic?: CriticReport;
 }
 
 export interface AcceptanceOptions {
@@ -46,6 +49,8 @@ export interface AcceptanceOptions {
   maxFiles?: number;
   /** Max total evidence chars (default 60000). */
   maxChars?: number;
+  /** Ask for the P39 fixed-form critic report (used when the judge is distinct). */
+  criticForm?: boolean;
 }
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'coverage', '.uap', '.uap-deliver', 'agents', '.worktrees']);
@@ -537,7 +542,7 @@ export function gitChangeSummary(projectRoot: string): string {
     .slice(0, 4_000);
 }
 
-function buildPrompt(spec: string, evidence: string, runtimeNote?: string, changeNote?: string): string {
+function buildPrompt(spec: string, evidence: string, runtimeNote?: string, changeNote?: string, criticForm?: boolean): string {
   return [
     'You are a strict acceptance reviewer. Decide whether the IMPLEMENTATION satisfies',
     'the EXPLICIT, checkable requirements in the SPEC. Judge ONLY from the code shown',
@@ -569,7 +574,8 @@ function buildPrompt(spec: string, evidence: string, runtimeNote?: string, chang
     'Respond with ONLY a JSON object, no prose, no code fences:',
     '{"criteria":[{"requirement":"<short>","met":true|false,"reason":"<short>"}],"pass":true|false}',
     'Set "pass" to true only if every important requirement is met.',
-  ].join('\n');
+    criticForm ? CRITIC_FORM_SECTION : '',
+  ].filter(Boolean).join('\n');
 }
 
 /**
@@ -625,7 +631,7 @@ export async function runAcceptanceGate(opts: AcceptanceOptions): Promise<Accept
 
   let raw: string;
   try {
-    raw = await opts.executor(buildPrompt(opts.spec, evidence, opts.runtimeNote, gitChangeSummary(opts.projectRoot) || undefined));
+    raw = await opts.executor(buildPrompt(opts.spec, evidence, opts.runtimeNote, gitChangeSummary(opts.projectRoot) || undefined, opts.criticForm));
   } catch (e) {
     return { passed: true, score: 1, criteria: [], parseError: `executor error: ${String(e).slice(0, 120)}` };
   }
@@ -635,6 +641,8 @@ export async function runAcceptanceGate(opts: AcceptanceOptions): Promise<Accept
   if (!parsed || !rawCriteria) {
     return { passed: true, score: 1, criteria: [], parseError: 'unparseable judge verdict' };
   }
+  // P39 critic report — advisory: parsed only when requested, never blocking.
+  const critic = opts.criticForm ? parseCriticReport(parsed) : undefined;
 
   const criteria: AcceptanceCriterion[] = rawCriteria
     .map((c) => {
@@ -657,7 +665,7 @@ export async function runAcceptanceGate(opts: AcceptanceOptions): Promise<Accept
   // extracted criterion to be met — conservative, matching the gate's purpose.
   const passed = metCount === criteria.length;
 
-  return { passed, score, criteria };
+  return critic ? { passed, score, criteria, critic } : { passed, score, criteria };
 }
 
 /** Render a short human report of an acceptance result. */
@@ -669,7 +677,7 @@ export function formatAcceptanceReport(result: AcceptanceResult): string {
     ? `ACCEPTANCE ✓ (${result.criteria.length}/${result.criteria.length} requirements met)`
     : `ACCEPTANCE ✗ (${result.criteria.filter((c) => c.met).length}/${result.criteria.length} requirements met)`;
   const lines = result.criteria.map((c) => `  [${c.met ? 'MET ' : 'MISS'}] ${c.requirement}${c.met ? '' : ` — ${c.reason}`}`);
-  return [head, ...lines].join('\n');
+  return [head, ...lines, ...(result.critic ? [formatCriticReport(result.critic)] : [])].join('\n');
 }
 
 /**
