@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
  * Guards the geometry invariants for the local Qwen3.8 stack — strata era.
  *
  * Context (2026-10-04): the backend is the strata serve layer on :8080 —
- * ONE rail, a 131072-cell pool (kv int8, fixed tier), no systemd unit. Its
+ * ONE rail, a 196608-cell pool (kv int8, fixed tier), no systemd unit. Its
  * predecessor (2026-09-20) was buun-llama-cpp behind
  * uap-gsq-rco-server.service with `-np 2 -c 229376`, a SHARED pool; that unit
  * is now INACTIVE but still installed, and `systemctl show` still reports its
@@ -70,11 +70,12 @@ describe('qwen38 profile — strata geometry invariants', () => {
   });
 
   it('keeps the session cap at or under the pool the rails can serve', () => {
-    // Strata (one rail, 131072 pool) keeps 114688 — deliberately BELOW the
+    // Strata (one rail, 196608 pool) keeps 180224 — deliberately BELOW the
     // pool so a session at the cap leaves the engine its own working room.
     // The cap may never EXCEED pool/rails: that is the overcommit the
-    // per-session cap exists to prevent (two 114688 sessions demanded
-    // 229376 cells from this 131072 pool under the 2-rail-era admission).
+    // per-session cap exists to prevent (two 180224 sessions would demand
+    // 360448 cells from this 196608 pool; the 2-rail-era admission made
+    // exactly this mistake against its own pool).
     const servable = profile.server_optimization.kv_capacity / profile.server_optimization.parallel_rails;
     expect(profile.context_window).toBeLessThanOrEqual(servable);
   });
@@ -96,7 +97,7 @@ describe('qwen38 profile — strata geometry invariants', () => {
     // The profile, the proxy env written by scripts/sync-local-agent-configs.sh,
     // and the rail count move as one — 2 in the llama.cpp era, 1 in the strata
     // era. A profile of 1 against a proxy still admitting 2 overcommits the
-    // 131072 pool.
+    // 196608 pool.
     expect(profile.concurrency.max_parallel_requests).toBe(
       profile.server_optimization.parallel_rails,
     );
@@ -106,9 +107,14 @@ describe('qwen38 profile — strata geometry invariants', () => {
     // The trap this change hit: compaction forcing was computed from the
     // shared pool, landing its trigger ABOVE the session cap so it could never
     // fire and the destructive pruner became the only context manager.
-    const assumed = 200_000;            // PROXY_CLIENT_ASSUMED_WINDOW
-    const frac = 0.58;                  // PROXY_COMPACT_TARGET_FRACTION
-    const pruneThreshold = 0.70;        // PROXY_CONTEXT_PRUNE_THRESHOLD
+    // 2026-11-17: constants track the operator band that ships with the
+    // 180224 window (assumed 180224, target 0.66, prune 0.80). The live
+    // 4.36-scale loop incident (board #266) was the opposite failure — the
+    // trigger landing BELOW the client's unprunable floor; this invariant
+    // guards the direction that silently disables compaction.
+    const assumed = 180_224;            // PROXY_CLIENT_ASSUMED_WINDOW
+    const frac = 0.66;                  // PROXY_COMPACT_TARGET_FRACTION
+    const pruneThreshold = 0.80;        // PROXY_CONTEXT_PRUNE_THRESHOLD
     const target = profile.context_window * frac;
     const compactAt = (assumed * 0.925) / (assumed / target);
     expect(compactAt).toBeLessThan(profile.context_window * pruneThreshold);
@@ -265,7 +271,7 @@ describe('project opencode config agrees with the profile', () => {
   });
 
   it('keeps the declared output under the proxy tool-turn cap', () => {
-    // The profile's max_tokens (57344) is what the proxy writes into the body;
+    // The profile's max_tokens (90112) is what the proxy writes into the body;
     // PROXY_TOOL_TURN_MAX_TOKENS clamps it to 32768 on any turn carrying
     // tools, which is nearly every agentic turn. The client limit must not
     // promise more than it can get.

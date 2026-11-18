@@ -51,11 +51,19 @@ import { fileURLToPath as __fileURLToPath } from 'node:url';
 const __cliEntry = (() => {
   try {
     const argv1 = process.argv[1];
-    if (!argv1) return false;
-    return __realpathSync(argv1) === __realpathSync(__fileURLToPath(import.meta.url));
+    if (argv1 && __realpathSync(argv1) === __realpathSync(__fileURLToPath(import.meta.url))) return true;
   } catch {
-    return false;
+    /* argv[1] unresolvable (e.g. relative path from a foreign cwd) — fall through */
   }
+  // Fallback: the plan-check CLI's REQUIRED flag. Covers symlinked/renamed
+  // copies and relative argv[1] from a different cwd where the realpath
+  // comparison cannot match — every real invocation passes --plan-id, so it
+  // alone identifies the CLI. Deliberately NOT '--mode': that token is generic,
+  // this module is imported at startup by the deliver pipeline (decompose.ts),
+  // and a process whose argv merely contains it (e.g. a deliver instruction
+  // quoting the flag) would be hijacked into the exit(1) path below at import
+  // time. Pinned by test/delivery/plan-check-cli-entry.test.ts.
+  return process.argv.slice(2).some((a) => a === '--plan-id');
 })();
 if (__cliEntry) {
   const args = process.argv.slice(2);

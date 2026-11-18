@@ -59,7 +59,7 @@ const measuredLocal = {
           unit: 'uap-strata-server',
           resident_gpu_mib: 21812,
           host_rss_mib: 52857,
-          context_pool_cells: 131072,
+          context_pool_cells: 196608,
           kv_resident_cells: 32768,
           kv_kind: 'int8',
           kv_mib_per_1k_cells: 12.2,
@@ -76,7 +76,7 @@ const policy = {
   services: [
     {
       name: 'strata-server',
-      http: { url: 'http://127.0.0.1:8080', kind: 'strata' as const, metricsMustMatch: { kv: 'int8', max_context: 131072 } },
+      http: { url: 'http://127.0.0.1:8080', kind: 'strata' as const, metricsMustMatch: { kv: 'int8', max_context: 196608 } },
       headroom: { gpuMinFreeMiB: 200 },
     },
     {
@@ -155,8 +155,8 @@ describe('configCostMiB', () => {
   });
 
   it('scales marginal KV beyond the resident pool', () => {
-    // 21812 + 81920/1000 × 12.2 = 21812 + 999.424
-    expect(configCostMiB(measured, 114688)).toBeCloseTo(22811.424, 2);
+    // 21812 + 147456/1000 × 12.2 = 21812 + 1798.9632
+    expect(configCostMiB(measured, 180224)).toBeCloseTo(23610.9632, 2);
   });
 
   it('returns null — refuse, not guess — beyond the pool with no kv rate', () => {
@@ -174,7 +174,7 @@ describe('validateRegistry', () => {
     const llamaCfg = loaded.registry.models['qwen3.8-27b'].configs['llama-mtp'] as { service?: string };
     llamaCfg.service = 'strata-server';
     const findings = validateRegistry(loaded.registry, policy);
-    // The measured entry agrees with the policy: kv int8, max_context 131072.
+    // The measured entry agrees with the policy: kv int8, max_context 196608.
     expect(findings.filter((f) => f.severity === 'error')).toEqual([]);
     // Unmeasured configs with a service link cannot be cross-checked.
     expect(findings.some((f) => f.severity === 'warning' && /cannot cross-check/.test(f.message))).toBe(true);
@@ -410,25 +410,32 @@ describe('files manifest (model-file recovery)', () => {
 // 2026-11-11: the Unsloth Dynamic v3.1 arm — installed for the aidavid125
 // stack (Strata 0.2.13.1 / engine 0.1.59); the base IQ3_S arm was dropped
 // the same day (superseded by the Swift 1.5 arm at the same quant since
-// 2026-10-17, its shards deleted after a links=1 check).
+// 2026-10-17, its shards deleted after a links=1 check). RETIRED 2026-11-17:
+// the operator switched the fleet to the ISTA-DASLab base IQ3_S arm and
+// removed every other flash-next quant — the entry below stays as the
+// pinned re-fetch manifest for a future re-stage.
 // ---------------------------------------------------------------------------
 
-describe('repo registry: unsloth UD-IQ4_XS-v31 arm wiring', () => {
-  it('ships the v31 config with the pinned 4-shard manifest and fails closed until measured', () => {
+describe('repo registry: unsloth UD-IQ4_XS-v31 arm wiring (retired 2026-11-17)', () => {
+  it('keeps the retired v31 config as the pinned re-fetch manifest — not advertised, alias retired', () => {
     const own = mkdtempSync(join(tmpdir(), 'unsloth-v31-registry-'));
     try {
       const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
       expect(loaded.errors).toEqual([]);
       const entry = loaded.registry.models['qwen3.8-flash-next'];
-      // setup writes model_name = <family name>-<model key lowercased> — the
-      // dash form, the same convention as the config file name.
-      expect(entry.advertises).toContain('qwen3.8-flash-next-unsloth-ud-iq4_xs-v31');
-      // The short form matches nothing this arm advertises — it must not ship.
-      expect(entry.advertises).not.toContain('unsloth-ud-iq4_xs_v31');
+      // Retired with the 2026-11-17 removal round: the alias left the
+      // family advertises for retired_local_aliases (the sync's migration
+      // source), and the manifest carries the WEIGHTS REMOVED marker.
+      const raw = JSON.parse(
+        readFileSync(join(repoRoot, 'config/model-registry.json'), 'utf8'),
+      ) as { retired_local_aliases?: string[] };
+      expect(entry.advertises).not.toContain('qwen3.8-flash-next-unsloth-ud-iq4_xs-v31');
+      expect(raw.retired_local_aliases).toContain('qwen3.8-flash-next-unsloth-ud-iq4_xs-v31');
       const cfg = entry.configs['strata-unsloth-ud-iq4_xs-v31'];
-      expect(cfg, 'config/model-registry.json must keep the v31 arm').toBeTruthy();
+      expect(cfg, 'the retired v31 arm must keep its re-fetch manifest').toBeTruthy();
       expect(cfg.unit).toBe('uap-strata-server');
       expect(cfg.engine).toBe('strata');
+      expect(cfg.note).toMatch(/WEIGHTS REMOVED 2026-11-17/);
       // Shape only until `uap models measure` records this machine (spec §4.1).
       expect(isPlaceable(cfg)).toBe(false);
       // The v3.1 republication is HEAD-pinned: every shard must record the
@@ -459,28 +466,39 @@ describe('repo registry: unsloth UD-IQ4_XS-v31 arm wiring', () => {
     }
   });
 
-  it('no longer ships the dropped base IQ3_S arm — the files are gone, so the entry must be too', () => {
+  it('reinstated the base IQ3_S arm as the 2026-11-17 default and keeps every retired manifest', () => {
     const own = mkdtempSync(join(tmpdir(), 'iq3s-dropped-registry-'));
     try {
       const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
       expect(loaded.errors).toEqual([]);
       const entry = loaded.registry.models['qwen3.8-flash-next'];
-      expect(entry.configs['strata-iq3_s']).toBeUndefined();
-      // What remains: the v31 default, the switchable abliterated IQ2_XS and
-      // IQ3_S arms, the Swift 1.5 A/B arm, the unsloth UD-Q3_K_XL arm
-      // (the IQ3_S-class tier staged 2026-11-14), and the Speedy engine arm
-      // (the flash-next engine A/B on the same v31 weights, staged 2026-11-15)
-      // — each naming the unit that actually serves it.
+      // 2026-11-17 (evening): the DavidAU abliterated IQ3_S pair is BACK as
+      // the LIVE default — the strata default + the speedy engine A/B, same
+      // weight set — after the morning ISTA switch, so the 11-11 "dropped
+      // arm" expectation inverts again.
+      expect(entry.configs['strata-abliterated-iq3_s']).toBeTruthy();
+      expect(entry.configs['strata-abliterated-iq3_s'].unit).toBe('uap-strata-server');
+      // What ships after the reinstatement round: the LIVE abliterated
+      // pair (the strata default + the speedy engine A/B, same weight set),
+      // the kept-on-disk ISTA base pair (switchable, not retired), plus
+      // every retired arm kept as a pinned re-fetch manifest — each naming
+      // the unit that serves its config family.
       expect(Object.keys(entry.configs).sort()).toEqual([
+        'speedy-abliterated-iq3_s',
+        'speedy-iq3_s',
         'speedy-unsloth-ud-iq4_xs-v31',
         'strata-abliterated-iq2_xs',
         'strata-abliterated-iq3_s',
+        'strata-iq3_s',
         'strata-swift-iq3_s',
         'strata-unsloth-ud-iq4_xs-v31',
         'strata-unsloth-ud-q3_k_xl',
       ]);
+      expect(entry.configs['strata-iq3_s'].unit).toBe('uap-strata-base-iq3s-server');
+      expect(entry.configs['speedy-iq3_s'].unit).toBe('uap-speedy-server');
+      expect(entry.configs['speedy-abliterated-iq3_s'].unit).toBe('uap-speedy-server');
       expect(entry.configs['strata-abliterated-iq2_xs'].unit).toBe('uap-strata-abliterated-server');
-      expect(entry.configs['strata-abliterated-iq3_s'].unit).toBe('uap-strata-abliterated-iq3_s-server');
+      expect(entry.configs['strata-abliterated-iq3_s'].unit).toBe('uap-strata-server');
       expect(entry.configs['strata-swift-iq3_s'].unit).toBe('uap-strata-swift-server');
       expect(entry.configs['strata-unsloth-ud-iq4_xs-v31'].unit).toBe('uap-strata-server');
       expect(entry.configs['strata-unsloth-ud-q3_k_xl'].unit).toBe(
@@ -500,21 +518,36 @@ describe('repo registry: unsloth UD-IQ4_XS-v31 arm wiring', () => {
 // panel arm (unit uap-strata-abliterated-iq3_s-server.service, switch
 // model-switch.sh strata-abliterated-iq3_s; weights on disk since the 10-23
 // adoption, re-verified against the HF LFS digests at the 11-14 re-staging).
+// RETIRED 2026-11-17 (weights removed with the other flash-next quants),
+// then REINSTATED the 2026-11-17 EVENING by operator follow-up: the same
+// 2-shard set re-fetched (shard 1 sha256-verified against the Hub LFS oid
+// at the pinned rev; shard 2 hardlinked from the live ISTA base copy —
+// the tier-shared PLE table, zero re-download; mmproj reused), pack
+// rebuilt (1079 tensors, 302 native, arena 1.43 GiB), config realigned to
+// the 196608 fleet posture. The :8080 DEFAULT again, served by
+// uap-strata-server.service with strata-abliterated-iq3_s.json; the
+// morning's ISTA base set stays switchable as strata-base-iq3s.
 // ---------------------------------------------------------------------------
 
-describe('repo registry: strata-abliterated-iq3_s arm wiring', () => {
-  it('ships the iq3_s config with the pinned 2-shard manifest and fails closed until measured', () => {
+describe('repo registry: strata-abliterated-iq3_s arm wiring (reinstated default 2026-11-17 evening)', () => {
+  it('ships the reinstated default arm with the pinned DavidAU manifest and fails closed until measured', () => {
     const own = mkdtempSync(join(tmpdir(), 'iq3s-abliterated-registry-'));
     try {
       const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
       expect(loaded.errors).toEqual([]);
       const entry = loaded.registry.models['qwen3.8-flash-next'];
-      // The registration id this arm advertises at /v1/models (cfg model_name).
+      // Reinstated the 2026-11-17 evening: advertised again, alias
+      // un-retired, manifest re-verified on disk at the reinstatement.
+      const raw = JSON.parse(
+        readFileSync(join(repoRoot, 'config/model-registry.json'), 'utf8'),
+      ) as { retired_local_aliases?: string[] };
       expect(entry.advertises).toContain('abliterated-iq3_s');
+      expect(raw.retired_local_aliases).not.toContain('abliterated-iq3_s');
       const cfg = entry.configs['strata-abliterated-iq3_s'];
-      expect(cfg, 'config/model-registry.json must keep the iq3_s arm').toBeTruthy();
+      expect(cfg, 'the reinstated iq3_s arm must keep its manifest').toBeTruthy();
       expect(cfg.engine).toBe('strata');
-      expect(cfg.unit).toBe('uap-strata-abliterated-iq3_s-server');
+      expect(cfg.unit).toBe('uap-strata-server');
+      expect(cfg.note).toMatch(/REINSTATED/);
       // Shape only until `uap models measure` records this machine (spec §4.1).
       expect(isPlaceable(cfg)).toBe(false);
       // Head-pinned like every shipped manifest — `uap models ensure` must be
@@ -545,6 +578,45 @@ describe('repo registry: strata-abliterated-iq3_s arm wiring', () => {
     }
   });
 
+  it('ships the speedy engine A/B on the same DavidAU manifest (one variable: the engine)', () => {
+    const own = mkdtempSync(join(tmpdir(), 'speedy-abliterated-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['qwen3.8-flash-next'];
+      // The registration id this arm advertises at /v1/models (cfg
+      // model_name).
+      expect(entry.advertises).toContain('qwen3.8-flash-next-speedy-abliterated-iq3_s');
+      const cfg = entry.configs['speedy-abliterated-iq3_s'];
+      expect(cfg, 'config/model-registry.json must keep the speedy abliterated arm').toBeTruthy();
+      // The engine is the variable, not the weights: engine speedy on the
+      // strata-family serve layer, its own unit, its own panel id.
+      expect(cfg.engine).toBe('speedy');
+      expect(cfg.unit).toBe('uap-speedy-server');
+      // Shape only until `uap models measure` records this machine (spec §4.1).
+      expect(isPlaceable(cfg)).toBe(false);
+      // Byte-identical shard manifest to the strata abliterated default:
+      // same paths, bytes, digests and HEAD pin, so `uap models ensure`
+      // repairs either arm from one pin and the A/B has exactly one
+      // variable (the 2026-11-15 invariant, carried to the reinstated set).
+      const base = entry.configs['strata-abliterated-iq3_s'];
+      expect(cfg.files).toHaveLength(2);
+      expect(cfg.files).toEqual(base.files);
+      expect(
+        cfg.files?.every((f) => f.rev === '623b419bd443e6e76ec51ca4b95d951da93c6969'),
+      ).toBe(true);
+      expect(
+        cfg.files?.every(
+          (f) =>
+            f.repo ===
+            'DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF',
+        ),
+      ).toBe(true);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+
   it('cross-links the tier-shared shard 2 with the IQ2_XS arm entry', () => {
     // Shard 2 (the PLE/expert shard) is byte-identical across the release's
     // tiers — both shipped arm entries must pin the SAME digest, or the
@@ -558,6 +630,12 @@ describe('repo registry: strata-abliterated-iq3_s arm wiring', () => {
       const iq3s = configs['strata-abliterated-iq3_s'];
       expect(iq3s.files?.[1].sha256).toBe(iq2xs.files?.[1].sha256);
       expect(iq3s.files?.[1].bytes).toBe(iq2xs.files?.[1].bytes);
+      // 2026-11-17: the ISTA base IQ3_S default hardlinked the same
+      // tier-shared table at install — the digest chain now runs through
+      // the live arm too.
+      const base = configs['strata-iq3_s'];
+      expect(base.files?.[1].sha256).toBe(iq2xs.files?.[1].sha256);
+      expect(base.files?.[1].bytes).toBe(iq2xs.files?.[1].bytes);
     } finally {
       rmSync(own, { recursive: true, force: true });
     }
@@ -674,22 +752,29 @@ describe('repo registry: edge0-145b latent-MoE arm wiring', () => {
 // tops out at UD-Q3_K_XL 3.5 bpw, the same class as the fleet's IQ3_S arms),
 // staged as the switchable inference-panel arm ABOVE the v31 UD-IQ4_XS
 // default (panel id strata-unsloth-q3_k_xl, unit
-// uap-strata-unsloth-q3_k_xl-server.service).
+// uap-strata-unsloth-q3_k_xl-server.service). RETIRED 2026-11-17 (weights
+// removed with the other flash-next quants; entry = re-fetch manifest).
 // ---------------------------------------------------------------------------
 
-describe('repo registry: strata-unsloth-ud-q3_k_xl arm wiring', () => {
-  it('ships the q3_k_xl config with the pinned 4-shard manifest and fails closed until measured', () => {
+describe('repo registry: strata-unsloth-ud-q3_k_xl arm wiring (retired 2026-11-17)', () => {
+  it('keeps the retired q3_k_xl config as the pinned re-fetch manifest and fails closed until measured', () => {
     const own = mkdtempSync(join(tmpdir(), 'q3kxl-registry-'));
     try {
       const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
       expect(loaded.errors).toEqual([]);
       const entry = loaded.registry.models['qwen3.8-flash-next'];
-      // The registration id this arm advertises at /v1/models (cfg model_name).
-      expect(entry.advertises).toContain('qwen3.8-flash-next-unsloth-ud-q3_k_xl');
+      // Retired with the 2026-11-17 removal round: not advertised, alias
+      // retired, manifest kept with the WEIGHTS REMOVED marker.
+      const raw = JSON.parse(
+        readFileSync(join(repoRoot, 'config/model-registry.json'), 'utf8'),
+      ) as { retired_local_aliases?: string[] };
+      expect(entry.advertises).not.toContain('qwen3.8-flash-next-unsloth-ud-q3_k_xl');
+      expect(raw.retired_local_aliases).toContain('qwen3.8-flash-next-unsloth-ud-q3_k_xl');
       const cfg = entry.configs['strata-unsloth-ud-q3_k_xl'];
-      expect(cfg, 'config/model-registry.json must keep the q3_k_xl arm').toBeTruthy();
+      expect(cfg, 'the retired q3_k_xl arm must keep its re-fetch manifest').toBeTruthy();
       expect(cfg.engine).toBe('strata');
       expect(cfg.unit).toBe('uap-strata-unsloth-q3_k_xl-server');
+      expect(cfg.note).toMatch(/WEIGHTS REMOVED 2026-11-17/);
       // Shape only until `uap models measure` records this machine (spec §4.1).
       expect(isPlaceable(cfg)).toBe(false);
       // Head-pinned like every shipped manifest — `uap models ensure` must be
@@ -748,19 +833,27 @@ describe('repo registry: strata-unsloth-ud-q3_k_xl arm wiring', () => {
 // switchable inference-panel arm (panel id speedy, unit
 // uap-speedy-server.service). Same 4-shard v31 manifest as the strata
 // default — the engine is the only variable between the two arms.
+// RETIRED 2026-11-17: the A/B moved to the ISTA base IQ3_S set (speedy-iq3_s);
+// this entry stays as the pinned re-fetch manifest.
 // ---------------------------------------------------------------------------
 
-describe('repo registry: speedy-unsloth-ud-iq4_xs-v31 arm wiring', () => {
-  it('ships the speedy config with the v31 4-shard manifest and fails closed until measured', () => {
+describe('repo registry: speedy-unsloth-ud-iq4_xs-v31 arm wiring (retired 2026-11-17)', () => {
+  it('keeps the retired speedy config as the pinned v31 re-fetch manifest and fails closed until measured', () => {
     const own = mkdtempSync(join(tmpdir(), 'speedy-registry-'));
     try {
       const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
       expect(loaded.errors).toEqual([]);
       const entry = loaded.registry.models['qwen3.8-flash-next'];
-      // The registration id this arm advertises at /v1/models (cfg model_name).
-      expect(entry.advertises).toContain('qwen3.8-flash-next-speedy-ud-iq4_xs-v31');
+      // Retired with the 2026-11-17 IQ3_S switch: not advertised, alias
+      // retired, manifest kept with the WEIGHTS REMOVED marker.
+      const raw = JSON.parse(
+        readFileSync(join(repoRoot, 'config/model-registry.json'), 'utf8'),
+      ) as { retired_local_aliases?: string[] };
+      expect(entry.advertises).not.toContain('qwen3.8-flash-next-speedy-ud-iq4_xs-v31');
+      expect(raw.retired_local_aliases).toContain('qwen3.8-flash-next-speedy-ud-iq4_xs-v31');
       const cfg = entry.configs['speedy-unsloth-ud-iq4_xs-v31'];
-      expect(cfg, 'config/model-registry.json must keep the speedy arm').toBeTruthy();
+      expect(cfg, 'the retired speedy arm must keep its re-fetch manifest').toBeTruthy();
+      expect(cfg.note).toMatch(/WEIGHTS REMOVED 2026-11-17/);
       // The engine is the variable, not the weights: engine speedy on the
       // strata-family serve layer, its own unit, its own panel id.
       expect(cfg.engine).toBe('speedy');
@@ -785,6 +878,127 @@ describe('repo registry: speedy-unsloth-ud-iq4_xs-v31 arm wiring', () => {
       expect(
         cfg.files?.every((f) =>
           f.path.startsWith('/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/'),
+        ),
+      ).toBe(true);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-11-17: the ISTA-DASLab base GSQ-RCO IQ3_S pair — the operator switch
+// that made the pristine base IQ3_S arm the :8080 default (unit
+// uap-strata-server, config strata-iq3_s.json) and moved the Speedy engine
+// A/B onto the SAME weight set (unit uap-speedy-server, config
+// speedy-iq3_s.json), deleting every other flash-next quant the same day.
+// The advertised alias is deliberately NOT the historical
+// qwen3.8-flash-next-iq3_s (retired 2026-11-11): reusing it would break the
+// sync's retired-alias migration source.
+// EVENING 2026-11-17: the operator's same-day follow-up reinstated the
+// DavidAU abliterated IQ3_S tier as the default; this base pair STAYS ON
+// DISK as the switchable strata-base-iq3s arm (unit
+// uap-strata-base-iq3s-server.service) — switchable, not retired.
+// ---------------------------------------------------------------------------
+
+describe('repo registry: strata-iq3_s (ISTA base IQ3_S, switchable strata-base-iq3s) arm wiring', () => {
+  it('keeps the switchable base arm on disk with the pinned 2-shard ISTA manifest and fails closed until measured', () => {
+    const own = mkdtempSync(join(tmpdir(), 'iq3s-base-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['qwen3.8-flash-next'];
+      // The registration id this arm advertises at /v1/models when serving
+      // (cfg model_name) — the dash form, the same convention as the
+      // config file. Switchable since the 2026-11-17 evening round (the
+      // DavidAU abliterated tier reinstated as the default): NOT advertised
+      // by the default pair, but NOT retired either — weights + pack stay
+      // on disk behind uap-strata-base-iq3s-server.
+      expect(entry.advertises).not.toContain('qwen3.8-flash-next-gsq-rco-iq3_s');
+      expect(entry.advertises).not.toContain('qwen3.8-flash-next-iq3_s');
+      const raw = JSON.parse(
+        readFileSync(join(repoRoot, 'config/model-registry.json'), 'utf8'),
+      ) as { retired_local_aliases?: string[] };
+      expect(raw.retired_local_aliases).toContain('qwen3.8-flash-next-iq3_s');
+      expect(raw.retired_local_aliases).not.toContain('qwen3.8-flash-next-gsq-rco-iq3_s');
+      const cfg = entry.configs['strata-iq3_s'];
+      expect(cfg, 'config/model-registry.json must keep the switchable base arm').toBeTruthy();
+      expect(cfg.engine).toBe('strata');
+      expect(cfg.unit).toBe('uap-strata-base-iq3s-server');
+      // Shape only until `uap models measure` records this machine (spec §4.1).
+      expect(isPlaceable(cfg)).toBe(false);
+      // Head-pinned like every shipped manifest — `uap models ensure` must
+      // be able to re-fetch and verify from this pin (the openjet lesson).
+      expect(cfg.files).toHaveLength(2);
+      const REV = 'ed59f92082b1e93c0e96d60a8b11aab089b52f09';
+      expect(
+        cfg.files?.every(
+          (f) => f.repo === 'ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF' && f.rev === REV,
+        ),
+      ).toBe(true);
+      expect(
+        cfg.files?.every((f) =>
+          f.path.startsWith('/home/cogtek/models/strata-data/models/IQ3_S/'),
+        ),
+      ).toBe(true);
+      // Shard 1: the experts shard, downloaded fresh and sha256-verified
+      // against the Hub LFS oid at the pinned rev (the .done marker).
+      expect(cfg.files?.[0]).toMatchObject({
+        bytes: 54817524224,
+        sha256: '4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3',
+      });
+      // Shard 2: the tier-shared PLE n-gram table, the same digest every
+      // GSQ-RCO tier pins — hardlinked at install from the since-removed
+      // abliterated copy (zero re-download, one inode, links=1 verified
+      // after the removal round).
+      expect(cfg.files?.[1]).toMatchObject({
+        bytes: 28800138432,
+        sha256: '316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113',
+      });
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('repo registry: speedy-iq3_s (fork preset on disk for the ISTA set) arm wiring', () => {
+  it('keeps the speedy ISTA preset on disk with the byte-identical manifest and fails closed until measured', () => {
+    const own = mkdtempSync(join(tmpdir(), 'speedy-iq3s-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['qwen3.8-flash-next'];
+      // The registration id this arm advertises at /v1/models when serving
+      // (cfg model_name). The uap-speedy-server unit flipped to the
+      // DavidAU abliterated set 2026-11-17 evening (speedy-abliterated-
+      // iq3_s.json, the speedy-abliterated-iq3_s entry); this ISTA preset
+      // stays on disk, restored by repointing the unit's --config — not
+      // advertised by the default pair, not retired.
+      expect(entry.advertises).not.toContain('qwen3.8-flash-next-speedy-gsq-rco-iq3_s');
+      const cfg = entry.configs['speedy-iq3_s'];
+      expect(cfg, 'config/model-registry.json must keep the speedy ISTA preset').toBeTruthy();
+      // The engine is the variable, not the weights: engine speedy on the
+      // strata-family serve layer, its own unit, its own panel id.
+      expect(cfg.engine).toBe('speedy');
+      expect(cfg.unit).toBe('uap-speedy-server');
+      // Shape only until `uap models measure` records this machine (spec §4.1).
+      expect(isPlaceable(cfg)).toBe(false);
+      // Byte-identical shard manifest to the strata IQ3_S default: same
+      // paths, bytes, digests and HEAD pin, so `uap models ensure` repairs
+      // either arm from one pin and the A/B has exactly one variable (the
+      // 2026-11-15 invariant, carried to the IQ3_S set).
+      const base = entry.configs['strata-iq3_s'];
+      expect(cfg.files).toHaveLength(2);
+      expect(cfg.files).toEqual(base.files);
+      expect(
+        cfg.files?.every((f) => f.rev === 'ed59f92082b1e93c0e96d60a8b11aab089b52f09'),
+      ).toBe(true);
+      expect(
+        cfg.files?.every((f) => f.repo === 'ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF'),
+      ).toBe(true);
+      expect(
+        cfg.files?.every((f) =>
+          f.path.startsWith('/home/cogtek/models/strata-data/models/IQ3_S/'),
         ),
       ).toBe(true);
     } finally {

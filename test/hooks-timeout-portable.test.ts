@@ -35,9 +35,11 @@ describe('runtime-gate timeout is portable (no bare `timeout`)', () => {
 
     // The buggy form ran `timeout` directly in bun's shell.
     expect(plugin).not.toMatch(/\$`timeout /);
-    // The fix resolves a real binary and degrades gracefully.
-    expect(plugin).toContain('Bun.which("timeout")');
-    expect(plugin).toContain('Bun.which("gtimeout")');
+    // The fix resolves a real binary and degrades gracefully. (V2: Bun is
+    // reached through a typed globalThis guard so the file typechecks under
+    // plain node without @types/bun.)
+    expect(plugin).toContain('bunGlobal.which("timeout")');
+    expect(plugin).toContain('bunGlobal.which("gtimeout")');
     // Still invokes the verify gate — but NOT with --strict (strict false-blocks
     // on "nothing runnable"; see the fresh-install Stop-loop fix).
     expect(plugin).toContain('uap verify --runtime-only');
