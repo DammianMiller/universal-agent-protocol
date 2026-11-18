@@ -18,9 +18,36 @@
  * worst severity, worst axis, id) — the same candidates always rank the
  * same, so a ladder re-run reproduces its trace byte-for-byte.
  */
-import { GapReport, gapReport, GapResult } from './tiers.js';
+import { appendFileSync, mkdirSync } from 'fs';
+import { dirname, join } from 'path';
+import { GapReport, gapReport, GapResult, tiersPath } from './tiers.js';
 import { classOfTierKey, resolveClass } from './classes.js';
 import { tierContractText } from './tier-contract.js';
+
+/**
+ * Record a fired escalation (Wave 1.4, repo-side half): one JSON line in
+ * .uap/quality/escalations.jsonl — the operator's explicit, durable queue
+ * for quality-model placement. The ladder firing is the SIGNAL; the switch
+ * decision stays with the fleet operator (the plan's owner for 1.4).
+ * Project-local and gitignored with the rest of the quality store.
+ */
+export function recordEscalation(
+  projectRoot: string,
+  tierKey: string,
+  round: number,
+  summary: string,
+): string {
+  const file = join(dirname(tiersPath(projectRoot)), 'escalations.jsonl');
+  mkdirSync(dirname(file), { recursive: true });
+  const line = JSON.stringify({
+    tier: tierKey,
+    round,
+    escalatedAt: new Date().toISOString(),
+    summary,
+  });
+  appendFileSync(file, `${line}\n`);
+  return file;
+}
 
 /** One candidate artifact for a round. The id is stable (ranking tiebreak + trace). */
 export interface TierLadderCandidate {
@@ -228,6 +255,14 @@ export async function runTierLadder(config: TierLadderConfig): Promise<TierLadde
     if (escalate) {
       escalationFired = true;
       plateau = 0; // the stronger model gets its own plateau budget
+      // Wave 1.4 repo-side half: the firing is recorded durably as the
+      // operator's placement queue (the switch itself is operator-owned).
+      recordEscalation(
+        config.projectRoot,
+        config.tierKey,
+        round,
+        `plateau: best candidate failed ${top.failing} of ${top.gap.axes.length} axes on tier ${config.tierKey} after ${round} round(s) without improvement — worst: ${top.worst}`,
+      );
       await config.onEscalate?.(round);
     }
 

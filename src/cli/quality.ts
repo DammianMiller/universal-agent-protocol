@@ -103,7 +103,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  gap --file <f>      Gap an artifact against a tier (--tier <class/name>); exit 2 below tier');
       console.log('  ladder --rounds-dir Rank harvested best-of-N rounds against a tier (--tier); escalation + honest cut');
       console.log('  contract --tier <k>  Print the tier contract (the injectable executor-prompt block)');
-      console.log(chalk.dim('  Classes: visual-scene (PNG), api-behavior (API transcript JSON), bench-score (bench results JSON)'));
+      console.log(chalk.dim('  Classes: visual-scene (PNG), api-behavior (API transcript JSON), bench-score (bench results JSON),'));
+      console.log(chalk.dim('  doc-style (Markdown). Anchors are project-local, gitignored, measuring-only (P39).'));
   }
 }
 
@@ -527,6 +528,9 @@ async function ladderCmd(dir: string, options: QualityOptions): Promise<void> {
       for (const a of gap.axes.filter((x) => x.status === 'fail').slice(0, 5)) {
         console.log(`      ${chalk.red('✗')} ${a.axis} ${a.value} → ${a.directive ?? 'below tier'}`);
       }
+    }
+    if (result.escalationFired) {
+      console.log(chalk.dim(`    escalation recorded for the operator: ${join(dir, '.uap', 'quality', 'escalations.jsonl')}`));
     }
   }
   if (result.outcome !== 'tier-reached') process.exitCode = 2;

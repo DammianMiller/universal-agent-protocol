@@ -25,6 +25,7 @@ import { readFileSync } from 'fs';
 import { extractTierVector, storeAnchorRecord, TierVector } from './tier.js';
 import { extractApiVector } from './api-behavior.js';
 import { extractBenchVector } from './bench-score.js';
+import { extractDocVector } from './doc-style.js';
 
 export type AxisDirection = 'min' | 'max' | 'band';
 
@@ -183,6 +184,37 @@ const BENCH_AXES: Record<string, AxisSpec> = {
   },
 };
 
+/* ------------------------------ doc-style -------------------------------- */
+
+const DOC_AXES: Record<string, AxisSpec> = {
+  emDashPer1k: {
+    direction: 'max',
+    directives: {
+      high: 'punctuation: replace prose em dashes with commas, colons, or a separate sentence by context (the v2.51.1 normalization normalized 2131 corpus-wide)',
+    },
+  },
+  sentenceLenMean: {
+    direction: 'band',
+    directives: {
+      low: 'flow: combine choppy fragments where the meaning is continuous',
+      high: 'readability: split long sentences at their natural joints — one topic per sentence',
+    },
+  },
+  wordLenMean: {
+    direction: 'band',
+    directives: {
+      high: 'plain words: prefer the short verb over the long nominalization',
+      low: 'precision: keep the domain term where the plain word loses meaning',
+    },
+  },
+  dupSentenceFrac: {
+    direction: 'max',
+    directives: {
+      high: 'bloat: cut repeated sentences — the same point stated twice is duplication, not emphasis',
+    },
+  },
+};
+
 /* ------------------------------- registry -------------------------------- */
 
 const REGISTRY: Record<string, ClassSpec> = {
@@ -209,6 +241,18 @@ const REGISTRY: Record<string, ClassSpec> = {
     degenerate: (v) =>
       (v.scalars?.taskCount ?? 0) < 1
         ? 'degenerate bench run: zero tasks recorded — the pass-rate is vacuous, re-run the suite before gapping'
+        : null,
+  },
+  'doc-style': {
+    cls: 'doc-style',
+    extract: (p) => extractDocVector(p),
+    axes: DOC_AXES,
+    artifact: 'documentation (Markdown)',
+    // writing class: moderate exploration — more than a transcript, less than a scene
+    sampling: { temperature: 0.4 },
+    degenerate: (v) =>
+      (v.scalars?.proseChars ?? 0) < 200
+        ? 'degenerate document: under 200 prose characters after stripping code, tables, and links — a config file or a stub is not doc-style evidence'
         : null,
   },
 };
