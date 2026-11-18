@@ -57,7 +57,7 @@ Do not rebuild these. Placement composes on top of them.
 | Declared service budgets, headroom, restart budgets | `config/capacity-policy.json`, `src/capacity/policy.ts` |
 | Health semantics, fail-open vs fail-closed probes | `docs/guides/CAPACITY_POLICY.md`, `src/capacity/probe.ts` |
 | Free VRAM probe | `probeGpuFreeMiB()`, **GPU 0 only** |
-| Post-load config verification | `metricsMustMatch` (`{"kv":"int8","max_context":131072}` for `strata-server`) |
+| Post-load config verification | `metricsMustMatch` (`{"kv":"int8","max_context":196608}` for `strata-server`) |
 | Slot budget: env → config → probe → default | `src/utils/model-slots.ts` (`DEFAULT_SLOTS = 2`, 30s cache) |
 | Cross-process slot semaphore, AIMD backpressure | `src/utils/model-slot-lease.ts`, `src/coordination/service.ts:1045-1174` |
 | Lease persistence | `model_leases` table, `src/coordination/database.ts` |
@@ -181,13 +181,13 @@ context size. The entry below is **measured on this machine**, not estimated:
         "strata-iq3_s": {
           "resident_gpu_mib": 21812,
           "host_rss_mib": 52857,
-          "context_pool_cells": 131072,
-          "per_session_cap_cells": 114688,
+          "context_pool_cells": 196608,
+          "per_session_cap_cells": 180224,
           "kv_resident_cells": 32768,
           "kv_mib_per_1k_cells": 12.2,
           "measured_at": "2026-10-08T14:02:00Z",
           "measured_on": "gpu0",
-          "flags": ["--max-context", "131072", "--kv", "int8", "--kv-resident", "32768", "--vram-reserve-mib", "1200"]
+          "flags": ["--max-context", "196608", "--kv", "int8", "--kv-resident", "32768", "--vram-reserve-mib", "1200"]
         }
       },
       "advertises": ["qwen3.8-flash-next-iq3_s", "gpt-5.1-codex"]
@@ -287,7 +287,7 @@ The naive recipe, file size for weights, `nvidia-smi` used-minus-weights for
 overhead, is wrong on both counts, and the numbers below are why.
 
 Current live config: `strata-iq3_s.json`, engine `strata`, pack `iq3_s`,
-`--max-context 131072 --kv int8 --kv-resident 32768 --vram-reserve-mib 1200
+`--max-context 196608 --kv int8 --kv-resident 32768 --vram-reserve-mib 1200
 --spec 8 --mtp rt --expert-cache auto`.
 
 | Quantity | Measured | Source |
@@ -697,12 +697,12 @@ What the measured row corresponds to, from the live unit's `ExecStart`
 (`config/strata-configs/strata-iq3_s.json`):
 
 ```
---max-context 131072 --kv int8 --kv-resident 32768
+--max-context 196608 --kv int8 --kv-resident 32768
 --vram-reserve-mib 1200 --expert-cache auto --spec 8 --spec-min-p 0.8
 ```
 
 `/metrics` reports `expert_cache_mib: 15017` and `expert_slots: 7736` for that
-config. So `kv_resident_cells` is 32768, not 131072: the first 32k cells of
+config. So `kv_resident_cells` is 32768, not 196608: the first 32k cells of
 context are already inside the 21,812 MiB, and marginal KV only starts accruing
 past that. `--vram-reserve-mib 1200` is the engine's own internal floor and
 belongs in `reserved_mib` for the device, not in the config's cost.
@@ -749,7 +749,7 @@ separate overhead term is needed for the common case. For the live Strata
 config, `/metrics` reports `expert_cache_mib: 15017` and `arena_mib: 47962`
 inside the 21,812 MiB resident total; those are reported for diagnosis only and
 never enter the decision. The marginal KV term matters only when a request asks
-for more context than the measured pool (`--max-context 131072` with
+for more context than the measured pool (`--max-context 196608` with
 `--kv-resident 32768` today); below that, the pool is already paid for.
 
 `reserve_mib` is the operator's placement reserve, declared in the placement

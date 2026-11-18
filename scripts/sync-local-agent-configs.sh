@@ -3,9 +3,9 @@
 # sync-local-agent-configs.sh — point every coding agent at the live local stack.
 #
 #   Server : uap-strata-server.service on :8080 (strata serve layer, engine
-#            0.1.59.1, unsloth UD-IQ4_XS v31 arm, ONE shared 131072 pool)
+#            0.1.59.1, unsloth UD-IQ4_XS v31 arm, ONE shared 196608 pool)
 #   Proxy  : uap-anthropic-proxy.service on :4000 (Anthropic Messages API)
-#   Profile: config/model-profiles/qwen38.json  (per-session window 114688)
+#   Profile: config/model-profiles/qwen38.json  (per-session window 180224)
 #
 # WHY A PER-SESSION CAP IS NEEDED
 # --------------------------------
@@ -268,10 +268,10 @@ for key in keys:
         # Deliberate 27B family listing: the marker id is this sync's own
         # stake, so it is exempt from convergence — repointing it would
         # erase the second family from the picker. Maintain, never migrate:
-        # the entry keeps the current token and gains baseModelId when
-        # absent; everything else about it is already correct by
-        # construction (the add-if-missing below wrote it, or a dedupe
-        # pass kept the marker member).
+        # the entry keeps the current token, gains baseModelId when
+        # absent, and its caps are re-maintained to the CURRENT geometry
+        # (the add-if-missing below, or a dedupe pass, wrote the entry —
+        # an era with a different window must not strand it stale).
         mid = m.get("id")
         if isinstance(mid, str) and marker27.match(mid):
             if m.get(AK) != token:
@@ -279,6 +279,18 @@ for key in keys:
             if camel and not m.get("baseModelId"):
                 m["baseModelId"] = chat_base
                 changed.append(f"{label} [baseModelId={chat_base}]")
+            # Session size is GEOMETRY, not identity: the marker exempts
+            # this entry from ALIAS convergence (repointing the model would
+            # erase the family from the picker), but the caps it advertises
+            # must track ctx_s/out exactly as the add-if-missing writes
+            # them — a geometry change (2026-11-17: window 114688 -> 180224)
+            # otherwise strands every pre-existing 27B listing at the old
+            # window, which the qwen38-model-knowledge suite catches as
+            # "27B listing is not session-sized".
+            if m.get(CK) != ctx_s:
+                setf(m, CK, ctx_s, label, "ctx", changed)
+            if m.get(OK) != out:
+                setf(m, OK, out, label, "out", changed)
             continue
         # Deliberate gemma family listing: same maintain-never-migrate rule
         # as the 27B marker. baseModelId is stamped only when the gemma base
