@@ -495,7 +495,7 @@ describe('repo registry: unsloth UD-IQ4_XS-v31 arm wiring (retired 2026-11-17)',
         'strata-unsloth-ud-q3_k_xl',
       ]);
       expect(entry.configs['strata-iq3_s'].unit).toBe('uap-strata-base-iq3s-server');
-      expect(entry.configs['speedy-iq3_s'].unit).toBe('uap-speedy-server');
+      expect(entry.configs['speedy-iq3_s'].unit).toBe('uap-speedy-base-iq3s-server');
       expect(entry.configs['speedy-abliterated-iq3_s'].unit).toBe('uap-speedy-server');
       expect(entry.configs['strata-abliterated-iq2_xs'].unit).toBe('uap-strata-abliterated-server');
       expect(entry.configs['strata-abliterated-iq3_s'].unit).toBe('uap-strata-server');
@@ -969,18 +969,18 @@ describe('repo registry: speedy-iq3_s (fork preset on disk for the ISTA set) arm
       expect(loaded.errors).toEqual([]);
       const entry = loaded.registry.models['qwen3.8-flash-next'];
       // The registration id this arm advertises at /v1/models when serving
-      // (cfg model_name). The uap-speedy-server unit flipped to the
-      // DavidAU abliterated set 2026-11-17 evening (speedy-abliterated-
-      // iq3_s.json, the speedy-abliterated-iq3_s entry); this ISTA preset
-      // stays on disk, restored by repointing the unit's --config — not
-      // advertised by the default pair, not retired.
-      expect(entry.advertises).not.toContain('qwen3.8-flash-next-speedy-gsq-rco-iq3_s');
+      // (cfg model_name). 2026-11-18: the IQ3_S-only panel round switched
+      // :8080 to this ISTA base preset under its own unit
+      // (uap-speedy-base-iq3s-server, panel id speedy-base) — it is the LIVE
+      // default arm and IS advertised; the uap-speedy-server unit (DavidAU
+      // abliterated set since 2026-11-17 evening) is the parked A/B arm.
+      expect(entry.advertises).toContain('qwen3.8-flash-next-speedy-gsq-rco-iq3_s');
       const cfg = entry.configs['speedy-iq3_s'];
       expect(cfg, 'config/model-registry.json must keep the speedy ISTA preset').toBeTruthy();
       // The engine is the variable, not the weights: engine speedy on the
       // strata-family serve layer, its own unit, its own panel id.
       expect(cfg.engine).toBe('speedy');
-      expect(cfg.unit).toBe('uap-speedy-server');
+      expect(cfg.unit).toBe('uap-speedy-base-iq3s-server');
       // Shape only until `uap models measure` records this machine (spec §4.1).
       expect(isPlaceable(cfg)).toBe(false);
       // Byte-identical shard manifest to the strata IQ3_S default: same

@@ -246,33 +246,35 @@ export const ModelPresets: Record<string, ModelConfig> = {
     // completion budget without ever appearing in the text — a tight max_tokens
     // yields an EMPTY answer with finish_reason=length, not a short one.
     endpoint: 'http://127.0.0.1:4000/v1',
-    // The PER-SESSION cap, not the server's pool. Strata serves one rail
-    // with a 196608-cell pool; the qwen38 model profile caps a session at
-    // 180224 — deliberately BELOW the pool so a session at the cap leaves the
-    // engine its own working room. A client sizing to the pool itself would
-    // aim past what its own session is allowed.
-    maxContextTokens: 180224,
+    // The PER-SESSION cap, not the server's pool. The speedy-base fork arm
+    // (live since 2026-11-18) serves one rail with a 131072-cell pool; the
+    // strata arms serve the 196608 #918 pool. The qwen38 model profile caps
+    // a session at 114688 — deliberately BELOW the pool so a session at the
+    // cap leaves the engine its own working room. A client sizing to the
+    // pool itself would aim past what its own session is allowed.
+    maxContextTokens: 114688,
     costPer1MInput: 0,
     costPer1MOutput: 0,
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
     // A 1024-token safety margin under the per-session cap above, NOT a
-    // computed reserve — nothing in the code derives 180224 - 1024.
+    // computed reserve — nothing in the code derives 114688 - 1024.
     //
     // READ THIS BEFORE TRUSTING THE NUMBER. It is a FALLBACK, and on the live
     // path it loses. resolveSessionTokenBudget (src/delivery/context-budget.ts)
     // ranks discovery ABOVE the preset, and discovery (`/v1/context`) reports
-    // the WHOLE POOL (196608 on strata), not this per-session cap — because the
-    // cap is opt-in via the `x-uap-model-profile` header and NOTHING in src/
-    // sends it (opencode, codex and claude-local do; UAP's own clients do not).
-    // So a deliver run on this box resolves 196608 * 0.7 = 137625 against a
-    // 180224 cap — under the cap by accident of the smaller strata session cap, not
-    // by enforcement. Under-claiming here is still the safe direction — every
-    // consumer clamps downward — but do not read this constant as evidence
-    // that anything is enforcing the cap on UAP's own traffic. Tracked
-    // separately. (Pre-strata the same arithmetic resolved 229376 * 0.7 =
-    // 160563, ABOVE the cap; the 2026-10-04 backend change flipped the
-    // inequality, and the gap is untracked either way.)
-    modelContextBudget: 179200,
+    // the WHOLE POOL (131072 on the speedy-base arm, 196608 on the strata
+    // arms), not this per-session cap — because the cap is opt-in via the
+    // `x-uap-model-profile` header and NOTHING in src/ sends it (opencode,
+    // codex and claude-local do; UAP's own clients do not). So a deliver run
+    // on this box resolves 131072 * 0.7 = 91750 against a 114688 cap — under
+    // the cap by the smaller discovery arithmetic, not by enforcement.
+    // Under-claiming here is still the safe direction — every consumer clamps
+    // downward — but do not read this constant as evidence that anything is
+    // enforcing the cap on UAP's own traffic. Tracked separately. (Pre-strata
+    // the same arithmetic resolved 229376 * 0.7 = 160563, ABOVE the cap; the
+    // 2026-10-04 backend change flipped the inequality, and the gap is
+    // untracked either way.)
+    modelContextBudget: 113664,
   },
   // NOTE: this entry keeps 196608/195584 while 'qwen38-27b' above dropped to
   // the per-session cap. Deliberate: 'local-auto' resolves whatever backend is
