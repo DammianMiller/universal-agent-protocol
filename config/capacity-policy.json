@@ -62,11 +62,11 @@
         "kind": "strata",
         "metricsMustMatch": {
           "kv": "int8",
-          "max_context": 131072
+          "max_context": 196608
         }
       },
       "budget": {
-        "note": "The local Qwen3.8 backend since 2026-10-04 (the gsq-rco llama-server above is its retired predecessor, unit kept for rotation). Unit-less: launched by /home/cogtek/dev/strata/run-iq3_xxs.sh (flash-next IQ3_XXS pack, --expert-cache auto, --vram-reserve-mib 1200, --spec 4, --kv int8, --max-context 131072, single rail). No restartBudget: with no unit, NRestarts does not exist; liveness IS the /metrics probe. metricsMustMatch pins the two load-bearing numbers the note mentions — kv kind and pool size — so a relaunch with different flags reads as RED, the execStartMustContain doctrine applied to a service with no ExecStart."
+        "note": "The local Qwen3.8 backend since 2026-10-04 (the gsq-rco llama-server above is its retired predecessor, unit kept for rotation). Unit-less: launched by /home/cogtek/dev/strata/run-iq3_xxs.sh (flash-next IQ3_XXS pack, --expert-cache auto, --vram-reserve-mib 1200, --spec 4, --kv int8, --max-context 131072, single rail). No restartBudget: with no unit, NRestarts does not exist; liveness IS the /metrics probe. metricsMustMatch pins the two load-bearing numbers the note mentions — kv kind and pool size — so a relaunch with different flags reads as RED, the execStartMustContain doctrine applied to a service with no ExecStart. 2026-11-17: pool raised --max-context 131072 -> 196608 in the strata config (operator-directed; the engine natively serves max_model_len 196608, SSD-backed PLE pages KV beyond the 32768 resident cells); metricsMustMatch pins 196608."
       },
       "headroom": {
         "gpuMinFreeMiB": 200,

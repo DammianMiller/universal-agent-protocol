@@ -189,8 +189,8 @@ truth the rails suite drift-checks against the live `/props` on :8080), then:
   entries stay on `:8080`;
 - **adds** the entry when a settings file has no local qwen model at all, so
   every Droid instance (user-level settings cover all projects) can call it;
-- sizes entries to the profile's per-session cap (114688 via the proxy, the
-  131072 pool on the direct path) and the proxy tool-turn cap (32768);
+- sizes entries to the profile's per-session cap (180224 via the proxy, the
+  196608 pool on the direct path) and the proxy tool-turn cap (32768);
 - pins `baseModelId` on Anthropic-protocol entries (default
   `claude-sonnet-4-6`, override `DROID_ANTHROPIC_BASE_MODEL`) so the entry
   inherits model-specific prompts, tools, and Script-mode eligibility instead

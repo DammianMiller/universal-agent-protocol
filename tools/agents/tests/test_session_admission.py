@@ -113,5 +113,110 @@ class TestAdmissionAsync(unittest.TestCase):
         self.assertNotIn("hot", proxy._admitted_sessions)   # LRU evicted
 
 
+class TestAdmissionFairness(unittest.TestCase):
+    """2026-11-16 guard: a session with a LIVE request is never the victim.
+
+    The LRU is ordered by last-request-arrival, so a mid-turn session sits at
+    the eviction front BY CONSTRUCTION. Under over-subscription, force-admits
+    evicted exactly those sessions seconds after admission (zero turn progress
+    while 4 deliver sessions cycled the single hot slot — live-observed
+    2026-11-16 10:29-10:34). These cases pin the victim-selection contract:
+    busy sessions are skipped, the oldest IDLE session is preferred, and only
+    an all-busy hot set falls back to the plain LRU front.
+    """
+
+    def setUp(self):
+        proxy._admitted_sessions.clear()
+        proxy._admitted_busy.clear()
+        proxy._admission_cond = None
+        proxy.PROXY_SESSION_ADMISSION = True
+        proxy.PROXY_SESSION_ADMISSION_LIMIT = 2
+        proxy.PROXY_SESSION_ADMISSION_IDLE_TTL = 0.0        # never idle-prune
+        proxy.PROXY_SESSION_ADMISSION_WAIT_TIMEOUT = 0.01   # force-admit fast
+        proxy.PROXY_SESSION_ADMISSION_POLL = 0.01
+
+    def tearDown(self):
+        proxy._admitted_sessions.clear()
+        proxy._admitted_busy.clear()
+
+    def _force_admit(self, waiter):
+        asyncio.run(proxy._ensure_session_admitted(waiter))
+
+    def test_busy_session_is_never_the_victim(self):
+        # Two admitted sessions; s1 is OLDER (LRU front) but has a live
+        # request. The force-admit MUST take the idle s2 instead.
+        proxy._admitted_sessions["s1"] = 100.0
+        proxy._admitted_sessions["s2"] = 110.0
+        proxy._mark_admitted_busy("s1")
+        self._force_admit("s3")
+        self.assertIn("s1", proxy._admitted_sessions)   # protected
+        self.assertNotIn("s2", proxy._admitted_sessions)  # idle victim taken
+        self.assertIn("s3", proxy._admitted_sessions)
+
+    def test_oldest_idle_session_is_preferred_victim(self):
+        # Both idle: the OLDER one (s1, admitted first) is the victim.
+        proxy._admitted_sessions["s1"] = 100.0
+        proxy._admitted_sessions["s2"] = 110.0
+        self._force_admit("s3")
+        self.assertNotIn("s1", proxy._admitted_sessions)
+        self.assertIn("s2", proxy._admitted_sessions)
+
+    def test_older_idle_beats_newer_even_when_front_is_busy(self):
+        # Front (s1) is busy, so the next-oldest IDLE session (s2) goes —
+        # NOT the LRU front, and not the busy one.
+        proxy._admitted_sessions["s1"] = 100.0
+        proxy._admitted_sessions["s2"] = 110.0
+        proxy._admitted_sessions["s3"] = 120.0
+        proxy._mark_admitted_busy("s1")
+        self._force_admit("s4")
+        self.assertIn("s1", proxy._admitted_sessions)
+        self.assertNotIn("s2", proxy._admitted_sessions)
+        self.assertIn("s3", proxy._admitted_sessions)
+
+    def test_all_busy_falls_back_to_plain_lru_front(self):
+        # No idle victim exists: take the LRU front anyway so the waiter
+        # still makes progress (bounded by its generation timeout).
+        proxy._admitted_sessions["s1"] = 100.0
+        proxy._admitted_sessions["s2"] = 110.0
+        proxy._mark_admitted_busy("s1")
+        proxy._mark_admitted_busy("s2")
+        self._force_admit("s3")
+        self.assertNotIn("s1", proxy._admitted_sessions)  # LRU front taken
+        self.assertIn("s2", proxy._admitted_sessions)
+
+    def test_admission_success_marks_the_session_busy(self):
+        # The waiter that gets in is protected from the NEXT waiter's
+        # force-admit for the life of its turn.
+        proxy._admitted_sessions["s1"] = 100.0
+        self._force_admit("s2")
+        self.assertEqual(proxy._admitted_busy.get("s2"), 1)
+
+    def test_busy_holds_are_counted_and_released(self):
+        # One session, several concurrent funnel frames: mark/mark, then
+        # release both — the busy entry is forgotten at zero, never negative.
+        proxy._mark_admitted_busy("s1")
+        proxy._mark_admitted_busy("s1")
+        self.assertEqual(proxy._admitted_busy["s1"], 2)
+        proxy._release_admitted_busy("s1")
+        self.assertEqual(proxy._admitted_busy["s1"], 1)
+        proxy._release_admitted_busy("s1")
+        self.assertNotIn("s1", proxy._admitted_busy)
+        # A release past zero (defensive) must not create a negative count.
+        proxy._release_admitted_busy("s1")
+        self.assertNotIn("s1", proxy._admitted_busy)
+        # None session ids are no-ops on both sides.
+        proxy._mark_admitted_busy(None)
+        proxy._release_admitted_busy(None)
+        self.assertEqual(proxy._admitted_busy, {})
+
+    def test_try_admit_ignores_busy_state(self):
+        # The synchronous core stays PURE: busy-holds only steer the
+        # force-evict victim, never admission itself.
+        proxy._mark_admitted_busy("s1")
+        self.assertTrue(proxy._try_admit_session("s1", now=0))
+        self.assertTrue(proxy._try_admit_session("s2", now=1))
+        self.assertFalse(proxy._try_admit_session("s3", now=2))
+
+
 if __name__ == "__main__":
     unittest.main()
