@@ -26,7 +26,7 @@ describe('Dashboard Display Fixes', () => {
 
     it('uap-dashboard.ts still registers uap_dashboard tool', () => {
       const source = readFileSync('.opencode/plugin/uap-dashboard.ts', 'utf-8');
-      expect(source).toContain('uap_dashboard: tool(');
+      expect(source).toContain("name: 'uap_dashboard'");
       expect(source).toContain("'show', 'start', 'stop', 'snapshot', 'summary'");
     });
   });
