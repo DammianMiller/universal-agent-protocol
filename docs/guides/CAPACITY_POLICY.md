@@ -47,7 +47,7 @@ simply could not see the backend at all.
   "http": {
     "url": "http://127.0.0.1:8080",
     "kind": "strata",
-    "metricsMustMatch": { "kv": "int8", "max_context": 131072 }
+    "metricsMustMatch": { "kv": "int8", "max_context": 196608 }
   },
   "budget": { "note": "…which flags run-iq3_xxs.sh launches it with…" },
   "headroom": { "gpuMinFreeMiB": 600 }

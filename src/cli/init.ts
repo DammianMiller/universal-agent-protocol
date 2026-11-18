@@ -685,7 +685,7 @@ async function setupPlatform(
         JSON.stringify(
           {
             dependencies: {
-              '@opencode-ai/plugin': '^1.2.24',
+              '@opencode/plugin': '2.3.0',
             },
           },
           null,

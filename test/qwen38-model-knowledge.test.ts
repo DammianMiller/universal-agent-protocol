@@ -92,16 +92,18 @@ const PIN27_MATCH = /DROID_LOCAL_27B_PIN:=([^}"\s]+)/.exec(CONTRACTS);
 const PIN27 = PIN27_MATCH?.[1] ?? '';
 const MARKER27 = /^custom:Qwen[\d.]+-27B-UAP-local-\d+$/;
 const FAM27 = registry.models['qwen3.8-27b'];
-// The THIRD local family (gemma-4-31b, PR #896): same deliberate-picker-line
-// doctrine as the 27B. The pin comes from the same shared contract; the
-// marker id shape (derived from the pin, never transcribed) is the sync's
-// stake that distinguishes the DELIBERATE listing (never converged) from a
-// stale pin (always converged).
-const PIN_GEMMA_MATCH = /DROID_LOCAL_GEMMA_PIN:=([^}"\s]+)/.exec(CONTRACTS);
-const PIN_GEMMA = PIN_GEMMA_MATCH?.[1] ?? '';
-const MARKER_GEMMA = PIN_GEMMA
-  ? new RegExp(`^custom:${PIN_GEMMA}-UAP-local-\\d+$`)
-  : /$^/;
+// The third local family the pickers list alongside both qwen families:
+// the registry's gemma-4-31b arm (llama.cpp QAT+MTP). Same rules as the 27B
+// listing — the pin from the same shared contract, the marker id shape is
+// the sync's gemma stake (the regex its markerg uses) — plus the arm's OWN
+// session cap, parsed from the sync's GEMMA_CTX assignment: the fit-probed
+// 49152 llama.cpp window minus output, NOT the qwen per-session window.
+const PING_MATCH = /DROID_LOCAL_GEMMA_PIN:=([^}"\s]+)/.exec(CONTRACTS);
+const PING = PING_MATCH?.[1] ?? '';
+const MARKERG = /^custom:gemma-4[\w.-]*-UAP-local-\d+$/;
+const FAMG = registry.models['gemma-4-31b'];
+const SYNC_SCRIPT = readFileSync(resolve(ROOT, 'scripts/sync-local-agent-configs.sh'), 'utf8');
+const GEMMA_CTX = Number(/GEMMA_CTX=(\d+)/.exec(SYNC_SCRIPT)?.[1] ?? 0);
 
 describe('qwen38 model knowledge — registry follows the profile', () => {
   it('advertises the alias the profile pins, so placement can match the served id', () => {
@@ -217,6 +219,22 @@ describe('the 27B family is a first-class picker listing, not drift', () => {
   });
 });
 
+describe('the gemma-4-31b family is a third picker listing, not drift', () => {
+  it('is pinned by a contract id the registry family advertises', () => {
+    expect(PING, 'DROID_LOCAL_GEMMA_PIN default is unparsable or absent').not.toBe('');
+    expect(FAMG, 'registry.models["gemma-4-31b"] is missing').toBeTruthy();
+    expect(
+      FAMG?.advertises,
+      'the gemma pin is not an id the gemma-4-31b family advertises',
+    ).toContain(PING);
+    // A listed family id is live, not drift: the FLEET rule (not the
+    // retired list) converges any stale plain-id pin.
+    expect(RETIRED, 'a listed family id must not sit in retired_local_aliases').not.toContain(
+      PING,
+    );
+  });
+});
+
 const PROJECT_SET = resolve(ROOT, '.factory/settings.json');
 const USER_SET = resolve(homedir(), '.factory/settings.json');
 
@@ -271,12 +289,11 @@ function expectRoutesConverged(entries: DroidModel[]): void {
  */
 function expectFleetPinsConverged(models: DroidModel[]): void {
   const localFleetPins = models.filter((m) => {
-    // The deliberate 27B and gemma family listings are extra PICKER LINES,
-    // not drift: their marker ids are the sync's stake. Everything else
-    // the fleet advertises, pinned at this box's ports, must share the one
+    // The deliberate 27B and gemma family listings are PICKER LINES, not
+    // drift: their marker ids are the sync's stakes. Everything else the
+    // fleet advertises, pinned at this box's ports, must share the one
     // served id.
-    if (typeof m.id === 'string' && MARKER27.test(m.id)) return false;
-    if (typeof m.id === 'string' && MARKER_GEMMA.test(m.id)) return false;
+    if (typeof m.id === 'string' && (MARKER27.test(m.id) || MARKERG.test(m.id))) return false;
     const base = String(m.baseUrl ?? '');
     const localPort = base.includes(':4000') || base.includes(':8080');
     return localPort && !!m.model && FLEET.has(m.model);
@@ -297,12 +314,17 @@ function expectFleetPinsConverged(models: DroidModel[]): void {
  * onto (the stale-profile case above). Fleet ids are ambiguous BY NAME
  * (the compat list collides with real cloud ids like gpt-5.1-codex), so
  * the fallback gates on this box's ports exactly like the sync's ours-rule.
- * Route invariants apply to either.
+ * Deliberate picker listings (the 27B and gemma marker stakes) are NOT
+ * alias pins — the hook never converges them — so they never enter the
+ * fallback: a gemma listing sized to its own arm geometry is a picker
+ * line, not an alias entry that forgot the qwen session window. Route
+ * invariants apply to either.
  */
 function liveAliasEntries(models: DroidModel[]): DroidModel[] {
   const pinned = models.filter((m) => m.model === profile.model);
   if (pinned.length > 0) return pinned;
   return models.filter((m) => {
+    if (typeof m.id === 'string' && (MARKER27.test(m.id) || MARKERG.test(m.id))) return false;
     const base = String(m.baseUrl ?? '');
     const localPort = base.includes(':4000') || base.includes(':8080');
     return localPort && !!m.model && FLEET.has(m.model) && !RETIRED.includes(m.model);
@@ -329,6 +351,28 @@ function expect27BListed(models: DroidModel[]): void {
     .toBeTruthy();
 }
 
+/**
+ * The gemma-4-31b family listing rides in every settings file the sync
+ * touches: exactly one marker entry, on the proxy chat route, capped at the
+ * arm's OWN geometry — GEMMA_CTX from the sync contract (the fit-probed
+ * 49152 llama.cpp window minus output; llama.cpp counts prompt AND output
+ * inside the window), NOT the qwen session window the alias and 27B
+ * listings carry. baseModelId carries no assertion: the sync stamps one
+ * only when the Factory catalog has a Gemma built-in (DROID_GEMMA_BASE_MODEL
+ * defaults empty — an honest omission beats a wrong-family mapping).
+ */
+function expectGemmaListed(models: DroidModel[]): void {
+  const listed = models.filter(
+    (m) => typeof m.id === 'string' && MARKERG.test(m.id) && m.model === PING,
+  );
+  expect(listed, 'the gemma family listing is missing from the picker').toHaveLength(1);
+  const m = listed[0] as DroidModel;
+  expect(m.baseUrl, 'gemma listing is not on the proxy chat route').toBe(
+    'http://127.0.0.1:4000/v1',
+  );
+  expect(m.maxContextLimit, 'gemma listing is not sized to the arm geometry').toBe(GEMMA_CTX);
+}
+
 describe('droid settings call the alias the profile pins', () => {
   it.skipIf(!existsSync(PROJECT_SET))('project customModels carry the live alias on all routes', () => {
     const d = readJson<DroidSettings>(PROJECT_SET);
@@ -336,6 +380,7 @@ describe('droid settings call the alias the profile pins', () => {
     expectRoutesConverged(entries);
     expectFleetPinsConverged(d.customModels ?? []);
     expect27BListed(d.customModels ?? []);
+    expectGemmaListed(d.customModels ?? []);
     for (const m of d.customModels ?? []) {
       expect(RETIRED, `retired id still pinned: ${String(m.model)}`).not.toContain(m.model);
     }
@@ -355,6 +400,7 @@ describe('droid settings call the alias the profile pins', () => {
     expectRoutesConverged(entries);
     expectFleetPinsConverged(d.customModels ?? []);
     expect27BListed(d.customModels ?? []);
+    expectGemmaListed(d.customModels ?? []);
     for (const m of d.customModels ?? []) {
       expect(RETIRED, `retired id still pinned: ${String(m.model)}`).not.toContain(m.model);
     }
