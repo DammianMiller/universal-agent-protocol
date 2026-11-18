@@ -2,10 +2,11 @@
 #
 # sync-local-agent-configs.sh — point every coding agent at the live local stack.
 #
-#   Server : uap-strata-server.service on :8080 (strata serve layer, engine
-#            0.1.59.1, unsloth UD-IQ4_XS v31 arm, ONE shared 196608 pool)
+#   Server : uap-speedy-base-iq3s-server.service on :8080 (Speedy fork, engine
+#            0.1.53, spec 8, MTP 8, min-p 0.70, ONE shared 131072-cell pool;
+#            live since 2026-11-18)
 #   Proxy  : uap-anthropic-proxy.service on :4000 (Anthropic Messages API)
-#   Profile: config/model-profiles/qwen38.json  (per-session window 180224)
+#   Profile: config/model-profiles/qwen38.json  (per-session window 114688)
 #
 # WHY A PER-SESSION CAP IS NEEDED
 # --------------------------------
