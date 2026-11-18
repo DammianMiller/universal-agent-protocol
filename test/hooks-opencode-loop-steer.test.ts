@@ -49,13 +49,15 @@ describe('opencode loop-steer plugin', () => {
   it('wires the bounded auto-continue into session.idle via the session API', async () => {
     const testDir = await generate();
     const plugin = readFileSync(join(testDir, '.opencode', 'plugin', 'uap-session-hooks.ts'), 'utf-8');
-    expect(plugin).toContain('client.session.prompt');
+    // V2: the bounded auto-continue rides ctx.session.prompt (V2 session API)
+    expect(plugin).toContain('ctx.session.prompt');
     expect(plugin).toContain('UAP_AUTO_CONTINUE_MAX');
     expect(plugin).toContain('_uapShouldAutoContinue');
     // A proxy hard stop (ERROR-LOOP / LOOP-ESCALATE) must be detectable so
     // the nudge never resumes a session the guard deliberately killed — and
     // STICKY: matched at event time, never cleared by a later benign error.
-    expect(plugin).toContain('session.error');
+    // V2: stream/provider errors surface as session.execution.failed
+    expect(plugin).toContain('session.execution.failed');
     expect(plugin).toMatch(/ERROR-LOOP|LOOP-ESCALATE/);
     expect(plugin).toContain('hardStops.add');
     expect(plugin).not.toContain('sessionErrors');

@@ -384,6 +384,7 @@ import { OpenAICompatClient, setModelCallProgress } from '../models/openai-compa
 import { ModelPresets } from '../models/types.js';
 import type { ModelConfig } from '../models/types.js';
 import { detectExecutionProfile } from '../models/execution-profiles.js';
+import { staleResumeRefusal } from './deliver-resume-staleness.js';
 
 export interface DeliverOptions {
   /**
@@ -1776,11 +1777,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
 
   // Concurrency guard: only one deliver runs per project at a time. A dry-run
-  // plans nothing and a --resume continues the SAME mission, so both skip the
-  // lock; a fresh run that finds a live holder exits cleanly as a duplicate
-  // (this is the backstop against a caller fan-out — see acquireDeliverLock).
+  // plans nothing, so it alone skips the lock. A --resume DOES take it now:
+  // "resume continues the same mission" was true of the original holder, but a
+  // resume launched while ANY deliver is live is a second writer on one tree —
+  // exactly the orphan-clobber incident of 2026-11-17, where a stale --resume
+  // and a live run rewrote the same artifact in turns for hours. A fresh run
+  // that finds a live holder exits cleanly as a duplicate (this is the
+  // backstop against a caller fan-out — see acquireDeliverLock).
   let releaseLock: (() => void) | null = null;
-  if (!options.dryRun && !options.resume) {
+  if (!options.dryRun) {
     releaseLock = acquireDeliverLock(projectRoot);
     if (releaseLock === null) {
       let holder = '';
@@ -1894,6 +1899,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     resumeState = loadRunState(projectRoot, options.resume);
     if (!resumeState) {
       fail(`No resumable run '${options.resume}' under ${projectRoot}/.uap/deliver-runs`);
+    }
+    // Staleness guard (2026-11-17 orphan incident): a day-old run resumed over
+    // a tree that had moved on, clobbering newer work. Old runs are refused
+    // unless the launch environment says otherwise. Dry-run only reports.
+    const staleReason = staleResumeRefusal(resumeState);
+    if (staleReason) {
+      if (options.dryRun) {
+        console.log(chalk.yellow(`⚠ ${staleReason} (dry-run: a real resume would refuse)`));
+      } else {
+        fail(staleReason);
+      }
     }
     if (!instruction.trim()) instruction = resumeState.instruction;
     if (!options.dryRun) {
