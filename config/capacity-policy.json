@@ -62,11 +62,12 @@
         "kind": "strata",
         "metricsMustMatch": {
           "kv": "int8",
-          "max_context": 196608
+          "max_context": 131072,
+          "_pin_note": "Follows the LIVE arm (2026-11-18: speedy-base IQ3_S fork arm at 131072; the strata arms serve 196608 \u2014 update this pin on every arm switch)."
         }
       },
       "budget": {
-        "note": "The local Qwen3.8 backend since 2026-10-04 (the gsq-rco llama-server above is its retired predecessor, unit kept for rotation). Unit-less: launched by /home/cogtek/dev/strata/run-iq3_xxs.sh (flash-next IQ3_XXS pack, --expert-cache auto, --vram-reserve-mib 1200, --spec 4, --kv int8, --max-context 131072, single rail). No restartBudget: with no unit, NRestarts does not exist; liveness IS the /metrics probe. metricsMustMatch pins the two load-bearing numbers the note mentions — kv kind and pool size — so a relaunch with different flags reads as RED, the execStartMustContain doctrine applied to a service with no ExecStart. 2026-11-17: pool raised --max-context 131072 -> 196608 in the strata config (operator-directed; the engine natively serves max_model_len 196608, SSD-backed PLE pages KV beyond the 32768 resident cells); metricsMustMatch pins 196608."
+        "note": "The local Qwen3.8 backend since 2026-10-04 (the gsq-rco llama-server above is its retired predecessor, unit kept for rotation). Unit-less: launched by /home/cogtek/dev/strata/run-iq3_xxs.sh (flash-next IQ3_XXS pack, --expert-cache auto, --vram-reserve-mib 1200, --spec 4, --kv int8, --max-context 131072, single rail). No restartBudget: with no unit, NRestarts does not exist; liveness IS the /metrics probe. metricsMustMatch pins the two load-bearing numbers the note mentions \u2014 kv kind and pool size \u2014 so a relaunch with different flags reads as RED, the execStartMustContain doctrine applied to a service with no ExecStart. 2026-11-17: pool raised --max-context 131072 -> 196608 in the strata config (operator-directed; the engine natively serves max_model_len 196608, SSD-backed PLE pages KV beyond the 32768 resident cells); metricsMustMatch pins 196608."
       },
       "headroom": {
         "gpuMinFreeMiB": 200,
@@ -81,7 +82,7 @@
       },
       "budget": {
         "vramMiB": 23376,
-        "note": "Edge0 145B latent-MoE on the edge0-strata engine since 2026-11-13: uap-edge0-145b-server.service runs edge0-infer serve, which delegates to edge0-strata (build/strata + .venv python) and proxies :8080 (--port 8080, registered as --alias edge0_145b). The engine launch template (edge0-strata/edge0/models/edge0-145b.json) sets expert cache auto, prefill auto, spec 4 / min-p 0.5, MTP, int8 KV and 131k context; the unit adds only --vram-reserve-mib 1200, the same desktop-co-tenancy reserve as the strata-server stack, so vramMiB is the card minus that reserve (24576 - 1200). The 51.2 GiB PLE table is ple-io=direct (read from disk, not resident); 40.1 GiB experts SSD-streamed with hot experts in VRAM. execStartMustContain pins the load-bearing words of the note against the unit's own ExecStart — the command lives inline in the unit, not in a wrapper script, exactly so this check has something to check. Dormant (inactive) reads DARK like every switched-away :8080 backend.",
+        "note": "Edge0 145B latent-MoE on the edge0-strata engine since 2026-11-13: uap-edge0-145b-server.service runs edge0-infer serve, which delegates to edge0-strata (build/strata + .venv python) and proxies :8080 (--port 8080, registered as --alias edge0_145b). The engine launch template (edge0-strata/edge0/models/edge0-145b.json) sets expert cache auto, prefill auto, spec 4 / min-p 0.5, MTP, int8 KV and 131k context; the unit adds only --vram-reserve-mib 1200, the same desktop-co-tenancy reserve as the strata-server stack, so vramMiB is the card minus that reserve (24576 - 1200). The 51.2 GiB PLE table is ple-io=direct (read from disk, not resident); 40.1 GiB experts SSD-streamed with hot experts in VRAM. execStartMustContain pins the load-bearing words of the note against the unit's own ExecStart \u2014 the command lives inline in the unit, not in a wrapper script, exactly so this check has something to check. Dormant (inactive) reads DARK like every switched-away :8080 backend.",
         "execStartMustContain": [
           "--model /home/cogtek/models/Edge0-145B-q3k",
           "--port 8080",

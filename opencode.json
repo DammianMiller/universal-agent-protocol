@@ -1,7 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "_comment": "Synced to the live local stack 2026-10-04. Previously (2026-09-20) tracked uap-gsq-rco-server.service; the backend is now the strata serve layer on :8080 (one rail, 196608 pool) — see config/model-profiles/qwen38.json for the authoritative record. The proxy path is unchanged: the strata layer answers the same /v1, and the server ignores requested model ids.",
-
+  "_comment": "Synced to the live local stack 2026-10-04. Previously (2026-09-20) tracked uap-gsq-rco-server.service; the backend is now the strata serve layer on :8080 (one rail, 196608 pool) \u2014 see config/model-profiles/qwen38.json for the authoritative record. The proxy path is unchanged: the strata layer answers the same /v1, and the server ignores requested model ids.",
   "provider": {
     "qwen-proxy": {
       "npm": "@ai-sdk/anthropic",
@@ -22,7 +21,7 @@
           "tool_call": true,
           "attachment": true,
           "limit": {
-            "context": 180224,
+            "context": 114688,
             "output": 32768
           }
         }
@@ -40,19 +39,17 @@
           "name": "Qwen3.8 Flash-Next (direct)",
           "_model_id_comment": "Key kept for session continuity: strata ignores requested model ids, and a resumed opencode session that pinned this entry keeps working against the new backend. Renaming it would break the pin without buying anything.",
           "limit": {
-            "context": 196608,
+            "context": 131072,
             "output": 32768
           }
         }
       }
     }
   },
-
-  "_limits_comment": "Proxy path: context 180224 is the PER-SESSION cap the qwen38 profile applies via the x-uap-model-profile header — deliberately below the strata pool (196608) so a session at the cap leaves the engine working room; with admission 1, that is the whole budget for one live agent. Direct path bypasses the proxy and the profile, so it sees the whole 196608 pool and carries no guardrails; use it for probing, not for agent work. output 32768 matches the proxy's tool-turn cap (PROXY_TOOL_TURN_MAX_TOKENS), which is what nearly every agentic turn hits.",
-  "_reasoning_comment": "reasoning: true — the server runs --reasoning-format auto and the proxy streams thinking deltas (PROXY_STREAM_THINKING_DELTAS=on). The old 'false' hid that output.",
+  "_limits_comment": "Proxy path: context 180224 is the PER-SESSION cap the qwen38 profile applies via the x-uap-model-profile header \u2014 deliberately below the strata pool (196608) so a session at the cap leaves the engine working room; with admission 1, that is the whole budget for one live agent. Direct path bypasses the proxy and the profile, so it sees the whole 196608 pool and carries no guardrails; use it for probing, not for agent work. output 32768 matches the proxy's tool-turn cap (PROXY_TOOL_TURN_MAX_TOKENS), which is what nearly every agentic turn hits.",
+  "_reasoning_comment": "reasoning: true \u2014 the server runs --reasoning-format auto and the proxy streams thinking deltas (PROXY_STREAM_THINKING_DELTAS=on). The old 'false' hid that output.",
   "_token_comment": "apiKey is {env:UAP_PROXY_TOKEN}, NOT a literal: this file is tracked in git and the live proxy token must never land in history. Export UAP_PROXY_TOKEN in your shell; the value lives in the untracked ~/.config/opencode/opencode.json, which scripts/sync-local-agent-configs.sh reads (it never prints the secret).",
-  "_auth_posture_comment": "Requests currently succeed WITHOUT a token, and the reason is not the one it looks like: PROXY_ALLOW_UNAUTHENTICATED_BIND=1 is a startup BIND-time assertion only (anthropic_proxy.py ~15355) and never runs per request. The request gate is `if PROXY_AUTH_TOKEN and ...` (~5519), and PROXY_AUTH_TOKEN is simply unset. There is NO loopback exemption in that gate: if an operator ever sets PROXY_AUTH_TOKEN, an unset {env:UAP_PROXY_TOKEN} will 401 even from 127.0.0.1. Note also that :4000 and :8080 are both bound to 0.0.0.0 and were verified on 2026-09-20 to answer unauthenticated from the LAN address — so this is an open inference endpoint on the local network, not a loopback-only service.",
-
+  "_auth_posture_comment": "Requests currently succeed WITHOUT a token, and the reason is not the one it looks like: PROXY_ALLOW_UNAUTHENTICATED_BIND=1 is a startup BIND-time assertion only (anthropic_proxy.py ~15355) and never runs per request. The request gate is `if PROXY_AUTH_TOKEN and ...` (~5519), and PROXY_AUTH_TOKEN is simply unset. There is NO loopback exemption in that gate: if an operator ever sets PROXY_AUTH_TOKEN, an unset {env:UAP_PROXY_TOKEN} will 401 even from 127.0.0.1. Note also that :4000 and :8080 are both bound to 0.0.0.0 and were verified on 2026-09-20 to answer unauthenticated from the LAN address \u2014 so this is an open inference endpoint on the local network, not a loopback-only service.",
   "model": "qwen-proxy/Qwen3.8-27B",
   "agent": {
     "build": {
@@ -72,7 +69,6 @@
       "temperature": 0.1
     }
   },
-
   "mcp": {
     "uap-router": {
       "type": "local",

@@ -187,7 +187,11 @@ describe('qwen38 profile — describes the engine that is actually running', () 
     // documentation, never a live value (the stripDocs assertion below
     // enforces exactly that).
     expect(String(spec.draft_model)).toMatch(/strata-data\/mtp\//);
-    expect(spec.draft_max).toBe(12);
+    // 2026-11-18: the live arm is the Speedy-fork ISTA base IQ3_S set
+    // (uap-speedy-base-iq3s-server), which drafts at spec window 8 — live
+    // /metrics 2026-11-18: spec 8, mtp_max 8, spec_min_p 0.70. The strata
+    // arms draft at spec 12; update this pin on every arm switch.
+    expect(spec.draft_max).toBe(8);
     expect(spec.draft_conf).toBe(0.7);
     const stripDocs = (v: unknown): unknown => {
       if (Array.isArray(v)) return v.map(stripDocs);

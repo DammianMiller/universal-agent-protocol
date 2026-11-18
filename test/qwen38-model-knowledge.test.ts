@@ -111,7 +111,7 @@ describe('qwen38 model knowledge — registry follows the profile', () => {
   });
 
   it('carries a config entry for the arm the profile describes', () => {
-    const m = /strata-[a-z0-9._-]+\.json/.exec(profile._engine);
+    const m = /(?:strata|speedy)-[a-z0-9._-]+\.json/.exec(profile._engine);
     expect(m, 'profile._engine names the unit config file').not.toBeNull();
     expect(arm.configs).toHaveProperty(m![0].replace(/\.json$/, ''));
   });
@@ -119,7 +119,7 @@ describe('qwen38 model knowledge — registry follows the profile', () => {
   it('declares the arm the profile names with a verified shard manifest', () => {
     // derived, not hardcoded: after the next arm swap this keeps testing the
     // LIVE arm, not yesterday's
-    const key = /strata-[a-z0-9._-]+\.json/.exec(profile._engine)![0].replace(/\.json$/, '');
+    const key = /(?:strata|speedy)-[a-z0-9._-]+\.json/.exec(profile._engine)![0].replace(/\.json$/, '');
     const cfg = arm.configs[key];
     if (!cfg) throw new Error(`arm config ${key} missing from the registry`);
     const files = cfg.files ?? [];
