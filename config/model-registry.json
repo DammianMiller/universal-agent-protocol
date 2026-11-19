@@ -336,12 +336,26 @@
       },
       "endpoint": "http://127.0.0.1:8080",
       "advertises": [
+        "qwen3.8-27b",
         "Qwen3.8-27B",
         "qwen38-ampere-27b",
         "qwen38-swift-27b",
         "Qwen3.8-27B-Q4_K_M.gguf"
       ],
       "configs": {
+        "hyperqwen": {
+          "engine": "hyperqwen",
+          "unit": "uap-hyperqwen-server",
+          "resident_gpu_mib": 20202,
+          "host_rss_mib": 5300,
+          "context_pool_cells": 131072,
+          "per_session_cap_cells": 114688,
+          "kv_resident_cells": 131072,
+          "kv_kind": "int8_per_token_head",
+          "measured_at": "2026-11-19T21:56:00.000Z",
+          "measured_on": "gpu0",
+          "note": "LIVE :8080 ARM since 2026-11-19 18:37 (its own unit uap-hyperqwen-server.service, inference-panel id hyperqwen; syv-ai/HyperQwen patched vLLM 0.33.0 — unit description: SPEC=mtp CTX=long PTH_FA=1 int8-KV pth-flash-attn, 118k ctx, MTP k=3). Weights: Qwen3.8-27B-W4A16-AutoRound-fast at /home/cogtek/dev/HyperQwen/models/Qwen3.8-27B-W4A16-AutoRound-fast (W4A16 AutoRound; --language-model-only, NO vision on this arm). Serves OpenAI-shaped /v1 only — no llama.cpp-shaped /props or /slots, /metrics is Prometheus text (`uap models measure` fails closed on it until the probe learns Prometheus; these numbers are hand-measured same-day, the exl3 precedent). THE ALIAS IS ENFORCED: vLLM answers 404 for any model id except qwen3.8-27b on the direct route (fleet log 2026-11-19 18:39:37), unlike the strata/speedy arms which ignore requested ids; through the :4000 proxy every id maps. --max-model-len 118784 caps a single request (the proxy's margin math keeps totals at or under 111412); kv-cache-memory 4819457484 bytes fixed int8_per_token_head; prefix caching on; Qwen-Sharp chat template; tools via qwen3_coder parser + auto tool choice; MTP k=3 probabilistic drafting. Measured 2026-11-19: 82.7 tok/s fresh decode (400 tok / 4.835 s), 69.4 tok/s at 101728-token prompt depth (1000 tok / 14.40 s), MTP per-position acceptance 0.869/0.686/0.577 (avg draft acceptance 50.8-71.7%, mean acceptance length 2.52-3.13), prefix cache hit 54%. GPU: nvidia-smi compute apps EngineCore 20202 MiB of the 24576 MiB card; host cgroup 5.3G current, 19.1G peak. The 2026-11-18 llama external-draft arm (18-19.4 tok/s) is history — this arm is ~4x that on decode."
+        },
         "llama-mtp": {
           "status": "unmeasured",
           "engine": "llama.cpp",
