@@ -331,6 +331,27 @@ for key in keys:
                 # only ours when the entry points at this box's ports — a
                 # cloud-router entry with the same model id survives.
                 ours = hlocal and (":4000" in base or ":8080" in base)
+        # CAPS ARE GEOMETRY (2026-11-19): an entry deliberately pinned to a
+        # switchable arm's id (the 2026-11-17 gsq-rco-era default left one in
+        # the Droid pickers advertising the retired-era 180224 window against
+        # the live 114688 posture) keeps ITS CHOSEN id — the id is the
+        # operator's arm choice — but the caps it advertises must track the
+        # CURRENT geometry exactly as the marker rule maintains the 27B and
+        # gemma listings: a stale ctx belief is a correctness bug on a capped
+        # box no matter which arm the line names, and factory/droid custom
+        # models cannot send the profile header, so their maxContextLimit IS
+        # the cap. Route-sized like the ours-branch: direct :8080 pool-sized,
+        # proxy session-sized. Only caps and output are touched; the model,
+        # route and key stay the operator's choice.
+        if (not ours and isinstance(model, str) and hlocal
+                and (":4000" in base or ":8080" in base)
+                and model.startswith(("qwen3.8", "Qwen3.8"))):
+            want_ctx = ctx_p if ":8080" in base else ctx_s
+            if m.get(CK) != want_ctx:
+                setf(m, CK, want_ctx, label, f"ctx={want_ctx} (geometry)", changed)
+            if m.get(OK) != out:
+                setf(m, OK, out, label, "out (geometry)", changed)
+            continue
         if not ours:
             continue
         if model != alias:
@@ -626,6 +647,16 @@ BANNER
 # profile, so a swap that has not reached the profile yet still converges the
 # Droid list onto reality — the note names the source either way.
 if [ "$MODELS_ONLY" = "1" ]; then
+  # The alias probe prefers what the backend is ACTUALLY serving over the
+  # profile, so a swap that has not reached the profile yet still converges
+  # the Droid list onto reality — the note names the source either way.
+  # /props first (the llama.cpp/strata arms answer it), then the
+  # OpenAI-shaped /v1/models — the vLLM-class fleet arms (hyperqwen, live
+  # since 2026-11-19) serve /v1 only and 404 /props, which is how a live
+  # vLLM arm used to read as "backend probe unreachable". A single-id model
+  # list names the served alias unambiguously; a multi-id list is a router
+  # box, and the profile alias stands (ambiguity is not convergence).
+  _live=""
   if _props=$(curl -fsS -m 3 "$DIRECT_URL/props" 2>/dev/null); then
     _live=$(printf '%s' "$_props" | python3 -c '
 import json, sys
@@ -633,18 +664,33 @@ try:
     print(json.load(sys.stdin).get("model_alias", ""))
 except Exception:
     pass' 2>/dev/null || true)
-    if [ -n "$_live" ] && [[ "$_live" =~ ^[A-Za-z0-9._/-]+$ ]]; then
-      if [ "$_live" != "$MODEL_ALIAS" ]; then
-        note "live backend serves: $_live (profile pins $MODEL_ALIAS — PROFILE IS STALE, update it)"
-        MODEL_ALIAS="$_live"
-      else
-        note "live backend confirms the profile alias: $MODEL_ALIAS"
-      fi
+    if [ -n "$_live" ]; then
+      note "live /props alias: $_live"
+    fi
+  fi
+  if [ -z "$_live" ] && _mlist=$(curl -fsS -m 3 "$DIRECT_URL/v1/models" 2>/dev/null); then
+    _live=$(printf '%s' "$_mlist" | python3 -c '
+import json, sys
+try:
+    ids = [m.get("id") for m in json.load(sys.stdin).get("data", [])
+           if isinstance(m, dict) and isinstance(m.get("id"), str) and m.get("id")]
+    if len(ids) == 1:
+        print(ids[0])
+except Exception:
+    pass' 2>/dev/null || true)
+    if [ -n "$_live" ]; then
+      note "live /v1/models alias: $_live (single served id)"
+    fi
+  fi
+  if [ -n "$_live" ] && [[ "$_live" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    if [ "$_live" != "$MODEL_ALIAS" ]; then
+      note "live backend serves: $_live (profile pins $MODEL_ALIAS — PROFILE IS STALE, update it)"
+      MODEL_ALIAS="$_live"
     else
-      note "/props returned no plain alias — keeping the profile alias"
+      note "live backend confirms the profile alias: $MODEL_ALIAS"
     fi
   else
-    note "backend probe unreachable ($DIRECT_URL/props) — keeping the profile alias"
+    note "backend probe unreachable ($DIRECT_URL/props and /v1/models) — keeping the profile alias"
   fi
   if droid_sync_lock; then
     sync_droid_models "$FACTORY_CFG" 0
@@ -758,7 +804,7 @@ prov["qwen-proxy"] = {
 # Guardrail-free escape hatch, kept for probing only.
 prov["llama.cpp-direct"] = {
     "npm": "@ai-sdk/openai-compatible",
-    "name": "llama-server direct (NO guardrails)",
+    "name": "local backend direct (NO guardrails)",
     "options": {"baseURL": f"{direct}/v1", "apiKey": "sk-no-auth"},
     "models": {
         alias: {

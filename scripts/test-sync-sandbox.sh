@@ -618,7 +618,10 @@ mkdir -p "$S3/.factory"
 cat > "$S3/.factory/settings.json" <<EOF
 { "customModels": [
   { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
-    "baseUrl": "http://localhost:4000", "apiKey": "not-needed", "provider": "anthropic" }
+    "baseUrl": "http://localhost:4000", "apiKey": "not-needed", "provider": "anthropic" },
+  { "displayName": "Qwen3.8 Flash-Next (UAP local)", "model": "qwen3.8-flash-next-gsq-rco-iq3_s", "id": "custom:q-28",
+    "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "not-needed", "provider": "generic-chat-completion-api",
+    "maxContextLimit": 180224, "maxOutputTokens": 32768 }
 ] }
 EOF
 PSET3="$S3/project-factory-settings.json"
@@ -643,6 +646,18 @@ a = [m for m in u if m.get("model") == alias][0]
 assert a["baseUrl"] == "http://127.0.0.1:4000", a["baseUrl"]
 assert a.get("baseModelId") == base_model, "anthropic entry missing baseModelId"
 assert a["maxContextLimit"] == ctx, "not session-sized"
+# CAPS ARE GEOMETRY (2026-11-19): the seeded gsq-rco-era pin is a
+# switchable arm's id (deliberately NOT in retired_local_aliases and NOT
+# advertised by the live pair — the placement suite pins both) — its id
+# must SURVIVE (the operator's arm choice), but the retired-era 180224
+# window must converge onto the current session size: a stale ctx belief
+# is a correctness bug no matter which arm the line names, and droid
+# entries cannot send the profile header, so maxContextLimit IS the cap.
+stale = [m for m in u if m.get("model") == "qwen3.8-flash-next-gsq-rco-iq3_s"]
+assert len(stale) == 1, "switchable-era pin vanished (id must stay the operator's choice)"
+assert stale[0].get("maxContextLimit") == ctx, \
+    f"stale 180224-era ctx survived: {stale[0].get('maxContextLimit')}"
+assert stale[0].get("maxOutputTokens") == 32768, "stale output cap survived"
 # the two-family listing holds in MODELS_ONLY too (the hook's exact mode)
 u27 = [m for m in u if m.get("model") == pin27]
 assert len(u27) == 1, f"user settings missing the 27B listing: {len(u27)}"
@@ -746,6 +761,70 @@ for m in hits:
 PY
 kill "$STUB_PID" 2>/dev/null || true
 rm -rf "$S4"
+
+# 7c. MODELS_ONLY live-alias override via /v1/models — the vLLM-class arms
+# (hyperqwen, live since 2026-11-19) have NO /props: the probe must fall
+# back to the OpenAI-shaped model list and converge onto the single served
+# id. This is the exact blindness that read the 2026-11-19 arm swap as
+# "backend probe unreachable" and kept a dead flash-next alias in every
+# client config while direct-route requests 404'd.
+S5=$(TMPDIR=/tmp mktemp -d)
+mkdir -p "$S5/.factory"
+cat > "$S5/.factory/settings.json" <<EOF
+{ "customModels": [
+  { "displayName": "Qwen3.5 Proxy", "model": "qwen35-a3b-iq4xs", "id": "custom:q-27",
+    "baseUrl": "http://localhost:4000", "apiKey": "not-needed", "provider": "anthropic" }
+] }
+EOF
+VLLM_ALIAS="stub-vllm-live-alias"
+VPORT_FILE="$S5/port"
+python3 - "$VPORT_FILE" "$VLLM_ALIAS" <<'STUBPY' &
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+pf, alias = sys.argv[1], sys.argv[2]
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/v1/models":
+            body = json.dumps({"object": "list",
+                               "data": [{"id": alias, "object": "model"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)   # /props absent — the vLLM shape
+            self.end_headers()
+    def log_message(self, *a):
+        pass
+srv = HTTPServer(("127.0.0.1", 0), H)
+with open(pf, "w") as fh:
+    fh.write(str(srv.server_port))
+srv.serve_forever()
+STUBPY
+VSTUB_PID=$!
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [ -s "$VPORT_FILE" ] && break
+  sleep 0.1
+done
+VPORT=$(cat "$VPORT_FILE" 2>/dev/null || echo 0)
+if [ "$VPORT" != "0" ] && MODELS_ONLY=1 DIRECT_URL="http://127.0.0.1:$VPORT" \
+     DROID_SYNC_LOCK="$S5/droid-sync.lock" HOME="$S5" \
+     bash "$HERE/sync-local-agent-configs.sh" >/dev/null 2>&1; then
+  ok "MODELS_ONLY /v1/models fallback: run exited 0 against the vLLM-shaped stub"
+else
+  bad "MODELS_ONLY /v1/models fallback: run failed (stub port $VPORT)"
+fi
+python3 - "$S5/.factory/settings.json" "$VLLM_ALIAS" <<PY && ok "MODELS_ONLY /v1/models fallback: converged onto the id the backend SERVES" || bad "MODELS_ONLY /v1/models fallback: assertions failed"
+import json, sys
+alias = sys.argv[2]
+u = json.load(open(sys.argv[1]))["customModels"]
+hits = [m for m in u if m.get("model") == alias]
+assert hits, "entries not converged onto the vLLM-served alias"
+assert not any(m.get("model") == "qwen35-a3b-iq4xs" for m in u), "retired id survived"
+PY
+kill "$VSTUB_PID" 2>/dev/null || true
+rm -rf "$S5"
 
 # 8. refuses to report success with no proxy env (FULL mode keeps the guard)
 S2=$(TMPDIR=/tmp mktemp -d); mkdir -p "$S2/.config/opencode"

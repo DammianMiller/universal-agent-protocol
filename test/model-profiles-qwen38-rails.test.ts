@@ -2,22 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 /**
- * Guards the geometry invariants for the local Qwen3.8 stack — strata era.
+ * Guards the geometry invariants for the local Qwen3.8 stack — vLLM
+ * fleet-arm era (2026-11-19).
  *
- * Context (2026-10-04): the backend is the strata serve layer on :8080 —
- * ONE rail, a 196608-cell pool (kv int8, fixed tier), no systemd unit. Its
- * predecessor (2026-09-20) was buun-llama-cpp behind
- * uap-gsq-rco-server.service with `-np 2 -c 229376`, a SHARED pool; that unit
- * is now INACTIVE but still installed, and `systemctl show` still reports its
- * ExecStart — which is exactly how `uap inference health` came to print a
- * stale 229,376-cell pool for the live 131,072 backend.
+ * Context (2026-11-19): the backend is the HyperQwen patched-vLLM 27B arm
+ * on :8080 (uap-hyperqwen-server) — ONE rail, a 131072-cell pool
+ * (int8-per-token-head KV), MTP k=3. Its predecessors were the strata
+ * serve layer (2026-10-04) and buun-llama-cpp behind uap-gsq-rco-server
+ * (2026-09-20, `-np 2 -c 229376`); those units are INACTIVE but still
+ * installed, and `systemctl show` still reports their ExecStart — which is
+ * exactly how `uap inference health` came to print a stale pool size for a
+ * live backend.
  *
- * The chain therefore no longer runs through the unit file (it would tie the
- * profile to a DEAD process). It runs through the LIVE backend: /slots and
- * /props on :8080 when reachable (this machine), degrading to
- * profile-INTERNAL consistency elsewhere (CI). Same doctrine as before: read
- * the geometry from reality, never transcribe it here — the history shows -np
- * going 4→3→2→1→2 and backends changing twice in six weeks.
+ * The chain therefore no longer runs through any unit file (it would tie
+ * the profile to a DEAD process). It runs through the LIVE backend: /slots
+ * and /props on :8080 when the llama.cpp/strata arms serve, /v1/models when
+ * a vLLM-class arm serves (the alias — pool and rails are unknowable on
+ * that wire), degrading to profile-INTERNAL consistency elsewhere (CI).
+ * Same doctrine as before: read the geometry from reality, never transcribe
+ * it here — the history shows -np going 4→3→2→1→2 and backends changing
+ * twice in six weeks.
  */
 
 const ROOT = resolve(__dirname, '..');
@@ -25,23 +29,41 @@ const readJson = (p: string) => JSON.parse(readFileSync(resolve(ROOT, p), 'utf8'
 
 const BACKEND_URL = 'http://127.0.0.1:8080';
 
-/** Probe the live backend once: /slots for pool+rail count, /props for the
- * advertised alias. Null when unreachable — the live-chain tests skip, same
- * posture the old unit-file tests had for absent units. Both fetches carry
- * an AbortSignal timeout so a wedged-but-listening socket skips the chain
- * instead of hanging the whole suite at module load. */
-async function liveGeometry(): Promise<{ pool: number; rails: number; alias: string } | null> {
+/** Probe the live backend: /slots + /props for pool+rail count and the
+ * advertised alias (the llama.cpp/strata arms), falling back to the
+ * OpenAI-shaped /v1/models for the alias alone (the vLLM-class fleet arms —
+ * hyperqwen, live since 2026-11-19 — have no /props or /slots). Null when
+ * unreachable — the live-chain tests skip, same posture the old unit-file
+ * tests had for absent units. Both fetches carry an AbortSignal timeout so
+ * a wedged-but-listening socket skips the chain instead of hanging the
+ * whole suite at module load. On the /v1/models wire pool and rails are
+ * UNKNOWABLE (vLLM's max_model_len is a per-request ceiling, not the pool),
+ * so they come back null and the geometry assertions skip rather than
+ * assert a number the engine does not expose. */
+async function liveGeometry(): Promise<{ pool: number | null; rails: number | null; alias: string } | null> {
   try {
     const slotsRes = await fetch(`${BACKEND_URL}/slots`, { signal: AbortSignal.timeout(2000) });
-    if (!slotsRes.ok) return null;
-    const slots = (await slotsRes.json()) as Array<{ n_ctx?: number }>;
-    const propsRes = await fetch(`${BACKEND_URL}/props`, { signal: AbortSignal.timeout(2000) });
-    if (!propsRes.ok) return null;
-    const props = (await propsRes.json()) as { model_alias?: string };
-    if (!Array.isArray(slots) || typeof slots[0]?.n_ctx !== 'number' || !props.model_alias) {
-      return null;
+    if (slotsRes.ok) {
+      const slots = (await slotsRes.json()) as Array<{ n_ctx?: number }>;
+      const propsRes = await fetch(`${BACKEND_URL}/props`, { signal: AbortSignal.timeout(2000) });
+      if (propsRes.ok) {
+        const props = (await propsRes.json()) as { model_alias?: string };
+        if (Array.isArray(slots) && typeof slots[0]?.n_ctx === 'number' && props.model_alias) {
+          return { pool: slots[0].n_ctx, rails: slots.length, alias: props.model_alias };
+        }
+      }
     }
-    return { pool: slots[0].n_ctx, rails: slots.length, alias: props.model_alias };
+    const modelsRes = await fetch(`${BACKEND_URL}/v1/models`, { signal: AbortSignal.timeout(2000) });
+    if (modelsRes.ok) {
+      const models = (await modelsRes.json()) as { data?: Array<{ id?: string }> };
+      const ids = (models.data ?? [])
+        .map((m) => m.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      // A single served id names the alias unambiguously; a multi-id list
+      // is a router box, not a nameable arm.
+      if (ids.length === 1) return { pool: null, rails: null, alias: ids[0] as string };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -124,16 +146,16 @@ describe('qwen38 profile — strata geometry invariants', () => {
 describe('qwen38 profile — matches the backend that is actually serving', () => {
   const profile = readJson('config/model-profiles/qwen38.json');
 
-  it.skipIf(geom === null)('records the live pool size', () => {
+  it.skipIf(geom === null || geom.pool === null)('records the live pool size', () => {
     expect(profile.server_optimization.kv_capacity).toBe(geom!.pool);
   });
 
-  it.skipIf(geom === null)('records the live rail count', () => {
+  it.skipIf(geom === null || geom.rails === null)('records the live rail count', () => {
     expect(profile.server_optimization.parallel_rails).toBe(geom!.rails);
   });
 
-  it.skipIf(geom === null)('derives the session cap under the servable pool, not a guess', () => {
-    expect(profile.context_window).toBeLessThanOrEqual(geom!.pool / geom!.rails);
+  it.skipIf(geom === null || geom.pool === null || geom.rails === null)('derives the session cap under the servable pool, not a guess', () => {
+    expect(profile.context_window).toBeLessThanOrEqual(geom!.pool! / geom!.rails!);
   });
 
   // The fleet's arms are panel-switchable and the operator changes them freely
@@ -154,13 +176,19 @@ describe('qwen38 profile — describes the engine that is actually running', () 
   const profile = readJson('config/model-profiles/qwen38.json');
   const blob = JSON.stringify(profile);
 
-  it('names the strata serve layer, not a retired engine', () => {
-    expect(profile._engine).toMatch(/strata/i);
+  it('names the live engine, not a retired one', () => {
+    // 2026-11-19: the fleet moved :8080 to the HyperQwen vLLM arm; the
+    // strata/speedy serve-layer text is history (kept in _engine_history).
+    // The engine claim must follow the arm, or this suite green-lights a
+    // profile describing a dead backend.
+    expect(profile._engine).toMatch(/hyperqwen/i);
+    expect(profile._engine).toMatch(/vllm/i);
     // The 2026-10-04 correction explicitly supersedes the llama.cpp-era
     // description; an unqualified present-tense llama.cpp claim is the exact
     // class of drift this suite was written for.
     expect(profile._engine).not.toMatch(/^buun-llama-cpp/i);
     expect(profile._engine_history).toMatch(/SUPERSEDED 2026-10-04/);
+    expect(profile._engine_history).toMatch(/SUPERSEDED 2026-11-19/);
   });
 
   it('does not assert that llama.cpp-shaped endpoints are missing', () => {
@@ -173,26 +201,24 @@ describe('qwen38 profile — describes the engine that is actually running', () 
     const spec = profile.server_optimization.speculative_decoding;
     expect(spec.enabled).toBe(true);
     expect(spec.type).toBe('mtp');
-    // 2026-11-13: the operator switched the fleet back to the abliterated
-    // arm (strata-abliterated-iq2_xs.json), which drafts with the model's
-    // own MTP layer, pinned by "drafting": "mtp" in the config after the
-    // DFlash2 auto plan for this model class OOM-killed the engine at start
-    // twice (the 48 GiB budget era) and the serve wrapper's DIDNT_START
-    // fallback landed on MTP. sm_86 is also the card class where upstream
-    // measured DFlash2 SLOWER than MTP (strata_control/drafting.py _SLOWER)
-    // and this box's own 2026-10-28 A/B rejected the stock drafter (-5.5%
-    // mean decode). Live /metrics 2026-11-13: spec window 12, mtp_max 8,
-    // spec_min_p 0.70, lookup 3 — pin those numbers. A DFlash2 retry is a
-    // follow-up behind a smaller budget and a fresh A/B; it stays
-    // documentation, never a live value (the stripDocs assertion below
-    // enforces exactly that).
-    expect(String(spec.draft_model)).toMatch(/strata-data\/mtp\//);
-    // 2026-11-18: the live arm is the Speedy-fork ISTA base IQ3_S set
-    // (uap-speedy-base-iq3s-server), which drafts at spec window 8 — live
-    // /metrics 2026-11-18: spec 8, mtp_max 8, spec_min_p 0.70. The strata
-    // arms draft at spec 12; update this pin on every arm switch.
-    expect(spec.draft_max).toBe(8);
-    expect(spec.draft_conf).toBe(0.7);
+    // 2026-11-19: the serving arm is the HyperQwen vLLM 27B fleet arm
+    // (uap-hyperqwen-server), which drafts with the model's OWN MTP head
+    // in-engine — --speculative-config {method mtp,
+    // num_speculative_tokens 3, draft_sample_method probabilistic}. There
+    // is NO external draft artifact on this arm, so draft_model is EMPTY
+    // BY REALITY, not omission (the strata-data/mtp/rt path belongs to the
+    // flash-next arms and returns with a panel switch back), and
+    // probabilistic draft sampling exposes no confidence floor (draft_conf
+    // null — the 0.70 spec_min_p floor was a strata-arm value). Live
+    // SpecDecoding metrics 2026-11-19: per-position acceptance
+    // 0.869/0.686/0.577, mean acceptance length 2.52-3.13 — pin those
+    // facts; update this pin on every arm switch. The DFlash2 doctrine
+    // (strata_control/drafting.py _SLOWER on sm_86; this box's own
+    // 2026-10-28 A/B at -5.5% mean decode) still governs any future
+    // drafter change, and the stripDocs assertion below enforces that.
+    expect(String(spec.draft_model)).toBe('');
+    expect(spec.draft_max).toBe(3);
+    expect(spec.draft_conf).toBeNull();
     const stripDocs = (v: unknown): unknown => {
       if (Array.isArray(v)) return v.map(stripDocs);
       if (v && typeof v === 'object') {
@@ -212,12 +238,15 @@ describe('qwen38 profile — describes the engine that is actually running', () 
   });
 
   it('does not quote a decode number without naming workload and depth', () => {
-    // 47 is a mid-depth code-workload observation on strata; prose reached ~25
-    // and counting ~93 on the predecessor. One number is always a
-    // simplification — the comment must say so.
+    // 2026-11-19 (HyperQwen vLLM arm, measured live): 82.7 tok/s on a fresh
+    // 400-token burst and 69.4 tok/s at a 101728-token prompt depth — the
+    // comment must carry the PAIR. One number is always a simplification;
+    // the band below is the honest sanity window for this arm (the strata
+    // era observed 36-52; the 2026-11-18 llama external-draft arm 18-19.4).
     const m = profile.measured;
     expect(m._decode_comment).toMatch(/depth/i);
-    expect(m.decode_tokens_per_second).toBeLessThan(50);
+    expect(m.decode_tokens_per_second).toBeGreaterThan(50);
+    expect(m.decode_tokens_per_second).toBeLessThan(100);
     expect(m.draft_acceptance).toBeLessThan(0.85);
   });
 
@@ -283,9 +312,15 @@ describe('project opencode config agrees with the profile', () => {
     expect(proxyModel.limit.output).toBeLessThan(profile.max_tokens);
   });
 
-  it('gives the guardrail-free direct path the full pool', () => {
-    const direct = oc.provider['llama.cpp-direct'].models['qwen38-gsq-rco-27b'];
-    expect(direct.limit.context).toBe(profile.server_optimization.kv_capacity);
+  it('gives the guardrail-free direct path the full pool, on the alias the engine enforces', () => {
+    // 2026-11-19: the HyperQwen vLLM arm 404s any direct-route model id
+    // except the served alias (fleet log 18:39:37 — the strata-era
+    // "ignores requested ids" continuity argument died with the arm), so
+    // the direct entry must carry the profile's model field. Read it from
+    // the profile, never transcribe it — the suite's own doctrine.
+    const direct = oc.provider['llama.cpp-direct'].models[profile.model];
+    expect(direct, 'the direct entry does not carry the profile alias').toBeTruthy();
+    expect(direct!.limit.context).toBe(profile.server_optimization.kv_capacity);
   });
 });
 

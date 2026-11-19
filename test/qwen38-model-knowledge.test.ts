@@ -34,6 +34,9 @@ interface Profile {
 }
 interface RegistryConfig {
   files?: Array<{ bytes: number; sha256: string }>;
+  unit?: string;
+  measured_at?: string;
+  resident_gpu_mib?: number;
 }
 interface RegistryModel {
   advertises?: string[];
@@ -62,7 +65,15 @@ function readJson<T>(p: string): T {
 
 const profile = readJson<Profile>(resolve(ROOT, 'config/model-profiles/qwen38.json'));
 const registry = readJson<Registry>(resolve(ROOT, 'config/model-registry.json'));
-const arm = registry.models['qwen3.8-flash-next'];
+// The family whose advertises carries the profile's alias — DERIVED, never
+// fixed to one family key: the 2026-11-19 arm swap moved the live alias
+// from the flash-next family (strata/speedy arms) to the 27B family
+// (hyperqwen), and the next swap can move it again.
+const ARM_KEY =
+  Object.keys(registry.models).find((k) =>
+    (registry.models[k]?.advertises ?? []).includes(profile.model),
+  ) ?? '';
+const arm = registry.models[ARM_KEY];
 
 // Retired ids are single-sourced in the registry (retired_local_aliases) —
 // the same list the installer migrates from — so this suite never
@@ -107,26 +118,48 @@ const GEMMA_CTX = Number(/GEMMA_CTX=(\d+)/.exec(SYNC_SCRIPT)?.[1] ?? 0);
 
 describe('qwen38 model knowledge — registry follows the profile', () => {
   it('advertises the alias the profile pins, so placement can match the served id', () => {
-    expect(arm.advertises).toContain(profile.model);
+    expect(ARM_KEY, `no registry family advertises the profile alias ${profile.model}`).not.toBe(
+      '',
+    );
+    expect(arm?.advertises).toContain(profile.model);
   });
 
   it('carries a config entry for the arm the profile describes', () => {
-    const m = /(?:strata|speedy)-[a-z0-9._-]+\.json/.exec(profile._engine);
-    expect(m, 'profile._engine names the unit config file').not.toBeNull();
-    expect(arm.configs).toHaveProperty(m![0].replace(/\.json$/, ''));
+    // Derived by UNIT: the profile's _engine names the serving unit and the
+    // registry config carries it — swap-proof (the strata era named
+    // uap-speedy-base-iq3s-server under the flash-next family's speedy-iq3_s
+    // config; the 2026-11-19 hyperqwen arm names uap-hyperqwen-server under
+    // the 27B family's hyperqwen config).
+    const unit = /uap-[a-z0-9-]+-server/.exec(profile._engine)?.[0] ?? '';
+    expect(unit, 'profile._engine names no serving unit').not.toBe('');
+    const hits = Object.values(registry.models).flatMap((fam) =>
+      Object.entries(fam.configs ?? {}).filter(([, c]) => c.unit === unit),
+    );
+    expect(hits.length, `no registry config carries unit ${unit}`).toBeGreaterThan(0);
   });
 
-  it('declares the arm the profile names with a verified shard manifest', () => {
+  it('declares the arm the profile names with a verified shard manifest or a measured footprint', () => {
     // derived, not hardcoded: after the next arm swap this keeps testing the
     // LIVE arm, not yesterday's
-    const key = /(?:strata|speedy)-[a-z0-9._-]+\.json/.exec(profile._engine)![0].replace(/\.json$/, '');
-    const cfg = arm.configs[key];
-    if (!cfg) throw new Error(`arm config ${key} missing from the registry`);
+    const unit = /uap-[a-z0-9-]+-server/.exec(profile._engine)?.[0] ?? '';
+    const hit = Object.values(registry.models)
+      .flatMap((fam) => Object.entries(fam.configs ?? {}).map(([k, c]) => ({ k, c })))
+      .find(({ c }) => c.unit === unit);
+    expect(hit, `no registry config carries unit ${unit}`).toBeTruthy();
+    const cfg = hit!.c;
     const files = cfg.files ?? [];
-    expect(files.length, `${key} carries no shard manifest`).toBeGreaterThan(0);
-    for (const f of files) {
-      expect(f.bytes).toBeGreaterThan(0);
-      expect(f.sha256).toMatch(/^[0-9a-f]{64}$/);
+    if (files.length > 0) {
+      for (const f of files) {
+        expect(f.bytes).toBeGreaterThan(0);
+        expect(f.sha256).toMatch(/^[0-9a-f]{64}$/);
+      }
+    } else {
+      // GGUF-less arms (the hyperqwen W4A16 safetensors dir, the exl3 arms)
+      // carry no shard manifest — their placeable footprint is the
+      // hand-measured record instead (the exl3 precedent: measured_at +
+      // resident_gpu_mib, recorded by hand the day the arm went live).
+      expect(cfg.measured_at, 'manifest-less arm is unmeasured').toBeTruthy();
+      expect(cfg.resident_gpu_mib ?? 0).toBeGreaterThan(0);
     }
   });
 });
@@ -149,6 +182,17 @@ describe('qwen38 client sync tooling — droid list follows the profile', () => 
     expect(script).toContain('MODELS_ONLY');
     expect(script).toContain('PROJECT_FACTORY_SET');
     expect(script).toMatch(/\/props/);
+  });
+
+  it('reads the LIVE alias from /v1/models when the backend has no /props (vLLM arms)', () => {
+    // 2026-11-19: the hyperqwen vLLM arm serves OpenAI-shaped /v1 only —
+    // /props 404s — and a /props-only probe read the live swap as "backend
+    // probe unreachable", keeping a dead flash-next alias in every client
+    // config while direct-route requests 404'd (fleet log 18:39:37). The
+    // probe must fall back to the model list; a single served id names the
+    // alias unambiguously, a multi-id list is a router and stands down.
+    expect(script).toContain('/v1/models');
+    expect(script).toMatch(/len\(ids\) == 1/);
   });
 
   it('derives the fleet wire ids from the registry advertises, never transcribed', () => {

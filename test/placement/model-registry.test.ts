@@ -10,6 +10,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { parsePolicy } from '../../src/capacity/policy.js';
 import {
   configCostMiB,
+  isMeasuredConfig,
   isPlaceable,
   loadModelRegistry,
   validateRegistry,
@@ -1048,6 +1049,42 @@ describe('repo registry: gemma-4-31b arm wiring', () => {
       expect(draft.sha256).toBe('3a5e99fd8d0b23afb1fccd1ee0c9ebd1f571d00399c2dae2292d217feeec0f6b');
       // The MTP-head digest is the HF LFS oid AND the locally computed
       // sha256 of the completed download (cross-validated 2026-11-15).
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('repo registry: hyperqwen (vLLM 27B fleet arm) wiring — the 2026-11-19 :8080 arm', () => {
+  it('records the live arm under the 27B family with the wire id it enforces and a measured footprint', () => {
+    const own = mkdtempSync(join(tmpdir(), 'hyperqwen-registry-'));
+    try {
+      const loaded = loadModelRegistry(repoRoot, { localPath: join(own, 'no-local.json') });
+      expect(loaded.errors).toEqual([]);
+      const entry = loaded.registry.models['qwen3.8-27b'];
+      // The wire id vLLM serves AND enforces (404 for any other id on the
+      // direct route — fleet log 2026-11-19 18:39:37), lowercase and
+      // distinct from the capital Qwen3.8-27B pin the Droid picker carries.
+      // It must be advertised so the sync's FLEET rule converges stale pins
+      // pinned to it.
+      expect(entry.advertises).toContain('qwen3.8-27b');
+      const cfg = entry.configs['hyperqwen'];
+      expect(cfg, 'config/model-registry.json must carry the live hyperqwen arm').toBeTruthy();
+      expect(cfg!.engine).toBe('hyperqwen');
+      expect(cfg!.unit).toBe('uap-hyperqwen-server');
+      // Hand-measured the day the arm went live (the exl3 precedent —
+      // `uap models measure` fails closed on it: vLLM serves Prometheus
+      // /metrics, not the strata JSON). Measured ⇒ placeable.
+      expect(isPlaceable(cfg!)).toBe(true);
+      if (!isMeasuredConfig(cfg!)) throw new Error('hyperqwen config is not measured');
+      expect(cfg.kv_kind).toBe('int8_per_token_head');
+      // Geometry mirrors the qwen38 profile: pool 131072, per-session cap
+      // 114688 — the cap must sit at or under the pool it serves.
+      expect(cfg.context_pool_cells).toBe(131072);
+      expect(cfg.per_session_cap_cells).toBeLessThanOrEqual(cfg.context_pool_cells);
+      expect(cfg.resident_gpu_mib).toBeGreaterThan(0);
+      // The alias-strictness record the 18:39:37 404 class demands.
+      expect(String(cfg.note)).toMatch(/404/);
     } finally {
       rmSync(own, { recursive: true, force: true });
     }
