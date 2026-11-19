@@ -118,8 +118,9 @@ sqlite3 ./agents/data/memory/reinforcement.db "SELECT * FROM v_recent_outcomes;"
 # Start Qdrant
 docker run -p 6333:6333 qdrant/qdrant
 
-# Or with persistence
-docker run -p 6333:6333 -v $(pwd)/qdrant_data:/qdrant/storage qdrant/qdrant
+# Or with persistence — bind the user's home, never $(pwd): a workspace
+# bind dies with the workspace (a mission re-scaffold wiped one on 2026-11-19)
+docker run -p 6333:6333 -v "$HOME/.cache/uap/qdrant_data":/qdrant/storage qdrant/qdrant
 ```
 
 ---

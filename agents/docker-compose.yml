@@ -6,7 +6,11 @@ services:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - ./qdrant_data:/qdrant/storage
+      # Durable home, NEVER a (possibly re-scaffolded) checkout dir: this
+      # compose gets copied into deliver-mission workspaces, and a
+      # cwd-relative bind took the vector store down with a mission-wipe on
+      # 2026-11-19. compose substitutes $HOME from the invoking shell.
+      - ${HOME}/.cache/uap/qdrant_data:/qdrant/storage
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
     restart: unless-stopped

@@ -11,15 +11,16 @@
  * only tier.
  */
 import { describe, it, expect } from 'vitest';
-import { join } from 'path';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { memoryRoot, shortTermDbPath } from '../src/memory/paths.js';
-import { recordMemoryQuery } from '../src/cli/memory.js';
+import { join, isAbsolute } from 'path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir, homedir } from 'os';
+import { memoryRoot, qdrantDataPath, shortTermDbPath } from '../src/memory/paths.js';
+import { buildQdrantCompose, recordMemoryQuery } from '../src/cli/memory.js';
 import { dimensionedName, storeLongTerm } from '../src/memory/long-term.js';
 import type { AgentContextConfig } from '../src/types/index.js';
 
 const MAIN = '/home/u/project';
+const repoRoot = new URL('../', import.meta.url).pathname;
 
 describe('memory paths resolve to the main checkout', () => {
   it('strips a worktree suffix so every agent shares one store', () => {
@@ -111,4 +112,49 @@ describe('long-term storage', () => {
     expect(result.stored).toBe(false);
     expect(result.reason, 'must say WHY, not just fail').toBeTruthy();
   }, 30_000);
+});
+
+describe('qdrant storage bind (the 2026-11-19 mission-wipe)', () => {
+  // A deliver-mission re-scaffold deleted the bind source out from under the
+  // live singleton container: the compose generator bound `./qdrant_data`, so
+  // the entire vector store lived inside a workspace that is wiped by design.
+  // Every embed 500'd for hours until the container was rebuilt on
+  // ~/.cache/uap/qdrant_data. These pin the durable-home doctrine shut.
+
+  it('resolves the storage bind to the user home, never cwd or a worktree', () => {
+    const p = qdrantDataPath();
+    expect(isAbsolute(p), 'a docker bind must be absolute').toBe(true);
+    expect(p).toBe(join(homedir(), '.cache', 'uap', 'qdrant_data'));
+    expect(p).not.toContain('.worktrees');
+    expect(p).not.toContain('/agents/');
+  });
+
+  it('generates a compose whose ONLY bind is the durable absolute path', () => {
+    const bind = qdrantDataPath();
+    const compose = buildQdrantCompose(bind);
+    expect(compose).toContain(`- ${bind}:/qdrant/storage`);
+    expect(compose, 'the cwd-relative bind is the bug').not.toContain('./qdrant_data');
+  });
+
+  it('the tracked agents/docker-compose.yml (what deliver scaffolds copy) binds the durable home', () => {
+    const compose = readFileSync(join(repoRoot, 'agents/docker-compose.yml'), 'utf-8');
+    expect(compose).toContain('${HOME}/.cache/uap/qdrant_data:/qdrant/storage');
+    expect(compose, 'the qdrant bind must never be workspace-relative').not.toContain(
+      './qdrant_data'
+    );
+    // tei_data is a re-downloadable cache, deliberately left relative — the
+    // vector store is not. Keep this assertion scoped to the qdrant bind.
+    expect(compose).toContain('uap-qdrant');
+  });
+
+  it('the memory doc no longer teaches $(pwd)/qdrant_data', () => {
+    const doc = readFileSync(
+      join(repoRoot, 'templates/CLAUDE_MEMORY.template.md'),
+      'utf-8'
+    );
+    expect(doc, 'the doc must not point operators at a wipeable workspace').not.toContain(
+      '-v $(pwd)/qdrant_data'
+    );
+    expect(doc).toContain('$HOME/.cache/uap/qdrant_data');
+  });
 });
