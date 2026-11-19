@@ -18,7 +18,7 @@ import type { DiscoveredSkill } from '../memory/prepopulate.js';
 import { statusBadge, miniGauge, divider, keyValue, tree, type TreeNode } from './visualize.js';
 import { evaluateWriteGate, formatGateResult } from '../memory/write-gate.js';
 import { DailyLog } from '../memory/daily-log.js';
-import { memoryRoot, shortTermDbPath } from '../memory/paths.js';
+import { memoryRoot, qdrantDataPath, shortTermDbPath } from '../memory/paths.js';
 import { storeLongTerm, dimensionedName } from '../memory/long-term.js';
 import { searchByVector, isDimensionMismatch } from '../memory/qdrant-search.js';
 import { propagateCorrection } from '../memory/correction-propagator.js';
@@ -289,6 +289,31 @@ async function showStatus(cwd: string): Promise<void> {
   console.log('');
 }
 
+export function buildQdrantCompose(bindPath: string): string {
+  return `version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: uap-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ${bindPath}:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: unless-stopped
+`;
+}
+
+/**
+ * The default compose for the singleton `uap-qdrant` container. `bindPath`
+ * is ALWAYS absolute (qdrantDataPath()) — a cwd-relative bind tied the
+ * vector store to a workspace that a mission re-scaffold deleted on
+ * 2026-11-19, and the semantic layer (every embed) 500'd for hours. See
+ * qdrantDataPath() for the durable-home doctrine.
+ */
 export async function startServices(cwd: string): Promise<void> {
   const spinner = ora('Starting memory services...').start();
 
@@ -309,21 +334,11 @@ export async function startServices(cwd: string): Promise<void> {
   if (!composePath) {
     // Create default docker-compose
     spinner.text = 'Creating docker-compose.yml...';
-    const defaultCompose = `version: '3.8'
-
-services:
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: uap-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - ./qdrant_data:/qdrant/storage
-    environment:
-      - QDRANT__SERVICE__GRPC_PORT=6334
-    restart: unless-stopped
-`;
+    const bindPath = qdrantDataPath();
+    // The bind source must exist when docker resolves it at container
+    // create — make it here so the generated compose is runnable as-is.
+    mkdirSync(bindPath, { recursive: true });
+    const defaultCompose = buildQdrantCompose(bindPath);
     const agentsDir = join(cwd, 'agents');
     if (!existsSync(agentsDir)) {
       mkdirSync(agentsDir, { recursive: true });

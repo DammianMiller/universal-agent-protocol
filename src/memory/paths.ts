@@ -14,6 +14,7 @@
  * to memory.
  */
 import { isAbsolute, join, sep } from 'path';
+import { homedir } from 'os';
 
 const WORKTREES = `${sep}.worktrees${sep}`;
 
@@ -38,4 +39,22 @@ export function shortTermDbPath(cwd: string, configuredPath?: string): string {
   if (configuredPath && isAbsolute(configuredPath)) return configuredPath;
   if (configuredPath) return join(root, configuredPath);
   return join(root, 'agents/data/memory/short_term.db');
+}
+
+/**
+ * Absolute path of the shared Qdrant storage bind — the /qdrant/storage volume
+ * of the singleton `uap-qdrant` container.
+ *
+ * ALWAYS home-anchored, never cwd-relative. The compose generator used to bind
+ * `./qdrant_data`, which pinned the container's entire long-term store to
+ * whatever directory `uap memory start` happened to run in. On 2026-11-19 that
+ * was a deliver-mission workspace; the mission's re-scaffold deleted the
+ * bind source out from under the live container and the semantic layer
+ * (every embed) 500'd for hours. `~/.cache/uap` is the home the rest of the
+ * system already treats as UAP's durable scratch space (`await-run`'s journal
+ * sweep explicitly spares qdrant_data there), so the vector store lives under
+ * it — a workspace may be wiped at any moment; the user's home may not.
+ */
+export function qdrantDataPath(): string {
+  return join(homedir(), '.cache', 'uap', 'qdrant_data');
 }
