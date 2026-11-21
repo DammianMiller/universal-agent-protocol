@@ -246,6 +246,18 @@ Keep approved UI screenshots as regression baselines under `.uap/visual/baseline
 
 **Recommendation:** Leave on so accepted UIs are pinned against regressions. Disable for throwaway prototypes where every render legitimately differs.
 
+### `fidelity.reference`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | string (path) |
+| **Default** | unset |
+
+Reference target anchoring the vision critique: an image, an image directory, or a video of a comparable flagship build. Frames are extracted (ffmpeg, evenly sampled across the video) and the vision judge scores the rendered output AGAINST that bar — comparing ambition and craft, not pixel identity; every capability the reference demonstrates that the output lacks becomes a MAJOR ticket. `$UAP_DELIVER_REFERENCE` or `uap deliver --reference <path>` override at runtime (highest precedence: the CLI flag).
+
+**Recommendation:** Set whenever a concrete exemplar of the target quality exists — a demo video of a comparable build is the fastest way to make "flagship" measurable rather than vibes. Unset keeps vacuum judging.
+
 ### `UAP_VISION_ENDPOINT`
 
 | | |

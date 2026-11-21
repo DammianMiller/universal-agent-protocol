@@ -35,6 +35,7 @@ import {
   loadOutcomeBlueprint,
 } from '../delivery/outcome-blueprint.js';
 import { createRoleExecutor, loadRoleRouting } from '../delivery/role-router.js';
+import { applyFleetCriticRouting } from '../delivery/fleet-critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
@@ -423,6 +424,15 @@ export interface DeliverOptions {
   evaluatorModel?: string;
   /** Endpoint override for the evaluator model. */
   evaluatorEndpoint?: string;
+  /** `--reference <path>` (U-B): reference target anchoring the vision
+   *  critique — an image, image directory, or video of a comparable flagship
+   *  build. Bridged to UAP_DELIVER_REFERENCE (highest precedence over
+   *  .uap.json fidelity.reference). */
+  reference?: string;
+  /** `--no-fleet-critic` (U-C): disable automatic routing of the blueprint +
+   *  critic passes to a measured stronger zero-cost arm. Default: auto when
+   *  fleet telemetry shows a clear edge; explicit env/config routing wins. */
+  fleetCritic?: boolean;
   temperature?: string;
   gates?: string;
   /** `--no-self-gate` sets this false; default (undefined) keeps the fallback on. */
@@ -2039,6 +2049,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   if (options.halo) {
     process.env.UAP_HALO_TRACE = '1';
   }
+  // U-B reference anchoring: a --reference flag must reach every fidelity
+  // consumer (vision judge in mission acceptance and verify) as the highest
+  // precedence source, so bridge it to the env before anything resolves.
+  if (options.reference) {
+    process.env.UAP_DELIVER_REFERENCE = options.reference;
+  }
   // Anchor trace artifacts to the TARGET project: the exporter defaults to
   // cwd, which is wrong (and commingles projects) under --project-root.
   if (!process.env.UAP_HALO_TRACE_PATH) {
@@ -2539,6 +2555,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // Option C3: role-specific thinking-ON fresh-context executors for Phase 0
   // Outcome Blueprint (B1) and clean-context Adversarial Critic (C1).
   const roleRouting = loadRoleRouting(projectRoot, model.id, model.endpoint);
+
+  // U-C fleet-critic routing: when NO explicit routing is configured for the
+  // blueprint/critic roles, fleet telemetry (recorded deliver outcomes) may
+  // name a MEASURED stronger zero-cost arm — route those cognitive passes
+  // there so the builder is no longer blueprinted by its own narrow reading.
+  // Explicit env/config/escalate routing always wins; paid arms are never
+  // auto-selected. Fail-soft: unavailable telemetry keeps local-fresh-context.
+  const fleetDecision = await applyFleetCriticRouting(projectRoot, model.id, {
+    disabled: options.fleetCritic === false || process.env.UAP_FLEET_CRITIC === '0',
+  });
+  if (fleetDecision.arm && roleRouting.blueprint.source === 'local-fresh-context') {
+    const arm = fleetDecision.arm;
+    roleRouting.blueprint = { ...roleRouting.blueprint, modelId: arm, source: 'fleet-telemetry' };
+    roleRouting.critic = { ...roleRouting.critic, modelId: arm, source: 'fleet-telemetry' };
+    console.log(
+      chalk.dim(`  fleet-critic: blueprint+critic routed to '${arm}' [fleet-telemetry] (${fleetDecision.reason})`)
+    );
+  } else if (fleetDecision.reason) {
+    console.log(chalk.dim(`  fleet-critic: ${fleetDecision.reason}`));
+  }
+
   const blueprintRoleExecutor = createRoleExecutor(client, roleRouting.blueprint, model);
   const adversarialCriticExecutor = createRoleExecutor(client, roleRouting.critic, model);
 

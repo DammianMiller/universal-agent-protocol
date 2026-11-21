@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { fetchModelWithRetry } from '../models/long-fetch.js';
 import { discoverLocalLlamaBases } from '../utils/llama-discovery.js';
+import { imageDataUrl } from './reference-media.js';
 
 export interface VisionAxes {
   completeness: number;
@@ -374,7 +375,8 @@ export async function judgeScreenshots(
   screenshotPaths: string[],
   spec: string,
   designContext = '',
-  fetchImpl?: typeof fetchModelWithRetry
+  fetchImpl?: typeof fetchModelWithRetry,
+  referencePaths?: string[]
 ): Promise<VisionVerdict | null> {
   if (!visionJudgeConfigured() || screenshotPaths.length === 0) return null;
   const endpoint = (process.env.UAP_VISION_ENDPOINT as string).replace(/\/$/, '');
@@ -384,6 +386,33 @@ export async function judgeScreenshots(
       type: 'image_url',
       image_url: { url: `data:image/png;base64,${readFileSync(p).toString('base64')}` },
     }));
+    // U-B reference anchoring: label the reference frames as the bar, then the
+    // output frames as the subject, so the axes are graded against a concrete
+    // target instead of the reviewer's imagination.
+    const referenceParts =
+      referencePaths && referencePaths.length > 0
+        ? [
+            {
+              type: 'text',
+              text: 'REFERENCE TARGET — a comparable flagship build that defines the quality bar the output must match or exceed:',
+            } as const,
+            ...referencePaths.slice(0, MAX_IMAGES).map((p) => ({
+              type: 'image_url' as const,
+              image_url: { url: imageDataUrl(p) },
+            })),
+            {
+              type: 'text',
+              text: 'OUTPUT UNDER REVIEW — score these frames against the reference bar:',
+            } as const,
+          ]
+        : [];
+    const referenceAnchor =
+      referenceParts.length > 0
+        ? ' REFERENCE ANCHORING: the REFERENCE frames demonstrate what a flagship build of a comparable task looks like — they define the target bar. ' +
+          'An axis reaches 10 only if the output matches or EXCEEDS the reference on that axis; 5 means roughly half its ambition. ' +
+          'Compare AMBITION and CRAFT, not subject identity: do not downgrade for legitimately different subject matter, palette, or style choices. ' +
+          'Every capability the reference demonstrates that the output lacks is a "major" ticket naming the missing subsystem (target: the missing capability), not a stylistic note.'
+        : '';
     // Stability: the vision score gates a DONE claim, so run-to-run variance
     // (the same render scoring 3→8) can false-block a good deliverable. Default
     // to the MEDIAN of 3 independent scores (a small temperature makes the samples
@@ -427,8 +456,10 @@ export async function judgeScreenshots(
                 '"tickets": [{"severity": "blocker|major|polish", "axis": "<axis>", "target": "<element/subsystem>", "defect": "<what is wrong>", "fix": "<concrete fix>"}], ' +
                 '"findings": ["<specific, actionable fix>", ...]}\n\nSPEC:\n' +
                 spec.slice(0, 4000) +
-                (designContext ? `\n\nDESIGN SYSTEM (score adherence to this):\n${designContext.slice(0, 2500)}` : ''),
+                (designContext ? `\n\nDESIGN SYSTEM (score adherence to this):\n${designContext.slice(0, 2500)}` : '') +
+                referenceAnchor,
             },
+            ...referenceParts,
             ...images,
           ],
         },

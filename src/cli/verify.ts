@@ -464,10 +464,27 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
       if (visionJudgeConfigured()) {
         visionAvailable = true;
         const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
+        // U-B: extract the configured reference target (if any) so the judge
+        // grades against the reference bar instead of in a vacuum. Fail-soft:
+        // no reference configured → unchanged behavior.
+        let referencePaths: string[] | undefined;
+        if (fidelity.referencePath) {
+          const { extractReferenceImages } = await import('../delivery/reference-media.js');
+          const ref = await extractReferenceImages(
+            fidelity.referencePath,
+            joinPath(dir, '.uap', 'reference-frames')
+          );
+          referencePaths = ref.images.length > 0 ? ref.images : undefined;
+          if (ref.images.length === 0) {
+            visualReport += `\n(reference target configured but no frames extracted: ${ref.note})`;
+          }
+        }
         const verdict = await judgeScreenshots(
           shots,
           opts.acceptanceSpec ?? 'A polished, working application UI.',
-          readDesignContext(dir)
+          readDesignContext(dir),
+          undefined,
+          referencePaths
         );
         // Corroborate before reporting: asked for a `findings` list the judge
         // fills it whether or not defects exist, and a single still frame

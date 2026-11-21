@@ -1118,6 +1118,8 @@ program
   .option('--allow-bash', "Permit the agentic executor's run_bash tool when NOT running under `uap sandbox`. Off by default: an unsandboxed shell is not contained to the workdir. Auto-enabled under `uap sandbox`.")
   .option('--evaluator-model <preset>', 'Author + judge the acceptance gate with a DIFFERENT model than the implementer (separate generator from evaluator; pairs with the barbell strategy). Default: same as --model')
   .option('--evaluator-endpoint <url>', 'Endpoint override for --evaluator-model')
+  .option('--reference <path>', 'Reference target anchoring the vision critique (U-B): an image, an image directory, or a video of a comparable flagship build — frames are extracted and the rendered output is scored AGAINST that bar (ambition and craft), instead of in a vacuum. Also .uap.json fidelity.reference or $UAP_DELIVER_REFERENCE')
+  .option('--no-fleet-critic', 'Disable automatic routing of the blueprint + critic passes to a measured stronger zero-cost arm (U-C). Default: auto when fleet telemetry (deliver outcomes) shows a clear edge for a FREE arm; explicit --evaluator-model / env / config routing always wins')
   .option('--keep-best', 'Never regress (DEFAULT ON): snapshot the project and roll back if deliver ends with a worse required-gate score than its best turn (real gates only)')
   .option('--no-keep-best', 'Disable never-regress: keep whatever the final turn produced, even if an earlier turn scored better')
   .option('--candidates <n>', 'Best-of-N exploration: candidates per turn (2-8)')

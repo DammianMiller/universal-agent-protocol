@@ -35,6 +35,7 @@ import { runVisualGate, visualRuntimeNote, structuralFeedback } from './visual-g
 import { runInteractionGate } from './interaction-gate.js';
 import type { ProbeMode } from './interaction/types.js';
 import { resolveFidelity } from './fidelity.js';
+import { join } from 'path';
 import { buildUserPathsNote } from './user-validation.js';
 import { formatTierGateLine, resolveTierGateMode, runTierGate } from '../quality/tier-gate.js';
 import {
@@ -147,7 +148,24 @@ export async function visionAcceptanceFeedback(
     const vj = await import('./vision-judge.js');
     if (!vj.visionJudgeConfigured()) await vj.autodetectLocalVision();
     if (!vj.visionJudgeConfigured()) return null;
-    const verdict = await vj.judgeScreenshots(screenshots, spec, vj.readDesignContext(root));
+    // U-B: when a reference target is configured, extract its frames and grade
+    // the screenshots AGAINST that bar (fail-soft: no reference → vacuum mode).
+    let referencePaths: string[] | undefined;
+    if (fidelity.referencePath) {
+      const rm = await import('./reference-media.js');
+      const ref = await rm.extractReferenceImages(
+        fidelity.referencePath,
+        join(root, '.uap', 'reference-frames')
+      );
+      referencePaths = ref.images.length > 0 ? ref.images : undefined;
+    }
+    const verdict = await vj.judgeScreenshots(
+      screenshots,
+      spec,
+      vj.readDesignContext(root),
+      undefined,
+      referencePaths
+    );
     if (!verdict || verdict.score >= fidelity.visionMinScore) return null;
     return (
       `VISION REVIEW FAILED — the rendered UI scores ${verdict.score}/10 (max-fidelity threshold ${fidelity.visionMinScore}). ` +

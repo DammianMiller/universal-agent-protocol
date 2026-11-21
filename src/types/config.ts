@@ -569,6 +569,13 @@ export const FidelitySchema = z.object({
   visionBlocking: z.enum(['advisory', 'block']).default('advisory'),
   /** Keep approved screenshots as regression baselines and block on visual drift. */
   visualBaselines: z.boolean().default(true),
+  /**
+   * Reference target anchoring the vision critique (U-B): an image, an image
+   * directory, or a video of a comparable flagship build. Frames are extracted
+   * and the judged artifact is scored AGAINST that bar (ambition and craft),
+   * rather than in a vacuum.
+   */
+  reference: z.string().optional(),
 });
 
 export const AgentContextConfigSchema = z.object({
