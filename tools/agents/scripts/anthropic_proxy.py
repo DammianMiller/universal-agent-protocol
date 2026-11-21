@@ -1751,6 +1751,12 @@ PROXY_THINKING_ON_OBSERVATION_TURNS = os.environ.get(
 PROXY_THINKING_OBSERVATION_MIN_MAX_TOKENS = int(
     os.environ.get("PROXY_THINKING_OBSERVATION_MIN_MAX_TOKENS", "16384")
 )
+PROXY_MULTIMODAL_CRITIQUE_PROMPT = os.environ.get(
+    "PROXY_MULTIMODAL_CRITIQUE_PROMPT", "on"
+).strip().lower() not in {"0", "false", "off", "no"}
+PROXY_HARD_FINALIZE_CTX_THRESHOLD = float(
+    os.environ.get("PROXY_HARD_FINALIZE_CTX_THRESHOLD", "0.85")
+)
 
 # Compute-budget guardrails (B2): detect prolonged third-party/vendor read
 # archaeology and single-file edit thrashing, restoring thinking + injecting a
@@ -1758,6 +1764,25 @@ PROXY_THINKING_OBSERVATION_MIN_MAX_TOKENS = int(
 PROXY_ARCHAEOLOGY_CAP = int(os.environ.get("PROXY_ARCHAEOLOGY_CAP", "12"))
 PROXY_SINGLE_FILE_REFLECT_THRESHOLD = int(
     os.environ.get("PROXY_SINGLE_FILE_REFLECT_THRESHOLD", "5")
+)
+
+_MULTIMODAL_CRITIQUE_DIRECTIVE = (
+    "VISUAL & SYSTEMIC CRITIQUE CHECKLIST: Before acting on this image, inspect it carefully for: "
+    "(1) structural, layout, or rendering integrity (missing, clipped, inverted, overlapping, or empty "
+    "regions, broken geometry, or unrendered components), "
+    "(2) framing, bounds, alignment, and composition (whether the full subject fits cleanly with clear separation), "
+    "(3) readability, contrast, lighting/color fidelity, and hierarchy, and "
+    "(4) shared upstream root causes — whenever multiple independent elements exhibit the same visual "
+    "defect, diagnose the common generator, renderer, or layout helper instead of patching symptoms one by one."
+)
+
+# Benign deterministic-replay notices emitted by deliver_autoroute.py when a
+# direct write is auto-applied to disk via `uap deliver --pending`. These are
+# routine successful edits, NOT failures, and must not trigger false
+# verification_failure thinking flips.
+_BENIGN_AUTOROUTE_MARKERS = (
+    "auto-applying to disk via deterministic",
+    "already auto-routed/applied for this change",
 )
 
 _VERIFICATION_FAILURE_MARKERS = (
@@ -1800,6 +1825,14 @@ _READ_INSPECT_TOOLS = {
 _WRITE_EDIT_TOOLS = {
     "edit", "write", "create", "multiedit", "patch", "apply_patch", "notebookedit",
 }
+_SCRIPT_WRAPPER_TOOLS = {"script", "run_script", "codemode", "tool_script"}
+_SCRIPT_TOOL_CALL_RE = re.compile(
+    r"""\btools(?:\.(?P<dot>[A-Za-z_][A-Za-z0-9_]*)|\[['"](?P<br>[A-Za-z_][A-Za-z0-9_]*)['"]\])\s*\(""",
+)
+_SCRIPT_ARG_KV_RE = re.compile(
+    r"""(?:['"]?(?P<key>file_path|filePath|path|target|filename|file|directory_path|folder|pattern|command|cmd)['"]?)\s*:\s*(?:(?P<q>['"`])(?P<val>(?:\\.|(?!(?P=q)).)*)(?P=q))""",
+    re.DOTALL,
+)
 _BEHAVIORAL_CMD_RE = re.compile(
     r"\b(?:pytest|vitest|jest|mocha|playwright|cypress|uap\s+verify"
     r"|cargo\s+test|go\s+test|npm\s+(?:run\s+)?test|(?:pnpm|yarn|bun)\s+(?:run\s+)?test"
@@ -1814,6 +1847,35 @@ def _thinking_enabled_on_body(body: dict) -> bool:
     if isinstance(ctk, dict) and "enable_thinking" in ctk:
         return bool(ctk["enable_thinking"])
     return bool(body.get("enable_thinking"))
+
+
+def _append_directive_to_trailing_user(openai_body: dict, directive: str) -> None:
+    """Attach a per-turn directive to the trailing user message without mutating messages[0].
+
+    Preserves prefix KV-cache invariance by only ever appending at the tail of
+    the conversation. Merges into an existing trailing `role == 'user'` turn
+    (both text and multimodal list content) to avoid consecutive user turns on
+    strict chat templates; appends a new user message when the last message is
+    another role (e.g. `tool`).
+    """
+    text = (directive or "").strip()
+    if not text:
+        return
+    msgs = openai_body.setdefault("messages", [])
+    if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user":
+        content = msgs[-1].get("content")
+        if isinstance(content, str):
+            if text not in content:
+                msgs[-1]["content"] = f"{content}\n\n{text}" if content else text
+            return
+        if isinstance(content, list):
+            if not any(
+                isinstance(b, dict) and b.get("type") == "text" and text in str(b.get("text") or "")
+                for b in content
+            ):
+                content.append({"type": "text", "text": text})
+            return
+    msgs.append({"role": "user", "content": text})
 
 
 def _content_has_multimodal_block(content: object) -> bool:
@@ -1831,41 +1893,59 @@ def _content_has_multimodal_block(content: object) -> bool:
     return False
 
 
+def _is_benign_autoroute_notice(text: str) -> bool:
+    """True when *text* is a benign deterministic-replay notice from deliver_autoroute."""
+    lower = (text or "").lower()
+    return any(marker in lower for marker in _BENIGN_AUTOROUTE_MARKERS)
+
+
 def _collect_user_turn_signals(content: object) -> tuple[bool, list[str]]:
-    """Return (has_tool_error, text_fragments) from an Anthropic user content payload."""
+    """Return (has_tool_error, text_fragments) from an Anthropic user content payload.
+
+    Excludes benign deliver_autoroute deterministic-replay notices so routine
+    auto-applied edits do not trigger false verification_failure thinking flips.
+    """
     if isinstance(content, str):
-        return False, [content]
+        return False, ([] if _is_benign_autoroute_notice(content) else [content])
     if not isinstance(content, list):
         return False, []
     has_error = False
     texts: list[str] = []
     for block in content:
         if isinstance(block, str):
-            texts.append(block)
+            if not _is_benign_autoroute_notice(block):
+                texts.append(block)
             continue
         if not isinstance(block, dict):
             continue
         btype = str(block.get("type") or "").lower()
         if btype == "text":
             t = block.get("text")
-            if isinstance(t, str):
+            if isinstance(t, str) and not _is_benign_autoroute_notice(t):
                 texts.append(t)
         elif btype == "tool_result":
-            if block.get("is_error") is True:
-                has_error = True
             inner = block.get("content")
             if isinstance(inner, str):
-                texts.append(inner)
+                inner_err, inner_texts = False, [inner]
             elif isinstance(inner, list):
-                sub_err, sub_texts = _collect_user_turn_signals(inner)
-                has_error = has_error or sub_err
-                texts.extend(sub_texts)
+                inner_err, inner_texts = _collect_user_turn_signals(inner)
+            else:
+                inner_err, inner_texts = False, []
+            joined_inner = "\n".join(inner_texts)
+            if _is_benign_autoroute_notice(joined_inner):
+                continue
+            if block.get("is_error") is True or inner_err:
+                has_error = True
+            texts.extend(inner_texts)
     return has_error, texts
 
 
 def _latest_turn_cognitive_signal(anthropic_body: dict) -> str | None:
     """Classify whether the current turn warrants restoring thinking ON.
 
+    Scans ALL trailing `role == 'user'` messages since the last `role == 'assistant'`
+    turn so appended harness reminders (e.g. `<system-reminder>`) never hide an
+    earlier image `tool_result` or verification error from the same turn.
     Returns a short reason tag ('explicit_reasoning_header',
     'multimodal_observation', or 'verification_failure') or None for routine
     mechanical tool turns.
@@ -1875,27 +1955,101 @@ def _latest_turn_cognitive_signal(anthropic_body: dict) -> str | None:
     if not PROXY_THINKING_ON_OBSERVATION_TURNS:
         return None
     messages = anthropic_body.get("messages") or []
-    latest_user = None
+    trailing_users: list[dict] = []
     for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            latest_user = msg
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant":
             break
-    if not latest_user:
+        if role == "user":
+            trailing_users.append(msg)
+    if not trailing_users:
         return None
-    content = latest_user.get("content")
-    if _content_has_multimodal_block(content):
-        return "multimodal_observation"
-    has_error, texts = _collect_user_turn_signals(content)
-    if has_error:
-        return "verification_failure"
-    joined = "\n".join(texts).lower()
+    for user_msg in trailing_users:
+        if _content_has_multimodal_block(user_msg.get("content")):
+            return "multimodal_observation"
+    all_texts: list[str] = []
+    for user_msg in trailing_users:
+        has_error, texts = _collect_user_turn_signals(user_msg.get("content"))
+        if has_error:
+            return "verification_failure"
+        all_texts.extend(texts)
+    joined = "\n".join(all_texts).lower()
     if any(marker in joined for marker in _VERIFICATION_FAILURE_MARKERS):
         return "verification_failure"
     return None
 
 
+def _extract_balanced_call_args(source: str, open_paren_idx: int) -> str:
+    """Return the substring inside `(...)` starting at *open_paren_idx*, respecting strings."""
+    depth = 0
+    in_quote: str | None = None
+    escaped = False
+    n = len(source)
+    for i in range(open_paren_idx, n):
+        ch = source[i]
+        if in_quote is not None:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ("'", '"', "`"):
+            in_quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return source[open_paren_idx + 1 : i]
+    return source[open_paren_idx + 1 :]
+
+
+def _parse_script_arg_object(arg_src: str) -> dict:
+    """Extract guardrail-relevant string properties from a JS/JSON tool argument slice."""
+    trimmed = arg_src.strip()
+    if not trimmed:
+        return {}
+    if trimmed.startswith("{") and trimmed.endswith("}"):
+        try:
+            parsed = json.loads(trimmed)
+            if isinstance(parsed, dict):
+                return parsed
+        except (ValueError, TypeError):
+            pass
+    extracted: dict = {}
+    for m in _SCRIPT_ARG_KV_RE.finditer(trimmed):
+        key = m.group("key")
+        if key not in extracted:
+            extracted[key] = m.group("val")
+    return extracted
+
+
+def _parse_script_tool_calls(script_text: str) -> list[tuple[str, dict]]:
+    """Parse chronological inner `tools.<Name>({ ... })` calls from Script Mode payloads."""
+    if not isinstance(script_text, str) or "tools" not in script_text:
+        return []
+    calls: list[tuple[str, dict]] = []
+    for match in _SCRIPT_TOOL_CALL_RE.finditer(script_text):
+        raw_name = match.group("dot") or match.group("br") or ""
+        tool_name = raw_name.strip().lower()
+        if not tool_name:
+            continue
+        arg_src = _extract_balanced_call_args(script_text, match.end() - 1)
+        calls.append((tool_name, _parse_script_arg_object(arg_src)))
+    return calls
+
+
 def _extract_recent_tool_activity(anthropic_body: dict) -> list[tuple[str, dict]]:
-    """Extract chronological (tool_name_lower, input_dict) pairs from assistant turns."""
+    """Extract chronological (tool_name_lower, input_dict) pairs from assistant turns.
+
+    Unpacks inner `tools.<ToolName>({ ... })` calls from Script Mode wrapper
+    tools (`Script`, `run_script`, etc.) so compute-budget guardrails apply
+    uniformly across both standard tool calls and Script Mode sessions.
+    """
     out: list[tuple[str, dict]] = []
     for msg in anthropic_body.get("messages") or []:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -1908,8 +2062,44 @@ def _extract_recent_tool_activity(anthropic_body: dict) -> list[tuple[str, dict]
                 continue
             name = str(block.get("name") or "").strip().lower()
             inp = block.get("input")
-            out.append((name, inp if isinstance(inp, dict) else {}))
+            inp_dict = inp if isinstance(inp, dict) else {}
+            if name in _SCRIPT_WRAPPER_TOOLS:
+                script_src = (
+                    inp_dict.get("code")
+                    or inp_dict.get("script")
+                    or inp_dict.get("source")
+                    or ""
+                )
+                inner_calls = _parse_script_tool_calls(str(script_src))
+                if inner_calls:
+                    out.extend(inner_calls)
+                    continue
+            out.append((name, inp_dict))
     return out
+
+
+def _should_hard_strip_on_periodic_audit(monitor: "SessionMonitor") -> tuple[bool, str]:
+    """Decide whether a periodic tool-turn ceiling should hard-strip tools vs run non-disruptively.
+
+    Hard tool-stripping forces an `end_turn` (which invokes harness Stop hooks),
+    so reserve it for genuine stalls or high context saturation (>= threshold).
+    Actively progressing sessions get a non-disruptive Holistic Outcome Audit
+    with Thinking ON and tools kept attached.
+    """
+    util = max(monitor.get_utilization(), monitor.get_raw_utilization())
+    if util >= PROXY_HARD_FINALIZE_CTX_THRESHOLD:
+        return True, f"high_context({util * 100:.0f}%)"
+    if monitor.no_progress_streak >= 3:
+        return True, f"no_progress_streak({monitor.no_progress_streak})"
+    if monitor.tool_state_stagnation_streak >= 3:
+        return True, f"stagnation_streak({monitor.tool_state_stagnation_streak})"
+    if monitor.tool_state_review_cycles >= 2:
+        return True, f"review_cycles({monitor.tool_state_review_cycles})"
+    if monitor.cycling_tool_names:
+        return True, "cycling_tools"
+    if monitor.should_release_tool_choice():
+        return True, "loop_breaker_released"
+    return False, "active_progress"
 
 
 def _tool_target_path(inp: dict) -> str:
@@ -2124,6 +2314,16 @@ def _note_ctk_rejection(error_text: str) -> bool:
 # round-trip to EVERY /v1/messages for the life of the process. Bounded.
 _CTK_PROBE_MAX_ATTEMPTS = 3
 _ctk_probe_attempts = 0
+PROXY_CTK_SKIP_PROBE_WHEN_WARM = os.environ.get(
+    "PROXY_CTK_SKIP_PROBE_WHEN_WARM", "on"
+).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _has_warm_session() -> bool:
+    """True when a live session already has KV state on the upstream backend."""
+    if _slot_owner_session is not None or _admitted_sessions:
+        return True
+    return any(getattr(m, "total_requests", 0) > 0 for m in session_monitors.values())
 
 
 async def _probe_chat_template_kwargs() -> None:
@@ -2147,9 +2347,21 @@ async def _probe_chat_template_kwargs() -> None:
     Any answer that is NOT the specific rejection leaves the state UNKNOWN, so a
     probe that could not run (upstream down, timeout, auth) never disables a
     field llama.cpp needs.
+
+    When a session is ALREADY warm on a single-slot backend, skip the synthetic
+    `"hi"` completion entirely so we never evict an active session's KV cache:
+    unknown counts as allowed (`_ctk_allowed() == True`) and `_note_ctk_rejection()`
+    still latches False on the first real rejection.
     """
     global _ctk_supported, _ctk_probed, _ctk_probe_attempts
     if _ctk_probed or http_client is None:
+        return
+    if PROXY_CTK_SKIP_PROBE_WHEN_WARM and _has_warm_session():
+        _ctk_probed = True
+        logger.info(
+            "CHAT_TEMPLATE_KWARGS: skipping synthetic completion probe while a session is warm "
+            "(preserving single-slot KV cache; error latch remains active)"
+        )
         return
     _ctk_probe_attempts += 1
     _ctk_probed = True  # cleared below only if the answer was inconclusive
@@ -2601,7 +2813,7 @@ def invalidate_upstream_caches() -> list[str]:
     global _upstream_model_ids, _ctk_supported, _ctk_probed, _ctk_probe_attempts
     global default_context_window, _context_window_measured, _last_ctx_recheck_ts
     global upstream_vision, _last_vision_recheck_ts
-    global _placement_pending
+    global _placement_pending, _slot_save_supported
     cleared: list[str] = []
     if _upstream_model_ids is not None:
         _upstream_model_ids = None
@@ -2627,6 +2839,9 @@ def invalidate_upstream_caches() -> list[str]:
     # interval gate would otherwise suppress the re-probe for up to 60s
     # after the swap.
     _last_vision_recheck_ts = 0.0
+    if globals().get("_slot_save_supported") is False:
+        _slot_save_supported = None
+        cleared.append("slot_save_support")
     _admitted_sessions.clear()
     cleared.append("admitted_sessions")
     if _placement_pending:
@@ -2634,6 +2849,25 @@ def invalidate_upstream_caches() -> list[str]:
         cleared.append("placement_pending")
     logger.info("PLACEMENT: upstream caches invalidated (%s)", ", ".join(cleared))
     return cleared
+
+
+async def _fetch_live_upstream_model_ids() -> list[str] | None:
+    """Metadata-only GET /v1/models check returning live served model IDs (zero KV impact)."""
+    if http_client is None:
+        return None
+    try:
+        r = await http_client.get(f"{LLAMA_CPP_BASE}/models", timeout=5.0)
+        if r.status_code != 200:
+            return None
+        data = (r.json() or {}).get("data") or []
+        ids = [
+            str(entry["id"])
+            for entry in data
+            if isinstance(entry, dict) and entry.get("id")
+        ]
+        return ids or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 async def _upstream_model_name() -> str | None:
@@ -3087,12 +3321,12 @@ def _apply_json_response_grammar(openai_body: dict, anthropic_body: dict) -> Non
         return
     if not anthropic_body.get("_uap_json_response"):
         return
-    if not JSON_RESPONSE_GBNF:
+    if openai_body.get("tools"):
         return
-    if openai_body.get("tools") or openai_body.get("grammar"):
+    _set_thinking(openai_body, False)
+    if not JSON_RESPONSE_GBNF or openai_body.get("grammar"):
         return
     openai_body["grammar"] = JSON_RESPONSE_GBNF
-    _set_thinking(openai_body, False)
     logger.info("JSON-RESPONSE grammar applied (evaluator verdict turn)")
 
 
@@ -6304,6 +6538,11 @@ PROXY_SLOT_RESTORE_TIMEOUT = float(os.environ.get("PROXY_SLOT_RESTORE_TIMEOUT", 
 # (_post_with_retry), so no extra lock is needed.
 _slot_owner_session: str | None = None  # session id currently loaded in the slot
 _slot_lru: "OrderedDict[str, float]" = OrderedDict()  # session -> last-access ts
+# Tri-state capability latch for llama-server's /slots/{id}?action=save|restore.
+# Backends that do not implement /slots (e.g. Basalt, vLLM) return 404/405/501;
+# latch False on the first unsupported status so we stop emitting repeated
+# warnings and pointless POSTs until an actual model swap clears the latch.
+_slot_save_supported: bool | None = None
 
 # Per-request session id, set by the request handler and read by
 # _ensure_slot_for_session inside _post_with_retry. A ContextVar keeps the
@@ -6428,6 +6667,9 @@ def _slot_filename(session_id: str) -> str:
 
 async def _save_slot(client: httpx.AsyncClient, session_id: str) -> bool:
     """Persist the current slot KV state under *session_id*'s filename."""
+    global _slot_save_supported
+    if _slot_save_supported is False:
+        return False
     fn = _slot_filename(session_id)
     url = f"{_slot_endpoint_base()}/slots/{PROXY_SLOT_ID}?action=save"
     try:
@@ -6435,8 +6677,17 @@ async def _save_slot(client: httpx.AsyncClient, session_id: str) -> bool:
             url, json={"filename": fn}, timeout=PROXY_SLOT_SAVE_TIMEOUT
         )
         if resp.status_code == 200:
+            _slot_save_supported = True
             logger.info("SLOT SAVE: session=%s -> %s", session_id, fn)
             return True
+        if resp.status_code in (404, 405, 501):
+            _slot_save_supported = False
+            logger.info(
+                "SLOT SAVE/RESTORE: upstream returned HTTP %d on %s — disabling slot save/restore until model swap",
+                resp.status_code,
+                url,
+            )
+            return False
         logger.warning(
             "SLOT SAVE failed: session=%s http=%d %s",
             session_id, resp.status_code, resp.text[:200],
@@ -6457,6 +6708,9 @@ async def _restore_slot(client: httpx.AsyncClient, session_id: str) -> bool:
     Returns False if no saved file exists or the restore failed — the caller
     then proceeds with a normal (full-reprocess) upstream call.
     """
+    global _slot_save_supported
+    if _slot_save_supported is False:
+        return False
     fn = _slot_filename(session_id)
     path = os.path.join(PROXY_SLOT_SAVE_DIR, fn)
     if not os.path.exists(path):
@@ -6467,8 +6721,17 @@ async def _restore_slot(client: httpx.AsyncClient, session_id: str) -> bool:
             url, json={"filename": fn}, timeout=PROXY_SLOT_RESTORE_TIMEOUT
         )
         if resp.status_code == 200:
+            _slot_save_supported = True
             logger.info("SLOT RESTORE: session=%s <- %s", session_id, fn)
             return True
+        if resp.status_code in (404, 405, 501):
+            _slot_save_supported = False
+            logger.info(
+                "SLOT SAVE/RESTORE: upstream returned HTTP %d on %s — disabling slot save/restore until model swap",
+                resp.status_code,
+                url,
+            )
+            return False
         logger.warning(
             "SLOT RESTORE failed: session=%s http=%d %s",
             session_id, resp.status_code, resp.text[:200],
@@ -6516,7 +6779,12 @@ async def _ensure_slot_for_session(
     the outgoing session's state and restores the incoming session's.
     """
     global _slot_owner_session
-    if not PROXY_SLOT_SAVE_RESTORE or not session_id or client is None:
+    if (
+        not PROXY_SLOT_SAVE_RESTORE
+        or _slot_save_supported is False
+        or not session_id
+        or client is None
+    ):
         return
     if session_id == _slot_owner_session:
         if session_id in _slot_lru:
@@ -6526,6 +6794,9 @@ async def _ensure_slot_for_session(
         if await _save_slot(client, _slot_owner_session):
             _slot_lru[_slot_owner_session] = time.time()
             _slot_lru.move_to_end(_slot_owner_session)
+    if _slot_save_supported is False:
+        _slot_owner_session = session_id
+        return
     await _restore_slot(client, session_id)
     _slot_owner_session = session_id
     _slot_lru[session_id] = time.time()
@@ -10444,6 +10715,11 @@ def build_openai_request(
 
     # Inject agentic protocol instructions only for tool-enabled turns.
     # Use minimal supplement for qwen models to reduce prompt leak surface.
+    # Keep messages[0] strictly invariant across thinking ON/OFF toggles so the
+    # upstream prefix KV cache is never invalidated from token 0; thinking state
+    # is controlled via chat_template_kwargs.enable_thinking when supported, and
+    # any prompt-level fallback directive (when _ctk_supported is False) is
+    # attached only to the trailing user message below.
     if has_tools:
         model_name = anthropic_body.get("model", "").lower()
         supplement = (
@@ -10451,14 +10727,6 @@ def build_openai_request(
             if "qwen" in model_name and PROXY_AGENTIC_SUPPLEMENT_MODE != "legacy"
             else _AGENTIC_SYSTEM_SUPPLEMENT
         )
-        # When thinking is explicitly disabled (Anthropic default, plus our
-        # tool-turn forcing) but the upstream model is Qwen — which emits
-        # <think> blocks regardless of enable_thinking — append a strong
-        # directive that suppresses internal reasoning. Skip this directive when
-        # selective thinking (A1) or budget guardrails (B2) will keep thinking ON
-        # for this turn so the prompt does not contradict enable_thinking=True.
-        if openai_body.get("enable_thinking") is False and not keep_thinking_this_turn:
-            supplement = supplement + _NO_THINKING_DIRECTIVE
         if (
             openai_body["messages"]
             and openai_body["messages"][0].get("role") == "system"
@@ -10543,6 +10811,10 @@ def build_openai_request(
                 )
             elif (
                 not has_tools
+                and not (
+                    anthropic_body.get("_uap_json_response")
+                    and not anthropic_body.get("_uap_reasoning")
+                )
                 and THINKING_MIN_NO_TOOLS > 0
                 and requested_raw < THINKING_MIN_NO_TOOLS
                 and requested_raw > 16  # leave true preflight alone
@@ -10800,65 +11072,93 @@ def build_openai_request(
                 openai_body["speculative.n_max"] = 0
             return openai_body
 
-        # TURN-COUNT FINALIZE BREAKER (mode-B runaway backstop): the model keeps
-        # emitting distinct, well-formed tool calls and never emits end_turn, so
-        # none of the other terminal paths engage and 'release to auto' just lets
-        # it keep choosing tools — it loops to the client's agent timeout. After a
-        # high tool-turn ceiling, strip tools so the only possible output is a
-        # terminal text summary (end_turn), ending the loop. Gated HIGH so only a
-        # genuine runaway trips it; see PROXY_HARD_FINALIZE_TURNS.
+        # TURN-COUNT FINALIZE BREAKER / PERIODIC HOLISTIC OUTCOME AUDIT:
+        # Periodically pause for a Holistic Outcome Audit every
+        # PROXY_HARD_FINALIZE_TURNS tool turns. When the session is actively
+        # progressing (not stalled and context < PROXY_HARD_FINALIZE_CTX_THRESHOLD),
+        # inject the audit non-disruptively with Thinking ON and tools KEPT
+        # attached so harnesses do not prematurely fire Stop hooks mid-build.
+        # Reserve hard tool-stripping (forced end_turn) for genuine stalls or
+        # high context saturation (>= 85%).
+        holistic_audit_active = False
         if PROXY_HARD_FINALIZE_TURNS > 0:
             _agent_tool_turns = _count_agent_tool_turns(anthropic_body)
             # PERIODIC, not permanent: fire once each time the count crosses
-            # another `ceiling` worth of tool turns past the last firing. Without
-            # the `last + ceiling` gate this fires on EVERY turn past the first
-            # crossing (the count only grows), permanently denying tools and
-            # stalling a long-but-legitimate task. Between fires tools are restored
-            # so the agent keeps making progress.
+            # another `ceiling` worth of tool turns past the last firing.
             if _agent_tool_turns >= monitor.last_hard_finalize_turn_count + PROXY_HARD_FINALIZE_TURNS:
                 monitor.last_hard_finalize_turn_count = _agent_tool_turns
-                openai_body.pop("tool_choice", None)
-                openai_body.pop("tools", None)
-                openai_body.pop("grammar", None)
-                msgs = openai_body.get("messages", [])
-                msgs.append({
-                    "role": "user",
-                    "content": (
-                        f"You have made {_agent_tool_turns} tool calls. Pause for a "
-                        "Holistic Outcome Audit (progress checkpoint): in plain text, "
-                        "(1) audit every requirement and subsystem from the original "
-                        "prompt/blueprint as DONE+VERIFIED vs MISSING/HOLLOW/UNVERIFIED, "
-                        "(2) check for runtime hollowness (stubbed handlers, empty "
-                        "collections, broken lookups, unrendered/unexercised paths) or "
-                        "single-file micro-tweaking, and (3) name the single highest-"
-                        "leverage structural gap to tackle next. No tools are available "
-                        "this turn — do NOT emit any tool call or tool-call-like syntax. "
-                        "If the task is genuinely complete and verified, say so; "
-                        "otherwise you will continue on the next turn."
-                    ),
-                })
-                openai_body["messages"] = msgs
-                monitor.reset_tool_turn_state(reason="turn_count_finalize_breaker")
-                # Tools were stripped to force a terminal text summary; do not let
-                # the response-side extractor resurrect prose tool-calls (which
-                # would defeat the breaker and continue the loop).
-                monitor.suppress_text_tool_extraction = True
-                logger.warning(
-                    "TURN-COUNT FINALIZE BREAKER: %d agent tool turns >= ceiling %d "
-                    "-- stripped tools to force holistic outcome audit (end_turn).",
-                    _agent_tool_turns,
-                    PROXY_HARD_FINALIZE_TURNS,
-                )
-                if PROXY_DISABLE_THINKING_ALWAYS:
-                    _set_thinking(openai_body, False)
+                hard_strip, audit_mode_reason = _should_hard_strip_on_periodic_audit(monitor)
+                if hard_strip:
+                    openai_body.pop("tool_choice", None)
+                    openai_body.pop("tools", None)
+                    openai_body.pop("grammar", None)
+                    _append_directive_to_trailing_user(
+                        openai_body,
+                        (
+                            f"You have made {_agent_tool_turns} tool calls. Pause for a "
+                            "Holistic Outcome Audit (progress checkpoint): in plain text, "
+                            "(1) audit every requirement and subsystem from the original "
+                            "prompt/blueprint as DONE+VERIFIED vs MISSING/HOLLOW/UNVERIFIED, "
+                            "(2) check for runtime hollowness (stubbed handlers, empty "
+                            "collections, broken lookups, unrendered/unexercised paths) or "
+                            "single-file micro-tweaking, and (3) name the single highest-"
+                            "leverage structural gap to tackle next. No tools are available "
+                            "this turn — do NOT emit any tool call or tool-call-like syntax. "
+                            "If the task is genuinely complete and verified, say so; "
+                            "otherwise you will continue on the next turn."
+                        ),
+                    )
+                    monitor.reset_tool_turn_state(reason="turn_count_finalize_breaker")
+                    # Tools were stripped to force a terminal text summary; do not let
+                    # the response-side extractor resurrect prose tool-calls (which
+                    # would defeat the breaker and continue the loop).
+                    monitor.suppress_text_tool_extraction = True
+                    logger.warning(
+                        "TURN-COUNT FINALIZE BREAKER: %d agent tool turns >= ceiling %d "
+                        "(%s) -- stripped tools to force holistic outcome audit (end_turn).",
+                        _agent_tool_turns,
+                        PROXY_HARD_FINALIZE_TURNS,
+                        audit_mode_reason,
+                    )
+                    if PROXY_DISABLE_THINKING_ALWAYS:
+                        _set_thinking(openai_body, False)
+                    else:
+                        _set_thinking(openai_body, True)
+                    if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
+                        openai_body["speculative.n_max"] = 0
+                    return openai_body
                 else:
-                    _set_thinking(openai_body, True)
-                if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
-                    openai_body["speculative.n_max"] = 0
-                return openai_body
+                    holistic_audit_active = True
+                    _append_directive_to_trailing_user(
+                        openai_body,
+                        (
+                            f"You have made {_agent_tool_turns} tool calls. Pause for a "
+                            "Holistic Outcome Audit (non-disruptive progress checkpoint): "
+                            "in your reasoning, (1) audit every requirement and subsystem "
+                            "from the original prompt/blueprint as DONE+VERIFIED vs "
+                            "MISSING/HOLLOW/UNVERIFIED, (2) check for runtime hollowness "
+                            "(stubbed handlers, empty collections, broken lookups, "
+                            "unrendered/unexercised paths) or single-file micro-tweaking, "
+                            "and (3) immediately execute the single highest-leverage "
+                            "structural fix or verification tool call next (or conclude "
+                            "cleanly in plain text ONLY if every requirement is genuinely "
+                            "complete and verified)."
+                        ),
+                    )
+                    logger.info(
+                        "HOLISTIC OUTCOME AUDIT (non-disruptive): %d agent tool turns >= ceiling %d "
+                        "(%s) -- keeping tools attached with thinking ON and tool_choice=auto.",
+                        _agent_tool_turns,
+                        PROXY_HARD_FINALIZE_TURNS,
+                        audit_mode_reason,
+                    )
 
-        # Check if forced-tool dampener or loop breaker should override tool_choice
-        if monitor.consume_forced_auto_turn():
+        # Check if holistic audit, forced-tool dampener, or loop breaker should override tool_choice
+        if holistic_audit_active:
+            openai_body["tool_choice"] = "auto"
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
+        elif monitor.consume_forced_auto_turn():
             openai_body["tool_choice"] = "auto"
             monitor.consecutive_forced_count = 0
             monitor.no_progress_streak = 0
@@ -11049,8 +11349,10 @@ def build_openai_request(
                 monitor.reset_tool_turn_state(reason="no_tool_results")
 
 
-        restore_reason = cognitive_signal or (
-            budget_guardrail[0] if budget_guardrail else None
+        restore_reason = (
+            cognitive_signal
+            or (budget_guardrail[0] if budget_guardrail else None)
+            or ("holistic_outcome_audit" if holistic_audit_active else None)
         )
         if _tool_turn_thinking_disabled():
             if not PROXY_DISABLE_THINKING_ALWAYS and restore_reason:
@@ -11076,12 +11378,38 @@ def build_openai_request(
                 "Thinking kept ON for tool turn (exempt served ids: %s)",
                 _upstream_model_ids,
             )
+        elif holistic_audit_active and not PROXY_DISABLE_THINKING_ALWAYS:
+            _set_thinking(openai_body, True)
+            obs_floor = PROXY_THINKING_OBSERVATION_MIN_MAX_TOKENS
+            if obs_floor > 0 and int(openai_body.get("max_tokens") or 0) < obs_floor:
+                openai_body["max_tokens"] = obs_floor
+
+        # Item 5: Attach generalized Visual & Systemic Critique checklist on
+        # multimodal turns with Thinking ON (trailing user message only —
+        # never mutating messages[0]).
+        if (
+            cognitive_signal == "multimodal_observation"
+            and PROXY_MULTIMODAL_CRITIQUE_PROMPT
+            and _thinking_enabled_on_body(openai_body)
+        ):
+            _append_directive_to_trailing_user(openai_body, _MULTIMODAL_CRITIQUE_DIRECTIVE)
+            logger.info("MULTIMODAL CRITIQUE: injected generalized visual/systemic checklist at trailing user message")
+
+        # Item 1 fallback: Only inject _NO_THINKING_DIRECTIVE when the backend
+        # explicitly rejects chat_template_kwargs (_ctk_supported is False) and
+        # thinking is OFF for this turn — and place it at the trailing user
+        # message so messages[0] stays strictly prefix-cache invariant.
+        if (
+            _ctk_supported is False
+            and not _thinking_enabled_on_body(openai_body)
+            and not keep_thinking_this_turn
+            and not holistic_audit_active
+        ):
+            _append_directive_to_trailing_user(openai_body, _NO_THINKING_DIRECTIVE.strip())
 
         if budget_guardrail:
             guardrail_reason, guardrail_msg = budget_guardrail
-            msgs = openai_body.get("messages", [])
-            msgs.append({"role": "user", "content": guardrail_msg})
-            openai_body["messages"] = msgs
+            _append_directive_to_trailing_user(openai_body, guardrail_msg)
             openai_body["tool_choice"] = "auto"
             if not PROXY_DISABLE_THINKING_ALWAYS:
                 _set_thinking(openai_body, True)
@@ -18965,14 +19293,40 @@ async def health():
     }
 
 
+async def refresh_upstream_caches_if_changed(force: bool = False) -> tuple[list[str], bool]:
+    """Idempotent placement refresh: check live GET /v1/models before clearing caches.
+
+    Returns (cleared_list, unchanged). When the upstream is still serving the
+    exact same model IDs (and *force* is False), preserve _ctk_supported,
+    _ctk_probed, _upstream_model_ids, and session admission so periodic
+    reconciler ticks (e.g. uap-fleet-arm every 5 min) never invalidate caches
+    or trigger synthetic KV-evicting probes on an unchanged single-slot backend.
+    """
+    if not force and _upstream_model_ids:
+        live_ids = await _fetch_live_upstream_model_ids()
+        if live_ids is not None and live_ids == _upstream_model_ids:
+            cleared: list[str] = []
+            if _placement_pending:
+                _placement_pending.clear()
+                cleared.append("placement_pending")
+            logger.info(
+                "PLACEMENT: refresh no-op — served model IDs unchanged (%s)",
+                ", ".join(_upstream_model_ids),
+            )
+            return cleared, True
+    return invalidate_upstream_caches(), False
+
+
 @app.post("/internal/placement/refresh")
 async def internal_placement_refresh(request: Request):
     """Placement swap invalidation hook (spec §4.6 step 7).
 
-    Called by the TS enforcement controller over loopback AFTER a placement
+    Called by the enforcement controller over loopback AFTER a placement
     swap is verified (new backend healthy, old one drained) so no client
-    request sees a cached view of the backend that just went away. Resets
-    live admission state, so it is loopback-only AND NOT in
+    request sees a cached view of the backend that just went away. Idempotent:
+    when the live GET /v1/models list is unchanged (unless ?force=1 is passed),
+    caches and CTK probe state are preserved so periodic reconcilers never
+    trigger KV-evicting re-probes. Loopback-only AND NOT in
     _PROXY_AUTH_OPEN_PATHS: on a token-gated bind the controller must present
     the shared secret like any other caller (it reads the same proxy.env).
     """
@@ -18988,8 +19342,10 @@ async def internal_placement_refresh(request: Request):
             status_code=403,
             media_type="application/json",
         )
-    cleared = invalidate_upstream_caches()
-    return {"ok": True, "cleared": cleared}
+    force_param = (request.query_params.get("force") or "").strip().lower()
+    force = force_param in {"1", "true", "yes", "on"}
+    cleared, unchanged = await refresh_upstream_caches_if_changed(force=force)
+    return {"ok": True, "cleared": cleared, "unchanged": unchanged}
 
 
 @app.get("/internal/placement/inflight")

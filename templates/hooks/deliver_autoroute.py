@@ -363,6 +363,64 @@ def _replay_enabled() -> bool:
     return v in {"1", "on", "true", "yes"}
 
 
+_PROJECT_MANIFESTS = (
+    "package.json",
+    "pyproject.toml",
+    "Cargo.toml",
+    "go.mod",
+    "Makefile",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "CMakeLists.txt",
+    "composer.json",
+    "Gemfile",
+    "deno.json",
+)
+
+
+def _resolve_replay_cwd(root: Path, file_arg: str) -> Path:
+    """Resolve the nearest worktree or package root for *file_arg* within *root*.
+
+    When a direct edit inside `.worktrees/<slug>/...` or a nested package is
+    replayed via `uap deliver --pending`, running from the bare repo root misses
+    the worktree's manifests and fast-tier gates. Walk upward from the target
+    file's parent (never leaving *root*) to find the nearest manifest or linked
+    worktree `.git` boundary; fall back to *root*.
+    """
+    if not file_arg:
+        return root
+    try:
+        root_resolved = root.resolve()
+        candidate_path = Path(file_arg)
+        if not candidate_path.is_absolute():
+            candidate_path = root_resolved / candidate_path
+        target_resolved = candidate_path.resolve()
+        # Containment check: never step outside the hook's repo root.
+        try:
+            target_resolved.relative_to(root_resolved)
+        except ValueError:
+            return root
+        cur = target_resolved.parent
+        worktree_candidate: Path | None = None
+        while True:
+            if cur == root_resolved:
+                break
+            if any((cur / m).exists() for m in _PROJECT_MANIFESTS):
+                return cur
+            if (cur / ".git").exists() and worktree_candidate is None:
+                worktree_candidate = cur
+            parent = cur.parent
+            if parent == cur:
+                break
+            cur = parent
+        if worktree_candidate is not None:
+            return worktree_candidate
+    except Exception:
+        pass
+    return root
+
+
 def _spawn_pending_replay(root: Path, file_arg: str) -> None:
     """Spawn `uap deliver --pending <file>` detached: DETERMINISTICALLY replay
     the recorded edit intent(s) for this file to disk (writeFileSync of the
@@ -381,9 +439,16 @@ def _spawn_pending_replay(root: Path, file_arg: str) -> None:
     except Exception:
         log = subprocess.DEVNULL
     try:
+        replay_cwd = _resolve_replay_cwd(root, file_arg)
+        resolved_arg = file_arg
+        if replay_cwd != root and not Path(file_arg).is_absolute():
+            try:
+                resolved_arg = str((root / file_arg).resolve())
+            except Exception:
+                resolved_arg = file_arg
         proc = subprocess.Popen(
-            ["uap", "deliver", "--pending", file_arg],
-            cwd=str(root),
+            ["uap", "deliver", "--pending", resolved_arg],
+            cwd=str(replay_cwd),
             stdout=log, stderr=log, stdin=subprocess.DEVNULL,
             start_new_session=True,
         )

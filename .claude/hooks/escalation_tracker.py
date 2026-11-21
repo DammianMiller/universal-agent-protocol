@@ -37,22 +37,44 @@ from pathlib import Path
 STATE_FILE = "escalation-state.json"
 DETAIL_MAX = 1200
 
-# A shell command that exercises the project's real gates. Only these commands'
-# outcomes count as verification evidence — `ls` failing is not a gate failure.
-_BUILD_TEST_RE = re.compile(
+# Behavioral verification gates (tests, runtime/e2e/uap verify) prove the code
+# actually works at runtime. Compile-only gates (build, tsc, lint, clippy) only
+# prove syntax/types — they must NEVER wipe per-file edit churn counters.
+_BEHAVIORAL_GATE_RE = re.compile(
     r"(?:^|[;&|]\s*)(?:"
-    r"cargo\s+(?:build|check|test|clippy)"
-    r"|npm\s+(?:run\s+)?(?:build|test|lint|typecheck|check)"
-    r"|(?:pnpm|yarn|bun)\s+(?:run\s+)?(?:build|test|lint|typecheck|check)"
-    r"|(?:npx\s+)?(?:tsc|vitest|jest|mocha|eslint)\b"
-    r"|(?:python3?\s+-m\s+)?pytest\b"
-    r"|go\s+(?:build|test|vet)"
-    r"|make(?:\s+(?:test|build|check|all))?\s*(?:$|[;&|])"
-    r"|mvn\s+(?:test|package|verify|compile)"
-    r"|gradle(?:w)?\s+(?:test|build|check)"
-    r"|dotnet\s+(?:build|test)"
+    r"cargo\s+test\b"
+    r"|npm\s+(?:run\s+)?test(?::[\w-]+)?\b"
+    r"|(?:pnpm|yarn|bun)\s+(?:run\s+)?test(?::[\w-]+)?\b"
+    r"|(?:npx\s+)?(?:vitest|jest|mocha|playwright|cypress)\b"
+    r"|(?:python3?\s+-m\s+)?(?:pytest|unittest)\b"
+    r"|go\s+test\b"
+    r"|make\s+test\b"
+    r"|mvn\s+(?:test|verify)\b"
+    r"|gradle(?:w)?\s+test\b"
+    r"|dotnet\s+test\b"
     r"|uap\s+verify\b"
     r")",
+    re.IGNORECASE,
+)
+
+_COMPILE_GATE_RE = re.compile(
+    r"(?:^|[;&|]\s*)(?:"
+    r"cargo\s+(?:build|check|clippy)\b"
+    r"|npm\s+(?:run\s+)?(?:build|lint|typecheck|check)\b"
+    r"|(?:pnpm|yarn|bun)\s+(?:run\s+)?(?:build|lint|typecheck|check)\b"
+    r"|(?:npx\s+)?(?:tsc|eslint)\b"
+    r"|go\s+(?:build|vet)\b"
+    r"|make(?:\s+(?:build|check|all))?\s*(?:$|[;&|])"
+    r"|mvn\s+(?:package|compile)\b"
+    r"|gradle(?:w)?\s+(?:build|check)\b"
+    r"|dotnet\s+build\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Back-compat combined pattern for any callers importing _BUILD_TEST_RE directly.
+_BUILD_TEST_RE = re.compile(
+    f"(?:{_BEHAVIORAL_GATE_RE.pattern})|(?:{_COMPILE_GATE_RE.pattern})",
     re.IGNORECASE,
 )
 _FAIL_MARKERS = (
@@ -156,7 +178,12 @@ def failure_signature(detail: str) -> str:
     return line[:200]
 
 
-def record_fail(source: str, detail: str, root: Path | None = None) -> dict:
+def record_fail(
+    source: str,
+    detail: str,
+    root: Path | None = None,
+    kind: str = "behavioral",
+) -> dict:
     """Count a red verification toward the escalation threshold.
 
     CONSECUTIVE means "the same failure keeps coming back". A red run whose
@@ -187,6 +214,7 @@ def record_fail(source: str, detail: str, root: Path | None = None) -> dict:
     st["last_failure"] = {
         "ts": int(time.time()),
         "source": source or "unknown",
+        "kind": kind or "behavioral",
         "detail": (detail or "")[-DETAIL_MAX:],
         "sig": sig,
         "edits_total": edits_total,
@@ -195,11 +223,32 @@ def record_fail(source: str, detail: str, root: Path | None = None) -> dict:
     return st
 
 
-def record_pass(source: str, root: Path | None = None) -> dict:
+def record_pass(source: str, root: Path | None = None, kind: str = "behavioral") -> dict:
+    """Record a green gate.
+
+    `kind == "compile"` (build / tsc / lint / clippy) clears ONLY compile-class
+    failures and NEVER clears `edits_since_green` or `recent_edit_files` —
+    running `npm run build` between 20 edits to one file must never reset the
+    thrash detector. `kind == "behavioral"` (tests / uap verify / stop) resets
+    failures, per-file edit churn, and recent edit history.
+    """
     st = load_state(root)
+    now = int(time.time())
+    if kind == "compile":
+        st["last_compile_green"] = {"ts": now, "source": source or "unknown"}
+        lf = st.get("last_failure") if isinstance(st.get("last_failure"), dict) else None
+        lf_src = str((lf or {}).get("source") or "")
+        lf_kind = str((lf or {}).get("kind") or "")
+        if lf_src not in {"stop", "verify"} and lf_kind != "behavioral":
+            st["failures"] = 0
+            st["last_failure"] = None
+        save_state(st, root)
+        return st
+
     st["failures"] = 0
     st["edits_since_green"] = {}
-    st["last_green"] = {"ts": int(time.time()), "source": source or "unknown"}
+    st["recent_edit_files"] = []
+    st["last_green"] = {"ts": now, "source": source or "unknown"}
     st["last_failure"] = None
     save_state(st, root)
     return st
@@ -210,20 +259,38 @@ def record_edit(rel: str, root: Path | None = None) -> dict:
     edits = st.get("edits_since_green") or {}
     edits[rel] = int(edits.get(rel, 0)) + 1
     st["edits_since_green"] = edits
+    recent = st.get("recent_edit_files") if isinstance(st.get("recent_edit_files"), list) else []
+    recent.append(rel)
+    st["recent_edit_files"] = recent[-12:]
     st["edits_total"] = int(st.get("edits_total") or 0) + 1  # monotonic: "an attempt happened"
     save_state(st, root)
     return st
 
 
 def reset(root: Path | None = None) -> dict:
-    st = {"failures": 0, "edits_since_green": {}, "last_failure": None,
+    st = {"failures": 0, "edits_since_green": {}, "recent_edit_files": [], "last_failure": None,
           "last_green": {"ts": int(time.time()), "source": "reset"}, "updated": 0}
     save_state(st, root)
     return st
 
 
+def classify_gate_kind(command: str) -> str:
+    """Return 'behavioral' | 'compile' | 'none' for a shell command.
+
+    Checks behavioral patterns first so chained commands like
+    `npm run build && npm test` count as behavioral verification.
+    """
+    if not command:
+        return "none"
+    if _BEHAVIORAL_GATE_RE.search(command):
+        return "behavioral"
+    if _COMPILE_GATE_RE.search(command):
+        return "compile"
+    return "none"
+
+
 def is_gate_command(command: str) -> bool:
-    return bool(command) and bool(_BUILD_TEST_RE.search(command))
+    return classify_gate_kind(command) != "none"
 
 
 def classify_output(command: str, output: str, exit_code: int | None = None) -> str:
@@ -253,8 +320,8 @@ def classify_output(command: str, output: str, exit_code: int | None = None) -> 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="escalation_tracker.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    f = sub.add_parser("fail"); f.add_argument("--source", default="verify"); f.add_argument("--detail", default="")
-    p = sub.add_parser("pass"); p.add_argument("--source", default="verify"); p.add_argument("--detail", default="")
+    f = sub.add_parser("fail"); f.add_argument("--source", default="verify"); f.add_argument("--detail", default=""); f.add_argument("--kind", default="behavioral")
+    p = sub.add_parser("pass"); p.add_argument("--source", default="verify"); p.add_argument("--detail", default=""); p.add_argument("--kind", default="behavioral")
     e = sub.add_parser("edit"); e.add_argument("--file", required=True)
     sub.add_parser("reset")
     s = sub.add_parser("status"); s.add_argument("--json", action="store_true")
@@ -278,11 +345,14 @@ def main(argv: list[str] | None = None) -> int:
         detail = a.detail
         if detail == "-":
             detail = sys.stdin.read()
-        st = record_fail(a.source, detail)
+        st = record_fail(a.source, detail, kind=a.kind)
         print(f"escalation: {st['failures']} consecutive failure(s) recorded ({a.source})")
     elif a.cmd == "pass":
-        record_pass(a.source)
-        print(f"escalation: green ({a.source}) — counters reset")
+        record_pass(a.source, kind=a.kind)
+        if a.kind == "compile":
+            print(f"escalation: compile green ({a.source}) — edit churn retained until behavioral pass")
+        else:
+            print(f"escalation: green ({a.source}) — counters reset")
     elif a.cmd == "edit":
         record_edit(a.file)
     elif a.cmd == "reset":
@@ -301,11 +371,12 @@ def main(argv: list[str] | None = None) -> int:
         if output == "-":
             output = sys.stdin.read()
         verdict = classify_output(a.command, output, a.exit_code)
+        gate_kind = classify_gate_kind(a.command)
         if not a.dry_run:
             if verdict == "fail":
-                record_fail("bash", f"$ {a.command[:200]}\n{output[-DETAIL_MAX:]}")
+                record_fail("bash", f"$ {a.command[:200]}\n{output[-DETAIL_MAX:]}", kind=gate_kind)
             elif verdict == "pass":
-                record_pass("bash")
+                record_pass("bash", kind=gate_kind)
         print(verdict)
     return 0
 

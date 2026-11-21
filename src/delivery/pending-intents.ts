@@ -55,8 +55,37 @@ export interface RootedIntent {
 }
 
 /**
+ * When `.git` is a file (a linked git worktree containing `gitdir: ...`),
+ * resolve the main repository root that owns the worktree. Returns null for
+ * regular `.git` directories or malformed files.
+ */
+export function resolveWorktreeMainRoot(gitPath: string): string | null {
+  try {
+    if (!existsSync(gitPath) || !lstatSync(gitPath).isFile()) return null;
+    const raw = readFileSync(gitPath, 'utf-8').trim();
+    const m = /^gitdir:\s*(.+)$/im.exec(raw);
+    if (!m) return null;
+    const gitdir = resolve(dirname(gitPath), m[1].trim());
+    const commondirPath = join(gitdir, 'commondir');
+    if (existsSync(commondirPath)) {
+      const commonRel = readFileSync(commondirPath, 'utf-8').trim();
+      if (commonRel) {
+        const commonGitDir = resolve(gitdir, commonRel);
+        return dirname(commonGitDir);
+      }
+    }
+    const wtMatch = /^(.*)[/\\]\.git[/\\]worktrees[/\\][^/\\]+$/.exec(gitdir);
+    return wtMatch ? resolve(wtMatch[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Directories from projectRoot up to (and including) the git root whose
- * `.uap/pending-deliver.jsonl` exists. Closest first.
+ * `.uap/pending-deliver.jsonl` exists. Closest first. For linked git worktrees
+ * (`.git` file), also includes the owning main repository root so intents
+ * recorded at the hook's repo root remain discoverable from inside a worktree.
  */
 export function pendingLogRoots(projectRoot: string): string[] {
   const start = resolve(projectRoot);
@@ -65,8 +94,13 @@ export function pendingLogRoots(projectRoot: string): string[] {
   let foundGit = false;
   for (let hops = 0; hops < 16; hops++) {
     if (existsSync(join(dir, PENDING_LOG))) roots.push(dir);
-    if (existsSync(join(dir, '.git'))) {
+    const gitPath = join(dir, '.git');
+    if (existsSync(gitPath)) {
       foundGit = true;
+      const mainRoot = resolveWorktreeMainRoot(gitPath);
+      if (mainRoot && !roots.includes(mainRoot) && existsSync(join(mainRoot, PENDING_LOG))) {
+        roots.push(mainRoot);
+      }
       break; // the git root is the boundary
     }
     const parent = dirname(dir);
@@ -130,16 +164,26 @@ export function readAppliedIntents(projectRoot: string): RootedIntent[] {
   const seen = new Set<string>();
   const out: RootedIntent[] = [];
   let dir = resolve(projectRoot);
-  for (let hops = 0; hops < 16; hops++) {
-    if (existsSync(join(dir, APPLIED_LOG))) {
-      for (const intent of parseIntentsFile(join(dir, APPLIED_LOG))) {
-        const key = intentKey(intent);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push({ root: dir, intent });
-      }
+  const visited = new Set<string>();
+  const collectFrom = (d: string): void => {
+    if (visited.has(d)) return;
+    visited.add(d);
+    if (!existsSync(join(d, APPLIED_LOG))) return;
+    for (const intent of parseIntentsFile(join(d, APPLIED_LOG))) {
+      const key = intentKey(intent);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ root: d, intent });
     }
-    if (existsSync(join(dir, '.git'))) break;
+  };
+  for (let hops = 0; hops < 16; hops++) {
+    collectFrom(dir);
+    const gitPath = join(dir, '.git');
+    if (existsSync(gitPath)) {
+      const mainRoot = resolveWorktreeMainRoot(gitPath);
+      if (mainRoot) collectFrom(mainRoot);
+      break;
+    }
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;

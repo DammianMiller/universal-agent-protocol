@@ -41,6 +41,7 @@ import {
   type AdversarialCritiqueVerdict,
 } from '../delivery/adversarial-critic.js';
 import { createRoleExecutor, loadRoleRouting, type RoleExecutor } from '../delivery/role-router.js';
+import type { ModelCompleteOptions } from '../models/executor.js';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join as joinPath } from 'node:path';
 
@@ -187,18 +188,6 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     if (uvRung && !rungs.some((r) => r.id === uvRung.id)) rungs = [...rungs, uvRung];
   }
 
-  // The acceptance gate (behavioral completeness) can run with or without
-  // runtime gates; compute it once and fold it into the result below.
-  const acceptance =
-    opts.acceptanceSpec && opts.acceptanceExecutor
-      ? await runAcceptanceGate({ spec: opts.acceptanceSpec, projectRoot: dir, executor: opts.acceptanceExecutor })
-      : undefined;
-  // Acceptance is a JUDGMENT: by default it only affects the exit code under
-  // --strict, so its nondeterminism never hard-blocks a session. Under max
-  // fidelity the acceptance judge is REQUIRED — a failing verdict blocks.
-  const acceptanceBlocks = Boolean(acceptance && !acceptance.passed && (opts.strict || fidelity.max));
-  const acceptanceReport = acceptance ? `\n${formatAcceptanceReport(acceptance)}` : '';
-
   // A RENDERABLE deliverable is verifiable even with zero build/test rungs. This
   // early-return used to fire on `rungs.length === 0` alone, skipping the visual,
   // vision and behavioral gates outright and exiting 0 — so a static page with no
@@ -208,10 +197,18 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   const entryPages = discoverEntryPages(dir);
   const hasEntryPages = entryPages.length > 0;
   if (rungs.length === 0 && !hasEntryPages) {
+    const emptyAcceptance =
+      opts.acceptanceSpec && opts.acceptanceExecutor
+        ? await runAcceptanceGate({ spec: opts.acceptanceSpec, projectRoot: dir, executor: opts.acceptanceExecutor })
+        : undefined;
+    const emptyAcceptanceBlocks = Boolean(
+      emptyAcceptance && !emptyAcceptance.passed && (opts.strict || fidelity.max)
+    );
+    const emptyAcceptanceReport = emptyAcceptance ? `\n${formatAcceptanceReport(emptyAcceptance)}` : '';
     // Fail-closed under --strict or max fidelity: "we could not check anything"
     // must never be reported as "verified". Otherwise it's an honest no-op.
     const gatePassed = !(opts.strict || fidelity.max);
-    const passed = gatePassed && !acceptanceBlocks;
+    const passed = gatePassed && !emptyAcceptanceBlocks;
     const msg = opts.runtimeOnly
       ? 'no runnable artifact detected — nothing to execute'
       : 'no verifiable gates detected (no build/test/runnable artifact, no entry page)';
@@ -219,14 +216,16 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
       passed,
       exitCode: passed ? 0 : 1,
       empty: true,
-      report: `${!gatePassed ? 'UNVERIFIED' : 'SKIP'}: ${msg}${acceptanceReport}`,
+      report: `${!gatePassed ? 'UNVERIFIED' : 'SKIP'}: ${msg}${emptyAcceptanceReport}`,
       rungs,
-      acceptance,
+      acceptance: emptyAcceptance,
     };
   }
 
-  // Cheap-first floor. Max fidelity promotes past `runtime` into `integration`
-  // so integration-tier gates run before "done" (standard stops at runtime).
+  // Cheap-first floor: execute the deterministic ladder BEFORE spending LLM
+  // acceptance time so --runtime-only (Stop-hook fast path) fails fast when
+  // the runtime execution gate is already red. Max fidelity promotes past
+  // `runtime` into `integration` so integration-tier gates run before "done".
   const maxTier: GateTier = opts.full ? 'deploy-dev' : fidelity.max ? 'integration' : 'runtime';
   const ladder = await runTieredLadder(rungs, dir, {
     maxTier,
@@ -236,6 +235,25 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     ...(uvMode ? { userValidationRunner: createUserValidationRunner() } : {}),
     ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
   });
+
+  // The acceptance gate (behavioral completeness) runs after the deterministic
+  // ladder. Under --runtime-only (Stop-hook path), skip the LLM acceptance call
+  // fail-fast whenever the deterministic runtime gate already failed.
+  const acceptanceWanted = Boolean(opts.acceptanceSpec && opts.acceptanceExecutor);
+  const acceptanceSkippedForRuntime = Boolean(acceptanceWanted && opts.runtimeOnly && !ladder.passed);
+  const acceptance =
+    acceptanceWanted && !acceptanceSkippedForRuntime && opts.acceptanceSpec && opts.acceptanceExecutor
+      ? await runAcceptanceGate({ spec: opts.acceptanceSpec, projectRoot: dir, executor: opts.acceptanceExecutor })
+      : undefined;
+  // Acceptance is a JUDGMENT: by default it only affects the exit code under
+  // --strict, so its nondeterminism never hard-blocks a session. Under max
+  // fidelity the acceptance judge is REQUIRED — a failing verdict blocks.
+  const acceptanceBlocks = Boolean(acceptance && !acceptance.passed && (opts.strict || fidelity.max));
+  const acceptanceReport = acceptance
+    ? `\n${formatAcceptanceReport(acceptance)}`
+    : acceptanceSkippedForRuntime
+      ? '\nacceptance review SKIPPED — runtime execution gate failed; fix the runtime error first.'
+      : '';
 
   // Even below max fidelity, say so plainly rather than let a green tick imply
   // the code was tested when nothing ran.
@@ -691,8 +709,33 @@ function formatReport(ladder: LadderResult, overallPassed?: boolean, blockedBy: 
   return `${header}\n${lines.join('\n')}`;
 }
 
+/** Completion options for the acceptance judge.
+ *
+ * The Stop-hook fast path (`--runtime-only --acceptance-auto`) must fit inside
+ * a 60s harness Stop-hook timeout, so it disables upstream thinking, requests
+ * JSON-grammar output, caps maxTokens at 4096 (also preventing 32k truncation
+ * retries), and bounds the HTTP call to 25s. Full `--critic` keeps its own
+ * fresh-context thinking-ON RoleExecutor unchanged.
+ */
+export function buildAcceptanceCompleteOptions(fast: boolean): ModelCompleteOptions {
+  if (fast) {
+    return {
+      temperature: 0.1,
+      thinking: false,
+      jsonResponse: true,
+      maxTokens: 4096,
+      timeout: 25_000,
+    };
+  }
+  return { temperature: 0.1 };
+}
+
 /** Build a text executor (prompt → completion) for the acceptance judge. */
-async function buildAcceptanceExecutor(modelPreset?: string, endpoint?: string): Promise<LoopExecutor> {
+async function buildAcceptanceExecutor(
+  modelPreset?: string,
+  endpoint?: string,
+  opts?: { fast?: boolean }
+): Promise<LoopExecutor> {
   const { OpenAICompatClient } = await import('../models/openai-compat-client.js');
   const { ModelPresets } = await import('../models/types.js');
   const presetId = modelPreset ?? process.env.UAP_DELIVER_MODEL ?? 'qwen35-a3b';
@@ -707,9 +750,10 @@ async function buildAcceptanceExecutor(modelPreset?: string, endpoint?: string):
   if (ep && !/^https?:\/\/(localhost|127\.|0\.0\.0\.0|\[?::1\]?|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(ep)) {
     process.stderr.write(`uap verify: acceptance gate will send project source to a NON-LOCAL endpoint (${ep}).\n`);
   }
+  const completeOptions = buildAcceptanceCompleteOptions(Boolean(opts?.fast));
   const client = new OpenAICompatClient();
   return async (prompt: string) => {
-    const r = await client.complete(resolved, prompt, { temperature: 0.1 });
+    const r = await client.complete(resolved, prompt, completeOptions);
     return r.content;
   };
 }
@@ -827,7 +871,9 @@ export async function verifyCommand(
     const spec = resolveAcceptanceSpecAuto(dir);
     if (spec) {
       try {
-        const executor = await buildAcceptanceExecutor(options.model, options.endpoint);
+        const executor = await buildAcceptanceExecutor(options.model, options.endpoint, {
+          fast: Boolean(options.runtimeOnly),
+        });
         opts = { ...options, acceptanceSpec: spec, acceptanceExecutor: executor };
       } catch {
         process.stderr.write('uap verify: --acceptance-auto found a spec but no acceptance model is configured — skipping the requirements judge (set UAP_INFERENCE_ENDPOINT/UAP_DELIVER_MODEL).\n');

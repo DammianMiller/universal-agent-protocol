@@ -56,10 +56,13 @@ describe('runtime-gate timeout is portable (no bare `timeout`)', () => {
     expect(existsSync(stopPath)).toBe(true);
     const stop = readFileSync(stopPath, 'utf-8');
 
-    // Portable resolver present.
+    // Portable resolver present, with the verify budget bounded by
+    // UAP_STOP_VERIFY_TIMEOUT (default 45s + 5s kill grace = 50s max, inside a
+    // 60s harness Stop-hook budget) instead of the old hardcoded 120s.
     expect(stop).toContain('command -v timeout');
-    expect(stop).toContain('gtimeout -k 5 120');
+    expect(stop).toContain('STOP_VERIFY_TIMEOUT="${UAP_STOP_VERIFY_TIMEOUT:-45}"');
+    expect(stop).toContain('gtimeout -k 5 ${STOP_VERIFY_TIMEOUT}');
     // No unguarded bare invocation of the timeout binary on the verify line.
-    expect(stop).not.toMatch(/&& timeout -k 5 120 uap verify/);
+    expect(stop).not.toMatch(/&& timeout -k 5 \d+ uap verify/);
   });
 });

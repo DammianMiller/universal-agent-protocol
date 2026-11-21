@@ -7,7 +7,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { readPendingIntents, applyPendingIntents } from '../../src/delivery/pending-intents.js';
+import {
+  readPendingIntents,
+  applyPendingIntents,
+  pendingLogRoots,
+  resolveWorktreeMainRoot,
+} from '../../src/delivery/pending-intents.js';
+import { resolvePendingGateRoot } from '../../src/cli/deliver.js';
 
 describe('pending-intents', () => {
   let dir: string;
@@ -135,5 +141,58 @@ describe('pending-intents', () => {
     mkdirSync(join(dir, '.uap'), { recursive: true });
     writeFileSync(join(dir, '.uap', 'pending-deliver.jsonl'), 'not-json\n{"file_path":"src/a.ts","ts":1,"tool":"Edit"}\n');
     expect(readPendingIntents(dir)).toHaveLength(1);
+  });
+
+  it('discovers and consumes intents stored at main repo root when invoked from a linked git worktree', () => {
+    // Simulate a linked git worktree:
+    //   <dir>/.git/worktrees/001-feat/{commondir -> ../..}
+    //   <dir>/.worktrees/001-feat/.git ("gitdir: ../../.git/worktrees/001-feat")
+    //   <dir>/.uap/pending-deliver.jsonl  (recorded by enforcer at main repo root)
+    const gitCommon = join(dir, '.git');
+    const wtGitDir = join(gitCommon, 'worktrees', '001-feat');
+    mkdirSync(wtGitDir, { recursive: true });
+    writeFileSync(join(wtGitDir, 'commondir'), '../..\n');
+
+    const wtRoot = join(dir, '.worktrees', '001-feat');
+    mkdirSync(join(wtRoot, 'src'), { recursive: true });
+    writeFileSync(join(wtRoot, '.git'), 'gitdir: ../../.git/worktrees/001-feat\n');
+    const wtFile = join(wtRoot, 'src', 'app.ts');
+    writeFileSync(wtFile, 'export const v = 1;\n');
+
+    expect(resolveWorktreeMainRoot(join(wtRoot, '.git'))).toBe(dir);
+
+    record([
+      {
+        ts: 10,
+        tool: 'Edit',
+        file_path: wtFile,
+        edit: { old_string: 'v = 1', new_string: 'v = 2' },
+      },
+    ]);
+
+    // The main root's pending log is discoverable from INSIDE the worktree
+    // (pendingLogRoots crosses the linked-worktree .git boundary).
+    expect(pendingLogRoots(wtRoot)).toContain(dir);
+
+    const res = applyPendingIntents(wtRoot, wtFile);
+    expect(res.applied).toHaveLength(1);
+    expect(readFileSync(wtFile, 'utf-8')).toContain('v = 2');
+    expect(readPendingIntents(wtRoot)).toHaveLength(0);
+    expect(readPendingIntents(dir)).toHaveLength(0);
+  });
+
+  it('resolvePendingGateRoot locates fast gates inside a nested worktree instead of bare repo root', () => {
+    const wtRoot = join(dir, '.worktrees', '001-feat');
+    mkdirSync(join(wtRoot, 'src'), { recursive: true });
+    writeFileSync(
+      join(wtRoot, 'package.json'),
+      JSON.stringify({ name: 'wt-app', scripts: { build: 'true', test: 'true' } })
+    );
+    const target = join(wtRoot, 'src', 'index.ts');
+    writeFileSync(target, 'export const ok = true;\n');
+
+    expect(resolvePendingGateRoot(dir, [target], target)).toBe(wtRoot);
+    // Relative path also resolves cleanly inside worktree
+    expect(resolvePendingGateRoot(dir, ['.worktrees/001-feat/src/index.ts'])).toBe(wtRoot);
   });
 });
