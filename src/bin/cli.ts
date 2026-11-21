@@ -1226,8 +1226,9 @@ program
   .option('--approve-capability', 'Pin the current runtime capability reading as the baseline (.uap/capability/baseline.json) — use when a simplification is intentional')
   .option('--user-paths', 'Run the user-path validation gate: execute .uap/user-paths.json journeys through the real client (headless browser / HTTP / built CLI)')
   .option('--user-paths-auto', 'Stop-hook mode: run the user-path gate only when delivery.userValidation is on and the last report is missing/stale/failed for the current tree')
-  .option('-m, --model <preset>', 'Model preset for the acceptance gate (default: $UAP_DELIVER_MODEL or qwen35-a3b)')
-  .option('--endpoint <url>', 'Override the model endpoint for the acceptance gate')
+  .option('--critic', 'Run the clean-context thinking-ON adversarial critic (5-axis rubric + prioritized defect tickets)')
+  .option('-m, --model <preset>', 'Model preset for the acceptance/critic gate (default: $UAP_DELIVER_MODEL or local-auto)')
+  .option('--endpoint <url>', 'Override the model endpoint for the acceptance/critic gate')
   .option('--json', 'Emit JSON result')
   .action(async (options) => {
     const cmd = await lazy.verify();
@@ -1241,6 +1242,7 @@ program
       timeoutMs: options.timeout ? Number(options.timeout) : undefined,
       acceptanceFile: options.acceptance,
       acceptanceAuto: Boolean(options.acceptanceAuto),
+      critic: Boolean(options.critic),
       model: options.model,
       endpoint: options.endpoint,
       visual: options.visual,

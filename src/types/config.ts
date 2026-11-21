@@ -477,7 +477,11 @@ export const DeliverySchema = z.object({
   // enforcer's own defaults (2 failures / 10 edits / 6000 chars).
   escalateAfterFailures: z.number().int().min(0).optional(),
   escalateAfterEdits: z.number().int().min(0).optional(),
+  escalateAfterConsecutiveFileEdits: z.number().int().min(0).optional(),
   complexEditChars: z.number().int().min(0).optional(),
+  autoEscalate: z.union([z.boolean(), z.enum(['on', 'off'])]).optional(),
+  maxCriticPasses: z.number().int().min(0).max(5).optional(),
+  criticMinScore: z.number().min(0).max(10).optional(),
   // G1 (deliver-hardening 2026-07-13): model routing is a PROJECT decision,
   // so it lives in config — authoritative over ambient env (same pattern as
   // delivery.enforcement): a stale UAP_DELIVER_MODEL/UAP_DELIVER_ROUTING in a

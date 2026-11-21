@@ -24,15 +24,22 @@ import type { ModelId } from '../memory/model-router.js';
 /**
  * Model client interface for executing prompts
  */
+export interface ModelCompleteOptions {
+  maxTokens?: number;
+  timeout?: number;
+  temperature?: number;
+  jsonResponse?: boolean;
+  /** Keep upstream reasoning/thinking ON (sets x-uap-reasoning: 1, omits json-response grammar). */
+  thinking?: boolean;
+  /** Optional base64 data URLs or image URLs for multimodal requests. */
+  images?: string[];
+}
+
 export interface ModelClient {
   complete(
     model: ModelConfig,
     prompt: string,
-    options?: {
-      maxTokens?: number;
-      timeout?: number;
-      temperature?: number;
-    }
+    options?: ModelCompleteOptions
   ): Promise<{
     content: string;
     tokensUsed: { input: number; output: number };

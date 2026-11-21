@@ -7,6 +7,7 @@ import { maybeCollaborationInjection } from './collaboration-inject.js';
 import { maybeStateInjection } from '../state/reactor-inject.js';
 import { maybePersistenceInjection } from './persistence-inject.js';
 import { maybeEtaInjection } from './eta-inject.js';
+import { maybeBlueprintInjection } from '../delivery/outcome-blueprint.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -213,6 +214,15 @@ export function resolve(
       ? maybeEtaInjection(ctx.cwd)
       : null;
 
+  // Phase 0 Outcome Blueprint (Option B1): surface existing .uap/blueprint.md or
+  // prompt multi-subsystem blueprint discipline in direct mode (complexity-gated,
+  // domain-agnostic). Deduped per session via `blueprint:phase0`.
+  const blueprintKey = 'blueprint:phase0';
+  const blueprintInject =
+    ctx.cwd && !(ctx.surfaced ?? []).includes(blueprintKey)
+      ? maybeBlueprintInjection(ctx.cwd, ctx.promptText)
+      : null;
+
   // #3-B: delivery routing. Surface up-front (deduped per session via
   // `deliver:routing`) whenever the task routes to a code capability, so the
   // agent calls deliver instead of editing source directly and tripping the gate.
@@ -305,6 +315,10 @@ export function resolve(
     if (designInject) {
       blocks.push(`## Design system (DESIGN.md)\n${designInject}`);
       keys.push(designKey);
+    }
+    if (blueprintInject) {
+      blocks.push(`## Phase 0 Outcome Blueprint\n${blueprintInject}`);
+      keys.push(blueprintKey);
     }
     if (principlesInject) {
       blocks.push(`## Engineering principles — resolve the stance once\n${principlesInject}`);

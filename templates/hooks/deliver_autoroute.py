@@ -72,6 +72,28 @@ def _autoroute_enabled() -> bool:
     return v in {"1", "on", "true", "yes"}
 
 
+def _auto_escalate_enabled(root: Path | None = None) -> bool:
+    """True when direct-mode escalation blocks (`failures`/`churn`/`complex`)
+    should automatically spawn a single-flight bounded `uap deliver --critic`
+    run. Controlled by UAP_DELIVER_AUTO_ESCALATE or `.uap.json`
+    `delivery.autoEscalate` (true | "on" | "yes" | "1")."""
+    env_v = os.environ.get("UAP_DELIVER_AUTO_ESCALATE")
+    if env_v is not None:
+        return env_v.strip().lower() in {"1", "on", "true", "yes"}
+    if root is None:
+        return False
+    try:
+        cfg = json.loads((root / ".uap.json").read_text(encoding="utf-8"))
+        val = (cfg.get("delivery") or {}).get("autoEscalate")
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in {"1", "on", "true", "yes"}
+    except Exception:
+        pass
+    return False
+
+
 def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set,
            replay_on: bool = True, deliver_inflight: bool = False) -> dict:
     """Pure decision: what message to show, whether to spawn, and the intent.
@@ -120,8 +142,8 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     edit_intent = out.get("editIntent") or {
         k: v
         for k, v in (
-            ("old_string", args.get("old_string", args.get("oldString"))),
-            ("new_string", args.get("new_string", args.get("newString"))),
+            ("old_string", args.get("old_string") or args.get("oldString") or args.get("old_str")),
+            ("new_string", args.get("new_string") or args.get("newString") or args.get("new_str")),
             ("content", args.get("content")),
         )
         if isinstance(v, str)
@@ -291,8 +313,8 @@ def _acquire_slot(root: Path) -> bool:
         return False
 
 
-def _spawn_deliver(root: Path, hint: str) -> None:
-    """Spawn `uap deliver -- "<hint>"` fully detached. Best-effort; never
+def _spawn_deliver(root: Path, hint: str, *, with_critic: bool = False) -> None:
+    """Spawn `uap deliver [--critic] -- "<hint>"` fully detached. Best-effort; never
     raises. The hint is passed after `--` (a pure operand — no flag smuggling),
     bounded turn budget, output logged to .uap/autoroute.log for visibility."""
     import subprocess
@@ -314,8 +336,12 @@ def _spawn_deliver(root: Path, hint: str) -> None:
         # UAP_AUTOROUTE_CEILING override.
         max_turns = os.environ.get("UAP_AUTOROUTE_MAX_TURNS", "12")
         ceiling = os.environ.get("UAP_AUTOROUTE_CEILING", "25")
+        cmd = ["uap", "deliver", "--max-turns", max_turns, "--ceiling", ceiling]
+        if with_critic:
+            cmd.append("--critic")
+        cmd.extend(["--", hint])
         proc = subprocess.Popen(
-            ["uap", "deliver", "--max-turns", max_turns, "--ceiling", ceiling, "--", hint],
+            cmd,
             cwd=str(root),
             stdout=log, stderr=log, stdin=subprocess.DEVNULL,
             start_new_session=True,
@@ -451,7 +477,9 @@ def main() -> None:
         args = {}
 
     root = Path(ns.root)
-    d = decide(out, ns.tool, args, _autoroute_enabled(), _load_seen(root), _replay_enabled(),
+    is_escalation = bool(out.get("escalation"))
+    autoroute_effective = _autoroute_enabled() or (is_escalation and _auto_escalate_enabled(root))
+    d = decide(out, ns.tool, args, autoroute_effective, _load_seen(root), _replay_enabled(),
                _deliver_inflight(root))
 
     if d["intent"] is not None:
@@ -496,7 +524,7 @@ def main() -> None:
             # productive instead of an infinite record-and-re-block loop.
             _spawn_pending_replay(root, d["file_path"])
         else:
-            _spawn_deliver(root, d["hint"])
+            _spawn_deliver(root, d["hint"], with_critic=is_escalation)
 
     prefix = ("[UAP policy blocked: " + ns.policy + "] ") if ns.policy else ""
     sys.stdout.write(prefix + message)

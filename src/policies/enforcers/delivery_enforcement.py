@@ -47,7 +47,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import emit, parse_cli, repo_root  # noqa: E402
 
-EDIT_OPS = {"Edit", "Write", "MultiEdit", "edit", "write", "multiedit"}
+EDIT_OPS = {"Edit", "Write", "MultiEdit", "Create", "edit", "write", "multiedit", "create"}
 
 # Only real implementation code is gated.
 # EVERY code type is gated. The rule: if it is interpreted, transpiled, or
@@ -402,6 +402,9 @@ def _record_escalation_edit(root: Path, rel: str) -> None:
     edits = st.get("edits_since_green") if isinstance(st.get("edits_since_green"), dict) else {}
     edits[rel] = int(edits.get(rel, 0)) + 1
     st["edits_since_green"] = edits
+    recent = st.get("recent_edit_files") if isinstance(st.get("recent_edit_files"), list) else []
+    recent.append(rel)
+    st["recent_edit_files"] = recent[-12:]
     st["edits_total"] = int(st.get("edits_total") or 0) + 1  # attempt counter (tracker reads it)
     st.setdefault("failures", 0)
     st["updated"] = int(_time.time())
@@ -414,12 +417,27 @@ def _record_escalation_edit(root: Path, rel: str) -> None:
         pass
 
 
+def _consecutive_trailing_edits(recent: object, rel: str) -> int:
+    """Count consecutive trailing entries in recent_edit_files matching rel."""
+    if not isinstance(recent, list) or not rel:
+        return 0
+    count = 0
+    for item in reversed(recent):
+        if item == rel:
+            count += 1
+        else:
+            break
+    return count
+
+
 def _escalation_trigger(root: Path, rel: str, changed: "int | None", *, size_known: bool = True):
     """(kind, human detail) when this edit must escalate to deliver, else None.
 
     Order matters: a failing build is the strongest evidence, then thrashing on
-    one file, then sheer size. `changed is None` with size_known means a
-    whole-file rewrite the cost model refused (gutting) -> complex."""
+    one file (either cumulative edits without a behavioral green gate OR
+    consecutive single-file edits regardless of compile-only builds), then sheer
+    size. `changed is None` with size_known means a whole-file rewrite the cost
+    model refused (gutting) -> complex."""
     st = _escalation_state(root)
     n_fail = int(st.get("failures") or 0)
     fail_budget = _delivery_cfg_int(root, "escalateAfterFailures", "UAP_DELIVER_ESCALATE_FAILURES", 2)
@@ -432,7 +450,19 @@ def _escalation_trigger(root: Path, rel: str, changed: "int | None", *, size_kno
     n_edits = int(edits.get(rel, 0)) if isinstance(edits, dict) else 0
     churn_budget = _delivery_cfg_int(root, "escalateAfterEdits", "UAP_DELIVER_ESCALATE_EDITS", 10)
     if churn_budget > 0 and n_edits >= churn_budget:
-        return ("churn", f"'{rel}' has been edited {n_edits} times with no green gate in between")
+        return ("churn", f"'{rel}' has been edited {n_edits} times with no behavioral green gate in between")
+    consec_budget = _delivery_cfg_int(
+        root,
+        "escalateAfterConsecutiveFileEdits",
+        "UAP_DELIVER_ESCALATE_CONSECUTIVE_FILE_EDITS",
+        6,
+    )
+    n_consec = _consecutive_trailing_edits(st.get("recent_edit_files"), rel)
+    if consec_budget > 0 and n_consec >= consec_budget:
+        return (
+            "churn",
+            f"'{rel}' has been edited {n_consec} consecutive times in a row without advancing other files or passing behavioral verification",
+        )
     if size_known:
         big = _delivery_cfg_int(root, "complexEditChars", "UAP_DELIVER_COMPLEX_EDIT_CHARS", 6000)
         if changed is None:
@@ -442,10 +472,31 @@ def _escalation_trigger(root: Path, rel: str, changed: "int | None", *, size_kno
     return None
 
 
-def _escalation_block(rel: str, kind: str, detail: str, args: dict) -> None:
+def _escalation_context_suffix(root: Path | None, rel: str) -> str:
+    """Attach active worktree + blueprint references to escalation hints (C2)."""
+    tags: list[str] = []
+    wt_root: Path | None = None
+    norm = rel.replace("\\", "/")
+    if norm.startswith(".worktrees/"):
+        parts = norm.split("/")
+        if len(parts) >= 2:
+            wt_rel = f"{parts[0]}/{parts[1]}"
+            tags.append(f"worktree={wt_rel}")
+            if root is not None:
+                wt_root = root / wt_rel
+    if root is not None:
+        for base, label in ((wt_root, f"{wt_root.relative_to(root)}/.uap/blueprint.md") if wt_root else (None, ""), (root, ".uap/blueprint.md")):
+            if base is not None and (base / ".uap" / "blueprint.md").exists():
+                tags.append(f"blueprint={label}")
+                break
+    return f" [{' | '.join(tags)}]" if tags else ""
+
+
+def _escalation_block(rel: str, kind: str, detail: str, args: dict, root: Path | None = None) -> None:
     """Refuse the direct edit and hand the agent the deliver escalation, with
     the evidence that triggered it. Terse and imperative on purpose (weak local
     models retry or hallucinate completion on passive prose)."""
+    ctx = _escalation_context_suffix(root, rel)
     if kind == "failures":
         msg = (
             f"ESCALATE: {detail}. Direct edits are paused: editing '{rel}' again would repeat "
@@ -454,16 +505,16 @@ def _escalation_block(rel: str, kind: str, detail: str, args: dict) -> None:
             "converges the change against the real gates; direct edits resume once it lands or "
             "the gates go green. Do NOT retry this edit."
         )
-        hint = f"fix the failing verification and make the gates green: {detail[:240]}"
+        hint = f"fix the failing verification and make the gates green: {detail[:240]}{ctx}"
         intent = None
     elif kind == "churn":
         msg = (
             f"ESCALATE: {detail} — you are thrashing. Stop patching it line by line. Call the "
             "`deliver` tool with a one-line description of the INTENDED END STATE of this file "
-            "(what it must do, which tests must pass). Direct edits to it resume after a green "
-            "gate. Do NOT retry this edit."
+            "(what it must do, which tests must pass). Direct edits to it resume after a behavioral "
+            "green gate. Do NOT retry this edit."
         )
-        hint = f"bring {rel} to a working state that passes the project gates"
+        hint = f"bring {rel} to a verified end state ({detail[:180]}){ctx}"
         intent = None
     else:
         msg = (
@@ -472,7 +523,7 @@ def _escalation_block(rel: str, kind: str, detail: str, args: dict) -> None:
             "gates, not trusted blind. Your content is recorded as a replayable intent. Do NOT "
             "retry this edit directly."
         )
-        hint = f"implement the intended change to {rel}"
+        hint = f"implement the intended change to {rel} ({detail[:160]}){ctx}"
         intent = {
             k: v
             for k, v in (
@@ -491,7 +542,7 @@ def _escalation_block(rel: str, kind: str, detail: str, args: dict) -> None:
 def _handle_escalate_edit(args: dict, rel: str, root: Path, changed: "int | None") -> None:
     trig = _escalation_trigger(root, rel, changed)
     if trig is not None:
-        _escalation_block(rel, trig[0], trig[1], args)
+        _escalation_block(rel, trig[0], trig[1], args, root=root)
         return
     _record_escalation_edit(root, rel)
     print(
@@ -742,7 +793,7 @@ def _handle_bash(args: dict) -> None:
             root = repo_root()
             trig = _escalation_trigger(root, target, None, size_known=False)
             if trig is not None:
-                _escalation_block(target, trig[0], trig[1], {})
+                _escalation_block(target, trig[0], trig[1], {}, root=root)
                 return
             _record_escalation_edit(root, target)
             emit(True, "escalate mode: shell source write allowed; deliver is the escalation point")

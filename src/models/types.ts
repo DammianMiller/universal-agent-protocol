@@ -675,6 +675,16 @@ export const MultiModelConfigSchema = z.object({
     })
     .optional(),
 
+  // Optional asymmetric role overrides (Option C3: Phase 0 blueprint, fresh-context
+  // adversarial critic, and vision reviewer). Omit to run single-arm locally with
+  // fresh-context thinking-ON mode.
+  blueprintModel: z.string().optional(),
+  blueprintEndpoint: z.string().optional(),
+  criticModel: z.string().optional(),
+  criticEndpoint: z.string().optional(),
+  visionModel: z.string().optional(),
+  visionEndpoint: z.string().optional(),
+
   // Routing rules (optional - uses defaults if not specified)
   routing: z.array(RoutingRuleSchema).optional(),
 

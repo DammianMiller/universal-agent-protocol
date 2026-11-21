@@ -113,3 +113,125 @@ export function createModelCritic(executor: LoopExecutor): Critic {
     }
   };
 }
+
+export type DefectSeverity = 'blocker' | 'major' | 'polish';
+
+export interface DefectTicket {
+  severity: DefectSeverity;
+  axis: string;
+  target: string;
+  defect: string;
+  fix: string;
+}
+
+const DEFECT_SEVERITY_RANK: Record<DefectSeverity, number> = {
+  blocker: 0,
+  major: 1,
+  polish: 2,
+};
+
+function buildStructuredDefectPrompt(input: CritiqueInput): string {
+  const gate = firstFailingGate(input.record);
+  const persona = (gate && GATE_PERSONAS[gate]) ?? DEFAULT_PERSONA;
+
+  return [
+    persona,
+    'Prioritize structural, completeness, and runtime-integrity defects strictly above cosmetic polish.',
+    'Do NOT emit polish tickets while any blocker or major defect remains.',
+    '',
+    `TASK BEING ATTEMPTED: ${input.instruction}`,
+    '',
+    input.record.filesApplied.length > 0
+      ? `FILES CHANGED BY THE ATTEMPT: ${input.record.filesApplied.join(', ')}`
+      : 'THE ATTEMPT CHANGED NO FILES.',
+    '',
+    'VERIFICATION FEEDBACK:',
+    input.feedback,
+    '',
+    'THE ATTEMPT (truncated):',
+    input.attemptOutput,
+    '',
+    `Return ONLY a JSON object with at most ${MAX_FIX_STEPS} severity-ranked defect tickets targeting the lowest-scoring subsystem/axis first:`,
+    '{"tickets":[{"severity":"blocker|major|polish","axis":"completeness|craftDensity|cohesionPolish|framingErgonomics|runtimeIntegrity","target":"<file or subsystem>","defect":"<concrete failure>","fix":"<exact change>"}]}',
+  ].join('\n');
+}
+
+function normalizeDefectSeverity(raw: string | undefined): DefectSeverity {
+  const s = (raw ?? '').trim().toLowerCase();
+  if (s === 'blocker' || s === 'critical') return 'blocker';
+  if (s === 'major' || s === 'high') return 'major';
+  return 'polish';
+}
+
+/**
+ * Parse severity-ranked defect tickets from structured JSON critic output.
+ * Sorts strictly by blocker > major > polish and filters out polish tickets
+ * whenever any blocker or major ticket exists (anti-dithering rule).
+ */
+export function parseDefectTickets(raw: string): DefectTicket[] {
+  const bounded = raw.length > MAX_CRITIC_CHARS ? raw.slice(0, MAX_CRITIC_CHARS) : raw;
+  const start = bounded.indexOf('{');
+  const end = bounded.lastIndexOf('}');
+  if (start === -1 || end <= start) return [];
+
+  let parsed: { tickets?: Array<Record<string, string | undefined>> };
+  try {
+    parsed = JSON.parse(bounded.slice(start, end + 1)) as {
+      tickets?: Array<Record<string, string | undefined>>;
+    };
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed.tickets)) return [];
+  const tickets: DefectTicket[] = [];
+  for (const item of parsed.tickets) {
+    if (!item || typeof item !== 'object') continue;
+    const target = String(item.target ?? '').trim().slice(0, 120);
+    const defect = String(item.defect ?? '').trim().slice(0, 240);
+    const fix = String(item.fix ?? '').trim().slice(0, 260);
+    if (!defect && !fix) continue;
+    tickets.push({
+      severity: normalizeDefectSeverity(item.severity),
+      axis: String(item.axis ?? 'runtimeIntegrity').trim().slice(0, 40) || 'runtimeIntegrity',
+      target: target || 'project',
+      defect: defect || fix,
+      fix: fix || defect,
+    });
+  }
+
+  tickets.sort((a, b) => DEFECT_SEVERITY_RANK[a.severity] - DEFECT_SEVERITY_RANK[b.severity]);
+  const hasHigh = tickets.some((t) => t.severity === 'blocker' || t.severity === 'major');
+  const filtered = hasHigh ? tickets.filter((t) => t.severity !== 'polish') : tickets;
+  return filtered.slice(0, MAX_FIX_STEPS);
+}
+
+/** Format severity-ranked tickets into concise action lines for the convergence loop. */
+export function formatDefectTicketsAsFixList(tickets: DefectTicket[]): string[] {
+  return tickets.map(
+    (t) => `[${t.severity.toUpperCase()}/${t.axis}] ${t.target}: ${t.defect} — Fix: ${t.fix}`
+  );
+}
+
+/**
+ * Structured defect-ticket critic (Option B4).
+ * Emits severity-ranked tickets (`blocker` > `major` > `polish`) targeting the
+ * lowest-scoring subsystem/axis, falling back to `parseFixList` if the model
+ * replies with numbered text instead of JSON.
+ */
+export function createStructuredDefectCritic(executor: LoopExecutor): Critic {
+  return async (input) => {
+    const focusGate = firstFailingGate(input.record);
+    try {
+      const raw = await executor(buildStructuredDefectPrompt(input));
+      const tickets = parseDefectTickets(raw);
+      if (tickets.length > 0) {
+        return { fixList: formatDefectTicketsAsFixList(tickets), focusGate };
+      }
+      return { fixList: parseFixList(raw), focusGate };
+    } catch {
+      return { fixList: [], focusGate };
+    }
+  };
+}
+

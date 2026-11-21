@@ -28,7 +28,13 @@ import {
 } from '../delivery/verification-provenance.js';
 import { resolveTiers } from '../quality/tiers.js';
 import { tierContractText, tierKeysFor } from '../quality/tier-contract.js';
-import { createModelCritic } from '../delivery/critic.js';
+import { createStructuredDefectCritic } from '../delivery/critic.js';
+import {
+  formatBlueprintContract,
+  generateOutcomeBlueprint,
+  loadOutcomeBlueprint,
+} from '../delivery/outcome-blueprint.js';
+import { createRoleExecutor, loadRoleRouting } from '../delivery/role-router.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
@@ -2493,6 +2499,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const result = await client.complete(model, prompt, { temperature, jsonResponse: true });
     return result.content;
   };
+  // Option C3: role-specific thinking-ON fresh-context executors for Phase 0
+  // Outcome Blueprint (B1) and clean-context Adversarial Critic (C1).
+  const roleRouting = loadRoleRouting(projectRoot, model.id, model.endpoint);
+  const blueprintRoleExecutor = createRoleExecutor(client, roleRouting.blueprint, model);
+  const adversarialCriticExecutor = createRoleExecutor(client, roleRouting.critic, model);
 
   // Generator!=Evaluator (loop-engineering rule #1): when an evaluator model is
   // configured, the acceptance gate is AUTHORED and JUDGED by a different model
@@ -3200,6 +3211,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // never get the form: a critic report authored by the builder is
         // theater (enforcement above already refuses that for tiers).
         ...(judgeDistinct ? { criticForm: true } : {}),
+        // Option C1: clean-context thinking-ON adversarial critic (bounded polish passes).
+        ...(process.env.UAP_DELIVER_ADVERSARIAL_CRITIC !== '0'
+          ? { adversarialCriticExecutor }
+          : {}),
         note: (line) => console.log(chalk.yellow(`  ${line}`)),
       })
     : undefined;
@@ -3374,10 +3389,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           workspaceProvider: agentic ? undefined : (createGitWorktreeProvider(projectRoot) ?? undefined),
         }
       : undefined,
-    critic: options.critic ? createModelCritic(jsonBlindExecutor) : undefined,
+    critic: options.critic ? createStructuredDefectCritic(jsonBlindExecutor) : undefined,
     // Critic evaluates text; keep it on a blind completion even if the loop
     // escalates the (agentic) executor.
-    criticFactory: (ex) => createModelCritic(agentic ? jsonBlindExecutor : ex),
+    criticFactory: (ex) => createStructuredDefectCritic(agentic ? jsonBlindExecutor : ex),
     practiceProvider,
     protectTests: options.protectTests,
     protectIac,
@@ -3610,6 +3625,35 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   } catch {
     /* tier contract injection is a best-effort quality aid */
+  }
+  // Phase 0 Outcome Blueprint (Option B1): establish required subsystems,
+  // quantitative fidelity targets, runtime invariants, and anti-patterns up
+  // front via thinking-ON Blueprint role (C3) so the first draft aims for
+  // flagship completeness rather than a bare-bones stub. Fail-soft on errors.
+  if (
+    !options.dryRun &&
+    process.env.UAP_BLUEPRINT !== '0' &&
+    measureQueryComplexity(instruction, DELIVERY_COMPLEXITY_THRESHOLDS) !== 'simple'
+  ) {
+    try {
+      const bp =
+        loadOutcomeBlueprint(projectRoot) ??
+        (await generateOutcomeBlueprint({
+          instruction,
+          projectRoot,
+          executor: blueprintRoleExecutor,
+        }));
+      if (bp) {
+        loopConfig.blueprintContract = formatBlueprintContract(bp);
+        console.log(
+          chalk.dim(
+            `  blueprint: ${bp.subsystems.length} subsystem(s), ${bp.runtimeInvariants.length} invariant(s) (${roleRouting.blueprint.modelId}/${roleRouting.blueprint.source})`
+          )
+        );
+      }
+    } catch {
+      /* blueprint generation is a best-effort completeness aid */
+    }
   }
   // Say up front when the task names files this run cannot reach. Refusing the
   // path at edit time (safePath) does not stop the model wanting the file, and
@@ -4456,6 +4500,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           // journeys/selectors the gate will drive (otherwise the lazy turn builds
           // blind, e.g. a canvas-only UI with no DOM handles, and only later turns
           // — which do get the contract — can recover it).
+          blueprintContract: loopConfig.blueprintContract,
           acceptanceContract: loopConfig.acceptanceContract,
           tierContract: loopConfig.tierContract,
           onIteration: (record) => { updateDeliverHeartbeat(projectRoot); printProgress(record); },

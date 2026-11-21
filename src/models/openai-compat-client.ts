@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 
 import { fetchModelWithRetry, modelHttpTimeoutMs, TRANSIENT_HTTP_STATUSES } from './long-fetch.js';
 import type { ModelConfig } from './types.js';
-import type { ModelClient } from './executor.js';
+import type { ModelClient, ModelCompleteOptions } from './executor.js';
 
 export interface OpenAICompatClientOptions {
   /** Fallback endpoint when the ModelConfig has none (default: UAP_INFERENCE_ENDPOINT or http://localhost:4000/v1) */
@@ -24,10 +24,15 @@ export interface OpenAICompatClientOptions {
 }
 
 interface ChatCompletionResponse {
-  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+  choices?: Array<{
+    message?: { content?: string; reasoning_content?: string };
+    finish_reason?: string;
+  }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
   error?: { message?: string } | string;
 }
+
+const THINKING_DEFAULT_MAX_TOKENS = 16384;
 
 /**
  * Budget for the single automatic re-request after a truncated completion.
@@ -247,7 +252,7 @@ export class OpenAICompatClient implements ModelClient {
   async complete(
     model: ModelConfig,
     prompt: string,
-    options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
+    options?: ModelCompleteOptions
   ): Promise<{
     content: string;
     tokensUsed: { input: number; output: number };
@@ -269,28 +274,10 @@ export class OpenAICompatClient implements ModelClient {
     });
   }
 
-  /**
-   * One bounded re-request when the completion was TRUNCATED.
-   *
-   * `finish_reason: "length"` means the text ends wherever the budget ran out,
-   * not where the model finished — for code/scripts that is a syntax error the
-   * caller cannot distinguish from a model mistake. Measured live (2026-08-13):
-   * deliver's self-gate authoring burned two of its three attempts on scripts
-   * cut mid-quote, failed the run, and fed the model feedback ("make sure it is
-   * complete") about a defect only the budget could fix.
-   *
-   * Retries once with an explicit raised budget, and ONLY when the caller did
-   * not pin `maxTokens` — an explicit cap is a cost decision the caller owns.
-   * The pick is non-regressive: a cleanly-finished retry always wins; a retry
-   * that also ended early wins only if it carries more text; a retry that
-   * ERRORS is discarded in favor of the first (partial) result. Either way
-   * `finishReason` reports what the returned content actually is.
-   * Kill-switch: UAP_TRUNCATION_RETRY=0.
-   */
   private async _requestWithTruncationRetry(
     model: ModelConfig,
     prompt: string,
-    options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
+    options?: ModelCompleteOptions
   ): Promise<{
     content: string;
     tokensUsed: { input: number; output: number };
@@ -301,9 +288,6 @@ export class OpenAICompatClient implements ModelClient {
     const retryAllowed =
       first.finishReason === 'length' &&
       options?.maxTokens === undefined &&
-      // A first call that already produced >= the retry budget was not starved
-      // by a low server-side default — re-requesting at the same ceiling is a
-      // deterministic duplicate decode.
       first.tokensUsed.output < TRUNCATION_RETRY_MAX_TOKENS &&
       process.env.UAP_TRUNCATION_RETRY !== '0';
     if (!retryAllowed) return first;
@@ -314,16 +298,8 @@ export class OpenAICompatClient implements ModelClient {
         maxTokens: TRUNCATION_RETRY_MAX_TOKENS,
       });
     } catch {
-      // The retry is opportunistic. Failing it must not destroy the partial
-      // result the first request already paid for — truncated-but-visible
-      // (finishReason: 'length') beats a thrown error the caller cannot
-      // salvage anything from.
       return first;
     }
-    // Non-regressive pick: a clean retry always wins; a retry that ALSO ended
-    // early (still 'length', or chopped by the proxy's degenerate guard) wins
-    // only if it carries more text. Both requests were paid for either way, so
-    // usage reports the sum regardless of which content is returned.
     const best =
       retry.finishReason !== 'length' || retry.content.length >= first.content.length
         ? retry
@@ -341,7 +317,7 @@ export class OpenAICompatClient implements ModelClient {
   private async _request(
     model: ModelConfig,
     prompt: string,
-    options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
+    options?: ModelCompleteOptions
   ): Promise<{
     content: string;
     tokensUsed: { input: number; output: number };
@@ -353,21 +329,24 @@ export class OpenAICompatClient implements ModelClient {
     const timeout = options?.timeout ?? this.timeoutMs;
 
     const url = new URL(`${endpoint}/chat/completions`);
-    // One shared rule for what may be sent where (throws on a cleartext leak of
-    // an explicit provider key; silently withholds the local proxy token from any
-    // non-local endpoint).
     const apiKey = resolveRequestCredential(model, url);
 
     const start = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
-
-    // "Still generating" progress for the whole call (planner/judge/critic
-    // completions run minutes on a local model with zero tool calls). The
-    // executor's per-tool heartbeat covers the tool loop; THIS covers
-    // everything else — a deliver run in its PLANNING phase looked dead for
-    // 5+ minutes and external agents kept trying to kill it (2026-08-16).
     const stopTicker = startModelCallTicker();
+
+    const thinkingOn = options?.thinking === true;
+    const effectiveMaxTokens =
+      options?.maxTokens ?? (thinkingOn ? THINKING_DEFAULT_MAX_TOKENS : undefined);
+    const images = (options?.images ?? []).filter((img) => img.trim().length > 0);
+    const userContent =
+      images.length > 0
+        ? [
+            { type: 'text', text: prompt },
+            ...images.map((imgUrl) => ({ type: 'image_url', image_url: { url: imgUrl } })),
+          ]
+        : prompt;
 
     try {
       const response = await fetchModelWithRetry(url, {
@@ -375,32 +354,28 @@ export class OpenAICompatClient implements ModelClient {
         headers: {
           'Content-Type': 'application/json',
           ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-          // Evaluator verdicts: the UAP proxy grammar-constrains this
-          // completion to a bare JSON value (no <think> preamble), so judge/
-          // critic/ideation parses are deterministic. Ignored by other servers.
-          ...(options?.jsonResponse ? { 'x-uap-json-response': '1' } : {}),
+          // Thinking-ON calls opt into explicit reasoning and MUST omit
+          // x-uap-json-response (which forces a bare-JSON grammar forbidding <think>).
+          ...(thinkingOn
+            ? { 'x-uap-reasoning': '1' }
+            : options?.jsonResponse
+              ? { 'x-uap-json-response': '1' }
+              : {}),
         },
         body: JSON.stringify({
-          // Resolved against THIS endpoint, so a preset that declines to pin a
-          // model name gets the one actually being served. A preset that names a
-          // model is returned unchanged.
           model: wireModel,
-          messages: [{ role: 'user', content: prompt }],
-          ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
+          messages: [{ role: 'user', content: userContent }],
+          ...(effectiveMaxTokens ? { max_tokens: effectiveMaxTokens } : {}),
           ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
-          // Reasoning effort for models that support it. UAP's 'xhigh' maps to
-          // the OpenAI-compatible maximum 'high' on the wire.
+          ...(thinkingOn
+            ? { enable_thinking: true, chat_template_kwargs: { enable_thinking: true } }
+            : {}),
           ...(model.reasoningEffort
             ? { reasoning_effort: model.reasoningEffort === 'xhigh' ? 'high' : model.reasoningEffort }
             : {}),
         }),
         signal: controller.signal,
       }, {
-        // Judge/planner/critic calls ride out proxy restarts and model-reload
-        // windows (529/502/503/504) instead of failing the verdict — a lost
-        // judge verdict fails the surrounding turn just like a lost turn.
-        // Env knobs let operators (and tests) shrink or disable the window;
-        // the caller's AbortController timeout still cuts every sleep short.
         retryStatuses: TRANSIENT_HTTP_STATUSES,
         statusRetries: Number(process.env.UAP_MODEL_STATUS_RETRIES ?? 5),
         statusBackoffMs: Number(process.env.UAP_MODEL_STATUS_BACKOFF_MS ?? 5000),
@@ -412,7 +387,16 @@ export class OpenAICompatClient implements ModelClient {
       }
 
       const data = (await response.json()) as ChatCompletionResponse;
-      const content = data.choices?.[0]?.message?.content;
+      const msg = data.choices?.[0]?.message;
+      const rawContent = msg?.content;
+      const reasoningFallback =
+        thinkingOn && (!rawContent || !rawContent.trim()) && typeof msg?.reasoning_content === 'string'
+          ? msg.reasoning_content
+          : undefined;
+      const content =
+        typeof rawContent === 'string' && rawContent.trim().length > 0
+          ? rawContent
+          : reasoningFallback ?? rawContent;
       if (typeof content !== 'string') {
         const errMsg =
           typeof data.error === 'string' ? data.error : data.error?.message ?? 'no choices in response';

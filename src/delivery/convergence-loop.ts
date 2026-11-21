@@ -116,6 +116,13 @@ export interface PromptContext {
    */
   tierContract?: string;
   /**
+   * Phase 0 Outcome Blueprint contract (Option B1): required subsystems,
+   * quantitative fidelity targets, runtime invariants, and anti-patterns.
+   * Injected every turn beside acceptanceContract/tierContract so the first
+   * draft targets flagship completeness rather than a bare-bones stub.
+   */
+  blueprintContract?: string;
+  /**
    * MIPRO (S8/3a): tuner-selected prompt-fragment variants (fragmentId→variantId,
    * from promptSelectionFromConfig). When absent the prompt is IDENTICAL to the
    * hand-authored default; when present, non-frozen fragments (e.g. executor.tone)
@@ -496,6 +503,11 @@ export interface ConvergenceConfig {
    */
   tierContract?: string;
   /**
+   * Phase 0 Outcome Blueprint contract (Option B1): injected into every
+   * executor prompt alongside acceptanceContract and tierContract.
+   */
+  blueprintContract?: string;
+  /**
    * Persist until delivered (full autonomy): keep iterating past `maxTurns`
    * until every required gate passes, the `maxTurnsCeiling` is reached, or
    * progress stalls (no score improvement for several consecutive turns).
@@ -776,6 +788,12 @@ function tierContractSection(tierContract?: string): string[] {
   return [tierContract.trim()];
 }
 
+/** Phase 0 Outcome Blueprint rides beside acceptanceContract and tierContract. */
+function blueprintContractSection(blueprintContract?: string): string[] {
+  if (!blueprintContract || !blueprintContract.trim()) return [];
+  return ['', blueprintContract.trim()];
+}
+
 /** Default prompt strategy: lean contract + structured retry context. */
 export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   // 3a: source the FROZEN output contract through the binding so it is always the
@@ -797,10 +815,10 @@ export const defaultPromptBuilder: PromptBuilder = (ctx) => {
     // variable and added the tuner-selected tone section; 580 appends the
     // up-front acceptance contract. Both apply — the contract goes last so the
     // concrete journeys sit closest to the task.
-    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ...tierContractSection(ctx.tierContract)].join('\n');
+    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...blueprintContractSection(ctx.blueprintContract), ...contractSection(ctx.acceptanceContract), ...tierContractSection(ctx.tierContract)].join('\n');
   }
 
-  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ...tierContractSection(ctx.tierContract), ''];
+  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...blueprintContractSection(ctx.blueprintContract), ...contractSection(ctx.acceptanceContract), ...tierContractSection(ctx.tierContract), ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   // Error-anchored steering: the files the failing gates NAMED go at the very
@@ -1684,6 +1702,7 @@ export class ConvergenceLoop {
         writeRestriction,
         guidance,
         autonomous: this.config.autonomous,
+        blueprintContract: this.config.blueprintContract,
         acceptanceContract: this.config.acceptanceContract,
         tierContract: this.config.tierContract,
         promptSelection: this.config.promptSelection,

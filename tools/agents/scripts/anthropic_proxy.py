@@ -1718,6 +1718,321 @@ except (TypeError, ValueError):
 PROXY_DISABLE_THINKING_ALWAYS = os.environ.get(
     "PROXY_DISABLE_THINKING_ALWAYS", "off"
 ).lower() not in {"0", "false", "off", "no"}
+# Per-model carve-out for PROXY_DISABLE_THINKING_ON_TOOL_TURNS. The disable
+# is a FLASH-NEXT posture: that model's mandatory thinking burns the
+# tool-turn completion budget invisibly (see PROXY_TOOL_TURN_MAX_TOKENS),
+# so its tool turns run thinking-off. The 27B is the opposite shape --
+# hybrid thinking whose tool-turn reasoning is what keeps it out of
+# mechanical re-issue loops. Observed live (2026-11-20, Qwen3.8-27B QUASAR
+# NVFP4 via Basalt on this proxy): with the knob global-on, a 27B agent
+# session re-emitted the same check call ~15 times at ~2 s intervals
+# (zero prose, zero reasoning_content) until ERROR-LOOP hard-stopped it
+# with a 400. Comma-separated, case-insensitive SUBSTRINGS matched
+# against the upstream SERVED model id (arm truth, independent of
+# whatever id a client names). Empty (default) = today's global
+# behaviour. PROXY_DISABLE_THINKING_ALWAYS still wins over this list --
+# an operator hard-off stays off.
+PROXY_DISABLE_THINKING_ON_TOOL_TURNS_EXEMPT = [
+    _p.strip().lower()
+    for _p in os.environ.get(
+        "PROXY_DISABLE_THINKING_ON_TOOL_TURNS_EXEMPT", ""
+    ).split(",")
+    if _p.strip()
+]
+
+# Selective/adaptive thinking restoration for high-leverage tool turns (A1).
+# Even when PROXY_DISABLE_THINKING_ON_TOOL_TURNS=on (e.g. Flash-Next), certain
+# turns are structurally cognitive rather than mechanical: interpreting visual
+# observations (screenshots/images), diagnosing verification/gate failures, or
+# explicit x-uap-reasoning: 1 requests (blueprint / critic / audit turns).
+PROXY_THINKING_ON_OBSERVATION_TURNS = os.environ.get(
+    "PROXY_THINKING_ON_OBSERVATION_TURNS", "on"
+).strip().lower() not in {"0", "false", "off", "no"}
+PROXY_THINKING_OBSERVATION_MIN_MAX_TOKENS = int(
+    os.environ.get("PROXY_THINKING_OBSERVATION_MIN_MAX_TOKENS", "16384")
+)
+
+# Compute-budget guardrails (B2): detect prolonged third-party/vendor read
+# archaeology and single-file edit thrashing, restoring thinking + injecting a
+# generalized reflection/pivot directive. 0 disables either guardrail.
+PROXY_ARCHAEOLOGY_CAP = int(os.environ.get("PROXY_ARCHAEOLOGY_CAP", "12"))
+PROXY_SINGLE_FILE_REFLECT_THRESHOLD = int(
+    os.environ.get("PROXY_SINGLE_FILE_REFLECT_THRESHOLD", "5")
+)
+
+_VERIFICATION_FAILURE_MARKERS = (
+    "escalate:",
+    "not verified",
+    "runtime/user-path gate failed",
+    "vision review failed",
+    "acceptance ✗",
+    "structural failure",
+    "assertionerror",
+    "traceback (most recent call last)",
+    "error ts",
+    "exit code 1",
+    "exit status 1",
+    "uap policy blocked",
+    "test result: failed",
+    "build failed",
+    "failed to compile",
+)
+
+_VENDOR_PATH_MARKERS = (
+    "node_modules/",
+    ".venv/",
+    "site-packages/",
+    "dist-packages/",
+    "/vendor/",
+    "vendor/",
+    "/usr/lib/",
+    "/usr/local/lib/",
+    ".cargo/registry/",
+    "/target/debug/",
+    "/target/release/",
+    "__pycache__/",
+)
+
+_READ_INSPECT_TOOLS = {
+    "read", "grep", "glob", "ls", "bash", "execute", "shell", "run_bash",
+    "search", "find", "view", "list",
+}
+_WRITE_EDIT_TOOLS = {
+    "edit", "write", "create", "multiedit", "patch", "apply_patch", "notebookedit",
+}
+_BEHAVIORAL_CMD_RE = re.compile(
+    r"\b(?:pytest|vitest|jest|mocha|playwright|cypress|uap\s+verify"
+    r"|cargo\s+test|go\s+test|npm\s+(?:run\s+)?test|(?:pnpm|yarn|bun)\s+(?:run\s+)?test"
+    r"|mvn\s+(?:test|verify)|gradle(?:w)?\s+test|dotnet\s+test)\b",
+    re.IGNORECASE,
+)
+
+
+def _thinking_enabled_on_body(body: dict) -> bool:
+    """True when the outbound OpenAI body requests upstream thinking ON."""
+    ctk = body.get("chat_template_kwargs")
+    if isinstance(ctk, dict) and "enable_thinking" in ctk:
+        return bool(ctk["enable_thinking"])
+    return bool(body.get("enable_thinking"))
+
+
+def _content_has_multimodal_block(content: object) -> bool:
+    """True when Anthropic/OpenAI message content (or nested tool_result) carries an image."""
+    if not isinstance(content, list):
+        return False
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = str(block.get("type") or "").lower()
+        if btype in {"image", "image_url", "input_image"}:
+            return True
+        if btype == "tool_result" and _content_has_multimodal_block(block.get("content")):
+            return True
+    return False
+
+
+def _collect_user_turn_signals(content: object) -> tuple[bool, list[str]]:
+    """Return (has_tool_error, text_fragments) from an Anthropic user content payload."""
+    if isinstance(content, str):
+        return False, [content]
+    if not isinstance(content, list):
+        return False, []
+    has_error = False
+    texts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            texts.append(block)
+            continue
+        if not isinstance(block, dict):
+            continue
+        btype = str(block.get("type") or "").lower()
+        if btype == "text":
+            t = block.get("text")
+            if isinstance(t, str):
+                texts.append(t)
+        elif btype == "tool_result":
+            if block.get("is_error") is True:
+                has_error = True
+            inner = block.get("content")
+            if isinstance(inner, str):
+                texts.append(inner)
+            elif isinstance(inner, list):
+                sub_err, sub_texts = _collect_user_turn_signals(inner)
+                has_error = has_error or sub_err
+                texts.extend(sub_texts)
+    return has_error, texts
+
+
+def _latest_turn_cognitive_signal(anthropic_body: dict) -> str | None:
+    """Classify whether the current turn warrants restoring thinking ON.
+
+    Returns a short reason tag ('explicit_reasoning_header',
+    'multimodal_observation', or 'verification_failure') or None for routine
+    mechanical tool turns.
+    """
+    if anthropic_body.get("_uap_reasoning"):
+        return "explicit_reasoning_header"
+    if not PROXY_THINKING_ON_OBSERVATION_TURNS:
+        return None
+    messages = anthropic_body.get("messages") or []
+    latest_user = None
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            latest_user = msg
+            break
+    if not latest_user:
+        return None
+    content = latest_user.get("content")
+    if _content_has_multimodal_block(content):
+        return "multimodal_observation"
+    has_error, texts = _collect_user_turn_signals(content)
+    if has_error:
+        return "verification_failure"
+    joined = "\n".join(texts).lower()
+    if any(marker in joined for marker in _VERIFICATION_FAILURE_MARKERS):
+        return "verification_failure"
+    return None
+
+
+def _extract_recent_tool_activity(anthropic_body: dict) -> list[tuple[str, dict]]:
+    """Extract chronological (tool_name_lower, input_dict) pairs from assistant turns."""
+    out: list[tuple[str, dict]] = []
+    for msg in anthropic_body.get("messages") or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = str(block.get("name") or "").strip().lower()
+            inp = block.get("input")
+            out.append((name, inp if isinstance(inp, dict) else {}))
+    return out
+
+
+def _tool_target_path(inp: dict) -> str:
+    for key in ("file_path", "filePath", "path", "target", "filename", "file"):
+        val = inp.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip().replace("\\", "/")
+    return ""
+
+
+def _tool_touches_vendor(inp: dict) -> bool:
+    parts: list[str] = []
+    for key in ("file_path", "filePath", "path", "directory_path", "folder", "pattern", "command", "cmd"):
+        val = inp.get(key)
+        if isinstance(val, str) and val:
+            parts.append(val.replace("\\", "/").lower())
+    haystack = " ".join(parts)
+    return any(m in haystack for m in _VENDOR_PATH_MARKERS)
+
+
+def _detect_compute_budget_guardrail(
+    anthropic_body: dict, monitor: "SessionMonitor | None" = None
+) -> tuple[str, str] | None:
+    """Detect wasted-compute loops (vendor archaeology or single-file churn).
+
+    Returns (reason, directive_text) when a guardrail threshold is reached,
+    else None. Generalized across all languages and tasks.
+    """
+    activity = _extract_recent_tool_activity(anthropic_body)
+    if not activity:
+        return None
+    total_calls = len(activity)
+
+    # 1. Anti-archaeology cap: trailing consecutive read/inspect calls targeting
+    # third-party/vendor paths with no project writes.
+    if PROXY_ARCHAEOLOGY_CAP > 0:
+        vendor_streak = 0
+        for name, inp in reversed(activity):
+            if name in _WRITE_EDIT_TOOLS:
+                break
+            if name in _READ_INSPECT_TOOLS and _tool_touches_vendor(inp):
+                vendor_streak += 1
+            else:
+                break
+        if vendor_streak >= PROXY_ARCHAEOLOGY_CAP:
+            last_fire = getattr(monitor, "last_budget_guardrail_tool_count", 0) if monitor else 0
+            if last_fire == 0 or total_calls >= last_fire + PROXY_ARCHAEOLOGY_CAP:
+                if monitor is not None:
+                    monitor.last_budget_guardrail_tool_count = total_calls
+                return (
+                    "vendor_archaeology_cap",
+                    f"COMPUTE BUDGET GUARDRAIL: You have spent {vendor_streak} consecutive tool "
+                    "calls inspecting third-party/vendor internals without modifying project code. "
+                    "Stop reading library internals. Reason concisely about the interface you need, "
+                    "audit your project files against the user requirements/blueprint, and make a "
+                    "concrete implementation or verification move now.",
+                )
+
+    # 2. Single-file edit reflection checkpoint: trailing writes concentrated on
+    # one source file without advancing other files or running behavioral tests.
+    if PROXY_SINGLE_FILE_REFLECT_THRESHOLD > 0:
+        target_file = ""
+        write_streak = 0
+        for name, inp in reversed(activity):
+            if name in _WRITE_EDIT_TOOLS:
+                path = _tool_target_path(inp)
+                if not path:
+                    break
+                if not target_file:
+                    target_file = path
+                    write_streak = 1
+                elif path == target_file:
+                    write_streak += 1
+                else:
+                    break
+            elif name in {"bash", "execute", "shell", "run_bash"}:
+                cmd = str(inp.get("command") or inp.get("cmd") or "")
+                if _BEHAVIORAL_CMD_RE.search(cmd):
+                    break  # behavioral verification breaks the thrash streak
+                # Compile-only builds / inspection commands do NOT clear churn.
+            # Pure read/grep/glob calls between edits do NOT clear churn.
+        if write_streak >= PROXY_SINGLE_FILE_REFLECT_THRESHOLD and target_file:
+            last_fire = getattr(monitor, "last_budget_guardrail_tool_count", 0) if monitor else 0
+            if last_fire == 0 or total_calls >= last_fire + PROXY_SINGLE_FILE_REFLECT_THRESHOLD:
+                if monitor is not None:
+                    monitor.last_budget_guardrail_tool_count = total_calls
+                return (
+                    "single_file_churn_reflect",
+                    f"REFLECTION CHECKPOINT: You have edited '{target_file}' {write_streak} "
+                    "consecutive times without advancing other subsystems or running behavioral "
+                    "verification. Pause and reason before editing it again: (1) Audit every "
+                    "required subsystem, acceptance criterion, and runtime invariant from the "
+                    "prompt/blueprint — are any still missing, hollow, or unverified? (2) Are you "
+                    "micro-tweaking one file while higher-impact structural defects remain? Pick "
+                    "the highest-leverage next action.",
+                )
+    return None
+
+
+def _tool_turn_thinking_disabled() -> bool:
+    """Tool-turn thinking switch for THIS request.
+    PROXY_DISABLE_THINKING_ALWAYS wins (an operator hard-off stays off);
+    otherwise the tool-turn disable applies unless the upstream SERVED
+    model is exempt via PROXY_DISABLE_THINKING_ON_TOOL_TURNS_EXEMPT.
+    Arm truth comes from the cached /v1/models ids (_upstream_model_ids,
+    warmed before request prep by the handler's early probe path — and
+    re-warmed after every placement refresh, which clears it); a cold
+    cache keeps today's disable for that one request only. The body's
+    client-named model is deliberately NOT matched: build_openai_request
+    runs before wire reconciliation, so it holds the CLIENT's id there,
+    and a client must not be able to switch the thinking posture of an
+    arm it did not pick."""
+    if PROXY_DISABLE_THINKING_ALWAYS:
+        return True
+    if not PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
+        return False
+    if PROXY_DISABLE_THINKING_ON_TOOL_TURNS_EXEMPT:
+        served = " ".join(str(i) for i in (_upstream_model_ids or [])).lower()
+        if any(_p in served for _p in PROXY_DISABLE_THINKING_ON_TOOL_TURNS_EXEMPT):
+            return False
+    return True
+
+
 # Does the upstream accept `chat_template_kwargs`?
 #
 # It is a llama.cpp `--jinja` concept: the Qwen chat template reads its
@@ -2764,8 +3079,12 @@ def _apply_json_response_grammar(openai_body: dict, anthropic_body: dict) -> Non
     Fires only when the client tagged the request (x-uap-json-response, staged
     into the body as _uap_json_response), there are no tools, the grammar
     loaded, and nothing upstream set a grammar already. Thinking is forced off
-    — the grammar forbids a <think> preamble by construction.
+    — the grammar forbids a <think> preamble by construction. Skipped when
+    x-uap-reasoning is active so thinking-ON evaluator/critic calls can reason
+    before emitting JSON.
     """
+    if anthropic_body.get("_uap_reasoning"):
+        return
     if not anthropic_body.get("_uap_json_response"):
         return
     if not JSON_RESPONSE_GBNF:
@@ -3031,7 +3350,21 @@ def _is_grammar_tools_incompatibility(status_code: int, error_text: str) -> bool
     if status_code != 400:
         return False
     lowered = (error_text or "").lower()
-    return "custom grammar constraints" in lowered and "with tools" in lowered
+    # llama.cpp-server shape: free-form GBNF grammar cannot be combined with
+    # the tools path ("Cannot use custom grammar constraints with tools").
+    if "custom grammar constraints" in lowered and "with tools" in lowered:
+        return True
+    # Infernix shape (measured 2026-11-20, infernix-fn arm, forced-required
+    # tool turn): the engine's API layer accepts only response_format JSON
+    # shapes or its own structured_outputs param - a raw `grammar` field is
+    # refused with HTTP 400 {"param":"grammar","message":"use standard JSON
+    # output formats or structured_outputs"}. Same remedy: drop the grammar
+    # and let the tool call ride on the chat template's native tool-call
+    # training. Text-keyed (not an arm registry) so any future engine with
+    # the same contract is covered without a capability map.
+    if "standard json output formats" in lowered and "structured_outputs" in lowered:
+        return True
+    return False
 
 
 def _is_gemma4_peg_parse_failure(status_code: int, error_text: str) -> bool:
@@ -3211,6 +3544,12 @@ def _apply_tool_call_grammar(
     if not TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE:
         return
 
+    # tool-call.gbnf forbids <think> tokens by construction (`root ::= ws tool-calls ws`).
+    # Skip it whenever thinking is enabled on this request so reasoning is never
+    # constrained out of existence or rejected by upstream.
+    if _thinking_enabled_on_body(request_body):
+        return
+
     effective_tool_choice = (
         tool_choice if tool_choice is not None else request_body.get("tool_choice")
     )
@@ -3353,6 +3692,7 @@ class SessionMonitor:
     # with tools restored in between, so long tasks complete while a true runaway
     # still gets bounded (and the contamination/prune/cycle breakers catch faster).
     last_hard_finalize_turn_count: int = 0
+    last_budget_guardrail_tool_count: int = 0
     finalize_continuation_count: int = 0
     finalize_hard_stop_count: int = 0  # monotonic, not reset by fresh user text
     finalize_synthetic_tool_id: str = ""
@@ -4151,10 +4491,61 @@ def vision_enabled() -> bool:
     return upstream_vision
 
 
-async def _maybe_recheck_vision() -> None:
-    """Periodically re-probe upstream /props for vision support (auto mode).
+def _extract_vision_from_health(data: object) -> bool | None:
+    """Return True/False when /health declares a vision/images flag, else None."""
+    if not isinstance(data, dict):
+        return None
+    for key in ("images", "vision", "multimodal"):
+        if key in data and isinstance(data[key], bool):
+            return bool(data[key])
+    modalities = data.get("modalities")
+    if isinstance(modalities, dict) and "vision" in modalities:
+        return bool(modalities.get("vision"))
+    return None
 
-    Handles server restarts that add/remove --mmproj mid-session. Non-blocking:
+
+def _extract_vision_from_models(data: object) -> bool | None:
+    """Return True/False when /v1/models declares vision/image modality, else None."""
+    if not isinstance(data, dict):
+        return None
+    entries = data.get("data") or data.get("models")
+    if not isinstance(entries, list) or not entries:
+        return None
+    saw_metadata = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        arch = entry.get("architecture")
+        if isinstance(arch, dict):
+            mods = arch.get("input_modalities")
+            if isinstance(mods, list):
+                saw_metadata = True
+                if any(str(m).strip().lower() in {"image", "vision"} for m in mods):
+                    return True
+        direct_mods = entry.get("input_modalities")
+        if isinstance(direct_mods, list):
+            saw_metadata = True
+            if any(str(m).strip().lower() in {"image", "vision"} for m in direct_mods):
+                return True
+        caps = entry.get("capabilities")
+        if isinstance(caps, dict) and "vision" in caps:
+            saw_metadata = True
+            if bool(caps.get("vision")):
+                return True
+        modalities = entry.get("modalities")
+        if isinstance(modalities, dict) and "vision" in modalities:
+            saw_metadata = True
+            if bool(modalities.get("vision")):
+                return True
+    return False if saw_metadata else None
+
+
+async def _maybe_recheck_vision() -> None:
+    """Periodically re-probe upstream for vision support (auto mode).
+
+    Probes /props (llama.cpp modalities.vision) -> /health (Basalt images: true)
+    -> /v1/models (Infernix/vLLM architecture.input_modalities / capabilities.vision).
+    Handles server restarts that add/remove vision mid-session. Non-blocking:
     skips inside the check interval; failures keep the last known value.
     """
     global upstream_vision, _last_vision_recheck_ts
@@ -4166,20 +4557,57 @@ async def _maybe_recheck_vision() -> None:
     _last_vision_recheck_ts = now
     if http_client is None:
         return
+
+    base_root = LLAMA_CPP_BASE.rstrip("/")
+    if base_root.endswith("/v1"):
+        base_root = base_root[:-3]
+
+    detected: bool | None = None
+    source = ""
+
+    # 1. llama.cpp /props -> modalities.vision
     try:
-        props_url = LLAMA_CPP_BASE.replace("/v1", "/props")
-        resp = await http_client.get(props_url, timeout=2.0)
+        resp = await http_client.get(f"{base_root}/props", timeout=2.0)
         if resp.status_code == 200:
-            modalities = (resp.json() or {}).get("modalities") or {}
-            detected = bool(modalities.get("vision"))
-            if detected != upstream_vision:
-                logger.warning(
-                    "VISION: upstream modalities.vision=%s — image passthrough %s",
-                    detected, "ENABLED" if detected else "DISABLED",
-                )
-                upstream_vision = detected
+            payload = resp.json()
+            if isinstance(payload, dict):
+                modalities = payload.get("modalities")
+                if isinstance(modalities, dict) and "vision" in modalities:
+                    detected = bool(modalities.get("vision"))
+                    source = "/props"
     except Exception:
-        pass  # Non-critical; retry next interval
+        pass
+
+    # 2. Basalt / engine /health -> images / vision / multimodal
+    if detected is None:
+        try:
+            resp = await http_client.get(f"{base_root}/health", timeout=2.0)
+            if resp.status_code == 200:
+                v = _extract_vision_from_health(resp.json())
+                if v is not None:
+                    detected = v
+                    source = "/health"
+        except Exception:
+            pass
+
+    # 3. Infernix / vLLM / OpenAI-compat /v1/models -> input_modalities / capabilities.vision
+    if detected is None:
+        try:
+            resp = await http_client.get(f"{base_root}/v1/models", timeout=2.0)
+            if resp.status_code == 200:
+                v = _extract_vision_from_models(resp.json())
+                if v is not None:
+                    detected = v
+                    source = "/v1/models"
+        except Exception:
+            pass
+
+    if detected is not None and detected != upstream_vision:
+        logger.warning(
+            "VISION: upstream vision=%s via %s — image passthrough %s",
+            detected, source, "ENABLED" if detected else "DISABLED",
+        )
+        upstream_vision = detected
 
 
 def _cleanup_stale_monitors(now_ts: float) -> None:
@@ -4249,8 +4677,13 @@ async def _maybe_recheck_context_window() -> None:
         # window undetected, and every consumer fell back to the 131,072
         # env default — smaller than the real rail, so sessions over-pruned
         # at ~70% of the context they were given. Read /health before
-        # giving up: llama.cpp-style {n_ctx: N} or the strata family's
-        # {max_context: N} both count.
+        # giving up: llama.cpp-style {n_ctx: N}, the strata family's
+        # {max_context: N}, and the yasakani/basalt/infernix family's
+        # {max_context_tokens: N} all count (the last one is what the
+        # 5090-fleet engines return — missing it left the window at
+        # 0/unknown forever after every placement refresh cleared it:
+        # the runtime probe read the wrong field while the cold-start
+        # script read the right one).
         try:
             resp = await http_client.get(
                 LLAMA_CPP_BASE.replace("/v1", "/health"), timeout=2.0
@@ -4258,7 +4691,36 @@ async def _maybe_recheck_context_window() -> None:
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict):
-                    n_ctx = int(data.get("n_ctx") or data.get("max_context") or 0)
+                    n_ctx = int(
+                        data.get("n_ctx")
+                        or data.get("max_context")
+                        or data.get("max_context_tokens")
+                        or 0
+                    )
+        except Exception:
+            pass  # Non-critical, will retry next interval
+    if n_ctx <= 0:
+        # Engines with a minimal /health body ({"status":"ok"} only — the
+        # Infernix arm) publish the window on /v1/models as max_model_len
+        # (or meta.n_ctx). Third source: without it the recheck never
+        # re-pins the window after a placement refresh on those arms.
+        try:
+            resp = await http_client.get(
+                LLAMA_CPP_BASE.rstrip("/") + "/models", timeout=2.0
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                entries = []
+                if isinstance(data, dict):
+                    entries = data.get("data") or data.get("models") or []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    meta = entry.get("meta") or {}
+                    v = entry.get("max_model_len") or meta.get("n_ctx") or 0
+                    if v:
+                        n_ctx = int(v)
+                        break
         except Exception:
             pass  # Non-critical, will retry next interval
     try:
@@ -7713,6 +8175,29 @@ def openai_to_anthropic_request(openai_body: dict) -> dict:
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "text":
                     blocks.append({"type": "text", "text": block.get("text", "")})
+                elif isinstance(block, dict) and block.get("type") == "image_url":
+                    img = block.get("image_url")
+                    url = img.get("url", "") if isinstance(img, dict) else (img if isinstance(img, str) else "")
+                    if isinstance(url, str) and url.startswith("data:") and ";base64," in url:
+                        header, b64_data = url.split(";base64,", 1)
+                        media_type = header[5:] or "image/png"
+                        blocks.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64_data,
+                                },
+                            }
+                        )
+                    elif isinstance(url, str) and url:
+                        blocks.append(
+                            {
+                                "type": "image",
+                                "source": {"type": "url", "url": url},
+                            }
+                        )
                 elif isinstance(block, str):
                     blocks.append({"type": "text", "text": block})
             anthropic_messages.append(
@@ -7780,6 +8265,18 @@ def openai_to_anthropic_request(openai_body: dict) -> dict:
             "type": "tool",
             "name": tool_choice.get("function", {}).get("name", ""),
         }
+
+    ctk = openai_body.get("chat_template_kwargs")
+    if (
+        openai_body.get("enable_thinking") is True
+        or (isinstance(ctk, dict) and ctk.get("enable_thinking") is True)
+    ):
+        anthropic_body["thinking"] = {"type": "enabled"}
+    elif (
+        openai_body.get("enable_thinking") is False
+        or (isinstance(ctk, dict) and ctk.get("enable_thinking") is False)
+    ):
+        anthropic_body["thinking"] = {"type": "disabled"}
 
     return anthropic_body
 
@@ -9928,8 +10425,22 @@ def build_openai_request(
     # Only applies when the client did NOT explicitly request thinking above.
     # Per-path tool-turn handling below (DISABLE_THINKING_ON_TOOL_TURNS) is
     # additive — ALWAYS supersedes when set.
+    uap_reasoning = bool(anthropic_body.get("_uap_reasoning"))
+    cognitive_signal = (
+        None if PROXY_DISABLE_THINKING_ALWAYS else _latest_turn_cognitive_signal(anthropic_body)
+    )
+    budget_guardrail = (
+        _detect_compute_budget_guardrail(anthropic_body, monitor)
+        if has_tools
+        else None
+    )
+    keep_thinking_this_turn = (not PROXY_DISABLE_THINKING_ALWAYS) and bool(
+        uap_reasoning or cognitive_signal or budget_guardrail
+    )
     if PROXY_DISABLE_THINKING_ALWAYS:
         _set_thinking(openai_body, False)
+    elif uap_reasoning:
+        _set_thinking(openai_body, True)
 
     # Inject agentic protocol instructions only for tool-enabled turns.
     # Use minimal supplement for qwen models to reduce prompt leak surface.
@@ -9943,11 +10454,10 @@ def build_openai_request(
         # When thinking is explicitly disabled (Anthropic default, plus our
         # tool-turn forcing) but the upstream model is Qwen — which emits
         # <think> blocks regardless of enable_thinking — append a strong
-        # directive that suppresses internal reasoning. Without this, small
-        # max_tokens budgets get fully consumed by the model's reasoning,
-        # producing required_tool_miss retries (observed in Shannon workflows
-        # with max_tokens=512 + tool_choice=required).
-        if openai_body.get("enable_thinking") is False:
+        # directive that suppresses internal reasoning. Skip this directive when
+        # selective thinking (A1) or budget guardrails (B2) will keep thinking ON
+        # for this turn so the prompt does not contradict enable_thinking=True.
+        if openai_body.get("enable_thinking") is False and not keep_thinking_this_turn:
             supplement = supplement + _NO_THINKING_DIRECTIVE
         if (
             openai_body["messages"]
@@ -10315,10 +10825,15 @@ def build_openai_request(
                     "role": "user",
                     "content": (
                         f"You have made {_agent_tool_turns} tool calls. Pause for a "
-                        "progress checkpoint: in a brief plain-text summary, state "
-                        "what is done and the single most important next step. No "
-                        "tools are available this turn — do NOT emit any tool call "
-                        "or tool-call-like syntax. If the task is complete, say so; "
+                        "Holistic Outcome Audit (progress checkpoint): in plain text, "
+                        "(1) audit every requirement and subsystem from the original "
+                        "prompt/blueprint as DONE+VERIFIED vs MISSING/HOLLOW/UNVERIFIED, "
+                        "(2) check for runtime hollowness (stubbed handlers, empty "
+                        "collections, broken lookups, unrendered/unexercised paths) or "
+                        "single-file micro-tweaking, and (3) name the single highest-"
+                        "leverage structural gap to tackle next. No tools are available "
+                        "this turn — do NOT emit any tool call or tool-call-like syntax. "
+                        "If the task is genuinely complete and verified, say so; "
                         "otherwise you will continue on the next turn."
                     ),
                 })
@@ -10330,12 +10845,14 @@ def build_openai_request(
                 monitor.suppress_text_tool_extraction = True
                 logger.warning(
                     "TURN-COUNT FINALIZE BREAKER: %d agent tool turns >= ceiling %d "
-                    "-- stripped tools to force terminal summary (end_turn).",
+                    "-- stripped tools to force holistic outcome audit (end_turn).",
                     _agent_tool_turns,
                     PROXY_HARD_FINALIZE_TURNS,
                 )
-                if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
+                if PROXY_DISABLE_THINKING_ALWAYS:
                     _set_thinking(openai_body, False)
+                else:
+                    _set_thinking(openai_body, True)
                 if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
                     openai_body["speculative.n_max"] = 0
                 return openai_body
@@ -10532,13 +11049,43 @@ def build_openai_request(
                 monitor.reset_tool_turn_state(reason="no_tool_results")
 
 
-        if PROXY_DISABLE_THINKING_ALWAYS or PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
-            _set_thinking(openai_body, False)
+        restore_reason = cognitive_signal or (
+            budget_guardrail[0] if budget_guardrail else None
+        )
+        if _tool_turn_thinking_disabled():
+            if not PROXY_DISABLE_THINKING_ALWAYS and restore_reason:
+                _set_thinking(openai_body, True)
+                openai_body["tool_choice"] = "auto"
+                obs_floor = PROXY_THINKING_OBSERVATION_MIN_MAX_TOKENS
+                if obs_floor > 0 and int(openai_body.get("max_tokens") or 0) < obs_floor:
+                    openai_body["max_tokens"] = obs_floor
+                logger.info(
+                    "Thinking KEPT ON for high-leverage tool turn (reason=%s, max_tokens=%s)",
+                    restore_reason,
+                    openai_body.get("max_tokens"),
+                )
+            else:
+                _set_thinking(openai_body, False)
+                logger.info(
+                    "Thinking disabled (always=%s tool_turns=%s)",
+                    PROXY_DISABLE_THINKING_ALWAYS,
+                    PROXY_DISABLE_THINKING_ON_TOOL_TURNS,
+                )
+        elif PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
             logger.info(
-                "Thinking disabled (always=%s tool_turns=%s)",
-                PROXY_DISABLE_THINKING_ALWAYS,
-                PROXY_DISABLE_THINKING_ON_TOOL_TURNS,
+                "Thinking kept ON for tool turn (exempt served ids: %s)",
+                _upstream_model_ids,
             )
+
+        if budget_guardrail:
+            guardrail_reason, guardrail_msg = budget_guardrail
+            msgs = openai_body.get("messages", [])
+            msgs.append({"role": "user", "content": guardrail_msg})
+            openai_body["messages"] = msgs
+            openai_body["tool_choice"] = "auto"
+            if not PROXY_DISABLE_THINKING_ALWAYS:
+                _set_thinking(openai_body, True)
+            logger.warning("COMPUTE BUDGET GUARDRAIL: %s", guardrail_reason)
 
         if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
             openai_body["speculative.n_max"] = 0
@@ -16227,6 +16774,13 @@ async def messages(request: Request):
     if request.headers.get("x-uap-json-response"):
         body["_uap_json_response"] = True
 
+    # Explicit reasoning marker: blueprint/critic/audit turns opt into thinking ON
+    # and skip JSON/tool-call grammars that forbid <think>.
+    if (request.headers.get("x-uap-reasoning") or "").strip().lower() in {
+        "1", "true", "on", "yes"
+    }:
+        body["_uap_reasoning"] = True
+
     # Sandboxed sessions (`uap sandbox` / bwrap) set X-Uap-Sandbox:1 via
     # ANTHROPIC_CUSTOM_HEADERS. The sandbox can't reach the claude-in-chrome
     # browser extension, so strip its MCP tools here (before passthrough, so it
@@ -16507,6 +17061,13 @@ async def messages(request: Request):
     # returned. A cloud-only session was otherwise blocking on a capability
     # probe of a local backend it will never send a token to.
     await _probe_chat_template_kwargs()
+    # Warm the served-ids cache before the body is built: the per-model
+    # tool-turn thinking switch (_tool_turn_thinking_disabled) reads arm
+    # truth from _upstream_model_ids at build time, while wire
+    # reconciliation only fetches the list AFTER the build -- cold on the
+    # first request per process and after every placement refresh (which
+    # clears it). One loopback GET, cached for the process lifetime.
+    await _upstream_model_ids_cached()
     try:
         openai_body = build_openai_request(
             body,

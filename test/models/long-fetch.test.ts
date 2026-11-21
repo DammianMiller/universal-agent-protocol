@@ -4,6 +4,7 @@
  * turns as opaque `TypeError: fetch failed`.
  */
 
+import { createServer } from 'http';
 import { describe, it, expect } from 'vitest';
 import {
   isTransientNetworkError,
@@ -181,6 +182,28 @@ describe('modelHttpTimeoutMs', () => {
       expect(modelHttpTimeoutMs()).toBe(60000);
     } finally {
       delete process.env.UAP_MODEL_HTTP_TIMEOUT_MS;
+    }
+  });
+
+  it('completes a real loopback HTTP request using the matched undici Agent dispatcher', async () => {
+    const srv = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', () => resolve()));
+    const addr = srv.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      const res = await fetchModelWithRetry(`http://127.0.0.1:${port}/ping`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      expect(res.ok).toBe(true);
+      const body = (await res.json()) as { ok: boolean };
+      expect(body.ok).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
     }
   });
 });
