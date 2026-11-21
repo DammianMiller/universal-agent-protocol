@@ -18,7 +18,7 @@
  * worst severity, worst axis, id) — the same candidates always rank the
  * same, so a ladder re-run reproduces its trace byte-for-byte.
  */
-import { appendFileSync, mkdirSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { GapReport, gapReport, GapResult, tiersPath } from './tiers.js';
 import { classOfTierKey, resolveClass } from './classes.js';
@@ -47,6 +47,103 @@ export function recordEscalation(
   });
   appendFileSync(file, `${line}\n`);
   return file;
+}
+
+/** Wave 2.1 convergence telemetry: one record per ladder RUN (not per escalation). */
+export interface LadderRunRecord {
+  tier: string;
+  outcome: TierLadderOutcome;
+  rounds: number;
+  /** Total candidates measured across rounds (the best-of-N cost). */
+  candidatesMeasured: number;
+  /** Winner passed its tier gate; null when nothing was measured. */
+  winnerPassed: boolean | null;
+  escalationFired: boolean;
+  /** Executor model id when the caller knows it; null when unattributed. */
+  model?: string | null;
+  endedAt: string;
+}
+
+/**
+ * Record one completed ladder run beside the tiers store
+ * (.uap/quality/convergence.jsonl). The per-model/per-class convergence
+ * numbers — rounds-to-tier, cut rate, escalation frequency, best-of-N win
+ * rate — derive from this log. It is the measured evidence the tier gate's
+ * shadow→block promotion decision is made against (the System-1 rule: no
+ * promotion without a measured budget).
+ */
+export function recordLadderRun(
+  projectRoot: string,
+  record: Omit<LadderRunRecord, 'endedAt'>,
+): string {
+  const file = join(dirname(tiersPath(projectRoot)), 'convergence.jsonl');
+  mkdirSync(dirname(file), { recursive: true });
+  const line = JSON.stringify({ ...record, endedAt: new Date().toISOString() });
+  appendFileSync(file, `${line}\n`);
+  return file;
+}
+
+export interface LadderConvergenceSummary {
+  tier: string;
+  runs: number;
+  tierReached: number;
+  cutRate: number;
+  escalationRate: number;
+  /** Mean rounds over runs that reached the tier; null when none did. */
+  meanRoundsToTier: number | null;
+  /** Share of runs whose winner passed (null winner counts as a miss). */
+  winnerPassRate: number;
+  /** Mean candidates measured per run — the best-of-N cost line. */
+  meanCandidates: number;
+}
+
+/** Aggregate the convergence log per tier — the promotion-budget evidence. */
+export function summarizeLadderRuns(
+  projectRoot: string
+): { summaries: LadderConvergenceSummary[]; totalRuns: number; logPath: string } {
+  const logPath = join(dirname(tiersPath(projectRoot)), 'convergence.jsonl');
+  const summaries: LadderConvergenceSummary[] = [];
+  if (!existsSync(logPath)) return { summaries, totalRuns: 0, logPath };
+  const byTier = new Map<string, LadderRunRecord[]>();
+  let totalRuns = 0;
+  try {
+    for (const line of readFileSync(logPath, 'utf-8').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let rec: LadderRunRecord;
+      try {
+        rec = JSON.parse(trimmed) as LadderRunRecord;
+      } catch {
+        continue; // a corrupt line never breaks the aggregate
+      }
+      const list = byTier.get(rec.tier) ?? [];
+      list.push(rec);
+      byTier.set(rec.tier, list);
+      totalRuns++;
+    }
+  } catch {
+    return { summaries, totalRuns: 0, logPath };
+  }
+  for (const [tier, runs] of byTier) {
+    const reached = runs.filter((r) => r.outcome === 'tier-reached');
+    const winnerPasses = runs.filter((r) => r.winnerPassed === true).length;
+    const measured = runs.filter((r) => r.winnerPassed !== null).length;
+    summaries.push({
+      tier,
+      runs: runs.length,
+      tierReached: reached.length,
+      cutRate: 1 - reached.length / runs.length,
+      escalationRate: runs.filter((r) => r.escalationFired).length / runs.length,
+      meanRoundsToTier:
+        reached.length > 0
+          ? reached.reduce((a, r) => a + r.rounds, 0) / reached.length
+          : null,
+      winnerPassRate: measured > 0 ? winnerPasses / measured : 0,
+      meanCandidates: runs.reduce((a, r) => a + r.candidatesMeasured, 0) / runs.length,
+    });
+  }
+  summaries.sort((a, b) => b.runs - a.runs || a.tier.localeCompare(b.tier));
+  return { summaries, totalRuns, logPath };
 }
 
 /** One candidate artifact for a round. The id is stable (ranking tiebreak + trace). */

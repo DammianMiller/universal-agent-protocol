@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "_comment": "Synced to the live local stack 2026-11-19. The backend is the HyperQwen vLLM 27B fleet arm on :8080 (uap-hyperqwen-server, one rail, 131072 pool, MTP k=3) — see config/model-profiles/qwen38.json for the authoritative record. The proxy path is unchanged; the vLLM arm ENFORCES the served model id on the direct route (404 otherwise), so the direct entry below carries the profile's model field verbatim — update both together on every arm swap.",
+  "_comment": "Synced to the live local stack 2026-11-21. The backend is the basalt-fn NVFP4-DQ6_K fleet arm on :8080 (uap-basalt-fn-server, the miller-tech-prime DEFAULT arm, one rail, 262144 int8 KV pool) — see config/model-profiles/qwen38.json for the authoritative record. The proxy path is unchanged; the engine ENFORCES the served model id on the direct route (404 otherwise), so the direct entry below carries the profile's model field verbatim — update both together on every arm swap.",
   "provider": {
     "qwen-proxy": {
       "npm": "@ai-sdk/anthropic",
@@ -39,14 +39,14 @@
           "name": "Qwen3.8 27B (direct)",
           "_model_id_comment": "The id the live :8080 backend SERVES. The strata-era continuity argument for the old qwen38-gsq-rco-27b key (strata ignores requested model ids) died with the 2026-11-19 arm swap: the HyperQwen vLLM arm 404s any id except its served alias (fleet log 2026-11-19 18:39:37), so this key is the profile's model field verbatim — update both together on every arm swap.",
           "limit": {
-            "context": 131072,
+            "context": 262144,
             "output": 32768
           }
         }
       }
     }
   },
-  "_limits_comment": "Proxy path: context 114688 is the PER-SESSION cap the qwen38 profile applies via the x-uap-model-profile header \u2014 deliberately below the live pool (131072 on the HyperQwen vLLM arm since the 2026-11-19 swap) so a session at the cap leaves the engine working room; admission 4 (operator decision 2026-11-18) degrades contention to queueing, not pool corruption. Direct path bypasses the proxy and the profile, so it sees the whole 131072 pool and carries no guardrails; use it for probing, not for agent work \u2014 and it must carry the served alias (qwen3.8-27b), which the vLLM arm enforces with a 404. output 32768 matches the proxy's tool-turn cap (PROXY_TOOL_TURN_MAX_TOKENS), which is what nearly every agentic turn hits.",
+  "_limits_comment": "Proxy path: context 114688 is the PER-SESSION cap the qwen38 profile applies via the x-uap-model-profile header \u2014 deliberately below the live pool (262144 on the basalt-fn DEFAULT arm since the 2026-11-21 swap) so a session at the cap leaves the engine working room; admission 4 (operator decision 2026-11-18) degrades contention to queueing, not pool corruption. Direct path bypasses the proxy and the profile, so it sees the whole 262144 pool and carries no guardrails; use it for probing, not for agent work \u2014 and it must carry the served alias (qwen3.8-27b), which the engine enforces with a 404. output 32768 matches the proxy's tool-turn cap (PROXY_TOOL_TURN_MAX_TOKENS), which is what nearly every agentic turn hits.",
   "_reasoning_comment": "reasoning: true \u2014 the server runs --reasoning-format auto and the proxy streams thinking deltas (PROXY_STREAM_THINKING_DELTAS=on). The old 'false' hid that output.",
   "_token_comment": "apiKey is {env:UAP_PROXY_TOKEN}, NOT a literal: this file is tracked in git and the live proxy token must never land in history. Export UAP_PROXY_TOKEN in your shell; the value lives in the untracked ~/.config/opencode/opencode.json, which scripts/sync-local-agent-configs.sh reads (it never prints the secret).",
   "_auth_posture_comment": "Requests currently succeed WITHOUT a token, and the reason is not the one it looks like: PROXY_ALLOW_UNAUTHENTICATED_BIND=1 is a startup BIND-time assertion only (anthropic_proxy.py ~15355) and never runs per request. The request gate is `if PROXY_AUTH_TOKEN and ...` (~5519), and PROXY_AUTH_TOKEN is simply unset. There is NO loopback exemption in that gate: if an operator ever sets PROXY_AUTH_TOKEN, an unset {env:UAP_PROXY_TOKEN} will 401 even from 127.0.0.1. Note also that :4000 and :8080 are both bound to 0.0.0.0 and were verified on 2026-09-20 to answer unauthenticated from the LAN address \u2014 so this is an open inference endpoint on the local network, not a loopback-only service.",

@@ -58,3 +58,34 @@ if (process.env.UAP_FOLLOW_POLL_DIR === undefined) {
 if (process.env.UAP_TIER_STORE === undefined) {
   process.env.UAP_TIER_STORE = join(tmpdir(), `uap-test-no-fleet-tiers-${process.pid}.json`);
 }
+
+/**
+ * The tool-call corpus is PRODUCTION telemetry — test runs must not write it.
+ *
+ * runTool records every call to ~/.uap/telemetry/tool-calls.db, the machine-
+ * scoped corpus the write-path failure classes are measured against. Any
+ * test that drives the executor — hundreds per suite run, with fixture
+ * paths and synthetic refusals — appends fixture rows to the real corpus.
+ * Measured after the 2026-11-21 v2.67.0 validation: the machine corpus held
+ * 630 rows, 100% of them test-fixture traffic (`.worktrees/003-...` paths,
+ * `src/big.ts`, protected-path refusals) — every era and failure-class
+ * number derived from that box since is fixture noise. Same pattern as the
+ * tiers above: tests asserting ON the corpus set their own
+ * UAP_TOOL_CORPUS_DIR (test/telemetry/tool-calls.test.ts).
+ */
+if (process.env.UAP_TOOL_CORPUS_DIR === undefined) {
+  process.env.UAP_TOOL_CORPUS_DIR = join(tmpdir(), `uap-test-tool-corpus-${process.pid}`);
+}
+
+/**
+ * Memory-health telemetry is machine-scoped too. `uap memory query` on a
+ * degraded backend records the outage transition to
+ * ~/.uap/telemetry/memory-health.jsonl; a test that drives the query path
+ * on this box (Qdrant reachable? embeddings down?) would record a
+ * fictional outage into the real machine's history. Tests asserting ON the
+ * transitions set their own UAP_MEMORY_TELEMETRY_DIR
+ * (test/memory/recall-health.test.ts).
+ */
+if (process.env.UAP_MEMORY_TELEMETRY_DIR === undefined) {
+  process.env.UAP_MEMORY_TELEMETRY_DIR = join(tmpdir(), `uap-test-memory-health-${process.pid}`);
+}

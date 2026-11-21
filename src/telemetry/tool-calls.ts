@@ -334,6 +334,81 @@ export function renderEvidence(summary: EvidenceSummary): string {
   return lines.join('\n');
 }
 
+export interface ToolRateRow {
+  tool: string;
+  calls: number;
+  failures: number;
+  failureRate: number;
+}
+
+/**
+ * Per-tool call/failure rates, highest failure count first. The write-path
+ * uplifts are measured against this table (the 2026-11-14 monitoring found
+ * 83% of failures in the write/edit family here).
+ */
+export function toolFailureRates(root = toolCorpusRoot()): ToolRateRow[] {
+  if (!existsSync(dbPathFor(root))) return [];
+  const db = openStore(root);
+  if (!db) return [];
+  try {
+    const rows = db
+      .prepare(
+        `SELECT tool, COUNT(*) AS calls, COALESCE(SUM(failed),0) AS failures
+         FROM tool_calls GROUP BY tool ORDER BY failures DESC, calls DESC`,
+      )
+      .all() as Array<{ tool: string; calls: number; failures: number }>;
+    return rows.map((r) => ({
+      tool: r.tool,
+      calls: r.calls,
+      failures: r.failures,
+      failureRate: r.calls > 0 ? r.failures / r.calls : 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export interface DailyToolCallRate {
+  day: string;
+  calls: number;
+  failures: number;
+  failureRate: number;
+}
+
+/**
+ * Per-day call/failure rates over the corpus — the era table. The corpus is
+ * rolling-capped (MAX_TOOL_CALL_ROWS) and test runs are corpus-isolated, so
+ * an era's numbers exist only while its rows do; a report that wants them
+ * durably snapshots them when it runs.
+ */
+export function dailyToolCallRates(days = 14, root = toolCorpusRoot()): DailyToolCallRate[] {
+  if (!existsSync(dbPathFor(root))) return [];
+  const db = openStore(root);
+  if (!db) return [];
+  try {
+    const windowDays = Math.max(1, Math.trunc(days));
+    const rows = db
+      .prepare(
+        `SELECT substr(ts, 1, 10) AS day, COUNT(*) AS calls, COALESCE(SUM(failed),0) AS failures
+         FROM tool_calls WHERE ts >= datetime('now', ?)
+         GROUP BY day ORDER BY day`,
+      )
+      .all(`-${windowDays} days`) as Array<{
+      day: string;
+      calls: number;
+      failures: number;
+    }>;
+    return rows.map((r) => ({
+      day: r.day,
+      calls: r.calls,
+      failures: r.failures,
+      failureRate: r.calls > 0 ? r.failures / r.calls : 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /** Test-only: close cached handles so temp-dir fixtures do not leak. */
 export function closeToolCallStores(root?: string): void {
   if (root) {

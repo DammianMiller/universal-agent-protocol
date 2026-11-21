@@ -71,6 +71,7 @@ const lazy = {
   plan: () => import('../cli/plan.js').then((m) => m.planCommand),
   self: () => import('../cli/self.js').then((m) => m.selfCommand),
   attention: () => import('../cli/attention.js').then((m) => m.attentionCommand),
+  telemetry: () => import('../cli/telemetry.js').then((m) => m.telemetryCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -315,6 +316,14 @@ program
       .description('Review and promote daily log entries to working/semantic memory')
       .action(async (options) => {
         (await lazy.memory())('promote', options);
+      })
+  )
+  .addCommand(
+    new Command('outcomes')
+      .description('Aggregate recorded deliver outcomes per model (proof-plan O1, descriptive)')
+      .option('--json', 'Emit the machine-readable dataset (rows, aggregates, coverage)')
+      .action(async (options) => {
+        (await lazy.memory())('outcomes', options);
       })
   )
   .addCommand(
@@ -647,6 +656,20 @@ program
     }
     const cmd = await lazy.inference();
     await cmd(options);
+  });
+
+// Tool-call corpus evidence — the reproducible era/failure-class report the
+// write-path uplift rounds measure with (see src/cli/telemetry.ts). The
+// corpus is rolling-capped, so a report is a snapshot, not a ledger.
+program
+  .command('telemetry')
+  .description('Tool-call corpus report: era table, per-tool failure rates, failure classes')
+  .argument('[subcommand]', 'report (default)', 'report')
+  .option('--days <n>', 'era-table window in days', '14')
+  .option('--json', 'Emit machine-readable JSON')
+  .action(async (subcommand, options) => {
+    const cmd = await lazy.telemetry();
+    await cmd(subcommand, options);
   });
 
 // Model placement registry (spec: docs/specs/operator-model-placement.md) —
