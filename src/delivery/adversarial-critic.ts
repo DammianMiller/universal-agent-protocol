@@ -195,6 +195,22 @@ export function buildAdversarialCriticPrompt(opts: {
         opts.blueprint.fidelityTargets.length
           ? 'Fidelity targets:\n' + opts.blueprint.fidelityTargets.map((t) => `- ${t}`).join('\n')
           : '',
+        opts.blueprint.runtimeInvariants.length
+          ? 'Runtime invariants:\n' +
+            opts.blueprint.runtimeInvariants.map((i) => `- [${i.subsystem}] ${i.invariant}`).join('\n')
+          : '',
+        opts.blueprint.impliedRequirements?.length
+          ? 'Implied requirements (binding — flag each unrealized one as a MAJOR defect):\n' +
+            opts.blueprint.impliedRequirements
+              .map((r) => `- ${r.term}: ${r.requirement} (realized by ${r.howRealized})`)
+              .join('\n')
+          : '',
+        opts.blueprint.continuityFlows?.length
+          ? 'Continuity (no orphan flows — flag any flow whose source→element→sink chain is not observable):\n' +
+            opts.blueprint.continuityFlows
+              .map((f) => `- ${f.element}: ${f.source} → ${f.element} → ${f.sink} (via ${f.path})`)
+              .join('\n')
+          : '',
       ]
         .filter(Boolean)
         .join('\n')

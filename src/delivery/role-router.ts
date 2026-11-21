@@ -24,6 +24,7 @@ export type RoleResolutionSource =
   | 'env'
   | 'config-multi-model'
   | 'escalate-model'
+  | 'fleet-telemetry'
   | 'local-fresh-context';
 
 export interface RoleRoutingConfig {

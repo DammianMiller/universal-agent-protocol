@@ -143,6 +143,15 @@ Green gates prove code *compiles and tests pass*, not that the artifact actually
 - **Acceptance judge** (`--acceptance`), after the objective gates pass, an LLM judges the spec's *behavioral completeness* from the code + runtime evidence and feeds any unmet requirements back so the loop finishes the spec. Pair it with **`--evaluator-model <preset>`** to have a *different* model judge than the one that implemented (separate generator from evaluator, the "barbell" strategy).
 - **Self-gate**, when a project has **no** detectable gates, `deliver` authors a task-specific acceptance gate as a fallback so there is always something to converge against (on by default; `--no-self-gate` disables, `--force-self-gate` authors one even when project gates exist).
 
+## The ambition layer: implied requirements, continuity, reference bar, fleet critic
+
+A strong literal executor can pass every spec-derived gate while a *narrow reading* of the task set the bar. `deliver`'s Phase 0 Outcome Blueprint now closes that gap with four task-agnostic mechanisms (measured on a voxel-diorama parity round, 2026-11-22):
+
+- **Implied requirements (binding)** — the blueprint prompt derives, from the qualitative terms in the task language (quality/intensity adjectives and intensifiers), the concrete systems each term requires to be TRUE at runtime. "Flowing water" is not one fall sprite; it names a source→path→sink water network. Each derivation lands in the build contract as a binding requirement, and the adversarial critic flags every unrealized one as a MAJOR defect.
+- **No orphan flows (continuity)** — every element the task names that flows, moves, feeds, animates, or depends on another must declare its SOURCE, PATH, SINK, and how the whole chain is observable. Each declared flow becomes a machine-checkable runtime invariant ("no orphan flow"), enforced by the same invariant checklist the hollowness gate and critics consume.
+- **Reference-anchored vision critique (`--reference <path>`)** — supply an image, an image directory, or a **video** of a comparable flagship build. Frames are extracted (ffmpeg, evenly sampled) and the vision judge scores the rendered output **against that bar** — ambition and craft, not pixel identity; each capability the reference demonstrates that the output lacks becomes a MAJOR ticket. Also settable via `.uap.json` `fidelity.reference` or `$UAP_DELIVER_REFERENCE`.
+- **Fleet-critic routing (U-C)** — when no explicit routing is configured, the blueprint + critic passes can be routed to the fleet's **measured strongest zero-cost arm** (from the recorded deliver outcomes: `uap memory outcomes`), so the builder is no longer blueprinted by its own narrow reading. Auto-selects only free/local arms (never a paid API model), requires a minimum run count and a clear delivered-rate edge, and reports the evidence in the run banner. `--no-fleet-critic` / `UAP_FLEET_CRITIC=0` disables; explicit `--evaluator-model`, env, or `.uap.json` routing always wins.
+
 ## Resilience: baseline-delta, migrations & repair escalation
 
 Long autonomous runs fail in predictable ways; `deliver` has a guard for each:
@@ -187,6 +196,8 @@ Long autonomous runs fail in predictable ways; `deliver` has a guard for each:
 | `--gates <ids>` | Gate subset: `build,typecheck,test,lint` |
 | `--acceptance` | After objective gates pass, judge spec behavioral completeness (LLM) and feed unmet requirements back |
 | `--evaluator-model <preset>` / `--evaluator-endpoint <url>` | Judge the acceptance gate with a DIFFERENT model than the implementer (generator≠evaluator) |
+| `--reference <path>` | Anchor the vision critique to a reference bar: an image, image directory, or video of a comparable flagship build (frames are extracted; the output is scored against them — ambition and craft, not pixel identity) |
+| `--no-fleet-critic` | Disable auto-routing of the blueprint+critic passes to a measured stronger zero-cost arm (explicit routing always wins) |
 | `--no-self-gate` | Disable the self-authored acceptance-gate fallback (on by default when no project gates are detected) |
 | `--force-self-gate` | Author a task-specific acceptance gate even when project gates exist |
 | `--keep-best` | Never regress: snapshot first, roll back if the run ends with a worse required-gate score |

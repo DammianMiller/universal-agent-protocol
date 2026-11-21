@@ -47,6 +47,11 @@ export interface ResolvedFidelity {
   visionBlocking: 'advisory' | 'block';
   /** Keep/enforce visual regression baselines. */
   visualBaselines: boolean;
+  /**
+   * Reference target anchoring the vision critique (U-B): image, image
+   * directory, or video of a comparable flagship build. Unset → vacuum judging.
+   */
+  referencePath?: string;
   /** Where the mode came from (for transparent reporting). */
   source: 'env' | 'config' | 'default';
 }
@@ -92,6 +97,7 @@ export function resolveFidelity(cwd: string = process.cwd()): ResolvedFidelity {
             ? 'block'
             : 'advisory',
     visualBaselines: cfg?.visualBaselines !== false,
+    referencePath: process.env.UAP_DELIVER_REFERENCE || cfg?.reference || undefined,
     source,
   };
 }
