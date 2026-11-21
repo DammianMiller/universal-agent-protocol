@@ -60,15 +60,20 @@ jobs:
       - name: Install python harness deps
         run: pip install fastapi uvicorn httpx openai
 
-      - name: Set version
+      # The requested version MUST match this ref's package.json: the version
+      # bump commit (npm run version:patch/minor on the feature branch, merged
+      # to master) IS the release. The previous behavior auto-bumped inside
+      # the runner, which published a 2.68.0 codebase as 2.69.0 when a
+      # trigger raced an unmerged PR (caught and cancelled 2026-11-21) — a
+      # mismatch is now a hard error, never a silent correction.
+      - name: Verify version matches the ref
         run: |
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           if [ "$CURRENT_VERSION" != "${{ github.event.inputs.version }}" ]; then
-            echo "Updating package.json version from $CURRENT_VERSION to ${{ github.event.inputs.version }}"
-            npm version ${{ github.event.inputs.version }} --no-git-tag-version || true
-          else
-            echo "Version already at $CURRENT_VERSION, skipping version bump"
+            echo "::error::Requested version '${{ github.event.inputs.version }}' does not match package.json '${CURRENT_VERSION}' on this ref — merge the version-bump commit before publishing."
+            exit 1
           fi
+          echo "Version verified: ${CURRENT_VERSION}"
 
       - name: Build
         run: npm run build

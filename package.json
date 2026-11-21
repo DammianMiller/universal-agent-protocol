@@ -6,14 +6,14 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "uap": "./dist/bin/cli.js",
-    "uap-tool-call-test": "./tools/agents/scripts/tool_call_test.py",
-    "uap-tool-call-wrapper": "./tools/agents/scripts/tool_call_wrapper.py",
-    "uap-template-verify": "./tools/agents/scripts/chat_template_verifier.py",
-    "llama-optimize": "./dist/bin/llama-server-optimize.js",
-    "generate-lora-data": "./tools/agents/scripts/generate_lora_training_data.py",
-    "uap-policy": "./dist/bin/policy.js",
-    "uap-anthropic-proxy": "./tools/agents/scripts/anthropic_proxy.py"
+    "uap": "dist/bin/cli.js",
+    "uap-tool-call-test": "tools/agents/scripts/tool_call_test.py",
+    "uap-tool-call-wrapper": "tools/agents/scripts/tool_call_wrapper.py",
+    "uap-template-verify": "tools/agents/scripts/chat_template_verifier.py",
+    "llama-optimize": "dist/bin/llama-server-optimize.js",
+    "generate-lora-data": "tools/agents/scripts/generate_lora_training_data.py",
+    "uap-policy": "dist/bin/policy.js",
+    "uap-anthropic-proxy": "tools/agents/scripts/anthropic_proxy.py"
   },
   "scripts": {
     "build": "tsc",
@@ -32,7 +32,7 @@
     "install:web": "bash scripts/setup/install-web.sh",
     "install:desktop": "bash scripts/setup/install-desktop.sh",
     "install:cloakbrowser": "tsx scripts/setup/install-cloakbrowser.ts",
-    "postinstall": "echo '\n✨ Run: npx @miller-tech/uap init --interactive'",
+    "postinstall": "echo '\n\u2728 Run: npx @miller-tech/uap init --interactive'",
     "version:patch": "bash scripts/version-bump.sh patch",
     "version:minor": "bash scripts/version-bump.sh minor",
     "version:major": "bash scripts/version-bump.sh major",

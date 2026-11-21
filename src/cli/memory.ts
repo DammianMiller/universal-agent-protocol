@@ -8,6 +8,7 @@ import { execSync } from 'child_process';
 // QdrantClient lazy-loaded via shared utility (saves ~100ms startup)
 import { getQdrantClientClass } from '../utils/lazy-imports.js';
 import { loadUapConfig } from '../utils/config-loader.js';
+import { inspectQdrantContainer } from '../memory/qdrant-diagnostics.js';
 import { generateEmbedding, generateEmbeddings } from '../memory/embeddings.js';
 import { prepopulateMemory } from '../memory/prepopulate.js';
 import { SQLiteShortTermMemory } from '../memory/short-term/sqlite.js';
@@ -228,25 +229,41 @@ async function showStatus(cwd: string): Promise<void> {
   }
   console.log('');
 
-  // Qdrant
-  try {
-    const dockerStatus = execSync('docker ps --filter name=qdrant --format "{{.Status}}"', {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    if (dockerStatus) {
-      qdrantActive = true;
-      console.log(`  ${statusBadge('running')} ${chalk.bold('Qdrant')} ${chalk.dim(dockerStatus)}`);
-      console.log(chalk.dim('    Endpoint: http://localhost:6333'));
-    } else {
-      console.log(
-        `  ${statusBadge('stopped')} ${chalk.bold('Qdrant')} ${chalk.dim('Container not running')}`
-      );
-    }
-  } catch {
+  // Qdrant — via the diagnostics module: a container that is up, absent, or
+  // down-and-looping (with the panic cause and the known-fix remediation).
+  const qdrant = inspectQdrantContainer();
+  if (qdrant.state === 'up') {
+    qdrantActive = true;
+    console.log(`  ${statusBadge('running')} ${chalk.bold('Qdrant')} ${chalk.dim(qdrant.statusLine)}`);
+    console.log(chalk.dim('    Endpoint: http://localhost:6333'));
+  } else if (qdrant.state === 'absent') {
+    console.log(
+      `  ${statusBadge('stopped')} ${chalk.bold('Qdrant')} ${chalk.dim('Container not running')}`
+    );
+  } else if (qdrant.state === 'unavailable') {
     console.log(
       `  ${statusBadge('not_available')} ${chalk.bold('Qdrant')} ${chalk.dim('Docker not available')}`
     );
+  } else {
+    // restarting / exited: down and looping — show WHY, and the fix when known.
+    // (Found live 2026-11-21: the status badge showed RUNNING over a container
+    // panic-looping on a poisoned shard WAL, with no cause and no remediation.)
+    console.log(
+      `  ${statusBadge('stopped')} ${chalk.bold('Qdrant')} ${chalk.dim(
+        `${qdrant.statusLine}${qdrant.exitCode !== undefined ? ` (exit ${qdrant.exitCode})` : ''}`,
+      )}`
+    );
+    if (qdrant.panicLine) {
+      console.log(chalk.dim(`    ${qdrant.panicLine.slice(0, 200)}`));
+    }
+    if (qdrant.knownFix) {
+      console.log(chalk.yellow(`    Known fix — ${qdrant.knownFix.label}:`));
+      for (const step of qdrant.knownFix.steps) {
+        console.log(chalk.yellow(`      ${step}`));
+      }
+    } else if (qdrant.panicLine) {
+      console.log(chalk.dim('    Inspect with: docker logs <qdrant-container>'));
+    }
   }
   console.log('');
 
