@@ -23,6 +23,16 @@ import { storeLongTerm, dimensionedName } from '../memory/long-term.js';
 import { searchByVector, isDimensionMismatch } from '../memory/qdrant-search.js';
 import { propagateCorrection } from '../memory/correction-propagator.js';
 import { runMaintenance } from '../memory/memory-maintenance.js';
+import {
+  formatRecallBanner,
+  isQdrantReachable,
+  keywordRecallLongTerm,
+  planRecall,
+  probeRecallHealth,
+  recordRecallHealthEvent,
+  type RecallPlan,
+} from '../memory/recall-health.js';
+import { collectDeliverOutcomes } from '../memory/outcome-aggregation.js';
 
 // CRITICAL: Memory databases are NEVER deleted or overwritten.
 // They persist with the project for its entire lifecycle.
@@ -41,7 +51,8 @@ type MemoryAction =
   | 'bridge'
   | 'sync-files'
   | 'graph-build'
-  | 'graph-status';
+  | 'graph-status'
+  | 'outcomes';
 
 interface MemoryOptions {
   search?: string;
@@ -55,6 +66,8 @@ interface MemoryOptions {
   git?: boolean;
   since?: string;
   verbose?: boolean;
+  /** `outcomes --json`: machine-readable dataset (rows, aggregates, coverage). */
+  json?: boolean;
   force?: boolean;
   all?: boolean;
   correction?: string;
@@ -89,6 +102,9 @@ export async function memoryCommand(
       break;
     case 'graph-status':
       await graphStatus(cwd);
+      break;
+    case 'outcomes':
+      await showDeliverOutcomes(cwd, options);
       break;
     case 'query':
       if (!options.search) {
@@ -350,7 +366,19 @@ export async function startServices(cwd: string): Promise<void> {
   try {
     execSync(`docker-compose -f "${composePath}" up -d`, { encoding: 'utf-8', stdio: 'pipe' });
     spinner.succeed('Memory services started');
-    console.log(chalk.dim('  Qdrant available at http://localhost:6333'));
+    // "Started" is not "healthy": a crash-looping container reports started
+    // and then dies (observed live: docker status "Restarting (101)"). Verify
+    // the endpoint actually answers before promising it works.
+    const reachable = await isQdrantReachable('http://localhost:6333', 15000);
+    if (reachable) {
+      console.log(chalk.green('  ✓ Qdrant healthy at http://localhost:6333'));
+    } else {
+      console.log(
+        chalk.yellow(
+          '  ⚠ Qdrant container started but is NOT answering on :6333 — it may be crash-looping. Check: docker logs uap-qdrant'
+        )
+      );
+    }
   } catch (error) {
     spinner.fail('Failed to start memory services');
     console.error(chalk.red('Make sure Docker is installed and running'));
@@ -358,31 +386,10 @@ export async function startServices(cwd: string): Promise<void> {
   }
 }
 
-/**
- * Check if Qdrant is reachable by polling its health endpoint.
- * Optionally waits up to `timeoutMs` for it to become available.
- */
-export async function isQdrantReachable(
-  endpoint = 'http://localhost:6333',
-  timeoutMs = 0
-): Promise<boolean> {
-  const url = endpoint.startsWith('http') ? endpoint : `http://${endpoint}`;
-  const deadline = Date.now() + timeoutMs;
-  const pollInterval = 1000;
-
-  do {
-    try {
-      const res = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(2000) });
-      if (res.ok) return true;
-    } catch {
-      // Not yet available
-    }
-    if (Date.now() + pollInterval > deadline) break;
-    await new Promise((r) => setTimeout(r, pollInterval));
-  } while (Date.now() < deadline);
-
-  return false;
-}
+// isQdrantReachable moved to src/memory/recall-health.ts (shared with the
+// recall-health probe). Re-exported here so existing importers
+// (src/cli/init.ts) and test mocks keep working unchanged.
+export { isQdrantReachable };
 
 async function stopServices(cwd: string): Promise<void> {
   const spinner = ora('Stopping memory services...').start();
@@ -475,8 +482,23 @@ async function queryMemory(
     project: { name: 'project', defaultBranch: 'main' },
   };
 
-  // Query short-term memory (SQLite) first
-  const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+  // Recall health first: a degraded backend (Qdrant down, embedding chain
+  // on its fallback tier) must present as a LOUD degraded banner plus
+  // keyword recall, never as a healthy-looking "No results" — the store
+  // may hold the answer while the backend cannot retrieve it.
+  const health = await probeRecallHealth(cwd, config);
+  if (health.degraded.length > 0) {
+    for (const line of formatRecallBanner(health)) console.log(chalk.yellow(line));
+    console.log('');
+    recordRecallHealthEvent(health);
+  }
+  const plan = planRecall(health);
+
+  // Query short-term memory (SQLite) first. shortTermDbPath resolves a
+  // relative configured path against the MAIN checkout, not the cwd —
+  // inside a worktree the join(cwd, ...) form read the worktree's private
+  // DB instead of the shared one, silently emptying short-term recall.
+  const dbPath = shortTermDbPath(cwd, config.memory?.shortTerm?.path);
   if (existsSync(dbPath)) {
     try {
       const shortTermDb = new SQLiteShortTermMemory({
@@ -510,17 +532,60 @@ async function queryMemory(
     }
   }
 
-  // Query long-term memory (Qdrant) if available
-  await queryQdrant(cwd, config, search, limit, threshold);
+  // Query long-term memory (Qdrant) when the semantic path is viable
+  await queryQdrant(cwd, config, search, limit, threshold, plan);
+
+  // Degraded-mode recall: deterministic keyword scan over the daily-log
+  // store, clearly labeled as non-semantic.
+  if (plan.useKeywordFallback) {
+    printKeywordRecallFallback(cwd, config, search, limit);
+  }
+}
+
+/**
+ * Print the degraded-mode keyword recall block. Clearly labeled: these
+ * results are a deterministic token-overlap scan over the daily-log
+ * store, NOT semantic retrieval.
+ */
+function printKeywordRecallFallback(
+  cwd: string,
+  config: AgentContextConfig,
+  search: string,
+  limit: number
+): void {
+  const hits = keywordRecallLongTerm(cwd, config, search, limit);
+  if (hits.length > 0) {
+    console.log(
+      chalk.yellow(
+        `\n⚠ Keyword recall (degraded, non-semantic): ${hits.length} daily-log entries:\n`
+      )
+    );
+    for (const h of hits) {
+      console.log(
+        `  ${chalk.yellow(`[${h.type}]`)} ${chalk.dim(`(${(h.score * 100).toFixed(0)}% overlap)`)} ${chalk.dim(h.timestamp.slice(0, 10))}`
+      );
+      console.log(`    ${h.content.slice(0, 150)}${h.content.length > 150 ? '...' : ''}\n`);
+    }
+  } else {
+    console.log(chalk.yellow('\n⚠ Keyword recall found no matching daily-log entries.'));
+  }
 }
 
 async function queryQdrant(
-  _cwd: string,
+  cwd: string,
   config: AgentContextConfig,
   search: string,
   limit: number,
-  threshold?: number
+  threshold?: number,
+  plan?: RecallPlan
 ): Promise<void> {
+  // Degraded recall: the banner above already said why semantic search is
+  // skipped — running it anyway would only produce a misleading "No
+  // results in long-term memory" against an unreachable backend, or a
+  // fallback-tier vector (384-dim TF-IDF) searched against 768-dim
+  // nomic-built collections.
+  if (plan && !plan.useVectorSearch) return;
+
   const endpoint = config.memory?.longTerm?.endpoint || 'localhost:6333';
   const url =
     endpoint.startsWith('http://') || endpoint.startsWith('https://')
@@ -635,9 +700,13 @@ async function queryQdrant(
       console.log(chalk.dim('\nNo results in long-term memory'));
     }
   } catch {
+    // The probe was healthy but the call failed (backend died mid-query,
+    // or the client errored). Say so loudly and degrade to keyword recall
+    // instead of a dim "not available" that reads as an empty store.
     console.log(
-      chalk.dim('\nQdrant not available for long-term search. Run `uap memory start` first.')
+      chalk.yellow('\n⚠ Qdrant failed during long-term search — semantic recall unavailable.')
     );
+    printKeywordRecallFallback(cwd, config, search, limit);
   }
 }
 
@@ -1470,6 +1539,58 @@ async function queryActive(cwd: string, search: string, options: MemoryOptions):
   }[result.stopReason];
   console.log(chalk.dim(why));
   return true;
+}
+
+/**
+ * Proof-plan O1 surface: aggregate the recorded deliver outcomes into the
+ * model × outcome × gates table. Descriptive by construction — the coverage
+ * lines name which substrates contributed, so a degraded memory backend
+ * narrows coverage visibly instead of silently shrinking the dataset.
+ */
+async function showDeliverOutcomes(cwd: string, options: MemoryOptions): Promise<void> {
+  const config = loadUapConfig(cwd);
+  const dataset = collectDeliverOutcomes(cwd, config);
+
+  if (options.json) {
+    console.log(JSON.stringify(dataset, null, 2));
+    return;
+  }
+
+  console.log(chalk.bold('\n📊 Deliver outcomes (descriptive, proof-plan O1)\n'));
+  for (const c of dataset.coverage) {
+    const state = !c.reachable
+      ? chalk.yellow('unreachable')
+      : c.rows > 0
+        ? chalk.green(`${c.rows} rows`)
+        : chalk.dim('reachable, no deliver lessons');
+    console.log(`  source ${c.source.padEnd(14)} ${state}`);
+  }
+  if (dataset.aggregates.length === 0) {
+    console.log(chalk.dim('\n  No deliver outcomes recorded on any reachable substrate.'));
+    console.log(
+      chalk.dim('  (Long-term memory down? `uap memory status` names the degraded components.)')
+    );
+    return;
+  }
+  console.log(
+    `\n  ${'model'.padEnd(14)}${'runs'.padStart(5)}  ${'deliv'.padStart(5)}  ${'not'.padStart(5)}  ` +
+      `${'stop'.padStart(5)}  ${'gates-mean'.padStart(10)}  ${'gates-best'.padStart(11)}  turns-mean`
+  );
+  for (const a of dataset.aggregates) {
+    const mean = a.bestGatesMean === null ? '—' : `${a.bestGatesMean.toFixed(0)}%`;
+    const best = a.bestGatesBest === null ? '—' : `${a.bestGatesBest}%`;
+    console.log(
+      `  ${a.model.padEnd(14)}${String(a.runs).padStart(5)}  ${String(a.delivered).padStart(5)}  ` +
+        `${String(a.notDelivered).padStart(5)}  ${String(a.stopped).padStart(5)}  ` +
+        `${mean.padStart(10)}  ${best.padStart(11)}  ${a.turnsMean.toFixed(1)}`
+    );
+  }
+  console.log(
+    chalk.dim(
+      '\n  Descriptive only (no controlled arm): it directs where paired runs should spend; it proves nothing about cause.'
+    )
+  );
+  console.log('');
 }
 
 async function buildGraph(cwd: string, options: MemoryOptions): Promise<void> {

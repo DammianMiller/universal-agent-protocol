@@ -804,6 +804,17 @@ export class EmbeddingService {
     log.info('Fallback to TF-IDF provider');
   }
 
+  /**
+   * The provider selected by initialize() — the recall-health layer
+   * compares this name against FALLBACK_EMBEDDING_PROVIDERS to detect
+   * silent semantic degradation: a TF-IDF vector searched against a
+   * nomic-built collection returns "no results" while the store holds
+   * the answer.
+   */
+  getActiveProviderName(): string | null {
+    return this.provider ? this.provider.name : null;
+  }
+
   async embed(text: string): Promise<number[]> {
     if (!this.provider) {
       await this.initialize();
@@ -926,6 +937,28 @@ export function getEmbeddingService(): EmbeddingService {
     embeddingServiceInstance = new EmbeddingService(undefined, undefined, llamaCppEndpoint);
   }
   return embeddingServiceInstance;
+}
+
+/**
+ * Embedding providers that are always available but NOT semantically
+ * compatible with the collections the primary providers build (a
+ * different vector space — 384 dims against nomic's 768). While one of
+ * these is active, semantic recall is degraded by construction and
+ * callers must not present vector-search results, or their absence, as
+ * healthy recall.
+ */
+export const FALLBACK_EMBEDDING_PROVIDERS: ReadonlySet<string> = new Set([
+  'tfidf-enhanced',
+]);
+
+export function isFallbackEmbeddingProvider(
+  name: string | null | undefined
+): boolean {
+  return !!name && FALLBACK_EMBEDDING_PROVIDERS.has(name);
+}
+
+export function getActiveEmbeddingProviderName(): string | null {
+  return getEmbeddingService().getActiveProviderName();
 }
 
 export async function generateEmbedding(text: string): Promise<number[]> {

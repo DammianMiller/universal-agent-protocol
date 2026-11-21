@@ -2,17 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 /**
- * Guards the geometry invariants for the local Qwen3.8 stack — vLLM
- * fleet-arm era (2026-11-19).
+ * Guards the geometry invariants for the local Qwen3.8 stack — basalt
+ * fleet-arm era (2026-11-21).
  *
- * Context (2026-11-19): the backend is the HyperQwen patched-vLLM 27B arm
- * on :8080 (uap-hyperqwen-server) — ONE rail, a 131072-cell pool
- * (int8-per-token-head KV), MTP k=3. Its predecessors were the strata
- * serve layer (2026-10-04) and buun-llama-cpp behind uap-gsq-rco-server
- * (2026-09-20, `-np 2 -c 229376`); those units are INACTIVE but still
- * installed, and `systemctl show` still reports their ExecStart — which is
- * exactly how `uap inference health` came to print a stale pool size for a
- * live backend.
+ * Context (2026-11-21): the backend is the basalt-fn NVFP4-DQ6_K arm on
+ * :8080 (uap-basalt-fn-server, the miller-tech-prime DEFAULT arm) — ONE
+ * rail, a 262144-cell int8-KV pool. Its predecessors were the HyperQwen
+ * patched-vLLM arm (2026-11-19, 131072 pool), the strata serve layer
+ * (2026-10-04), and buun-llama-cpp behind uap-gsq-rco-server (2026-09-20,
+ * `-np 2 -c 229376`); those units are INACTIVE but still installed, and
+ * `systemctl show` still reports their ExecStart — which is exactly how
+ * `uap inference health` came to print a stale pool size for a live
+ * backend.
  *
  * The chain therefore no longer runs through any unit file (it would tie
  * the profile to a DEAD process). It runs through the LIVE backend: /slots

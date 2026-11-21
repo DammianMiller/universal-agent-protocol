@@ -27,7 +27,12 @@ import { buildReport, changedFiles, QualityReport } from '../quality/report.js';
 import { scanContent } from '../quality/scanner.js';
 import { TierVector } from '../quality/tier.js';
 import { resolveClass, storeArtifactAnchor } from '../quality/classes.js';
-import { TierLadderCandidate, runTierLadder } from '../quality/tier-ladder.js';
+import {
+  TierLadderCandidate,
+  recordLadderRun,
+  runTierLadder,
+  summarizeLadderRuns,
+} from '../quality/tier-ladder.js';
 import { classSamplingProfile, tierContractText, tierKeysFor } from '../quality/tier-contract.js';
 import { DEFAULT_TOLERANCE, deriveTier, gapReport, loadTiers, saveGlobalTier } from '../quality/tiers.js';
 
@@ -86,6 +91,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       return gapCmd(dir, options);
     case 'ladder':
       return ladderCmd(dir, options);
+    case 'convergence':
+      return convergenceCmd(dir, options);
     case 'contract':
       return contractCmd(dir, options);
     case 'publish':
@@ -104,6 +111,7 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  derive <class>      Derive a tier from a class\'s anchors (--name, --tolerance)');
       console.log('  gap --file <f>      Gap an artifact against a tier (--tier <class/name>); exit 2 below tier');
       console.log('  ladder --rounds-dir Rank harvested best-of-N rounds against a tier (--tier); escalation + honest cut');
+      console.log('  convergence         Per-tier convergence telemetry — the tier-gate promotion budget');
       console.log('  contract --tier <k>  Print the tier contract (the injectable executor-prompt block)');
       console.log('  publish <class/name> Copy a project tier into the fleet-global store — it then auto-applies');
       console.log('                      (UAP_TIER_STORE or ~/.uap/quality/tiers.json; project tiers override on collision)');
@@ -468,6 +476,54 @@ function ladderInt(raw: string | undefined, fallback: number, min: number, max: 
 }
 
 /**
+ * `uap quality convergence` — Wave 2.1: per-tier convergence telemetry from
+ * the recorded ladder runs. This is the promotion-budget evidence for the
+ * tier gate's shadow→block decision (the System-1 rule): a tier with a
+ * measured cut-rate/winner-pass budget is promotable; a tier with no runs
+ * is not, no matter how long it has been in shadow.
+ */
+function convergenceCmd(dir: string, options: QualityOptions): void {
+  const { summaries, totalRuns, logPath } = summarizeLadderRuns(dir);
+  if (options.json) {
+    console.log(JSON.stringify({ totalRuns, logPath, summaries }, null, 2));
+    return;
+  }
+  console.log(chalk.bold(`\n  Tier-ladder convergence (${totalRuns} recorded run(s))`));
+  console.log(chalk.dim(`    log: ${logPath}`));
+  if (totalRuns === 0) {
+    console.log(chalk.dim('\n    No ladder runs recorded yet — run `uap quality ladder` first.'));
+    console.log(
+      chalk.dim(
+        '    The tier gate stays in shadow until this log holds the measured budget (UAP_TIER_GATE=block promotes).'
+      )
+    );
+    return;
+  }
+  console.log(
+    `\n    ${'tier'.padEnd(28)}${'runs'.padStart(5)}  ${'reached'.padStart(7)}  ${'cut%'.padStart(6)}  ` +
+      `${'escal%'.padStart(7)}  ${'rounds→tier'.padStart(11)}  ${'win%'.padStart(6)}  cand/run`
+  );
+  for (const s of summaries) {
+    const rtt = s.meanRoundsToTier === null ? '—' : s.meanRoundsToTier.toFixed(1);
+    const cut = `${(s.cutRate * 100).toFixed(0)}%`;
+    const escal = `${(s.escalationRate * 100).toFixed(0)}%`;
+    const win = `${(s.winnerPassRate * 100).toFixed(0)}%`;
+    const mark = s.cutRate >= 0.5 ? chalk.red : s.cutRate > 0 ? chalk.yellow : chalk.green;
+    console.log(
+      `    ${s.tier.padEnd(28)}${String(s.runs).padStart(5)}  ${String(s.tierReached).padStart(7)}  ` +
+        `${mark(cut.padStart(6))}  ${escal.padStart(7)}  ${rtt.padStart(11)}  ${win.padStart(6)}  ` +
+        `${s.meanCandidates.toFixed(1)}`
+    );
+  }
+  console.log(
+    chalk.dim(
+      '\n    Descriptive (no controlled arm). Promotion needs this budget plus the gate-shadow false-positive count.'
+    )
+  );
+  console.log('');
+}
+
+/**
  * `uap quality ladder --tier <class/name> --rounds-dir <dir>` — rank harvested
  * best-of-N candidate artifacts against a tier, round by round: each
  * roundNN/ subdirectory holds that round's N variants (the operator's model
@@ -506,6 +562,18 @@ async function ladderCmd(dir: string, options: QualityOptions): Promise<void> {
     candidatesPerRound: candidates,
     plateauRounds,
     generate: (round) => candidatesOf(roundDirs[round - 1] ?? ''),
+  });
+
+  // Wave 2.1: every completed run lands in the convergence log — the
+  // evidence the tier gate's shadow→block promotion decision reads.
+  recordLadderRun(dir, {
+    tier: result.tier,
+    outcome: result.outcome,
+    rounds: result.rounds.length,
+    candidatesMeasured: result.rounds.reduce((a, r) => a + r.candidates.length, 0),
+    winnerPassed: result.winner === null ? null : result.outcome === 'tier-reached',
+    escalationFired: result.escalationFired,
+    model: null, // the harvested-runs CLI does not attribute the executor
   });
 
   if (options.json) {
