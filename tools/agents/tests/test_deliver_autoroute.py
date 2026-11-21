@@ -304,5 +304,49 @@ class DeliverSingleFlightTest(unittest.TestCase):
         self.assertIn("already in progress", held["message"])
 
 
+class WorktreeReplayCwdTest(unittest.TestCase):
+    """Item 9: resolve the nearest worktree or package root for pending replay."""
+
+    def test_resolves_worktree_package_root_instead_of_bare_repo_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            wt = root / ".worktrees" / "001-feature"
+            src = wt / "src"
+            src.mkdir(parents=True)
+            (wt / "package.json").write_text('{"name":"demo"}', encoding="utf-8")
+            target = src / "App.jsx"
+            target.write_text("export default 1;\n", encoding="utf-8")
+
+            resolved = mod._resolve_replay_cwd(root, str(target))
+            self.assertEqual(resolved, wt.resolve())
+
+            # Relative path inside worktree resolves identically
+            resolved_rel = mod._resolve_replay_cwd(root, ".worktrees/001-feature/src/App.jsx")
+            self.assertEqual(resolved_rel, wt.resolve())
+
+    def test_resolves_worktree_git_boundary_even_without_manifest(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            wt = root / ".worktrees" / "002-scripts"
+            (wt / "lib").mkdir(parents=True)
+            (wt / ".git").write_text("gitdir: ../../.git/worktrees/002-scripts\n", encoding="utf-8")
+            target = wt / "lib" / "tool.py"
+            target.write_text("x = 1\n", encoding="utf-8")
+
+            self.assertEqual(mod._resolve_replay_cwd(root, str(target)), wt.resolve())
+
+    def test_never_escapes_repo_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            outer = Path(td)
+            repo = outer / "repo"
+            repo.mkdir()
+            outside = outer / "other" / "file.ts"
+            outside.parent.mkdir()
+            (outer / "other" / "package.json").write_text("{}", encoding="utf-8")
+            outside.write_text("export const x = 1;\n", encoding="utf-8")
+
+            self.assertEqual(mod._resolve_replay_cwd(repo, str(outside)), repo)
+
+
 if __name__ == "__main__":
     unittest.main()

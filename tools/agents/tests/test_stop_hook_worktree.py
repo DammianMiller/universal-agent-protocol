@@ -110,6 +110,51 @@ class StopHookWorktreeTest(unittest.TestCase):
         self.assertTrue(self.log_file.exists())
         self.assertIn(str(wt), self.log_file.read_text(encoding="utf-8"))
 
+    def test_timeout_wrapper_defaults_to_45s_and_honors_override(self):
+        # Default budget fits cleanly inside Droid's 60s Stop-hook ceiling (45s + 5s grace).
+        src = STOP_SH.read_text(encoding="utf-8")
+        self.assertIn('STOP_VERIFY_TIMEOUT="${UAP_STOP_VERIFY_TIMEOUT:-45}"', src)
+        self.assertNotIn("timeout -k 5 120", src)
+
+        # Install a fake `timeout` binary that records the budget passed to it.
+        timeout_log = Path(self.tmp.name) / "timeout.log"
+        fake_timeout = self.bin_dir / "timeout"
+        fake_timeout.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s\\n' \"$*\" >> \"{timeout_log}\"\n"
+            "shift 3\n"
+            "exec \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake_timeout.chmod(fake_timeout.stat().st_mode | stat.S_IXUSR)
+        self._install_fake_uap(verify_exit=0)
+        (self.root / "main.py").write_text("print(1)\n", encoding="utf-8")
+
+        # Default (unset) -> 45s
+        env = dict(os.environ)
+        env["CLAUDE_PROJECT_DIR"] = str(self.root)
+        env["PATH"] = f"{self.bin_dir}:{env.get('PATH', '')}"
+        env["UAP_VERIFY_ON_STOP"] = "1"
+        # Distinct session id per invocation: loop-protection.sh dedups a
+        # second "stop" within 5s for the SAME session state file, which would
+        # suppress the second run's gate entirely (observed as a missing
+        # timeout.log). Fresh session id => fresh state file => real verify.
+        env["UAP_SESSION_ID"] = "timeout-default-45"
+        env.pop("UAP_STOP_VERIFY_TIMEOUT", None)
+        res = subprocess.run(["bash", str(STOP_SH)], input="", env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(res.returncode, 0, msg=res.stdout + res.stderr)
+        self.assertTrue(timeout_log.exists())
+        self.assertIn("-k 5 45 uap verify", timeout_log.read_text(encoding="utf-8"))
+
+        # Custom override -> 20s
+        timeout_log.unlink()
+        (self.root / "main.py").write_text("print(2)\n", encoding="utf-8")
+        env["UAP_STOP_VERIFY_TIMEOUT"] = "20"
+        env["UAP_SESSION_ID"] = "timeout-override-20"
+        res2 = subprocess.run(["bash", str(STOP_SH)], input="", env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(res2.returncode, 0, msg=res2.stdout + res2.stderr)
+        self.assertIn("-k 5 20 uap verify", timeout_log.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

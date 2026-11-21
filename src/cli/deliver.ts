@@ -11,7 +11,7 @@ import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, writeFileSync, renameSync, realpathSync, closeSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { createHash } from 'crypto';
-import { join, resolve, relative } from 'path';
+import { dirname, join, resolve, relative } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
 import type {
   LoopExecutor,
@@ -1719,6 +1719,37 @@ export function epicFlatTurnOption(
   return { abortOnFlatTurns: Math.max(limit, escalationLadderReach) };
 }
 
+/**
+ * Resolve the nearest worktree or package root containing fast-tier required
+ * gates for pending replay targets, walking upward from each applied/target
+ * file's directory up to `projectRoot`. Prevents bare repo roots from logging
+ * "no required fast gates detected" when edits live inside `.worktrees/<slug>/`
+ * or a nested package.
+ */
+export function resolvePendingGateRoot(
+  projectRoot: string,
+  appliedFiles: string[],
+  pendingFile?: string
+): string {
+  const root = resolve(projectRoot);
+  const candidates = appliedFiles.length > 0 ? appliedFiles : pendingFile ? [pendingFile] : [];
+  for (const file of candidates) {
+    const abs = resolve(root, file);
+    const relToRoot = relative(root, abs);
+    if (relToRoot.startsWith('..')) continue;
+    let dir = dirname(abs);
+    for (let hops = 0; hops < 16; hops++) {
+      const hasFastGates = detectRungs(dir).some((r) => r.required && tierOf(r) === 'fast');
+      if (hasFastGates) return dir;
+      if (dir === root) break;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return root;
+}
+
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
 
@@ -1734,10 +1765,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     if (res.applied.length === 0) {
       fail(`No pending intents applied${pendingFile ? ` for ${pendingFile}` : ''} (${res.skipped.length} skipped).`);
     }
-    const rungs = detectRungs(projectRoot).filter((r) => r.required && tierOf(r) === 'fast');
+    const gateRoot = resolvePendingGateRoot(
+      projectRoot,
+      res.applied.map((a) => a.file),
+      pendingFile
+    );
+    const rungs = detectRungs(gateRoot).filter((r) => r.required && tierOf(r) === 'fast');
     if (rungs.length > 0) {
-      console.log(chalk.cyan(`⚖ verifying ${res.applied.length} applied intent(s) against ${rungs.length} required fast gate(s)…`));
-      const ladder = runLadder(rungs, projectRoot);
+      const scopeHint = gateRoot !== projectRoot ? ` in ${relative(projectRoot, gateRoot) || gateRoot}` : '';
+      console.log(chalk.cyan(`⚖ verifying ${res.applied.length} applied intent(s) against ${rungs.length} required fast gate(s)${scopeHint}…`));
+      const ladder = runLadder(rungs, gateRoot);
       if (!ladder.passed) {
         fail(`Applied intents but the required gates FAIL:\n${ladder.feedback}`);
       }

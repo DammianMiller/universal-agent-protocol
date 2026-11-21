@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { runVerify } from '../../src/cli/verify.js';
+import { buildAcceptanceCompleteOptions, runVerify } from '../../src/cli/verify.js';
+import { OpenAICompatClient } from '../../src/models/openai-compat-client.js';
 
 function writeWebGame(dir: string, gameJs: string): void {
   mkdirSync(join(dir, 'js'), { recursive: true });
@@ -167,5 +168,80 @@ describe('gate ORDER: build/run first, visual only after they pass', () => {
     const r = await runVerify({ dir, visual: true });
     expect(r.report).not.toMatch(/visual \+ aesthetic review SKIPPED/);
     expect(r.visual).toBeUndefined();
+  });
+
+  it('SKIPS LLM acceptance fail-fast under --runtime-only when deterministic runtime gates fail', async () => {
+    writeWebGame(dir, '(function(){ function r(){ return s.x; } r(); let s = {x:1}; })();');
+    const acceptanceExecutor = vi.fn(async () => ({
+      content: '{"passed": true, "criteria": []}',
+      provider: 'local',
+      model: 'mock',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }));
+
+    const r = await runVerify({
+      dir,
+      runtimeOnly: true,
+      acceptanceSpec: 'Render a working interactive scene without runtime exceptions',
+      acceptanceExecutor,
+    });
+    expect(r.passed).toBe(false);
+    expect(r.exitCode).toBe(1);
+    expect(acceptanceExecutor).not.toHaveBeenCalled();
+    expect(r.report).toMatch(/acceptance review SKIPPED/i);
+  });
+});
+
+describe('Item 7: fast Stop-hook acceptance options & explicit thinking:false', () => {
+  it('buildAcceptanceCompleteOptions uses fast non-thinking JSON bounds for runtime-only Stop hooks', () => {
+    expect(buildAcceptanceCompleteOptions(true)).toEqual({
+      temperature: 0.1,
+      thinking: false,
+      jsonResponse: true,
+      maxTokens: 4096,
+      timeout: 25_000,
+    });
+    expect(buildAcceptanceCompleteOptions(false)).toEqual({
+      temperature: 0.1,
+    });
+  });
+
+  it('OpenAICompatClient forwards thinking:false and x-uap-json-response header', async () => {
+    const captured: { body?: Record<string, unknown>; headers?: Record<string, string> } = {};
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      captured.body = JSON.parse(String(init?.body ?? '{}'));
+      captured.headers = (init?.headers ?? {}) as Record<string, string>;
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"passed":true}' } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    try {
+      const client = new OpenAICompatClient();
+      await client.complete(
+        {
+          id: 'fast-acceptance',
+          name: 'Fast Acceptance Judge',
+          provider: 'custom',
+          apiModel: 'fast-acceptance-1',
+          endpoint: 'http://127.0.0.1:4000/v1',
+          maxContextTokens: 8192,
+          capabilities: [],
+        },
+        'judge',
+        buildAcceptanceCompleteOptions(true)
+      );
+      expect(captured.body?.enable_thinking).toBe(false);
+      expect(captured.body?.chat_template_kwargs).toEqual({ enable_thinking: false });
+      expect(captured.body?.max_tokens).toBe(4096);
+      expect(captured.headers?.['x-uap-json-response']).toBe('1');
+      expect(captured.headers?.['x-uap-reasoning']).toBeUndefined();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

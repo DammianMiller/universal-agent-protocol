@@ -36,39 +36,80 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
 COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"
 
-# ─── Detect if code was changed ─────────────────────────────────
+# ─── Detect if code was changed (main repo + linked worktrees) ───
 CODE_CHANGED="false"
 TS_CHANGED="false"
 TEST_FILES_CHANGED="false"
 UNCOMMITTED_CHANGES="false"
 
-# Check for uncommitted changes in the working tree
-CHANGED_FILES=$(git -C "$PROJECT_DIR" diff --name-only HEAD 2>/dev/null || true)
-STAGED_FILES=$(git -C "$PROJECT_DIR" diff --cached --name-only 2>/dev/null || true)
-UNTRACKED_FILES=$(git -C "$PROJECT_DIR" ls-files --others --exclude-standard 2>/dev/null || true)
+# Filter out UAP/agent scaffolding paths so read-only sessions with untracked
+# hook/policy/agent files never false-trigger code-changed verification.
+SCAFFOLD_RE='^(\.factory/|\.claude/|\.codex/|\.cursor/|\.agents/|\.opencode/|\.forge/|\.policy-tools/|\.uap/|agents/|opencode\.json$|\.mcp\.json$|AGENTS\.md$|CLAUDE\.md$)'
+SOURCE_EXT_RE='\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|html|htm|css|scss|vue|svelte|java|kt|c|cc|cpp|h|hpp|rb|php|sh|sql|cs)$'
+TEST_FILE_RE='((^|/)(test/|tests/|__tests__/|spec/)|(\.(test|spec)\.|_test\.|test_))'
 
-# Newline-join the three lists: plain concatenation mashes the last file of one
-# list into the first of the next (e.g. "a.jsb.ts"), which breaks the per-line
-# extension greps below.
-ALL_CHANGES=$(printf '%s\n%s\n%s\n' "$CHANGED_FILES" "$STAGED_FILES" "$UNTRACKED_FILES")
+_collect_filtered_changes() {
+  local dir="$1"
+  local cf sf uf combined
+  cf=$(git -C "$dir" diff --name-only HEAD 2>/dev/null || true)
+  sf=$(git -C "$dir" diff --cached --name-only 2>/dev/null || true)
+  uf=$(git -C "$dir" ls-files --others --exclude-standard 2>/dev/null || true)
+  combined=$(printf '%s\n%s\n%s\n' "$cf" "$sf" "$uf" | sed '/^[[:space:]]*$/d' | grep -Ev "$SCAFFOLD_RE" || true)
+  printf '%s' "$combined"
+}
+
+CHANGED_FILES=$(git -C "$PROJECT_DIR" diff --name-only HEAD 2>/dev/null | grep -Ev "$SCAFFOLD_RE" || true)
+STAGED_FILES=$(git -C "$PROJECT_DIR" diff --cached --name-only 2>/dev/null | grep -Ev "$SCAFFOLD_RE" || true)
+UNTRACKED_FILES=$(git -C "$PROJECT_DIR" ls-files --others --exclude-standard 2>/dev/null | grep -Ev "$SCAFFOLD_RE" || true)
+
+ROOT_CHANGES=$(_collect_filtered_changes "$PROJECT_DIR")
+ALL_CHANGES="$ROOT_CHANGES"
+VERIFY_DIRS=()
+
+if [ -n "$ROOT_CHANGES" ]; then
+  UNCOMMITTED_CHANGES="true"
+  if printf '%s\n' "$ROOT_CHANGES" | grep -qE "$SOURCE_EXT_RE"; then
+    CODE_CHANGED="true"
+    VERIFY_DIRS+=("$PROJECT_DIR")
+  fi
+fi
+
+# Scan linked git worktrees (e.g. .worktrees/*) so worktree sessions are NOT
+# invisible to completion & runtime verification gates.
+MAIN_REAL="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P || printf '%s' "$PROJECT_DIR")"
+while IFS= read -r wt_line; do
+  case "$wt_line" in
+    "worktree "*)
+      wt_path="${wt_line#worktree }"
+      if [ -n "$wt_path" ] && [ -d "$wt_path" ]; then
+        wt_real="$(cd "$wt_path" 2>/dev/null && pwd -P || printf '%s' "$wt_path")"
+        if [ "$wt_real" != "$MAIN_REAL" ]; then
+          wt_changes=$(_collect_filtered_changes "$wt_path")
+          if [ -n "$wt_changes" ]; then
+            UNCOMMITTED_CHANGES="true"
+            ALL_CHANGES=$(printf '%s\n%s\n' "$ALL_CHANGES" "$wt_changes")
+            if printf '%s\n' "$wt_changes" | grep -qE "$SOURCE_EXT_RE"; then
+              CODE_CHANGED="true"
+              VERIFY_DIRS+=("$wt_path")
+            fi
+          fi
+        fi
+      fi
+      ;;
+  esac
+done < <(git -C "$PROJECT_DIR" worktree list --porcelain 2>/dev/null || true)
 
 if [ -n "$ALL_CHANGES" ]; then
-  UNCOMMITTED_CHANGES="true"
-
-  # Check for source code changes
-  if echo "$ALL_CHANGES" | grep -qE '\.(ts|tsx|js|jsx)$'; then
-    CODE_CHANGED="true"
-  fi
-
-  # Check for TypeScript changes specifically
-  if echo "$ALL_CHANGES" | grep -qE '\.tsx?$'; then
+  if printf '%s\n' "$ALL_CHANGES" | grep -qE '\.tsx?$'; then
     TS_CHANGED="true"
   fi
-
-  # Check for test file changes
-  if echo "$ALL_CHANGES" | grep -qE 'test/.*\.(ts|tsx|js|jsx)$'; then
+  if printf '%s\n' "$ALL_CHANGES" | grep -qE "$TEST_FILE_RE"; then
     TEST_FILES_CHANGED="true"
   fi
+fi
+
+if [ "${#VERIFY_DIRS[@]}" -eq 0 ]; then
+  VERIFY_DIRS+=("$PROJECT_DIR")
 fi
 
 # ─── Completion Gate Checklist ───────────────────────────────────
@@ -185,13 +226,19 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
   VERIFY_RC=0
   if [ "$VERIFY_SUPPORTED" = "0" ]; then
     # Portable timeout wrapper: GNU coreutils ships `timeout` (Linux), macOS
-    # ships it as `gtimeout`, and minimal shells may lack both. Resolve once and
-    # fall back to running verify directly — it enforces its own internal rung
-    # timeouts. Without this, a missing `timeout` printed "command not found".
+    # ships it as `gtimeout`, and minimal shells may lack both. Default 45s
+    # (+ 5s kill grace = 50s max) so verification always completes cleanly
+    # inside a 60s harness Stop-hook budget instead of being SIGKILLed mid-run.
+    # Override via UAP_STOP_VERIFY_TIMEOUT.
+    STOP_VERIFY_TIMEOUT="${UAP_STOP_VERIFY_TIMEOUT:-45}"
+    case "$STOP_VERIFY_TIMEOUT" in ''|*[!0-9]*) STOP_VERIFY_TIMEOUT=45 ;; esac
+    if [ "$STOP_VERIFY_TIMEOUT" -le 0 ]; then
+      STOP_VERIFY_TIMEOUT=45
+    fi
     if command -v timeout >/dev/null 2>&1; then
-      TIMEOUT_WRAP="timeout -k 5 120"
+      TIMEOUT_WRAP="timeout -k 5 ${STOP_VERIFY_TIMEOUT}"
     elif command -v gtimeout >/dev/null 2>&1; then
-      TIMEOUT_WRAP="gtimeout -k 5 120"
+      TIMEOUT_WRAP="gtimeout -k 5 ${STOP_VERIFY_TIMEOUT}"
     else
       TIMEOUT_WRAP=""
     fi
@@ -219,8 +266,25 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
     if uap verify --help 2>/dev/null | grep -q 'acceptance-auto'; then
       ACC_AUTO="--acceptance-auto"
     fi
-    VERIFY_OUT="$(cd "$PROJECT_DIR" && $TIMEOUT_WRAP uap verify --runtime-only $UV_AUTO $ACC_AUTO --dir "$PROJECT_DIR" 2>&1)"
-    VERIFY_RC=$?
+    VERIFY_OUT=""
+    VERIFY_RC=0
+    for target_dir in "${VERIFY_DIRS[@]}"; do
+      ONE_OUT="$(cd "$target_dir" && $TIMEOUT_WRAP uap verify --runtime-only $UV_AUTO $ACC_AUTO --dir "$target_dir" 2>&1)"
+      ONE_RC=$?
+      if [ -n "$ONE_OUT" ]; then
+        if [ -n "$VERIFY_OUT" ]; then
+          VERIFY_OUT="${VERIFY_OUT}"$'\n'"--- verify (${target_dir}) ---"$'\n'"${ONE_OUT}"
+        else
+          VERIFY_OUT="$ONE_OUT"
+        fi
+      fi
+      if [ "$ONE_RC" = "1" ]; then
+        VERIFY_RC=1
+        break
+      elif [ "$ONE_RC" != "0" ] && [ "$VERIFY_RC" = "0" ]; then
+        VERIFY_RC=$ONE_RC
+      fi
+    done
     # Evidence for the `escalate` delivery mode: a red verify counts toward the
     # "escalate to deliver" threshold, a green one clears it. Best-effort.
     TRACKER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/escalation_tracker.py"

@@ -226,13 +226,19 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
   VERIFY_RC=0
   if [ "$VERIFY_SUPPORTED" = "0" ]; then
     # Portable timeout wrapper: GNU coreutils ships `timeout` (Linux), macOS
-    # ships it as `gtimeout`, and minimal shells may lack both. Resolve once and
-    # fall back to running verify directly — it enforces its own internal rung
-    # timeouts. Without this, a missing `timeout` printed "command not found".
+    # ships it as `gtimeout`, and minimal shells may lack both. Default 45s
+    # (+ 5s kill grace = 50s max) so verification always completes cleanly
+    # inside a 60s harness Stop-hook budget instead of being SIGKILLed mid-run.
+    # Override via UAP_STOP_VERIFY_TIMEOUT.
+    STOP_VERIFY_TIMEOUT="${UAP_STOP_VERIFY_TIMEOUT:-45}"
+    case "$STOP_VERIFY_TIMEOUT" in ''|*[!0-9]*) STOP_VERIFY_TIMEOUT=45 ;; esac
+    if [ "$STOP_VERIFY_TIMEOUT" -le 0 ]; then
+      STOP_VERIFY_TIMEOUT=45
+    fi
     if command -v timeout >/dev/null 2>&1; then
-      TIMEOUT_WRAP="timeout -k 5 120"
+      TIMEOUT_WRAP="timeout -k 5 ${STOP_VERIFY_TIMEOUT}"
     elif command -v gtimeout >/dev/null 2>&1; then
-      TIMEOUT_WRAP="gtimeout -k 5 120"
+      TIMEOUT_WRAP="gtimeout -k 5 ${STOP_VERIFY_TIMEOUT}"
     else
       TIMEOUT_WRAP=""
     fi

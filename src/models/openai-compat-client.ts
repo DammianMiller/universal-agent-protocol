@@ -337,6 +337,7 @@ export class OpenAICompatClient implements ModelClient {
     const stopTicker = startModelCallTicker();
 
     const thinkingOn = options?.thinking === true;
+    const thinkingOff = options?.thinking === false;
     const effectiveMaxTokens =
       options?.maxTokens ?? (thinkingOn ? THINKING_DEFAULT_MAX_TOKENS : undefined);
     const images = (options?.images ?? []).filter((img) => img.trim().length > 0);
@@ -369,7 +370,9 @@ export class OpenAICompatClient implements ModelClient {
           ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
           ...(thinkingOn
             ? { enable_thinking: true, chat_template_kwargs: { enable_thinking: true } }
-            : {}),
+            : thinkingOff
+              ? { enable_thinking: false, chat_template_kwargs: { enable_thinking: false } }
+              : {}),
           ...(model.reasoningEffort
             ? { reasoning_effort: model.reasoningEffort === 'xhigh' ? 'high' : model.reasoningEffort }
             : {}),
