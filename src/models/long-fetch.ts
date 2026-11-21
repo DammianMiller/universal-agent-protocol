@@ -17,16 +17,22 @@
  *    are returned to the caller untouched — they are protocol, not transport.
  */
 
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 /**
- * Node's global fetch IS undici and honors a per-request `dispatcher` in its
- * init (untyped but supported). Routing through globalThis.fetch — instead of
- * importing undici's fetch directly — keeps test doubles that stub the global
- * working, while production still gets the long-timeout dispatcher.
+ * Use undici's own fetch paired with its own Agent dispatcher so Node 24+'s
+ * built-in undici v7 never receives a package undici v6 Agent (which throws
+ * `UND_ERR_INVALID_ARG: invalid onError method`). If a test has stubbed
+ * `globalThis.fetch`, honor that stub instead.
  */
 type FetchLike = (url: string | URL, init?: RequestInit & { dispatcher?: unknown }) => Promise<Response>;
-const globalFetch: FetchLike = (url, init) => (globalThis.fetch as unknown as FetchLike)(url, init);
+const originalGlobalFetch = globalThis.fetch;
+const globalFetch: FetchLike = (url, init) => {
+  if (globalThis.fetch !== originalGlobalFetch) {
+    return (globalThis.fetch as unknown as FetchLike)(url, init);
+  }
+  return (undiciFetch as unknown as FetchLike)(url, init);
+};
 
 /**
  * Marks a failure as "the model endpoint is not reachable".

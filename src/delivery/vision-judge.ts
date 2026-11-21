@@ -15,14 +15,156 @@ import { join } from 'path';
 import { fetchModelWithRetry } from '../models/long-fetch.js';
 import { discoverLocalLlamaBases } from '../utils/llama-discovery.js';
 
+export interface VisionAxes {
+  completeness: number;
+  craftDensity: number;
+  cohesionPolish: number;
+  framingErgonomics: number;
+  runtimeIntegrity: number;
+}
+
+export type VisionTicketSeverity = 'blocker' | 'major' | 'polish';
+
+export interface VisionTicket {
+  severity: VisionTicketSeverity;
+  axis: string;
+  target: string;
+  defect: string;
+  fix: string;
+}
+
 export interface VisionVerdict {
   /** 0–10 aesthetic/behavioral score across the reviewed screenshots. */
   score: number;
   findings: string[];
+  axes?: VisionAxes;
+  tickets?: VisionTicket[];
 }
 
 const MAX_IMAGES = 4;
 const MAX_FINDINGS = 8;
+const SEVERITY_RANK: Record<VisionTicketSeverity, number> = { blocker: 0, major: 1, polish: 2 };
+
+interface ModelsListPayload {
+  models?: Array<{
+    id?: string;
+    name?: string;
+    input_modalities?: string[];
+    architecture?: { input_modalities?: string[] };
+    capabilities?: { vision?: boolean };
+    modalities?: { vision?: boolean };
+  }>;
+  data?: Array<{
+    id?: string;
+    name?: string;
+    input_modalities?: string[];
+    architecture?: { input_modalities?: string[] };
+    capabilities?: { vision?: boolean };
+    modalities?: { vision?: boolean };
+  }>;
+}
+
+interface HealthPayload {
+  images?: boolean;
+  vision?: boolean;
+  multimodal?: boolean;
+  modalities?: { vision?: boolean };
+}
+
+interface PropsPayload {
+  modalities?: { vision?: boolean };
+  model_path?: string;
+}
+
+function entrySupportsVision(entry: NonNullable<ModelsListPayload['data']>[number]): boolean {
+  const mods = [
+    ...(entry.architecture?.input_modalities ?? []),
+    ...(entry.input_modalities ?? []),
+  ];
+  if (mods.some((m) => m.toLowerCase() === 'image' || m.toLowerCase() === 'vision')) {
+    return true;
+  }
+  return Boolean(entry.capabilities?.vision || entry.modalities?.vision);
+}
+
+async function isEndpointAlive(root: string, fetchFn: typeof fetch): Promise<boolean> {
+  for (const path of ['/props', '/health', '/v1/models']) {
+    try {
+      const res = await fetchFn(`${root}${path}`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) return true;
+    } catch {
+      /* try next probe path */
+    }
+  }
+  return false;
+}
+
+async function fetchModelsInfo(
+  root: string,
+  fetchFn: typeof fetch
+): Promise<{ model: string; vision: boolean }> {
+  let model = 'local';
+  let vision = false;
+  try {
+    const res = await fetchFn(`${root}/v1/models`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return { model, vision };
+    const payload = (await res.json()) as ModelsListPayload;
+    const entries = payload.data ?? payload.models ?? [];
+    if (entries.length > 0) {
+      model = entries[0]?.id || entries[0]?.name || model;
+      vision = entries.some((e) => entrySupportsVision(e));
+    }
+  } catch {
+    /* keep defaults */
+  }
+  return { model, vision };
+}
+
+async function probeEndpointVision(
+  root: string,
+  fetchFn: typeof fetch
+): Promise<{ vision: boolean; model: string }> {
+  // 1. llama.cpp /props -> modalities.vision
+  try {
+    const propsRes = await fetchFn(`${root}/props`, { signal: AbortSignal.timeout(2000) });
+    if (propsRes.ok) {
+      const props = (await propsRes.json()) as PropsPayload;
+      if (typeof props?.modalities?.vision === 'boolean') {
+        if (!props.modalities.vision) return { vision: false, model: 'local' };
+        const info = await fetchModelsInfo(root, fetchFn);
+        return { vision: true, model: info.model };
+      }
+    }
+  } catch {
+    /* fall through to /health */
+  }
+
+  // 2. Basalt / engine /health -> images / vision / multimodal
+  try {
+    const healthRes = await fetchFn(`${root}/health`, { signal: AbortSignal.timeout(2000) });
+    if (healthRes.ok) {
+      const health = (await healthRes.json()) as HealthPayload;
+      const hasVisionFlag =
+        typeof health?.images === 'boolean' ||
+        typeof health?.vision === 'boolean' ||
+        typeof health?.multimodal === 'boolean' ||
+        typeof health?.modalities?.vision === 'boolean';
+      if (hasVisionFlag) {
+        const vision = Boolean(
+          health.images || health.vision || health.multimodal || health.modalities?.vision
+        );
+        if (!vision) return { vision: false, model: 'local' };
+        const info = await fetchModelsInfo(root, fetchFn);
+        return { vision: true, model: info.model };
+      }
+    }
+  } catch {
+    /* fall through to /v1/models */
+  }
+
+  // 3. Infernix / vLLM / OpenAI-compat /v1/models -> input_modalities / capabilities.vision
+  return fetchModelsInfo(root, fetchFn);
+}
 
 export function visionJudgeConfigured(): boolean {
   return Boolean(process.env.UAP_VISION_MODEL && process.env.UAP_VISION_ENDPOINT);
@@ -30,68 +172,95 @@ export function visionJudgeConfigured(): boolean {
 
 /**
  * Auto-configure the vision judge from the ACTIVE local model when it isn't
- * explicitly configured. The aesthetic review used to report "no vision model"
- * whenever UAP_VISION_ENDPOINT/MODEL were unset — even though the local model
- * serving the run (e.g. Qwen3.6 with an mmproj projector) is vision-capable.
- * Probe candidate local OpenAI-compat endpoints' /props for
- * modalities.vision === true and, on a hit, set UAP_VISION_ENDPOINT/MODEL so
- * the judge uses the active model. Fail-soft: any error leaves config unset
- * (the caller then reports "not configured" exactly as before). Idempotent.
+ * explicitly configured. Probes candidate OpenAI-compat endpoints across
+ * /props (llama.cpp), /health (Basalt), and /v1/models (Infernix/vLLM).
+ * Fail-soft: any error leaves config unset. Idempotent.
  */
-export async function autodetectLocalVision(): Promise<boolean> {
+export async function autodetectLocalVision(fetchFn: typeof fetch = fetch): Promise<boolean> {
   if (visionJudgeConfigured()) {
-    // A pin is authoritative only while it answers. `uap setup` writes a
-    // conventional 127.0.0.1:8080 endpoint, which is wrong the moment llama
-    // runs on an ephemeral port — and because this early return preceded the
-    // probing below, a dead pin permanently defeated discovery and the judge
-    // failed later with a connection error instead of finding the live server.
     const pinned = (process.env.UAP_VISION_ENDPOINT ?? '').replace(/\/v1\/?$/, '').replace(/\/$/, '');
-    try {
-      const res = await fetch(`${pinned}/props`, { signal: AbortSignal.timeout(2000) });
-      if (res.ok) return true;
-    } catch {
-      /* unreachable — fall through to discovery */
+    if (pinned && (await isEndpointAlive(pinned, fetchFn))) {
+      return true;
     }
     delete process.env.UAP_VISION_ENDPOINT;
     delete process.env.UAP_VISION_MODEL;
   }
-  // Candidate OpenAI-compat bases, most-specific first. LLAMA_CPP_BASE is what
-  // the proxy talks to; the rest are conventional local llama-server ports.
-  // Explicit config first, then the servers actually listening, then the
-  // conventional port. Without the discovery step this list is env vars that are
-  // usually unset plus :8080 — which is empty whenever llama runs on an
-  // ephemeral port (Unsloth Studio picks a new one every launch), so a
-  // vision-capable server sitting right there reports "not configured".
   const bases = [
     process.env.UAP_INFERENCE_ENDPOINT,
     process.env.LLAMA_CPP_BASE,
     ...discoverLocalLlamaBases(),
     'http://127.0.0.1:8080/v1',
   ].filter((b): b is string => Boolean(b));
+  const seen = new Set<string>();
   for (const base of bases) {
     const root = base.replace(/\/v1\/?$/, '').replace(/\/$/, '');
-    try {
-      const propsRes = await fetch(`${root}/props`, { signal: AbortSignal.timeout(2000) });
-      if (!propsRes.ok) continue;
-      const props = (await propsRes.json()) as { modalities?: { vision?: boolean }; model_path?: string };
-      if (!props?.modalities?.vision) continue;
-      // Derive a model id (llama-server accepts any string; prefer the real one).
-      let model = 'local';
-      try {
-        const modelsRes = await fetch(`${root}/v1/models`, { signal: AbortSignal.timeout(2000) });
-        if (modelsRes.ok) {
-          const m = (await modelsRes.json()) as { models?: { id?: string; name?: string }[]; data?: { id?: string }[] };
-          model = m.models?.[0]?.id || m.models?.[0]?.name || m.data?.[0]?.id || model;
-        }
-      } catch { /* keep 'local' */ }
+    if (!root || seen.has(root)) continue;
+    seen.add(root);
+    const probe = await probeEndpointVision(root, fetchFn);
+    if (probe.vision) {
       process.env.UAP_VISION_ENDPOINT = `${root}/v1`;
-      process.env.UAP_VISION_MODEL = model;
+      process.env.UAP_VISION_MODEL = probe.model;
       return true;
-    } catch {
-      /* endpoint unreachable — try the next */
     }
   }
   return false;
+}
+
+function clampAxis(val: number | string | undefined): number | null {
+  const n = Number(val);
+  return Number.isFinite(n) ? Math.max(0, Math.min(10, n)) : null;
+}
+
+function parseVisionAxes(raw: Record<string, number | string | undefined> | undefined): VisionAxes | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const completeness = clampAxis(raw.completeness);
+  const craftDensity = clampAxis(raw.craftDensity ?? raw.craft_density);
+  const cohesionPolish = clampAxis(raw.cohesionPolish ?? raw.cohesion_polish);
+  const framingErgonomics = clampAxis(raw.framingErgonomics ?? raw.framing_ergonomics);
+  const runtimeIntegrity = clampAxis(raw.runtimeIntegrity ?? raw.runtime_integrity);
+  if (
+    completeness === null ||
+    craftDensity === null ||
+    cohesionPolish === null ||
+    framingErgonomics === null ||
+    runtimeIntegrity === null
+  ) {
+    return undefined;
+  }
+  return { completeness, craftDensity, cohesionPolish, framingErgonomics, runtimeIntegrity };
+}
+
+function parseVisionTickets(
+  raw: Array<Record<string, string | undefined>> | undefined
+): VisionTicket[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: VisionTicket[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const sevRaw = String(item.severity ?? 'major').toLowerCase();
+    const severity: VisionTicketSeverity =
+      sevRaw === 'blocker' || sevRaw === 'major' || sevRaw === 'polish' ? sevRaw : 'major';
+    const defect = typeof item.defect === 'string' ? item.defect.trim() : '';
+    const fix = typeof item.fix === 'string' ? item.fix.trim() : '';
+    if (!defect && !fix) continue;
+    out.push({
+      severity,
+      axis: typeof item.axis === 'string' && item.axis.trim() ? item.axis.trim() : 'completeness',
+      target: typeof item.target === 'string' && item.target.trim() ? item.target.trim() : 'artifact',
+      defect: defect || fix,
+      fix: fix || defect,
+    });
+  }
+  if (out.length === 0) return undefined;
+  out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+  return out.slice(0, MAX_FINDINGS);
+}
+
+interface RawVisionJson {
+  score?: number | string;
+  findings?: Array<string | number | boolean | null>;
+  axes?: Record<string, number | string | undefined>;
+  tickets?: Array<Record<string, string | undefined>>;
 }
 
 /** Extract the first JSON object from model output (grammar-free fallback). */
@@ -99,13 +268,34 @@ export function parseVisionVerdict(text: string): VisionVerdict | null {
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) return null;
   try {
-    const parsed = JSON.parse(match[0]) as { score?: unknown; findings?: unknown };
-    const score = Number(parsed.score);
+    const parsed = JSON.parse(match[0]) as RawVisionJson;
+    const axes = parseVisionAxes(parsed.axes);
+    const tickets = parseVisionTickets(parsed.tickets);
+    const rawScore = Number(parsed.score);
+    const derivedScore = axes
+      ? (axes.completeness +
+          axes.craftDensity +
+          axes.cohesionPolish +
+          axes.framingErgonomics +
+          axes.runtimeIntegrity) /
+        5
+      : NaN;
+    const score = Number.isFinite(rawScore) ? rawScore : derivedScore;
     if (!Number.isFinite(score)) return null;
-    const findings = Array.isArray(parsed.findings)
+    let findings = Array.isArray(parsed.findings)
       ? parsed.findings.filter((f): f is string => typeof f === 'string').slice(0, MAX_FINDINGS)
       : [];
-    return { score: Math.max(0, Math.min(10, score)), findings };
+    if (findings.length === 0 && tickets) {
+      findings = tickets.map(
+        (t) => `[${t.severity.toUpperCase()}/${t.axis}] ${t.target}: ${t.defect} — Fix: ${t.fix}`
+      );
+    }
+    return {
+      score: Math.max(0, Math.min(10, score)),
+      findings,
+      ...(axes ? { axes } : {}),
+      ...(tickets ? { tickets } : {}),
+    };
   } catch {
     return null;
   }
@@ -202,16 +392,15 @@ export async function judgeScreenshots(
     // higher values trade more latency for more stability.
     const samples = Math.max(1, Math.min(9, Number(process.env.UAP_VISION_SAMPLES) || 3));
     const temperature = samples > 1 ? 0.4 : 0;
+    const thinkingOn = process.env.UAP_VISION_THINKING !== '0';
     const body = {
       model,
-      max_tokens: 800,
+      max_tokens: thinkingOn ? 4096 : 800,
       temperature,
-      // Disable model "thinking" for this call. A local reasoning model (e.g.
-      // Qwen3.6 launched with --reasoning auto) otherwise spends the whole token
-      // budget in reasoning_content and returns EMPTY content — the JSON verdict
-      // never lands, so the review silently produced nothing. chat_template_kwargs
-      // is honored by llama.cpp/vLLM and ignored by cloud OpenAI-compat APIs.
-      chat_template_kwargs: { enable_thinking: false },
+      // B4: Thinking ON by default so vision critiques reason about composition,
+      // completeness, craft density, and runtime defects before scoring. Set
+      // UAP_VISION_THINKING=0 to restore legacy fast no-thinking mode.
+      chat_template_kwargs: { enable_thinking: thinkingOn },
       messages: [
         {
           role: 'user',
@@ -219,21 +408,24 @@ export async function judgeScreenshots(
             {
               type: 'text',
               text:
-                'You are a strict visual reviewer. These are frames of a rendered application. ' +
-                'Judge (a) design/aesthetic quality (composition, color, readability, polish), ' +
-                '(b) whether the visible behavior matches the spec below, and ' +
-                (designContext
-                  ? '(c) ADHERENCE TO THE DESIGN SYSTEM below — penalize off-palette colours, off-scale spacing, wrong fonts, and anything that violates the stated design intent. '
-                  : '') +
-                'Each finding must be a CONCRETE IMPLEMENTATION FIX a developer can act on — name the ' +
-                'element/region and what to change — not a vague quality complaint like "looks generic". ' +
-                'If a large region (especially a <canvas>) is blank or a near-uniform flat colour, say so ' +
-                'explicitly: the app most likely does not RENDER its scene in the state shown — the fix is to ' +
-                'run the render loop from load and draw the background/sprites in THIS state, not only during ' +
-                'active interaction. If the scene looks uniformly dark/dim, check for a semi-opaque overlay ' +
-                'dimming the view and recommend making it transparent. ' +
+                'You are a rigorous visual and structural reviewer evaluating rendered output of an artifact against its specification. ' +
+                'Score 5 axes independently from 0 to 10: ' +
+                '(1) completeness (every required feature/element/region from the spec is visibly present, not omitted or stubbed), ' +
+                '(2) craftDensity (richness, structural fidelity, and substantive detail rather than minimal bare-bones placeholders), ' +
+                '(3) cohesionPolish (visual hierarchy, typography/palette harmony, lighting/contrast, surface finish' +
+                (designContext ? ', and strict ADHERENCE TO THE DESIGN SYSTEM below' : '') +
+                '), ' +
+                '(4) framingErgonomics (subject framing, readability, layout balance, clipping/overlap, interactive affordances), ' +
+                '(5) runtimeIntegrity (no blank canvas/region, no broken geometry/rendering artifacts, no dead/flat placeholder state). ' +
+                'Emit severity-ranked defect tickets: "blocker" (broken/missing core element, blank/clipped subject, runtime failure), ' +
+                '"major" (missing spec subsystem, hollow/bare-bones craft, severe layout/cohesion flaw), or "polish" (minor refinement). ' +
+                'CRITICAL RULE: FORBID "polish" cosmetic micro-tweaks while ANY "blocker" or "major" defect exists or ANY axis scores below 7. ' +
+                'Each ticket and finding must name a concrete target and an actionable implementation fix — never vague complaints. ' +
+                'If a large region or <canvas> is blank or uniform flat color, emit a "blocker" on runtimeIntegrity noting the render loop is not drawing in this state. ' +
                 'Respond with ONLY JSON: ' +
-                '{"score": <0-10>, "findings": ["<specific, actionable fix>", ...]}\n\nSPEC:\n' +
+                '{"score": <0-10>, "axes": {"completeness": <0-10>, "craftDensity": <0-10>, "cohesionPolish": <0-10>, "framingErgonomics": <0-10>, "runtimeIntegrity": <0-10>}, ' +
+                '"tickets": [{"severity": "blocker|major|polish", "axis": "<axis>", "target": "<element/subsystem>", "defect": "<what is wrong>", "fix": "<concrete fix>"}], ' +
+                '"findings": ["<specific, actionable fix>", ...]}\n\nSPEC:\n' +
                 spec.slice(0, 4000) +
                 (designContext ? `\n\nDESIGN SYSTEM (score adherence to this):\n${designContext.slice(0, 2500)}` : ''),
             },
@@ -248,6 +440,7 @@ export async function judgeScreenshots(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(thinkingOn ? { 'x-uap-reasoning': '1' } : {}),
           ...(process.env.UAP_VISION_API_KEY ? { Authorization: `Bearer ${process.env.UAP_VISION_API_KEY}` } : {}),
         },
         signal: AbortSignal.timeout(VISION_CALL_TIMEOUT_MS),

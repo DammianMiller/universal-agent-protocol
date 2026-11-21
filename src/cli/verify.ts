@@ -32,6 +32,15 @@ import {
   writeCapabilityBaseline,
 } from '../delivery/capability-profile.js';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
+import { loadOutcomeBlueprint, renderBlueprintMarkdown } from '../delivery/outcome-blueprint.js';
+import { scanStaticHollowness, type StaticHollownessFinding } from '../delivery/runtime-invariants.js';
+import {
+  formatAdversarialReport,
+  resolveCriticBudget,
+  runAdversarialCritic,
+  type AdversarialCritiqueVerdict,
+} from '../delivery/adversarial-critic.js';
+import { createRoleExecutor, loadRoleRouting, type RoleExecutor } from '../delivery/role-router.js';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join as joinPath } from 'node:path';
 
@@ -119,6 +128,12 @@ export interface VerifyOptions {
   userPathsAuto?: boolean;
   /** Run the interaction gate (default: on when a manifest exists). */
   interaction?: boolean;
+  /** Option C1: run clean-context thinking-ON adversarial critic (5-axis rubric). */
+  critic?: boolean;
+  /** Injected thinking-ON critic executor (test seam; verifyCommand builds it). */
+  criticExecutor?: RoleExecutor;
+  /** Override minimum passing axis score for the adversarial critic (default 8). */
+  criticMinScore?: number;
 }
 
 export interface VerifyResult {
@@ -132,6 +147,10 @@ export interface VerifyResult {
   acceptance?: AcceptanceResult;
   visual?: VisualVerdict;
   interaction?: InteractionVerdict;
+  /** Option C1 adversarial critique verdict (when --critic or max fidelity runs it). */
+  critic?: AdversarialCritiqueVerdict;
+  /** Option B3 deterministic static hollowness findings (when detected). */
+  hollownessFindings?: StaticHollownessFinding[];
   /** Which gates blocked, for machine consumers of the JSON output. */
   blockedBy?: string[];
 }
@@ -414,6 +433,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // real failure. Bridges the resolved vision endpoint/model into the env the
   // vision judge reads, so `fidelity.visionEndpoint` config works without export.
   let visionBlocks = false;
+  let visionAvailable = false;
   if (visual && !visual.skipped) {
     if (fidelity.visionEndpoint && !process.env.UAP_VISION_ENDPOINT) process.env.UAP_VISION_ENDPOINT = fidelity.visionEndpoint;
     if (fidelity.visionModel && !process.env.UAP_VISION_MODEL) process.env.UAP_VISION_MODEL = fidelity.visionModel;
@@ -424,6 +444,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
       // used rather than reporting "no vision model".
       if (!visionJudgeConfigured()) await autodetectLocalVision();
       if (visionJudgeConfigured()) {
+        visionAvailable = true;
         const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
         const verdict = await judgeScreenshots(
           shots,
@@ -486,7 +507,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
           }
         }
       } else if (fidelity.max) {
-        visualReport += '\n⚠ max fidelity: no vision model available — aesthetic review skipped. No local vision-capable model was detected (llama-server /props modalities.vision) and UAP_VISION_ENDPOINT/MODEL is unset. Launch the model with an --mmproj projector, or set UAP_VISION_ENDPOINT/MODEL (uap setup).';
+        visualReport += '\n⚠ max fidelity: no vision model available — aesthetic review skipped. No local vision-capable model was detected (/props, /health, /v1/models) and UAP_VISION_ENDPOINT/MODEL is unset. Launch a vision-capable backend or set UAP_VISION_ENDPOINT/MODEL (uap setup).';
       }
     } catch {
       // vision review is best-effort; never let it throw out of verify
@@ -516,6 +537,59 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     }
   }
 
+  // Option B3: fast static hollowness scan (undefined constant-table lookups,
+  // stubbed exports). Surfaced in the report and fed into adversarial critique.
+  let hollownessFindings: StaticHollownessFinding[] = [];
+  let hollownessReport = '';
+  try {
+    hollownessFindings = scanStaticHollowness(dir);
+    if (hollownessFindings.length > 0) {
+      hollownessReport =
+        '\n⚠ STATIC HOLLOWNESS / RUNTIME INVARIANT FINDINGS:\n' +
+        hollownessFindings
+          .map((f) => `  - [${f.kind}] ${f.file}:${f.line} (${f.symbol}): ${f.detail}`)
+          .join('\n');
+    }
+  } catch {
+    /* static hollowness scan is fail-open */
+  }
+
+  // Option C1: clean-context thinking-ON adversarial critic (--critic or max fidelity).
+  let critic: AdversarialCritiqueVerdict | undefined;
+  let criticBlocks = false;
+  let criticReport = '';
+  const criticWanted =
+    Boolean(opts.critic) ||
+    (fidelity.max && process.env.UAP_VERIFY_CRITIC !== '0' && !opts.runtimeOnly);
+  if (criticWanted && opts.criticExecutor && ladderGreen) {
+    try {
+      const criticSpec =
+        opts.acceptanceSpec ??
+        resolveAcceptanceSpecAuto(dir) ??
+        'Evaluate completeness, craft density, cohesion, ergonomics, and runtime integrity of this deliverable.';
+      const criticMinScore = opts.criticMinScore ?? resolveCriticBudget(dir).minScore;
+      const criticScreenshots =
+        visual && !visual.skipped && visionAvailable
+          ? visual.pages.flatMap((pg) => pg.screenshots.slice(-1))
+          : [];
+      critic = await runAdversarialCritic({
+        spec: criticSpec,
+        projectRoot: dir,
+        executor: opts.criticExecutor,
+        visualNote: visualReport.trim() || undefined,
+        interactionNote: interactionReport.trim() || undefined,
+        screenshotPaths: criticScreenshots,
+        minScore: criticMinScore,
+      });
+      criticReport = `\n${formatAdversarialReport(critic)}`;
+      if (!critic.pass && !critic.parseError) {
+        criticBlocks = true;
+      }
+    } catch {
+      /* adversarial critic is fail-open when model is unreachable */
+    }
+  }
+
   // The header must reflect the OVERALL verdict, not just the objective ladder:
   // the ladder can pass while the visual/vision/acceptance/baseline gate blocks
   // (a broken-but-loading UI). Printing "VERIFIED ✓" then problems + exit 1 is
@@ -528,6 +602,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     tierBlocks && 'below quality tier',
     capabilityBlocks && 'capability regression',
     acceptanceBlocks && 'acceptance criteria',
+    criticBlocks && 'adversarial critic',
   ].filter(Boolean) as string[];
   const overallPassed = ladder.passed && blockedBy.length === 0;
   const report =
@@ -536,7 +611,9 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     interactionReport +
     capabilityReport +
     visualReport +
-    acceptanceReport;
+    hollownessReport +
+    acceptanceReport +
+    criticReport;
   // Exit-code contract for the Stop hook: 0 = verified, 1 = a REAL gate failure
   // (the code is broken), 3 = INFRA failure (gate timed out / could not spawn /
   // killed by signal). The hook hard-blocks only on 1; 3 fails OPEN so a flaky
@@ -563,6 +640,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // A capability regression means the artifact runs and does LESS than the
   // pinned baseline. That is a real failure, not infra flakiness.
   if (capabilityBlocks && exitCode === 0) exitCode = 1;
+  if (criticBlocks && exitCode === 0) exitCode = 1;
   return {
     passed:
       ladder.passed &&
@@ -571,7 +649,8 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
       !visualBlocks &&
       !visionBlocks &&
       !baselineBlocks &&
-      !capabilityBlocks,
+      !capabilityBlocks &&
+      !criticBlocks,
     exitCode,
     empty: false,
     report,
@@ -580,6 +659,8 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     acceptance,
     visual,
     interaction,
+    critic,
+    hollownessFindings,
     blockedBy,
   };
 }
@@ -633,6 +714,22 @@ async function buildAcceptanceExecutor(modelPreset?: string, endpoint?: string):
   };
 }
 
+/** Build a fresh-context thinking-ON RoleExecutor for the adversarial critic (Option C1/C3). */
+async function buildCriticExecutor(
+  dir: string,
+  modelPreset?: string,
+  endpoint?: string
+): Promise<RoleExecutor> {
+  const { OpenAICompatClient } = await import('../models/openai-compat-client.js');
+  const { ModelPresets } = await import('../models/types.js');
+  const activePresetId = modelPreset ?? process.env.UAP_DELIVER_MODEL ?? 'local-auto';
+  const basePreset = ModelPresets[activePresetId] ?? ModelPresets['local-auto'] ?? ModelPresets['qwen35-a3b'];
+  const baseModel = endpoint ? { ...basePreset, endpoint } : basePreset;
+  const routing = loadRoleRouting(dir, baseModel.id, baseModel.endpoint);
+  const client = new OpenAICompatClient();
+  return createRoleExecutor(client, routing.critic, baseModel);
+}
+
 /**
  * Auto-discover an acceptance/requirements spec for a DONE gate that has no
  * explicit --acceptance file (the completion gate / Stop hook). Priority:
@@ -665,10 +762,19 @@ export function resolveAcceptanceSpecAuto(dir: string): string | null {
       return null;
     }
   };
-  for (const rel of ['.uap/acceptance.md', '.uap/requirements.md', 'ACCEPTANCE.md', 'REQUIREMENTS.md', 'SPEC.md']) {
+  for (const rel of [
+    '.uap/acceptance.md',
+    '.uap/requirements.md',
+    '.uap/blueprint.md',
+    'ACCEPTANCE.md',
+    'REQUIREMENTS.md',
+    'SPEC.md',
+  ]) {
     const t = read(rel);
     if (t) return t;
   }
+  const bp = loadOutcomeBlueprint(dir);
+  if (bp) return renderBlueprintMarkdown(bp);
   // The completion ledger is the agent's declared plan of record — its
   // REMAINING half. Same remaining-definition as completion-ledger.ts
   // remainingItems(): judged unless status is exactly 'done'. Items with no
@@ -728,6 +834,24 @@ export async function verifyCommand(
       }
     }
   }
+  // Option C1: wire fresh-context thinking-ON adversarial critic executor for
+  // --critic (or automatically under fidelity.mode === 'max' unless opted out).
+  // Fails open if no model/endpoint can be resolved.
+  const verifyDir = options.dir || process.cwd();
+  const fidelityForCritic = options.fidelity ?? resolveFidelity(verifyDir);
+  const wantCritic =
+    Boolean(options.critic) ||
+    (fidelityForCritic.max && process.env.UAP_VERIFY_CRITIC !== '0' && !options.runtimeOnly);
+  if (wantCritic && !opts.criticExecutor) {
+    try {
+      const criticExecutor = await buildCriticExecutor(verifyDir, options.model, options.endpoint);
+      opts = { ...opts, criticExecutor };
+    } catch {
+      process.stderr.write(
+        'uap verify: adversarial critic could not resolve a model endpoint — skipping (fail-open).\n'
+      );
+    }
+  }
   const result = await runVerify(opts);
   if (options.json) {
     process.stdout.write(
@@ -742,6 +866,8 @@ export async function verifyCommand(
           // machine-readable saying which gate blocked or why.
           interaction: result.interaction ?? null,
           visual: result.visual ?? null,
+          critic: result.critic ?? null,
+          hollownessFindings: result.hollownessFindings ?? [],
           blockedBy: result.blockedBy ?? [],
         },
         null,

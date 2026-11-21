@@ -18,6 +18,7 @@ import { execSync } from 'child_process';
 import { basename, join, relative, dirname } from 'path';
 import type { LoopExecutor } from './convergence-loop.js';
 import { CRITIC_FORM_SECTION, formatCriticReport, parseCriticReport, type CriticReport } from './critic-form.js';
+import { buildRuntimeHollownessNote } from './runtime-invariants.js';
 
 export interface AcceptanceCriterion {
   requirement: string;
@@ -629,9 +630,17 @@ export async function runAcceptanceGate(opts: AcceptanceOptions): Promise<Accept
     return { passed: true, score: 1, criteria: [], parseError: 'no source evidence found' };
   }
 
+  let hollownessNote = '';
+  try {
+    hollownessNote = buildRuntimeHollownessNote(opts.projectRoot);
+  } catch {
+    /* static hollowness scan is best-effort */
+  }
+  const combinedRuntimeNote = [opts.runtimeNote, hollownessNote].filter(Boolean).join('\n\n') || undefined;
+
   let raw: string;
   try {
-    raw = await opts.executor(buildPrompt(opts.spec, evidence, opts.runtimeNote, gitChangeSummary(opts.projectRoot) || undefined, opts.criticForm));
+    raw = await opts.executor(buildPrompt(opts.spec, evidence, combinedRuntimeNote, gitChangeSummary(opts.projectRoot) || undefined, opts.criticForm));
   } catch (e) {
     return { passed: true, score: 1, criteria: [], parseError: `executor error: ${String(e).slice(0, 120)}` };
   }

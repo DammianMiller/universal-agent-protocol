@@ -43,6 +43,12 @@ import {
   resolveEvidenceGate,
 } from './delivery-evidence.js';
 import type { SpecRegistry } from './spec-registry.js';
+import type { RoleExecutor } from './role-router.js';
+import {
+  createBoundedCriticController,
+  maybeRunAdversarialUpgrade,
+  runAdversarialCritic,
+} from './adversarial-critic.js';
 
 /**
  * Fold a raw judge result into the loop-facing verdict, honoring primary vs
@@ -99,6 +105,14 @@ export interface MissionAcceptanceDeps {
   criticForm?: boolean;
   /** Quality-tier gate (0.5): measure the visual gate's captures against derived tiers. */
   tierGate?: typeof runTierGate;
+  /** Option C1: clean-context thinking-ON adversarial critic executor (post-green polish). */
+  adversarialCriticExecutor?: RoleExecutor;
+  /** Option C1 test seam for runAdversarialCritic. */
+  adversarialCritic?: typeof runAdversarialCritic;
+  /** Option C1 override for max bounded upgrade passes (default 2 / config). */
+  criticMaxPasses?: number;
+  /** Option C1 override for minimum passing axis score (default 8 / config). */
+  criticMinScore?: number;
 }
 
 /**
@@ -158,6 +172,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
   const tierGateRunner = deps.tierGate ?? runTierGate;
   // eslint-disable-next-line no-console
   const note = deps.note ?? ((line: string): void => console.log(line));
+  const criticControllers = new Map<string, ReturnType<typeof createBoundedCriticController>>();
   return async (root, gateCtx) => {
     // Explicit `=== false` — an undefined ctx means the caller did not tell us,
     // which must not be read as "the ladder was green".
@@ -425,6 +440,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     // it trips it never resets, so every later turn is force-accepted — including
     // the turn the ladder finally goes green, delivering with the judge still
     // holding that the spec is unmet. Red turns are simply not its business.
+    let finalVerdict: { passed: boolean; feedback: string; score?: number };
     if (!deps.primary && !ladderRed) {
       const checked = deps.specs.breaker(resolvedSpec, root).check(resolvedSpec, verdict);
       if (checked.overridden) {
@@ -432,8 +448,24 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
           '⚖ acceptance: judge rejected consecutive objectively-green turns — accepting on gates (raise UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT to let the judge argue longer)'
         );
       }
-      return finalizePass(checked);
+      finalVerdict = finalizePass(checked);
+    } else {
+      finalVerdict = finalizePass(verdict);
     }
-    return finalizePass(verdict);
+    return maybeRunAdversarialUpgrade({
+      verdict: finalVerdict,
+      ladderRed,
+      root,
+      spec: resolvedSpec,
+      runtimeNote,
+      visualNote,
+      screenshotPaths: tierCaptures,
+      executor: deps.adversarialCriticExecutor,
+      runner: deps.adversarialCritic,
+      maxPasses: deps.criticMaxPasses,
+      minScore: deps.criticMinScore,
+      note,
+      controllers: criticControllers,
+    });
   };
 }

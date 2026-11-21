@@ -14,31 +14,61 @@ const PNG = Buffer.from(
 describe('judgeScreenshots — reasoning model robustness', () => {
   let dir: string;
   let shot: string;
-  const saved = { e: process.env.UAP_VISION_ENDPOINT, m: process.env.UAP_VISION_MODEL };
+  const saved = {
+    e: process.env.UAP_VISION_ENDPOINT,
+    m: process.env.UAP_VISION_MODEL,
+    t: process.env.UAP_VISION_THINKING,
+    s: process.env.UAP_VISION_SAMPLES,
+  };
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'uap-vjudge-'));
     shot = join(dir, 's.png');
     writeFileSync(shot, PNG);
     process.env.UAP_VISION_ENDPOINT = 'http://x/v1';
     process.env.UAP_VISION_MODEL = 'local';
+    delete process.env.UAP_VISION_THINKING;
+    process.env.UAP_VISION_SAMPLES = '1';
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
     if (saved.e === undefined) delete process.env.UAP_VISION_ENDPOINT; else process.env.UAP_VISION_ENDPOINT = saved.e;
     if (saved.m === undefined) delete process.env.UAP_VISION_MODEL; else process.env.UAP_VISION_MODEL = saved.m;
+    if (saved.t === undefined) delete process.env.UAP_VISION_THINKING; else process.env.UAP_VISION_THINKING = saved.t;
+    if (saved.s === undefined) delete process.env.UAP_VISION_SAMPLES; else process.env.UAP_VISION_SAMPLES = saved.s;
   });
 
   const mkFetch = (message: Record<string, unknown>) =>
     (async () => ({ ok: true, json: async () => ({ choices: [{ message }] }) })) as never;
 
-  it('sends chat_template_kwargs.enable_thinking=false in the request', async () => {
+  it('defaults to thinking ON (enable_thinking=true, max_tokens=4096, x-uap-reasoning=1)', async () => {
     let sentBody: unknown;
-    const fetchImpl = (async (_url: string, init: { body: string }) => {
+    let sentHeaders: Record<string, string> = {};
+    const fetchImpl = (async (_url: string, init: { body: string; headers?: Record<string, string> }) => {
       sentBody = JSON.parse(init.body);
+      sentHeaders = init.headers ?? {};
       return { ok: true, json: async () => ({ choices: [{ message: { content: '{"score":7,"findings":[]}' } }] }) };
     }) as never;
     await judgeScreenshots([shot], 'spec', '', fetchImpl);
-    expect((sentBody as { chat_template_kwargs?: { enable_thinking?: boolean } }).chat_template_kwargs?.enable_thinking).toBe(false);
+    const parsed = sentBody as { max_tokens?: number; chat_template_kwargs?: { enable_thinking?: boolean } };
+    expect(parsed.chat_template_kwargs?.enable_thinking).toBe(true);
+    expect(parsed.max_tokens).toBe(4096);
+    expect(sentHeaders['x-uap-reasoning']).toBe('1');
+  });
+
+  it('supports legacy fast mode when UAP_VISION_THINKING=0', async () => {
+    process.env.UAP_VISION_THINKING = '0';
+    let sentBody: unknown;
+    let sentHeaders: Record<string, string> = {};
+    const fetchImpl = (async (_url: string, init: { body: string; headers?: Record<string, string> }) => {
+      sentBody = JSON.parse(init.body);
+      sentHeaders = init.headers ?? {};
+      return { ok: true, json: async () => ({ choices: [{ message: { content: '{"score":7,"findings":[]}' } }] }) };
+    }) as never;
+    await judgeScreenshots([shot], 'spec', '', fetchImpl);
+    const parsed = sentBody as { max_tokens?: number; chat_template_kwargs?: { enable_thinking?: boolean } };
+    expect(parsed.chat_template_kwargs?.enable_thinking).toBe(false);
+    expect(parsed.max_tokens).toBe(800);
+    expect(sentHeaders['x-uap-reasoning']).toBeUndefined();
   });
 
   it('parses the verdict from content (normal case)', async () => {

@@ -84,23 +84,60 @@ export PROXY_THINKING_GRAMMAR="${PROXY_THINKING_GRAMMAR:-off}"
 export PROXY_THINKING_GRAMMAR_PATH="${PROXY_THINKING_GRAMMAR_PATH:-${ROOT_DIR}/tools/agents/config/thinking.gbnf}"
 
 # ---------------------------------------------------------------------------
-# Auto-detect context window from upstream llama-server /slots endpoint.
-# Waits up to 60s for the server to be ready. Falls back to env var or 131072.
-# This ensures the proxy always matches the server's actual per-slot context,
-# even after server restarts with different --ctx-size / --parallel settings.
+# Auto-detect the context window from the upstream server.
+# Primary: llama-server /slots (per-slot n_ctx; appears only once fully
+# loaded, hence the retry loop — waits up to 60s). Fallback: engines without
+# /slots (YASAKANI 0.2.0, Basalt 0.5.0, ...) publish the served window on
+# /health as max_context_tokens, and answer /health while still loading, so
+# the fallback also wins the race against the retry loop. Third source
+# (regression 2026-11-21, miller-tech-prime, Infernix): engines with a
+# minimal /health body ({"status":"ok"} only — no max_context_tokens) publish
+# the window on /v1/models as max_model_len/meta.n_ctx instead. Without this
+# source the loop burns all 30 iterations (~60s) while the CLI's 15s health
+# wait expires and kills the script — proxy cold-start failure — and even a
+# survivor pins the wrong 131072 default. Last resort: 131072.
+# This ensures the proxy always matches the server's actual context, even
+# after server restarts with different --ctx-size / --parallel settings.
+#
+# set -euo pipefail SAFETY (regression 2026-11-21, miller-tech-prime): every
+# probe below can legitimately fail and MUST fall through to the next source.
+# The original '/slots' probe was a bare 'CTX=$(curl -sf ... | python3 ...)'
+# assignment: against a non-llama.cpp engine curl -f exits 22 on the 404,
+# pipefail made the assignment fail, and set -e aborted the WHOLE script ~2s
+# in — the 60s retry/fallback loop was dead code, so the proxy could never
+# cold-start against those engines while the CLI's health wait (15s) expired
+# ('uap proxy start/ensure' reported failure on every attempt). All probes
+# are now '|| CTX=""' guarded and never abort the script.
 # ---------------------------------------------------------------------------
 if [ "${PROXY_CONTEXT_WINDOW:-0}" = "0" ]; then
     # Was an inline ${LLAMA_CPP_BASE/\/v1/} substitution, which strips the FIRST
     # "/v1" anywhere in the string; llama_upstream_root strips only a trailing
     # one. Same job, one rule.
-    SLOTS_URL="$(llama_upstream_root "$LLAMA_CPP_BASE")/slots"
-    echo "[proxy-startup] Detecting context window from ${SLOTS_URL}..."
+    ROOT_URL="$(llama_upstream_root "$LLAMA_CPP_BASE")"
+    SLOTS_URL="${ROOT_URL}/slots"
+    HEALTH_URL="${ROOT_URL}/health"
+    MODELS_URL="${LLAMA_CPP_BASE%/v1}/v1/models"
+    echo "[proxy-startup] Detecting context window from ${SLOTS_URL} (fallback ${HEALTH_URL}, then ${MODELS_URL})..."
     for i in $(seq 1 30); do
-        CTX=$(curl -sf --max-time 2 -- "$SLOTS_URL" 2>/dev/null \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['n_ctx'])" 2>/dev/null)
-        if [ -n "$CTX" ] && [ "$CTX" -gt 0 ]; then
+        CTX=$(curl -s --max-time 2 -- "$SLOTS_URL" 2>/dev/null \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['n_ctx'])" 2>/dev/null) || CTX=""
+        if [ -n "$CTX" ] && [ "$CTX" -gt 0 ] 2>/dev/null; then
             export PROXY_CONTEXT_WINDOW="$CTX"
-            echo "[proxy-startup] Auto-detected context window: ${CTX} tokens"
+            echo "[proxy-startup] Auto-detected context window (slots): ${CTX} tokens"
+            break
+        fi
+        CTX=$(curl -s --max-time 2 -- "$HEALTH_URL" 2>/dev/null \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('max_context_tokens') or '')" 2>/dev/null) || CTX=""
+        if [ -n "$CTX" ] && [ "$CTX" -gt 0 ] 2>/dev/null; then
+            export PROXY_CONTEXT_WINDOW="$CTX"
+            echo "[proxy-startup] Auto-detected context window (health): ${CTX} tokens"
+            break
+        fi
+        CTX=$(curl -s --max-time 2 -- "$MODELS_URL" 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(next((v for e in (d.get('data') or d.get('models') or []) if (v:=e.get('max_model_len') or (e.get('meta') or {}).get('n_ctx') or 0)), ''))" 2>/dev/null) || CTX=""
+        if [ -n "$CTX" ] && [ "$CTX" -gt 0 ] 2>/dev/null; then
+            export PROXY_CONTEXT_WINDOW="$CTX"
+            echo "[proxy-startup] Auto-detected context window (models): ${CTX} tokens"
             break
         fi
         sleep 2

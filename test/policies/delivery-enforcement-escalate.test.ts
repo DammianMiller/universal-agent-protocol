@@ -84,12 +84,23 @@ describe('delivery-enforcement: escalate mode', () => {
     expect(run('Edit', editArgs()).allowed).toBe(true);
   });
 
-  it('escalates a file that is being thrashed (escalateAfterEdits) with no green in between', () => {
-    for (let i = 0; i < 10; i++) expect(run('Edit', editArgs()).allowed).toBe(true);
+  it('escalates a file that is being thrashed consecutively (escalateAfterConsecutiveFileEdits=6) with no green in between', () => {
+    for (let i = 0; i < 6; i++) expect(run('Edit', editArgs()).allowed).toBe(true);
     const r = run('Edit', editArgs());
     expect(r.allowed).toBe(false);
     expect(r.escalation).toBe('churn');
     // another file is unaffected
+    expect(run('Edit', editArgs('src/other.rs')).allowed).toBe(true);
+  });
+
+  it('escalates a file that hits total edits_since_green (escalateAfterEdits=10) even when interleaved with other files', () => {
+    for (let i = 0; i < 10; i++) {
+      expect(run('Edit', editArgs('src/a.rs')).allowed).toBe(true);
+      expect(run('Edit', editArgs('src/b.rs')).allowed).toBe(true);
+    }
+    const r = run('Edit', editArgs('src/a.rs'));
+    expect(r.allowed).toBe(false);
+    expect(r.escalation).toBe('churn');
     expect(run('Edit', editArgs('src/other.rs')).allowed).toBe(true);
   });
 
