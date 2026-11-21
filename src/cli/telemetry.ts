@@ -11,8 +11,11 @@
  *   uap telemetry report --days 30    # wider era window
  *   uap telemetry report --json       # machine-readable (CI, dashboards)
  *
- * The corpus is rolling-capped and machine-scoped — a report is a snapshot,
- * not a ledger; capture the numbers you intend to compare before they roll.
+ * The corpus is rolling-capped and machine-scoped — the headline and per-tool
+ * tables describe what the corpus holds now. The ERA table is durable: days
+ * whose rows turned over (or a wiped tool-calls.db) live on in
+ * era-history.jsonl beside the corpus, written when the prune drops them, so
+ * a before/after comparison survives the turnover that erased its rows.
  */
 
 import chalk from 'chalk';
@@ -69,18 +72,26 @@ export async function telemetryCommand(
   }
 
   console.log(chalk.bold(`\nTool-call corpus — ${root}`));
-  if (summary.totalCalls === 0) {
+  if (summary.totalCalls === 0 && eras.length === 0) {
     console.log(chalk.dim('  No tool-call evidence recorded yet.'));
     return;
   }
 
-  console.log(
-    `  calls ${summary.totalCalls} | failed ${summary.failedCalls} ` +
-      `(${(summary.failureRate * 100).toFixed(1)}%)`,
-  );
+  if (summary.totalCalls > 0) {
+    console.log(
+      `  calls ${summary.totalCalls} | failed ${summary.failedCalls} ` +
+        `(${(summary.failureRate * 100).toFixed(1)}%)`,
+    );
+  } else {
+    // The live corpus turned over or was wiped; the era table below is
+    // era-history.jsonl and is the whole story (found live: the 2026-11-21
+    // db wipe printed "No tool-call evidence recorded yet." over a corpus
+    // whose era numbers existed in history).
+    console.log(chalk.dim('  Live corpus empty — archived eras below.'));
+  }
 
   if (eras.length > 0) {
-    console.log(chalk.bold(`\nEra table (last ${days} days, failure rate by day):`));
+    console.log(chalk.bold(`\nEra table (last ${days} days, failure rate by day; includes days archived at turnover):`));
     for (const e of eras) {
       const mark = e.failureRate >= 0.2 ? chalk.red : e.failureRate >= 0.1 ? chalk.yellow : chalk.green;
       console.log(
