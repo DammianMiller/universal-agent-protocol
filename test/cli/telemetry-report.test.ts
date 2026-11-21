@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -124,6 +124,23 @@ describe('telemetry report — CLI surface', () => {
     expect(output.join('\n')).toContain('No tool-call evidence recorded yet.');
   });
 
+  it('renders archived eras even when the live corpus is empty (wiped db)', async () => {
+    // The regression: a wiped tool-calls.db used to print "No tool-call
+    // evidence recorded yet." and return — burying the era numbers that had
+    // survived in era-history.jsonl (found live on 2026-11-21).
+    const today = new Date().toISOString().slice(0, 10);
+    appendFileSync(
+      join(corpusDir, 'era-history.jsonl'),
+      JSON.stringify({ day: today, calls: 9, failures: 3 }) + '\n',
+    );
+    await telemetryCommand('report', {});
+    const text = output.join('\n');
+    expect(text).toContain('Live corpus empty');
+    expect(text).toContain('Era table');
+    expect(text).toContain(today);
+    expect(text).not.toContain('No tool-call evidence recorded yet.');
+  });
+
   it('rejects an unknown subcommand', async () => {
     const errors: string[] = [];
     const originalError = console.error;
@@ -138,6 +155,99 @@ describe('telemetry report — CLI surface', () => {
     expect(errors.join('\n')).toContain("unknown subcommand 'bogus'");
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
+  });
+});
+
+describe('telemetry report — era history durability', () => {
+  // Turnover is drivable with a small injected cap (UAP_TOOL_CORPUS_MAX_ROWS,
+  // the same override family as UAP_TOOL_CORPUS_DIR). The 2026-11-21 wipe of
+  // this machine's 20k corpus erased every era number with it — these tests
+  // pin the guarantee that the era table survives turnover and wipes.
+  let corpusDir: string;
+  let originalMaxRows: string | undefined;
+
+  beforeEach(() => {
+    corpusDir = mkdtempSync(join(tmpdir(), 'uap-era-history-'));
+    originalMaxRows = process.env.UAP_TOOL_CORPUS_MAX_ROWS;
+    process.env.UAP_TOOL_CORPUS_MAX_ROWS = '4';
+  });
+  afterEach(() => {
+    closeToolCallStores(corpusDir);
+    if (originalMaxRows === undefined) delete process.env.UAP_TOOL_CORPUS_MAX_ROWS;
+    else process.env.UAP_TOOL_CORPUS_MAX_ROWS = originalMaxRows;
+    rmSync(corpusDir, { recursive: true, force: true });
+  });
+
+  it('archives pruned rows by day at turnover and unions them into the era table', () => {
+    for (let i = 0; i < 6; i++) {
+      recordToolCall(
+        { runId: 'r', tool: 'read_file', result: i % 2 ? 'ERROR: boom' : 'contents' },
+        corpusDir,
+      );
+    }
+    // 6 rows over the cap of 4: the prune-on-open of the NEXT open archives
+    // and drops the 2 oldest rows — whose day would otherwise vanish with them.
+    closeToolCallStores(corpusDir);
+    recordToolCall({ runId: 'r2', tool: 'read_file', result: 'contents' }, corpusDir);
+
+    const history = readFileSync(join(corpusDir, 'era-history.jsonl'), 'utf8').trim();
+    const lines = history
+      .split('\n')
+      .map((l) => JSON.parse(l) as { day: string; calls: number; failures: number });
+    expect(lines).toHaveLength(1);
+    expect(lines[0].calls).toBe(2);
+    expect(lines[0].failures).toBe(1); // i=1 was the ERROR among rows 1..2
+
+    // The era table unions history and live: all 7 calls, all 3 failures.
+    const eras = dailyToolCallRates(1, corpusDir);
+    expect(eras).toHaveLength(1);
+    expect(eras[0].calls).toBe(7);
+    expect(eras[0].failures).toBe(3);
+  });
+
+  it('keeps history days when the corpus db is wiped (era numbers outlive the db)', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    appendFileSync(
+      join(corpusDir, 'era-history.jsonl'),
+      JSON.stringify({ day: today, calls: 5, failures: 2 }) + '\n',
+    );
+    // No db at all: the archived day still renders.
+    const eras = dailyToolCallRates(14, corpusDir);
+    expect(eras).toHaveLength(1);
+    expect(eras[0].day).toBe(today);
+    expect(eras[0].calls).toBe(5);
+    expect(eras[0].failures).toBe(2);
+    expect(eras[0].failureRate).toBeCloseTo(0.4, 10);
+  });
+
+  it('merges duplicate history day lines additively', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    appendFileSync(
+      join(corpusDir, 'era-history.jsonl'),
+      JSON.stringify({ day: today, calls: 2, failures: 1 }) + '\n' +
+        JSON.stringify({ day: today, calls: 3, failures: 0 }) + '\n',
+    );
+    const eras = dailyToolCallRates(14, corpusDir);
+    expect(eras).toHaveLength(1);
+    expect(eras[0].calls).toBe(5);
+    expect(eras[0].failures).toBe(1);
+  });
+
+  it('skips corrupt/malformed history lines and drops days outside the window', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    appendFileSync(
+      join(corpusDir, 'era-history.jsonl'),
+      [
+        '{ not json', // corrupt line: skipped, never fatal
+        JSON.stringify({ day: 42, calls: 1, failures: 0 }), // wrong-typed day
+        JSON.stringify({ day: '2019-01-01', calls: 50, failures: 50 }), // outside the window
+        JSON.stringify({ day: today, calls: 5, failures: 1 }),
+      ].join('\n') + '\n',
+    );
+    const eras = dailyToolCallRates(14, corpusDir);
+    expect(eras).toHaveLength(1);
+    expect(eras[0].day).toBe(today);
+    expect(eras[0].calls).toBe(5);
   });
 });
 

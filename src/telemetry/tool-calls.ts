@@ -17,7 +17,7 @@
  * agent loop it is observing.
  */
 import Database from 'better-sqlite3';
-import { existsSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -28,8 +28,16 @@ import {
   type ToolOutcomeClass,
 } from './tool-failure.js';
 
-/** Rolling cap: the corpus is a diagnosis aid, not an audit log. */
-const MAX_TOOL_CALL_ROWS = 20_000;
+/**
+ * Rolling cap: the corpus is a diagnosis aid, not an audit log.
+ * `UAP_TOOL_CORPUS_MAX_ROWS` overrides it (same override family as
+ * `UAP_TOOL_CORPUS_DIR`) so turnover is drivable in small-cap tests and
+ * paired-bench cells without 20k inserts.
+ */
+function maxToolCallRows(): number {
+  const parsed = parseInt(process.env.UAP_TOOL_CORPUS_MAX_ROWS ?? '', 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : 20_000;
+}
 
 const dbCache = new Map<string, Database.Database>();
 /**
@@ -61,6 +69,64 @@ export function toolCorpusRoot(): string {
 
 function dbPathFor(root: string): string {
   return join(root, 'tool-calls.db');
+}
+
+function eraHistoryPath(root: string): string {
+  return join(root, 'era-history.jsonl');
+}
+
+/**
+ * Day-level aggregates of the rows about to leave the rolling cap, appended
+ * to era-history.jsonl beside the corpus. The cap (and a wiped/recreated
+ * tool-calls.db — seen live on 2026-11-21) erases raw rows; the era table
+ * is the before/after instrument, so the days it compares must survive the
+ * turnover that removes their evidence rows. Append-only, one JSON object
+ * per line; readers merge duplicate day lines (a re-prune of the same rows
+ * is additive there, not double-counted by anything else).
+ *
+ * Best-effort, like every write in this module: archival must never break
+ * the prune it precedes or the tool call that triggered it.
+ */
+function archivePrunedEra(db: Database.Database, root: string): void {
+  try {
+    const rows = db
+      .prepare(
+        `SELECT substr(ts, 1, 10) AS day, COUNT(*) AS calls, COALESCE(SUM(failed),0) AS failures
+         FROM tool_calls WHERE id <= (SELECT MAX(id) - ? FROM tool_calls)
+         GROUP BY day ORDER BY day`,
+      )
+      .all(maxToolCallRows()) as Array<{ day: string; calls: number; failures: number }>;
+    if (rows.length === 0) return;
+    appendFileSync(
+      eraHistoryPath(root),
+      rows.map((r) => JSON.stringify({ day: r.day, calls: r.calls, failures: r.failures })).join('\n') + '\n',
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Merged day aggregates from era-history.jsonl; empty map when absent. */
+function readEraHistory(root: string): Map<string, { calls: number; failures: number }> {
+  const out = new Map<string, { calls: number; failures: number }>();
+  try {
+    for (const line of readFileSync(eraHistoryPath(root), 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const r = JSON.parse(line) as { day?: unknown; calls?: unknown; failures?: unknown };
+        if (typeof r.day !== 'string' || typeof r.calls !== 'number' || typeof r.failures !== 'number') continue;
+        const agg = out.get(r.day) ?? { calls: 0, failures: 0 };
+        agg.calls += r.calls;
+        agg.failures += r.failures;
+        out.set(r.day, agg);
+      } catch {
+        /* skip a corrupt line; the table must not die on one */
+      }
+    }
+  } catch {
+    /* no history yet */
+  }
+  return out;
 }
 
 function openStore(cwd: string): Database.Database | null {
@@ -99,9 +165,11 @@ function openStore(cwd: string): Database.Database | null {
     // Prune on OPEN, not on an insert counter: a deliver process records ~12
     // rows and exits, so a `% 100` counter reset per process meant the row cap
     // was never enforced and the table grew without bound across runs.
+    // Archive first: the pruned rows' days must survive in era-history.jsonl.
     try {
+      archivePrunedEra(db, cwd);
       db.prepare('DELETE FROM tool_calls WHERE id <= (SELECT MAX(id) - ? FROM tool_calls)').run(
-        MAX_TOOL_CALL_ROWS,
+        maxToolCallRows(),
       );
     } catch {
       /* best-effort */
@@ -174,9 +242,12 @@ export function recordToolCall(rec: ToolCallRecord, root = toolCorpusRoot()): To
       detail,
     );
     if (++insertCount % 100 === 0) {
+      // The rows leaving the cap take their days' era numbers with them
+      // unless archived first.
+      archivePrunedEra(db, root);
       db.prepare(
         `DELETE FROM tool_calls WHERE id <= (SELECT MAX(id) - ? FROM tool_calls)`,
-      ).run(MAX_TOOL_CALL_ROWS);
+      ).run(maxToolCallRows());
     }
   } catch {
     /* best-effort */
@@ -377,36 +448,54 @@ export interface DailyToolCallRate {
 
 /**
  * Per-day call/failure rates over the corpus — the era table. The corpus is
- * rolling-capped (MAX_TOOL_CALL_ROWS) and test runs are corpus-isolated, so
- * an era's numbers exist only while its rows do; a report that wants them
- * durably snapshots them when it runs.
+ * rolling-capped (maxToolCallRows()) and test runs are corpus-isolated, so
+ * days whose rows have turned over live on in era-history.jsonl (written when
+ * the prune drops them); this table unions history and live rows, so a
+ * before/after comparison survives the turnover that erased its evidence.
  */
 export function dailyToolCallRates(days = 14, root = toolCorpusRoot()): DailyToolCallRate[] {
-  if (!existsSync(dbPathFor(root))) return [];
-  const db = openStore(root);
-  if (!db) return [];
-  try {
-    const windowDays = Math.max(1, Math.trunc(days));
-    const rows = db
-      .prepare(
-        `SELECT substr(ts, 1, 10) AS day, COUNT(*) AS calls, COALESCE(SUM(failed),0) AS failures
-         FROM tool_calls WHERE ts >= datetime('now', ?)
-         GROUP BY day ORDER BY day`,
-      )
-      .all(`-${windowDays} days`) as Array<{
-      day: string;
-      calls: number;
-      failures: number;
-    }>;
-    return rows.map((r) => ({
-      day: r.day,
-      calls: r.calls,
-      failures: r.failures,
-      failureRate: r.calls > 0 ? r.failures / r.calls : 0,
-    }));
-  } catch {
-    return [];
+  const windowDays = Math.max(1, Math.trunc(days));
+  // The earliest day the window can still show, in the corpus's own UTC
+  // `YYYY-MM-DD` day keys (substr(ts,1,10)).
+  const cutoffDay = new Date(Date.now() - windowDays * 86_400_000).toISOString().slice(0, 10);
+  // Open (and thus prune) BEFORE reading history: the prune-on-open may
+  // archive this call's own turnover, and reading history first would
+  // under-count exactly the rows it just archived (they are in neither the
+  // stale history map nor the post-delete live select).
+  const db = existsSync(dbPathFor(root)) ? openStore(root) : null;
+  const byDay = readEraHistory(root);
+  if (db) {
+    try {
+      const rows = db
+        .prepare(
+          `SELECT substr(ts, 1, 10) AS day, COUNT(*) AS calls, COALESCE(SUM(failed),0) AS failures
+           FROM tool_calls WHERE ts >= datetime('now', ?)
+           GROUP BY day`,
+        )
+        .all(`-${windowDays} days`) as Array<{
+        day: string;
+        calls: number;
+        failures: number;
+      }>;
+      for (const r of rows) {
+        const agg = byDay.get(r.day) ?? { calls: 0, failures: 0 };
+        agg.calls += r.calls;
+        agg.failures += r.failures;
+        byDay.set(r.day, agg);
+      }
+    } catch {
+      /* fall back to history-only */
+    }
   }
+  return [...byDay.entries()]
+    .filter(([day]) => day >= cutoffDay)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, agg]) => ({
+      day,
+      calls: agg.calls,
+      failures: agg.failures,
+      failureRate: agg.calls > 0 ? agg.failures / agg.calls : 0,
+    }));
 }
 
 /** Test-only: close cached handles so temp-dir fixtures do not leak. */

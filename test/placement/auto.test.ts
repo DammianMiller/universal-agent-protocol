@@ -65,6 +65,20 @@ const seededPending = (ledgerPath: string, id: string, model: string): void => {
   });
 };
 
+// Wall-clock-independent settle: poll the asserted condition while yielding
+// to the event loop, so background runs land no matter how far CI load
+// stretches the timers (fixed 10/20/60ms sleeps flaked in CI exactly this
+// way: the sleep elapsed before the run, not after).
+const waitUntil = async (predicate: () => boolean, deadlineMs = 5_000): Promise<void> => {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > deadlineMs) {
+      throw new Error(`waitUntil: condition not met within ${deadlineMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
+
 describe('auto policy', () => {
   it('defaults to DISABLED when the policy file is missing (opt-in, fail-closed)', () => {
     dir = mkdtempSync(join(tmpdir(), 'placement-auto-'));
@@ -154,13 +168,15 @@ describe('autoOptionFor', () => {
       ledgerPath,
       enforce: slow,
     });
-    await new Promise((r) => setTimeout(r, 10)); // the run registers
+    const pickForM = (): ReturnType<typeof autoOptionFor> =>
+      autoOptionFor([option('load_alongside', 'm')], { enabled: true, allow_displace: [] }, 'm');
+    await waitUntil(() => pickForM() === null); // the run registers as in-flight
     // The same model parks for the operator while its run is alive — no
     // matter which client id (or placement id) asks again.
-    expect(autoOptionFor([option('load_alongside', 'm')], { enabled: true, allow_displace: [] }, 'm')).toBeNull();
+    expect(pickForM()).toBeNull();
     release?.();
-    await new Promise((r) => setTimeout(r, 10));
-    expect(autoOptionFor([option('load_alongside', 'm')], { enabled: true, allow_displace: [] }, 'm')).not.toBeNull();
+    await waitUntil(() => pickForM() !== null);
+    expect(pickForM()).not.toBeNull();
   });
 
   it('a FAILED model is in cooldown: no oscillation until the window passes; success clears it', async () => {
@@ -172,7 +188,7 @@ describe('autoOptionFor', () => {
       ledgerPath,
       enforce: failing,
     });
-    await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => loadLedger(ledgerPath).pending[0]?.reason === 'auto_failed');
     expect(loadLedger(ledgerPath).pending[0].reason).toBe('auto_failed');
     // The cooldown refuses a re-pick for the SAME model…
     expect(autoOptionFor([option('load_alongside', 'm')], { enabled: true, allow_displace: [] }, 'm')).toBeNull();
@@ -184,7 +200,7 @@ describe('autoOptionFor', () => {
       ledgerPath,
       enforce: okRun,
     });
-    await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => autoOptionFor([option('load_alongside', 'm')], { enabled: true, allow_displace: [] }, 'm') !== null);
     expect(autoOptionFor([option('load_alongside', 'm')], { enabled: true, allow_displace: [] }, 'm')).not.toBeNull();
   });
 });
@@ -211,7 +227,9 @@ describe('scheduleAutoResolution', () => {
       ledgerPath,
       enforce: fakeEnforce,
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await waitUntil(
+      () => enforced.length >= 1 && loadLedger(ledgerPath).pending.every((p) => p.id !== 'plc-aaaaaa'),
+    );
     expect(enforced).toEqual(['qwen3.8-27b']); // exactly one
     // The ORIGINAL entry is resolved by its run; the rotated twin never
     // had a run, so it survives for its own TTL self-heal (not extended:
@@ -239,7 +257,7 @@ describe('scheduleAutoResolution', () => {
       ledgerPath,
       enforce: slowFor('b', 1),
     });
-    await new Promise((r) => setTimeout(r, 60));
+    await waitUntil(() => events.length >= 4);
     // Never interleaved: b's enforcement starts only after a ends.
     expect(events).toEqual(['start:a', 'end:a', 'start:b', 'end:b']);
   });
@@ -261,7 +279,7 @@ describe('scheduleAutoResolution', () => {
     // synchronous prefix (device probes, systemctl is-active, the ledger
     // lock) must not run inline in the admit handler.
     expect(enforceStarted).toBe(false);
-    await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => enforceStarted);
     expect(enforceStarted).toBe(true);
   });
 
@@ -290,7 +308,7 @@ describe('scheduleAutoResolution', () => {
       ledgerPath,
       enforce: fakeEnforce,
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await waitUntil(() => loadLedger(ledgerPath).pending[0]?.reason === 'auto_failed');
     const pending = loadLedger(ledgerPath).pending;
     expect(pending.length).toBe(1); // survives for the operator
     expect(pending[0].reason).toBe('auto_failed');
@@ -303,7 +321,7 @@ describe('scheduleAutoResolution', () => {
       ledgerPath,
       enforce: throwing,
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await waitUntil(() => loadLedger(ledgerPath).pending[0]?.reason === 'auto_failed');
     expect(loadLedger(ledgerPath).pending[0].reason).toBe('auto_failed');
   });
 
@@ -319,7 +337,11 @@ describe('scheduleAutoResolution', () => {
     // Hold the ledger lock so the run's post-enforcement write throws.
     expect(acquireLedgerLock(ledgerPath)).toBe(true);
     try {
-      await new Promise((r) => setTimeout(r, 30)); // the run lands in the catch, not a rejection
+      // The run has fully completed (its in-flight registration is gone)
+      // only AFTER the throwing write landed in the catch — never reject.
+      await waitUntil(() =>
+        autoOptionFor([option('load_alongside', 'm')], { enabled: true, allow_displace: [] }, 'm') !== null,
+      );
     } finally {
       releaseLedgerLock(ledgerPath);
     }
