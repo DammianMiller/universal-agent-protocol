@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -109,5 +109,35 @@ describe('autoroute annotation (U-E)', () => {
     // Both live copies must stay in sync (installs copy from templates/).
     const live = readFileSync(join(process.cwd(), '.factory/hooks/deliver_autoroute.py'), 'utf-8');
     expect(live).toBe(hook);
+  });
+});
+
+describe('CLI entry (U-E, v2.71.1 regression)', () => {
+  it('answers --pending-status BEFORE the detach decision — no child, no deliver-logs', async () => {
+    // Observed live on 2.71.0: a piped `uap deliver --pending-status` spawned
+    // a detached child (mission-detach banner) and streamed three lines of
+    // status to a deliver-log file instead of to the caller. A read-only
+    // status must answer in-process, exactly like --await-run.
+    const dir = mkdtempSync(join(tmpdir(), 'uap-pend-cli-'));
+    const { deliverCommand } = await import('../../src/cli/deliver.js');
+    const logs: string[] = [];
+    const origLog = console.log;
+    const logSpy = (...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+      origLog(...(args as []));
+    };
+    console.log = logSpy as typeof console.log;
+    try {
+      await deliverCommand('', { pendingStatus: true, projectRoot: dir } as Parameters<typeof deliverCommand>[1]);
+    } finally {
+      console.log = origLog;
+    }
+    const out = logs.join('\n');
+    expect(out).toContain('Write-path status (pending deliver intents):');
+    expect(out).toContain('queue: empty');
+    // No detach happened: the mirror machinery creates .uap/deliver-logs
+    // under the invocation root the moment it detaches.
+    expect(existsSync(join(dir, '.uap', 'deliver-logs'))).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
