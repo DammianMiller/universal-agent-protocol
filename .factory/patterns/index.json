@@ -535,6 +535,26 @@
         "source of truth",
         "convergence"
       ]
+    },
+    {
+      "id": 47,
+      "file": "P47_fail_fast_mkdir.md",
+      "title": "Fail-Fast mkdir in Fail-Soft Paths",
+      "abbreviation": "FF-Mkdir",
+      "category": "Reliability",
+      "keywords": [
+        "mkdir",
+        "mkdirSync",
+        "recursive",
+        "fail-soft",
+        "try catch",
+        "pseudo-fs",
+        "/proc",
+        "hang",
+        "infinite loop",
+        "node",
+        "observability"
+      ]
     }
   ]
 }

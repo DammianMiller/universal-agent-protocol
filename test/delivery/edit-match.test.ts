@@ -91,6 +91,58 @@ describe('resolveEditMatch — miss diagnostics (harness plan A2)', () => {
   });
 });
 
+describe('resolveEditMatch — empty-nearest-match digest (U-H anchor-miss turnaround)', () => {
+  // The bare "re-read the file" miss is the measured thrash source (1,727
+  // corpus misses): the model guesses again from the same stale memory. When
+  // even the nearest-match report is empty, hand it the file's CURRENT shape
+  // in the same turn instead.
+  it('attaches the whole current file (with line numbers) when nothing resembles the anchor', () => {
+    const m = resolveEditMatch(FILE, 'zzz qqq wwww vvvv');
+    expect(m.kind).toBe('miss');
+    expect(m.note).toContain('shares no line with your anchor');
+    expect(m.note).toContain('CURRENT file (9 lines)');
+    // The head excerpt IS the file's real first lines, numbered for edit_range.
+    expect(m.note).toMatch(/1\| export function greet/);
+    expect(m.note).toMatch(/edit_range with start_line\/end_line/);
+  });
+
+  it('bounds the digest on large files — first 6 / last 3 with the count between', () => {
+    const big = Array.from({ length: 60 }, (_, i) => `line ${i + 1} content`).join('\n');
+    const m = resolveEditMatch(big, 'zzz qqq wwww vvvv');
+    expect(m.kind).toBe('miss');
+    expect(m.note).toContain('CURRENT file: 60 lines (first 6 / last 3)');
+    expect(m.note).toContain('51 lines between');
+    expect(m.note).toMatch(/60\| line 60 content/);
+    expect(m.note.length).toBeLessThan(2200);
+  });
+
+  it('caps pathological long lines so one line cannot flood context', () => {
+    const pathological = 'normal\n' + 'x'.repeat(50_000) + '\nnormal2\n';
+    const m = resolveEditMatch(pathological, 'zzz qqq wwww vvvv');
+    expect(m.note.length).toBeLessThan(2500);
+  });
+
+  it('does not replace the nearest-region report when one exists', () => {
+    const m = resolveEditMatch(FILE, 'return message;');
+    expect(m.note).toMatch(/Nearest region/);
+    // The digest is the EMPTY-report fallback only — the near-match report
+    // keeps its own shape (it already cites "the CURRENT file").
+    expect(m.note).not.toContain('shares no line with your anchor');
+    expect(m.note).not.toMatch(/CURRENT file \(\d+ lines?\)/);
+  });
+
+  it('respects the diagnostics knob — opt-out keeps the bare miss', () => {
+    const m = resolveEditMatch(FILE, 'zzz qqq wwww vvvv', { diagnostics: false });
+    expect(m.kind).toBe('miss');
+    expect(m.note).toBe('old_string not found — re-read the file and match the CURRENT content.');
+  });
+
+  it('digests an empty file honestly', () => {
+    const m = resolveEditMatch('', 'zzz qqq wwww vvvv');
+    expect(m.note).toContain('CURRENT file: empty (0 lines)');
+  });
+});
+
 describe('applyRangeEdit (harness plan A3)', () => {
   it('replaces an inclusive 1-based line range', () => {
     const r = applyRangeEdit(FILE, 2, 3, '    return `hello ${name}`;');
