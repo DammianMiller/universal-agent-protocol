@@ -234,6 +234,18 @@ Built-in class priors. A class with no anchor-derived tier (project or fleet) re
 
 **Recommendation:** Leave on — it is the reference-free quality floor for new projects. Set `off` only to reproduce the old anchor-less skip or when a class's prior demonstrably misfits the work.
 
+### `PROXY_TIER_CRITIQUE`
+
+| | |
+|---|---|
+| **Where** | shell env / `.uap/proxy.env` |
+| **Type** | enum (off \| unset) |
+| **Default** | unset (on) |
+
+Live tier bars on multimodal critique turns. When the proxy attaches its static VISUAL & SYSTEMIC CRITIQUE checklist (image-bearing observation turns with thinking on), it follows it with the numeric bars from the resolved tier store — fleet (`UAP_TIER_STORE`, else `~/.uap/quality/tiers.json`) overridden by project (`.uap/quality/tiers.json`, walked up from the proxy CWD with the proxy.env trust rules). The directive names each tier's per-axis thresholds and the exact self-measure command (`uap quality gap --file <artifact> --tier <key>`), so every capture the model views is graded against its own project's quality contract — no reference media at request time. Mtime-cached, read-only, fails open: absent or corrupt stores inject nothing. Companion knob `PROXY_TIER_CRITIQUE_MAX_TIERS` (default 4) caps tiers rendered per turn.
+
+**Recommendation:** Leave on — it is the request-time half of the tier-gate doctrine (the gate measures at delivery; this measures while the model is still looking). Set `off` when a project has no tier store or the extra directive bytes are unwanted on observation turns.
+
 ### `fidelity.visionMinScore`
 
 | | |

@@ -1388,6 +1388,35 @@ except Exception as _exc:  # pragma: no cover - optional advisory middleware
             "the blocking floor", type(_exc).__name__,
         )
 
+# U-J: live quality-tier bars on multimodal critique turns. The static VISUAL
+# & SYSTEMIC CRITIQUE checklist teaches HOW to look; the resolved tier store
+# (fleet ~/.uap/quality/tiers.json + project .uap/quality/tiers.json, walked
+# up from CWD) supplies the NUMERIC bar to look against — thresholds
+# harvested from frontier exemplars or published from the built-in class
+# priors (src/quality/class-priors.ts), measured on the artifact itself, so
+# no reference media is needed at request time. The digest rides the trailing
+# user message alongside the checklist (prefix-cache invariant), mtime-cached,
+# pure read-only, fails open. Escape hatch: PROXY_TIER_CRITIQUE=off.
+PROXY_TIER_CRITIQUE = os.environ.get(
+    "PROXY_TIER_CRITIQUE", "on"
+).strip().lower() not in {"0", "false", "off", "no"}
+try:
+    _d = os.path.dirname(os.path.abspath(__file__))
+    if _d not in sys.path:
+        sys.path.append(_d)
+    from proxy_tier_critique import build_digest as _tier_critique_digest
+    _TIER_CRITIQUE_OK = True
+except Exception as _exc:  # pragma: no cover - optional advisory middleware
+    _TIER_CRITIQUE_OK = False
+    if PROXY_TIER_CRITIQUE:
+        # Default-on features must never be silently dead — same visibility
+        # doctrine as AUTOMODE RISK above; fires once, at import (= startup).
+        logging.getLogger("uap.anthropic_proxy").warning(
+            "TIER CRITIQUE: proxy_tier_critique import failed (%s) — live tier "
+            "bars are DISABLED; the static critique checklist is unaffected",
+            type(_exc).__name__,
+        )
+
 
 def _record_project_telemetry(body, model, usage, duration_ms: float = 0.0) -> None:
     """Fail-open per-project routing/cost telemetry: derive the request's project
@@ -11394,6 +11423,17 @@ def build_openai_request(
         ):
             _append_directive_to_trailing_user(openai_body, _MULTIMODAL_CRITIQUE_DIRECTIVE)
             logger.info("MULTIMODAL CRITIQUE: injected generalized visual/systemic checklist at trailing user message")
+            # U-J: follow the static checklist with the LIVE numeric bars from
+            # the resolved tier store, so this observation turn grades the
+            # artifact against the project's own quality contract.
+            if PROXY_TIER_CRITIQUE and _TIER_CRITIQUE_OK:
+                tier_bars = _tier_critique_digest()
+                if tier_bars:
+                    _append_directive_to_trailing_user(openai_body, tier_bars)
+                    logger.info(
+                        "TIER CRITIQUE: injected live tier bars at trailing user message (%d chars)",
+                        len(tier_bars),
+                    )
 
         # Item 1 fallback: Only inject _NO_THINKING_DIRECTIVE when the backend
         # explicitly rejects chat_template_kwargs (_ctk_supported is False) and
