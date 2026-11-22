@@ -192,7 +192,7 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     spawn = bool(autoroute_on and not replay and hint and unseen and not deliver_inflight)
     message = reason
     if replay:
-        message = reason + " [intent recorded to .uap/pending-deliver.jsonl — auto-applying to disk via deterministic `uap deliver --pending` replay]"
+        message = reason + " [intent recorded to .uap/pending-deliver.jsonl — deterministic `uap deliver --pending` replay spawned: it applies the intent to disk and runs the gates; check the outcome ANYTIME with `uap deliver --pending-status`]"
     elif spawn:
         message = reason + " [auto-routed to `uap deliver` — running in the background]"
     elif deliver_inflight and hint and unseen:

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -42,6 +42,14 @@ describe('blueprint prompt ambition layer (U-A/U-D)', () => {
     expect(prompt).toContain('continuityFlows');
     expect(prompt).toContain('NO ORPHAN FLOWS');
     expect(prompt).toContain('"element","source","path","sink","howObservable"');
+  });
+
+  it('demands headless importability for browser/UI artifacts (U-F)', () => {
+    const prompt = buildBlueprintPrompt('Build an interactive page.');
+    expect(prompt).toContain('headless importability');
+    expect(prompt).toContain('lazy initialization');
+    expect(prompt).toContain('without a DOM');
+    expect(prompt).toContain('browser-global access that breaks headless import');
   });
 
   it('parses implied requirements and continuity flows', () => {
@@ -90,7 +98,6 @@ describe('blueprint prompt ambition layer (U-A/U-D)', () => {
 
   it('round-trips the new fields through save/load', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'uap-bp-'));
-    const bp = parseOutcomeBlueprint(JSON.stringify(fullPayload))!;
     const saved = await generateOutcomeBlueprint({
       instruction: 'irrelevant — executor returns the fixture',
       projectRoot: dir,

@@ -377,3 +377,90 @@ export function applyPendingIntents(projectRoot: string, file?: string): Pending
   for (const [logRoot, consumed] of consumedByRoot) consumeIntents(logRoot, consumed);
   return result;
 }
+
+const LAST_REPLAY_FILE = 'pending-deliver.last.json';
+
+/** Outcome of the most recent deterministic replay — the write-path's answer to "did my write land?". */
+export interface PendingReplayOutcome {
+  /** ISO timestamp of the replay. */
+  at: string;
+  /** Project root the replay ran from. */
+  root: string;
+  applied: Array<{ file: string; kind: string; ts: number }>;
+  skipped: Array<{ file: string; reason: string }>;
+  /** Gate verification result; null when no required fast gates were detected. */
+  gates: { passed: boolean; rungs: number; feedback: string } | null;
+}
+
+/**
+ * Persist the outcome of a `--pending` replay so a direct-session model has an
+ * AUTHORITATIVE, one-command answer to "what happened to my blocked write?"
+ * (U-E). Written on every exit path — applied+pass, applied+gate-fail, and
+ * skipped-only — because the unseen outcome is the one that costs turns.
+ */
+export function writePendingReplayOutcome(root: string, outcome: PendingReplayOutcome): void {
+  try {
+    const dir = join(root, '.uap');
+    // NOT recursive: node's recursive mkdir never returns on pseudo-fs roots
+    // (observed 99% CPU forever on /proc with node 24.19.0 / kernel 7.3.0) —
+    // the try/catch never fires because the call never throws. A fail-soft
+    // path must fail FAST, not wedge the replay. The project root always
+    // exists in production; a missing or unwritable root is exactly the case
+    // where this observability aid gives up quietly.
+    if (!existsSync(dir)) mkdirSync(dir);
+    writeFileSync(join(dir, LAST_REPLAY_FILE), JSON.stringify(outcome, null, 2) + '\n', 'utf-8');
+  } catch {
+    /* the state file is an observability aid — never fail a replay over it */
+  }
+}
+
+/** Read the last replay outcome, or null when no replay has been recorded. */
+export function readPendingReplayOutcome(root: string): PendingReplayOutcome | null {
+  try {
+    const file = join(root, '.uap', LAST_REPLAY_FILE);
+    if (!existsSync(file)) return null;
+    return JSON.parse(readFileSync(file, 'utf-8')) as PendingReplayOutcome;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One-page write-path status for `uap deliver --pending-status` (U-E): queue
+ * depth, the last deterministic replay's outcome (applied / skipped / gates),
+ * and the most recent archived intents. Read-only — it never applies anything.
+ */
+export function formatPendingStatus(projectRoot: string): string {
+  const root = resolve(projectRoot);
+  const queued = readPendingIntents(root);
+  const last = readPendingReplayOutcome(root);
+  const appliedArchive = readAppliedIntents(root);
+  const lines: string[] = ['Write-path status (pending deliver intents):'];
+  lines.push(
+    queued.length === 0
+      ? '  queue: empty (no blocked intents waiting for replay)'
+      : `  queue: ${queued.length} intent(s) waiting for the next \`uap deliver --pending\` replay`
+  );
+  if (last) {
+    lines.push(`  last replay: ${last.at} — applied ${last.applied.length}, skipped ${last.skipped.length}`);
+    for (const a of last.applied.slice(0, 6)) lines.push(`    ✓ applied ${a.kind}: ${a.file}`);
+    for (const s of last.skipped.slice(0, 6)) lines.push(`    ⚠ skipped ${s.file}: ${s.reason}`);
+    if (last.gates) {
+      lines.push(
+        last.gates.passed
+          ? `    gates: PASS (${last.gates.rungs} required fast gate(s))`
+          : `    gates: FAIL (${last.gates.rungs} required fast gate(s)) — ${last.gates.feedback.slice(0, 300)}`
+      );
+    } else {
+      lines.push('    gates: none detected (applied without verification)');
+    }
+  } else {
+    lines.push('  last replay: none recorded yet');
+  }
+  const recent = appliedArchive.slice(-5).reverse();
+  if (recent.length > 0) {
+    lines.push('  recently applied (archived):');
+    for (const r of recent) lines.push(`    ${new Date(r.intent.ts * 1000).toISOString().slice(11, 19)} ${r.intent.file_path.split('/').pop()}`);
+  }
+  return lines.join('\n');
+}

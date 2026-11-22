@@ -7,113 +7,49 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+# The checks follow the CURRENT CLAUDE.md contract (template v2.4.x). An
+# earlier revision grepped for v2.2-era section names ("## SESSION START",
+# "## DECISION LOOP", "## PARALLEL REVIEW PROTOCOL") that the template no
+# longer carries, so the check failed on every run (PRs #935-#38) while the
+# file itself was compliant. Each check now names a section the current
+# template actually requires, plus a substantive command/phrase so a bare
+# stub heading cannot satisfy it.
+
 jobs:
   compliance-check:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-        
+
       - name: Check UAP Compliance
         run: |
-          echo "=== UAP COMPLIANCE CHECK ==="
-          
+          echo "=== UAP COMPLIANCE CHECK (current template contract) ==="
+
           score=0
-          total=11
-          
-          # 1. SESSION START block — require the section, the task-ready
-          # command, and the canonical session-start hook command so the
-          # section can't be reduced to a one-liner stub.
-          if grep -q "## SESSION START" CLAUDE.md && \
-             grep -q "uap task ready" CLAUDE.md && \
-             grep -q ".codex/hooks/session-start.sh" CLAUDE.md; then
+          total=12
+
+          # 1. Unified UAP memory bridge — the shared-memory contract.
+          if grep -q "UAP-MEMORY-BRIDGE:START" CLAUDE.md && \
+             grep -q "uap memory query" CLAUDE.md; then
             score=$((score + 1))
-            echo "✓ SESSION START block with uap task ready + hook"
+            echo "✓ UAP memory bridge with query/store contract"
           else
-            echo "✗ SESSION START block MISSING"
+            echo "✗ UAP memory bridge MISSING"
             exit 1
           fi
 
-          # 2. DECISION LOOP workflow — require the section header and a
-          # reference to the Skill-import directive style so the loop
-          # encodes specialized-workflow matching, not just generic steps.
-          if grep -q "## DECISION LOOP" CLAUDE.md && grep -q "@Skill:name.md" CLAUDE.md; then
+          # 2. Template version tracking.
+          if grep -q "TEMPLATE_VERSION: 2\.\|TEMPLATE_VERSION: v2\.\|TEMPLATE_VERSION: 3\." CLAUDE.md; then
             score=$((score + 1))
-            echo "✓ DECISION LOOP with skills reference"
+            echo "✓ Template version tracked"
           else
-            echo "✗ DECISION LOOP or skills reference MISSING"
+            echo "✗ Template version NOT tracked"
             exit 1
           fi
-          
-          # 3. MANDATORY worktree enforcement
-          # Accept either the section header style ("## WORKTREE WORKFLOW — MANDATORY")
-          # or the gate-style header ("## WORKTREE GATE [REQUIRED..."), and require
-          # the substantive command reference ("uap worktree create" or
-          # "uap worktree ensure") to confirm the section isn't just a stub.
-          if grep -qE "## WORKTREE WORKFLOW.*MANDATORY|## WORKTREE GATE \[REQUIRED" CLAUDE.md && \
-             grep -q "uap worktree create\|uap worktree ensure" CLAUDE.md; then
-            score=$((score + 1))
-            echo "✓ MANDATORY worktree enforcement present"
-          else
-            echo "✗ MANDATORY worktree enforcement MISSING"
-            exit 1
-          fi
-          
-          # 4. PARALLEL REVIEW PROTOCOL — require both the section header
-          # and a reference to at least one canonical reviewer agent so a
-          # bare stub heading can't satisfy the gate.
-          if grep -q "## PARALLEL REVIEW PROTOCOL" CLAUDE.md && \
-             grep -qE "code-reviewer|security-auditor|architect-reviewer" CLAUDE.md; then
-            score=$((score + 1))
-            echo "✓ PARALLEL REVIEW PROTOCOL present"
-          else
-            echo "✗ PARALLEL REVIEW PROTOCOL MISSING"
-            exit 1
-          fi
-          
-          # 5. Schema diff gate ordering
-          if grep -q "BLOCKING PREREQUISITES.*Schema Diff Gate\|1\. \*\*Schema Diff Gate" CLAUDE.md; then
-            score=$((score + 1))
-            echo "✓ Schema diff gate in BLOCKING PREREQUISITES"
-          else
-            echo "✗ Schema diff gate NOT in blocking prerequisites"
-            exit 1
-          fi
-          
-          # 6. VERIFIER-FIRST section
-          if grep -q "## VERIFIER-FIRST" CLAUDE.md; then
-            score=$((score + 1))
-            echo "✓ VERIFIER-FIRST section present"
-          else
-            echo "✗ VERIFIER-FIRST MISSING"
-            exit 1
-          fi
-          
-          # 7. COMPLETION GATES - MANDATORY
-          if grep -q "COMPLETION GATES.*-.*MANDATORY\|## COMPLETION GATES - MANDATORY" CLAUDE.md; then
-            score=$((score + 1))
-            echo "✓ COMPLETION GATES - MANDATORY present"
-          else
-            echo "✗ COMPLETION GATES - MANDATORY MISSING"
-            exit 1
-          fi
-          
-          # 8. Pattern Router requirement
-          if grep -q "Pattern.*Router\|pattern router" CLAUDE.md; then
-            score=$((score + 1))
-            echo "✓ Pattern Router documented"
-          else
-            echo "✗ Pattern Router MISSING"
-            exit 1
-          fi
-          
-          # 9. Hook references — require the substantive session-start hook
-          # reference. Older revisions used `@hooks-session-start.md` /
-          # `@PreCompact.md` dangling import directives that resolved to
-          # nothing on disk; accept either the dangling directive style (for
-          # back-compat) or the substantive `.codex/hooks/session-start.sh`
-          # command reference.
+
+          # 3. Hook references — session-start + pre-compact seams.
           if grep -q "@hooks-session-start.md\|@PreCompact.md\|.codex/hooks/session-start.sh\|.codex/hooks/pre-compact.sh" CLAUDE.md; then
             score=$((score + 1))
             echo "✓ Hook references present"
@@ -121,32 +57,101 @@ jobs:
             echo "✗ Hook references MISSING"
             exit 1
           fi
-          
-          # 10. Verifier loop enforcement (min 3 runs)
-          if grep -q "MANDATORY.*minimum 3 times\|MANDATORY.*3 times" CLAUDE.md; then
+
+          # 4. MANDATORY worktree enforcement (section + substantive command).
+          if grep -qE "## WORKTREE GATE \[REQUIRED|## WORKTREE WORKFLOW.*MANDATORY" CLAUDE.md && \
+             grep -q "uap worktree create\|uap worktree ensure" CLAUDE.md; then
             score=$((score + 1))
-            echo "✓ Verifier loop enforced (min 3 runs)"
+            echo "✓ MANDATORY worktree enforcement present"
           else
-            echo "✗ Verifier loop enforcement MISSING"
+            echo "✗ MANDATORY worktree enforcement MISSING"
             exit 1
           fi
-          
-          # 11. Template version tracking
-          if grep -q "v2\.[2-9]\|v3\." CLAUDE.md; then
+
+          # 5. Pre-edit build gate.
+          if grep -q "## PRE-EDIT BUILD GATE" CLAUDE.md && grep -q "npm run build" CLAUDE.md; then
             score=$((score + 1))
-            echo "✓ Template version tracked (v2.x+)"
+            echo "✓ Pre-edit build gate present"
           else
-            echo "✗ Template version NOT tracked"
+            echo "✗ Pre-edit build gate MISSING"
             exit 1
           fi
-          
+
+          # 6. Verifier-first discipline.
+          if grep -q "## VERIFIER-FIRST" CLAUDE.md; then
+            score=$((score + 1))
+            echo "✓ VERIFIER-FIRST section present"
+          else
+            echo "✗ VERIFIER-FIRST MISSING"
+            exit 1
+          fi
+
+          # 7. Pattern router.
+          if grep -q "## PATTERN ROUTER" CLAUDE.md; then
+            score=$((score + 1))
+            echo "✓ Pattern Router documented"
+          else
+            echo "✗ Pattern Router MISSING"
+            exit 1
+          fi
+
+          # 8. Blocking prerequisites with the Schema Diff Gate first.
+          if grep -q "## BLOCKING PREREQUISITES" CLAUDE.md && \
+             grep -q "1\. \*\*Schema Diff Gate" CLAUDE.md; then
+            score=$((score + 1))
+            echo "✓ Blocking prerequisites with Schema Diff Gate first"
+          else
+            echo "✗ Schema diff gate NOT in blocking prerequisites"
+            exit 1
+          fi
+
+          # 9. Plan validation.
+          if grep -q "## PLAN VALIDATION" CLAUDE.md; then
+            score=$((score + 1))
+            echo "✓ Plan validation present"
+          else
+            echo "✗ Plan validation MISSING"
+            exit 1
+          fi
+
+          # 10. Completion gates — mandatory, verified 3x, with the full checklist.
+          if grep -q "## COMPLETION GATES - MANDATORY" CLAUDE.md && \
+             grep -q "minimum 3 times" CLAUDE.md && \
+             grep -q "npm test" CLAUDE.md && grep -q "tsc --noEmit" CLAUDE.md && \
+             grep -q "Version bump" CLAUDE.md; then
+            score=$((score + 1))
+            echo "✓ Completion gates (mandatory, 3x verification, checklist)"
+          else
+            echo "✗ Completion gates incomplete"
+            exit 1
+          fi
+
+          # 11. Session analysis + phantom-error investigation.
+          if grep -q "## SESSION ANALYSIS" CLAUDE.md && \
+             grep -q "## PHANTOM ERROR INVESTIGATION" CLAUDE.md; then
+            score=$((score + 1))
+            echo "✓ Session analysis + phantom error investigation present"
+          else
+            echo "✗ Session analysis / phantom error investigation MISSING"
+            exit 1
+          fi
+
+          # 12. Quality metrics gate (deterministic metric policing).
+          if grep -q "## QUALITY METRICS GATE" CLAUDE.md && grep -q "uap quality" CLAUDE.md; then
+            score=$((score + 1))
+            echo "✓ Quality metrics gate documented"
+          else
+            echo "✗ Quality metrics gate MISSING"
+            exit 1
+          fi
+
           echo ""
           echo "=== UAP COMPLIANCE SCORE: $score/$total ($(( score * 100 / total ))%) ==="
-          
+
           if [ "$score" -ne "$total" ]; then
             echo "ERROR: Compliance check failed! Score: $score/$total"
             exit 1
           fi
-          
+
           echo ""
           echo "✓ All compliance checks passed!"
