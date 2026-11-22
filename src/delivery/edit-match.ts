@@ -331,6 +331,33 @@ function truncateForReport(line: string, max = 200): string {
 }
 
 /**
+ * The empty-nearest-match fallback (U-H): when even the nearest-match report
+ * comes up empty — nothing in the CURRENT file resembles the anchor — hand the
+ * model the file's actual shape instead of a bare "re-read it": total line
+ * count plus a bounded, line-numbered head/tail excerpt. The bare form is the
+ * measured thrash source (1,727 corpus misses): the model guesses again from
+ * the same stale memory and misses again; the digest breaks the cycle in the
+ * SAME turn, without a read round-trip. Small files (≤10 lines) come whole.
+ */
+export function fileDigestReport(current: string, maxChars = 2000): string {
+  const lines = current.split('\n');
+  const total = lines.length;
+  if (total === 0 || (total === 1 && lines[0] === '')) return 'CURRENT file: empty (0 lines).';
+  const numbered = (l: string, i: number): string =>
+    `${String(i + 1).padStart(5)}| ${truncateForReport(l, 160)}`;
+  if (total <= 10) {
+    return `CURRENT file (${total} line${total === 1 ? '' : 's'}):\n${lines.map(numbered).join('\n')}`;
+  }
+  const head = lines.slice(0, 6).map(numbered).join('\n');
+  const tailFrom = total - 3;
+  const tail = lines.slice(tailFrom).map((l, i) => numbered(l, tailFrom + i)).join('\n');
+  const out =
+    `CURRENT file: ${total} lines (first 6 / last 3):\n${head}\n` +
+    `     … (${total - 9} lines between) …\n${tail}`;
+  return out.length > maxChars ? out.slice(0, maxChars) + '…' : out;
+}
+
+/**
  * Continuation of rung 1.5 for a listing-stripped needle with no exact hit:
  * the whitespace-tolerant search runs against the STRIPPED code text (the
  * prefixes themselves can never match a file), then the miss rung reports
@@ -379,6 +406,7 @@ function resolveListingStrippedMiss(
     }
   }
   const report = diagnostics ? nearestMatchReport(current, strippedNeedle) : '';
+  const digest = diagnostics && !report ? fileDigestReport(current) : '';
   return {
     kind: 'miss',
     index: -1,
@@ -386,7 +414,9 @@ function resolveListingStrippedMiss(
     count: 0,
     note: report
       ? `old_string not found (line-number listing prefixes were stripped).\n${report}`
-      : 'old_string not found — re-read the file and match the CURRENT content (not the numbered listing).',
+      : digest
+        ? `old_string not found — the CURRENT file shares no line with your anchor.\n${digest}\nCopy the exact text above, or use edit_range with start_line/end_line.`
+        : 'old_string not found — re-read the file and match the CURRENT content (not the numbered listing).',
   };
 }
 
@@ -519,6 +549,7 @@ export function resolveEditMatch(
 
   // --- Rung 3: miss, with diagnostics -------------------------------------
   const report = diagnostics ? nearestMatchReport(current, oldStr) : '';
+  const digest = diagnostics && !report ? fileDigestReport(current) : '';
   return {
     kind: 'miss',
     index: -1,
@@ -526,7 +557,9 @@ export function resolveEditMatch(
     count: 0,
     note: report
       ? `old_string not found.\n${report}`
-      : 'old_string not found — re-read the file and match the CURRENT content.',
+      : digest
+        ? `old_string not found — the CURRENT file shares no line with your anchor.\n${digest}\nCopy the exact text above, or use edit_range with start_line/end_line.`
+        : 'old_string not found — re-read the file and match the CURRENT content.',
   };
 }
 
