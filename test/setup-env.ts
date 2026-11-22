@@ -60,6 +60,20 @@ if (process.env.UAP_TIER_STORE === undefined) {
 }
 
 /**
+ * Built-in class priors (U-I frontier regimes) resolve for every tier-less
+ * class by default in production — the reference-free floor. In the test
+ * sandbox that default rewrites the seams the pre-prior tests pin (the tier
+ * gate's 'no derived tiers' skip, the empty known-tier list), so priors
+ * default OFF here and the tests asserting ON them pass their own env
+ * (test/quality/class-priors.test.ts) — the same idiom as the fleet store
+ * above. Production keeps priors ON; UAP_TIER_PRIORS=off is the operator
+ * escape hatch there too.
+ */
+if (process.env.UAP_TIER_PRIORS === undefined) {
+  process.env.UAP_TIER_PRIORS = 'off';
+}
+
+/**
  * The tool-call corpus is PRODUCTION telemetry — test runs must not write it.
  *
  * runTool records every call to ~/.uap/telemetry/tool-calls.db, the machine-

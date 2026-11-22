@@ -222,6 +222,18 @@ Runtime override of `fidelity.mode`, read from the shell env by verify/deliver a
 
 **Recommendation:** Set inline (`UAP_FIDELITY=max <cmd>`) to force max fidelity for one command without editing config.
 
+### `UAP_TIER_PRIORS`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | enum (off \| unset) |
+| **Default** | unset (priors on) |
+
+Built-in class priors. A class with no anchor-derived tier (project or fleet) resolves its baked frontier envelope instead — e.g. `visual-scene/frontier-prior`, the numeric bar harvested from frontier rendered-visual outputs, measured on the artifact itself with no reference media. Under `UAP_FIDELITY=max` a capture failing a builtin prior blocks delivery (`escalated`); in shadow mode it stays advisory. Curated anchor tiers always win and never escalate. Set `off` to restore pre-prior behavior (the gate skips when no tier was derived).
+
+**Recommendation:** Leave on — it is the reference-free quality floor for new projects. Set `off` only to reproduce the old anchor-less skip or when a class's prior demonstrably misfits the work.
+
 ### `fidelity.visionMinScore`
 
 | | |

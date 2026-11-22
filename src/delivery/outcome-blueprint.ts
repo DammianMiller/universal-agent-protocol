@@ -13,6 +13,23 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { extractJsonObject } from './acceptance-judge.js';
 import { measureQueryComplexity } from '../utils/query-complexity.js';
+import {
+  REGIMES_INJECTION_TEXT,
+  REGIMES_PROMPT_ITEMS,
+  artDirectionContractSection,
+  artDirectionMarkdownLines,
+  cleanStringList,
+  fillPriorRegimes,
+  parseArtDirection,
+  parseQualityRegimes,
+  regimesContractSection,
+  regimesMarkdownLines,
+  type BlueprintArtDirection,
+  type BlueprintQualityRegime,
+  type RegimePayload,
+} from './blueprint-regimes.js';
+
+export type { BlueprintArtDirection, BlueprintQualityRegime } from './blueprint-regimes.js';
 
 export interface BlueprintSubsystem {
   name: string;
@@ -59,6 +76,10 @@ export interface OutcomeBlueprint {
   impliedRequirements?: BlueprintImpliedRequirement[];
   /** No-orphan-flow declarations; absent in older blueprints. */
   continuityFlows?: BlueprintContinuityFlow[];
+  /** Self-measured numeric quality regimes; absent in older blueprints (U-I). */
+  qualityRegimes?: BlueprintQualityRegime[];
+  /** The one chosen art direction; absent in older blueprints (U-I). */
+  artDirection?: BlueprintArtDirection;
   verificationPerspectives: string[];
   antiPatterns: string[];
   generatedAt: string;
@@ -102,7 +123,7 @@ interface RawContinuityFlow {
   how_observable?: string;
 }
 
-interface RawBlueprintPayload {
+interface RawBlueprintPayload extends RegimePayload {
   summary?: string;
   subsystems?: RawBlueprintSubsystem[];
   fidelityTargets?: string[];
@@ -117,15 +138,6 @@ interface RawBlueprintPayload {
   verification_perspectives?: string[];
   antiPatterns?: string[];
   anti_patterns?: string[];
-}
-
-function cleanStringList(input: string[] | undefined, cap = 12): string[] {
-  if (!Array.isArray(input)) return [];
-  return input
-    .filter((item): item is string => typeof item === 'string')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, cap);
 }
 
 /** Parse implied requirements (tolerant of absence — older blueprints predate them). */
@@ -192,12 +204,13 @@ export function buildBlueprintPrompt(instruction: string, repoHints?: string): s
     '6. "antiPatterns": 3-6 hollow shortcuts to forbid (e.g., stubbed arrays, undefined lookup keys, dead controls, single-file monolith thrashing, unexercised error paths, top-level browser-global access that breaks headless import and blinds every automated gate).',
     '7. "impliedRequirements": scan the task language for QUALITATIVE or INTENSIVE terms (adjectives of quality, motion, richness, realism, or completeness — and intensifiers attached to them). For EACH, derive what a flagship implementation concretely REQUIRES beyond the literal feature list — the systems and behaviors that make the term TRUE at runtime, not merely named. Capture as {"term","requirement","howRealized"}. These are binding: the build is incomplete until each is realized. For any artifact that runs in a browser/UI runtime, headless importability is a STANDING implied requirement: browser-only APIs (document/window/canvas) must sit behind lazy initialization so the module graph imports under Node and automated gates can exercise its logic without a DOM.',
     '8. "continuityFlows": NO ORPHAN FLOWS. For every element the task names that flows, moves, streams, feeds, animates, emits, or depends on another, declare its SOURCE (what produces it), its PATH (the observable route it travels), its SINK (what receives/terminates it), and HOW the whole chain is observable at runtime. An effect with no visible upstream producer — or a producer with no path to its effect — is a hollow artifact. Capture each as {"element","source","path","sink","howObservable"}.',
+    ...REGIMES_PROMPT_ITEMS,
     '',
     `TASK SPECIFICATION:\n${instruction.slice(0, 6000)}`,
     repoHints ? `\nEXISTING REPO CONTEXT:\n${repoHints.slice(0, 2000)}` : '',
     '',
     'Respond with a single JSON object matching this exact schema:',
-    '{"summary":"...","subsystems":[{"name":"...","purpose":"...","keyArtifacts":["..."]}],"fidelityTargets":["..."],"runtimeInvariants":[{"subsystem":"...","invariant":"...","howToVerify":"..."}],"impliedRequirements":[{"term":"...","requirement":"...","howRealized":"..."}],"continuityFlows":[{"element":"...","source":"...","path":"...","sink":"...","howObservable":"..."}],"verificationPerspectives":["..."],"antiPatterns":["..."]}',
+    '{"summary":"...","subsystems":[{"name":"...","purpose":"...","keyArtifacts":["..."]}],"fidelityTargets":["..."],"runtimeInvariants":[{"subsystem":"...","invariant":"...","howToVerify":"..."}],"impliedRequirements":[{"term":"...","requirement":"...","howRealized":"..."}],"continuityFlows":[{"element":"...","source":"...","path":"...","sink":"...","howObservable":"..."}],"qualityRegimes":[{"axis":"...","range":"...","howMeasured":"..."}],"artDirection":{"stance":"...","principles":["..."]},"verificationPerspectives":["..."],"antiPatterns":["..."]}',
   ]
     .filter(Boolean)
     .join('\n');
@@ -256,6 +269,8 @@ export function parseOutcomeBlueprint(raw: string): OutcomeBlueprint | null {
     runtimeInvariants: [...runtimeInvariants, ...continuityFlows.map(continuityToInvariant)],
     impliedRequirements,
     continuityFlows,
+    qualityRegimes: parseQualityRegimes(obj),
+    artDirection: parseArtDirection(obj),
     verificationPerspectives,
     antiPatterns,
     generatedAt: new Date().toISOString(),
@@ -305,6 +320,7 @@ export function renderBlueprintMarkdown(bp: OutcomeBlueprint): string {
     }
     lines.push('');
   }
+  lines.push(...regimesMarkdownLines(bp.qualityRegimes), ...artDirectionMarkdownLines(bp.artDirection));
   if (bp.verificationPerspectives.length > 0) {
     lines.push('## Verification Perspectives');
     for (const v of bp.verificationPerspectives) lines.push(`- ${v}`);
@@ -359,6 +375,10 @@ export function formatBlueprintContract(bp: OutcomeBlueprint): string {
           .join('\n')
     );
   }
+  const regimesSection = regimesContractSection(bp.qualityRegimes);
+  if (regimesSection) sections.push(regimesSection);
+  const artSection = artDirectionContractSection(bp.artDirection);
+  if (artSection) sections.push(artSection);
   if (bp.antiPatterns.length > 0) {
     sections.push('Avoid these hollow shortcuts:\n' + bp.antiPatterns.map((a) => `  - ${a}`).join('\n'));
   }
@@ -396,6 +416,11 @@ export async function generateOutcomeBlueprint(
     const raw = await opts.executor(buildBlueprintPrompt(opts.instruction, opts.repoHints));
     const bp = parseOutcomeBlueprint(raw);
     if (!bp) return null;
+    // U-I auto-merge: a blueprint that declared no self-measurable regimes for
+    // a rendered-visual artifact gets the harvested frontier class prior as
+    // its binding regimes — a thin blueprint still carries the numeric bar,
+    // measured on the artifact's own captures with no reference media.
+    fillPriorRegimes(bp, opts.instruction);
     if (opts.persist !== false) {
       saveOutcomeBlueprint(opts.projectRoot, bp);
     }
@@ -438,7 +463,8 @@ export function maybeBlueprintInjection(cwd: string, promptText: string): string
     '(2) set concrete quantitative fidelity/completeness targets so the first draft is flagship quality rather than a bare-bones stub, ' +
     '(3) define runtime invariants that must hold when executed (not just compile-green), ' +
     '(4) derive IMPLIED requirements from qualitative terms in the task language (every quality/intensity word names concrete systems it takes to be true at runtime — make each binding), and ' +
-    '(5) declare CONTINUITY for every element that flows/moves/feeds/depends: its source, path, and sink — an effect with no producer or a producer with no path to its effect is hollow, and ' +
-    '(6) plan multi-angle behavioral verification before finishing.'
+    '(5) declare CONTINUITY for every element that flows/moves/feeds/depends: its source, path, and sink — an effect with no producer or a producer with no path to its effect is hollow, ' +
+    '(6) plan multi-angle behavioral verification before finishing, ' +
+    REGIMES_INJECTION_TEXT
   );
 }

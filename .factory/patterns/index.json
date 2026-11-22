@@ -555,6 +555,35 @@
         "node",
         "observability"
       ]
+    },
+    {
+      "id": 48,
+      "file": "P48_frontier_ambition_ideation.md",
+      "title": "Frontier Ambition & Ideation (Reference-Free)",
+      "abbreviation": "Frontier-AI",
+      "category": "Creative Production",
+      "keywords": [
+        "3d",
+        "three.js",
+        "scene",
+        "visual",
+        "creative",
+        "build",
+        "animation",
+        "game",
+        "ui",
+        "render",
+        "quality",
+        "aesthetic",
+        "premium",
+        "flagship",
+        "ambition",
+        "ideation",
+        "art direction",
+        "regime",
+        "voxel",
+        "webgl"
+      ]
     }
   ]
 }

@@ -39,8 +39,16 @@ export interface TierGateResult {
   skipped?: string;
   /** One entry per (tier, capture) pair measured. Empty when skipped. */
   reports: TierGateTierResult[];
-  /** Aggregate verdict — false only in block mode below tier. */
+  /** Aggregate verdict — false only in block mode below tier, or on max-fidelity prior escalation. */
   pass: boolean;
+  /**
+   * Max-fidelity prior escalation (U-I): true when the gate ran in shadow
+   * mode but a BUILT-IN class prior failed under max fidelity — the
+   * reference-free frontier floor refuses DONE without the operator having
+   * set UAP_TIER_GATE=block. Anchor-derived tiers never escalate (their
+   * promotion stays an explicit operator act).
+   */
+  escalated?: boolean;
   /** Worst-first gap directives; present only when blocking. */
   feedback?: string;
 }
@@ -50,7 +58,29 @@ export function formatTierGateLine(r: TierGateResult): string {
   if (r.skipped) return `tier gate: skipped (${r.skipped})`;
   const worst = r.reports.find((x) => !x.pass);
   if (!worst) return `tier gate: ✓ ${r.reports.length} measurement(s) at tier`;
-  return `tier gate: ✗ below tier ${worst.tier} — ${worst.failing}/${worst.axes} axes failing (worst: ${worst.worst})`;
+  const label = r.escalated ? 'tier gate (max-fidelity prior escalation)' : 'tier gate';
+  return `${label}: ✗ below tier ${worst.tier} — ${worst.failing}/${worst.axes} axes failing (worst: ${worst.worst})`;
+}
+
+/** The threshold range in human form (>= min / <= max / between). */
+function thresholdText(t: { min?: number; max?: number }): string {
+  return t.min !== undefined && t.max !== undefined
+    ? `[${t.min}, ${t.max}]`
+    : t.min !== undefined
+      ? `>= ${t.min}`
+      : `<= ${t.max}`;
+}
+
+/** The worst-first fix directives for a failing gap report (max 5 axes). */
+function gapFeedbackLines(report: GapReport, headline: string, doctrine: string): string[] {
+  return [
+    headline,
+    doctrine,
+    ...report.axes
+      .filter((a) => a.status === 'fail')
+      .slice(0, 5)
+      .map((a) => `  ${a.axis}: ${a.value} (tier ${thresholdText(a.threshold)}) → ${a.directive}`),
+  ];
 }
 
 /**
@@ -63,6 +93,12 @@ export function runTierGate(opts: {
   /** PNG captures (the visual gate's screenshots). */
   captures: string[];
   mode: TierGateMode;
+  /**
+   * Max-fidelity prior escalation (U-I): when true, a BUILT-IN class prior
+   * failing in shadow mode refuses DONE (result.escalated). Anchor-derived
+   * tiers keep pure shadow semantics at every fidelity.
+   */
+  maxFidelity?: boolean;
   load?: typeof resolveTiers;
 }): TierGateResult {
   if (opts.mode === 'off') return { mode: 'off', skipped: 'gate off (UAP_TIER_GATE=off)', reports: [], pass: true };
@@ -100,20 +136,31 @@ export function runTierGate(opts: {
   if (reports.length === 0) return { mode: opts.mode, skipped: 'no decodable captures', reports: [], pass: true };
 
   if (opts.mode === 'shadow') {
-    // Assess, do not block. The measurement is reported; DONE is unaffected.
-    return { mode: 'shadow', reports, pass: true };
+    // Assess, do not block — with one escalation path (U-I): a BUILT-IN class
+    // prior is the reference-free frontier floor, and under max fidelity its
+    // failure refuses DONE even without UAP_TIER_GATE=block. Anchor-derived
+    // tiers keep pure shadow semantics at every fidelity (their promotion to
+    // blocking stays an explicit operator act).
+    const priorGaps = opts.maxFidelity
+      ? gaps.filter((g) => store.tiers[g.tier]?.builtin === true)
+      : [];
+    if (priorGaps.length === 0) return { mode: 'shadow', reports, pass: true };
+    const worstPrior = [...priorGaps].sort((a, b) => b.report.failing - a.report.failing)[0];
+    const lines = gapFeedbackLines(
+      worstPrior.report,
+      `TIER GATE (max-fidelity escalation) — below the built-in frontier prior ${worstPrior.tier}: ${worstPrior.report.failing} of ${worstPrior.report.axes.length} axes failing (worst: ${worstPrior.report.worst}).`,
+      'The artifact is refused DONE below the reference-free frontier envelope (harvested class prior; UAP_TIER_PRIORS=off disables priors, UAP_TIER_GATE=off silences the gate). Fix the axes in severity order — one pass per axis:'
+    );
+    return { mode: 'shadow', reports, pass: false, escalated: true, feedback: lines.join('\n') };
   }
   if (gaps.length === 0) return { mode: 'block', reports, pass: true };
   // BLOCK mode: refuse DONE with the gap report attached (worst tier first).
   const ordered = [...gaps].sort((a, b) => b.report.failing - a.report.failing);
   const worst = ordered[0];
-  const lines = [
+  const lines = gapFeedbackLines(
+    worst.report,
     `TIER GATE — below tier ${worst.tier}: ${worst.report.failing} of ${worst.report.axes.length} axes failing (worst: ${worst.report.worst}).`,
-    'The artifact is refused DONE below the digitized quality bar. Fix the axes in severity order — one pass per axis:',
-    ...worst.report.axes
-      .filter((a) => a.status === 'fail')
-      .slice(0, 5)
-      .map((a) => `  ${a.axis}: ${a.value} (tier ${a.threshold.min !== undefined && a.threshold.max !== undefined ? `[${a.threshold.min}, ${a.threshold.max}]` : a.threshold.min !== undefined ? `>= ${a.threshold.min}` : `<= ${a.threshold.max}`}) → ${a.directive}`),
-  ];
+    'The artifact is refused DONE below the digitized quality bar. Fix the axes in severity order — one pass per axis:'
+  );
   return { mode: 'block', reports, pass: false, feedback: lines.join('\n') };
 }

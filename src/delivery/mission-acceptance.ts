@@ -368,6 +368,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
       projectRoot: root,
       captures: tierCaptures,
       mode: resolveTierGateMode(process.env),
+      maxFidelity: resolveFidelity(root).max,
     });
     if (!tierGateResult.pass) {
       return { passed: false, feedback: tierGateResult.feedback ?? `TIER GATE — below tier (see ${formatTierGateLine(tierGateResult)})` };
