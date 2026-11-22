@@ -199,4 +199,40 @@ print(json.dumps({
     expect(gate).toBeGreaterThan(-1);
     expect(tierLog - gate).toBeLessThan(1200);
   });
+
+  it('announces the armed state at startup, after logging is configured', () => {
+    const src = readFileSync(proxyPath, 'utf-8');
+    const armed = src.indexOf('TIER CRITIQUE: armed');
+    expect(armed).toBeGreaterThan(-1);
+    // The banner belongs to the startup path (next to "Proxy started"), NOT the
+    // import block — module-import-time logs predate the logging setup and
+    // would vanish; only the import FAILURE warning lives there (lastResort
+    // handler still surfaces WARNING+ on stderr).
+    const started = src.indexOf('Proxy started: listening on %s:%d -> upstream %s');
+    expect(started).toBeGreaterThan(-1);
+    expect(armed).toBeGreaterThan(started);
+    expect(armed - started).toBeLessThan(1200);
+    // Guarded by both the operator knob and import health; the fail-visible
+    // warning at import time is preserved.
+    const guard = src.lastIndexOf('if PROXY_TIER_CRITIQUE and _TIER_CRITIQUE_OK:', armed);
+    expect(guard).toBeGreaterThan(-1);
+    expect(armed - guard).toBeLessThan(400);
+    expect(src).toContain('TIER CRITIQUE: proxy_tier_critique import failed');
+  });
+
+  it.skipIf(!python)('proxy module still byte-compiles after edits', () => {
+    // Regression guard for the ~20k-line module: any syntax slip in the banner
+    // region (or anywhere else) fails here instead of at proxy spawn time,
+    // where it would surface as a dead :4000 and a stalled client run.
+    const out = runPython(`
+import py_compile
+py_compile.compile(
+    ${JSON.stringify(proxyPath)},
+    cfile='/tmp/uap-proxy-compile-check.pyc',
+    doraise=True,
+)
+print('COMPILED')
+`);
+    expect(out).toContain('COMPILED');
+  });
 });

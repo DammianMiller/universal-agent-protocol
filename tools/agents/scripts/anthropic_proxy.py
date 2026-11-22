@@ -7441,6 +7441,16 @@ async def lifespan(app: FastAPI):
         PROXY_PORT,
         LLAMA_CPP_BASE,
     )
+    # U-J visibility: the import block above only speaks on FAILURE — announce
+    # the healthy armed state here (logging is configured by this point, unlike
+    # at import time) so operators can confirm live tier bars without waiting
+    # for the first multimodal critique turn. Same doctrine as the failure
+    # warning: default-on features are never silently dead — or silently live.
+    if PROXY_TIER_CRITIQUE and _TIER_CRITIQUE_OK:
+        logger.info(
+            "TIER CRITIQUE: armed — live tier bars ride multimodal critique "
+            "turns (resolved from the tier store; PROXY_TIER_CRITIQUE=off disables)",
+        )
 
     _reaper_task = asyncio.ensure_future(_closewait_reaper())
 
