@@ -517,6 +517,24 @@
         "methodology",
         "superpowers"
       ]
+    },
+    {
+      "id": 46,
+      "file": "P46_literal_union_test_inputs.md",
+      "title": "Literal-Union Test Inputs from Source of Truth",
+      "abbreviation": "LU-Inputs",
+      "category": "Testing",
+      "keywords": [
+        "literal union",
+        "typescript",
+        "test inputs",
+        "type error",
+        "TS2345",
+        "cast",
+        "generated code",
+        "source of truth",
+        "convergence"
+      ]
     }
   ]
 }

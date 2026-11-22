@@ -413,6 +413,7 @@ uap deliver <instruction...> [options]
 | `--await-timeout <sec>` | Budget for `--await-run` (default 900, max 14400). An MCP caller is clamped to at most 45s, just under a client's ~60s request timeout |
 | `--resume <id>` | CONTINUE a stopped run. Not the same as following: resuming a **live** run starts a second copy of it |
 | `--pending [file]` | Replay the edit intents the delivery gate recorded (`.uap/pending-deliver.jsonl`) by exact anchor, no model, then run the gates once |
+| `--pending-status` | Read-only write-path state: pending queue depth, the last deterministic replay's outcome (applied / skipped / gate results), and recently archived intents — the one-command answer to "did my blocked write land?" |
 
 A mission outlives the tool call that launched it, so a caller whose own timeout
 fires mid-run follows it rather than relaunching:

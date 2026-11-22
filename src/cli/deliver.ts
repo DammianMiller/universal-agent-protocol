@@ -47,7 +47,12 @@ import type { TaskComplexity } from '../models/types.js';
 import { classifyComplexity, tierToRouting } from '../models/complexity.js';
 import { promptSelectionFromConfig } from '../self-tuning/prompt-variants.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
-import { applyPendingIntents } from '../delivery/pending-intents.js';
+import {
+  applyPendingIntents,
+  formatPendingStatus,
+  writePendingReplayOutcome,
+  type PendingReplayOutcome,
+} from '../delivery/pending-intents.js';
 import { prescribedReplayPreflight } from '../delivery/prescribed-replay.js';
 import { runAcceptanceGate } from '../delivery/acceptance-judge.js';
 import { buildMissionAcceptanceGate, resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
@@ -546,6 +551,11 @@ export interface DeliverOptions {
   /** `--pending [file]`: replay gate-recorded edit intents deterministically,
    * verify with the required gates, and exit (plan D1). */
   pending?: string | boolean;
+  /** `--pending-status` (U-E): read-only write-path state — pending queue
+   *  depth, the last deterministic replay's outcome (applied / skipped / gate
+   *  results), and recently archived intents. Answers "did my blocked write
+   *  land?" in one command. */
+  pendingStatus?: boolean;
   dryRun?: boolean;
   /** `--force`: run even when the trivial-mission guard would refuse (escalate posture). */
   force?: boolean;
@@ -1763,6 +1773,15 @@ export function resolvePendingGateRoot(
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
 
+  // U-E (write-path observability): `--pending-status` is the authoritative,
+  // one-command answer to "did my blocked write land?" — queue depth, the last
+  // deterministic replay's outcome, recent archived intents. Read-only; sits
+  // before every launch path so it can be checked at any moment.
+  if (options.pendingStatus) {
+    console.log(formatPendingStatus(projectRoot));
+    return;
+  }
+
   // P1 (plan D1): --pending replays gate-recorded edit intents exactly, then
   // verifies with the required gates — the sanctioned path for a blocked
   // direct edit, with zero model improvisation. Runs BEFORE preflight: it
@@ -1772,8 +1791,23 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const res = applyPendingIntents(projectRoot, pendingFile);
     for (const a of res.applied) console.log(chalk.green(`  ✓ applied ${a.kind}: ${a.file}`));
     for (const s of res.skipped) console.log(chalk.yellow(`  ⚠ skipped ${s.file}: ${s.reason}`));
+    // U-E: record the outcome on EVERY exit path — the unseen replay result is
+    // exactly what costs a direct-session model turns ("did my write land?").
+    const recordOutcome = (gates: PendingReplayOutcome['gates']): void => {
+      writePendingReplayOutcome(projectRoot, {
+        at: new Date().toISOString(),
+        root: projectRoot,
+        applied: res.applied.map((a) => ({ file: a.file, kind: a.kind, ts: a.ts })),
+        skipped: res.skipped.map((s) => ({ file: s.file, reason: s.reason })),
+        gates,
+      });
+    };
     if (res.applied.length === 0) {
-      fail(`No pending intents applied${pendingFile ? ` for ${pendingFile}` : ''} (${res.skipped.length} skipped).`);
+      recordOutcome(null);
+      fail(
+        `No pending intents applied${pendingFile ? ` for ${pendingFile}` : ''} (${res.skipped.length} skipped).` +
+          ' Outcome recorded — check anytime with `uap deliver --pending-status`.'
+      );
     }
     const gateRoot = resolvePendingGateRoot(
       projectRoot,
@@ -1786,10 +1820,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(chalk.cyan(`⚖ verifying ${res.applied.length} applied intent(s) against ${rungs.length} required fast gate(s)${scopeHint}…`));
       const ladder = runLadder(rungs, gateRoot);
       if (!ladder.passed) {
-        fail(`Applied intents but the required gates FAIL:\n${ladder.feedback}`);
+        recordOutcome({ passed: false, rungs: rungs.length, feedback: String(ladder.feedback).slice(0, 800) });
+        fail(
+          `Applied intents but the required gates FAIL:\n${ladder.feedback}\n` +
+            '(outcome recorded — check anytime with `uap deliver --pending-status`)'
+        );
       }
+      recordOutcome({ passed: true, rungs: rungs.length, feedback: '' });
       console.log(chalk.green('  ✓ gates pass'));
     } else {
+      recordOutcome(null);
       console.log(chalk.yellow('  (no required fast gates detected — applied without verification)'));
     }
     return;

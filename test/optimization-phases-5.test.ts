@@ -261,12 +261,26 @@ describe('Phase 3: Architecture', () => {
       expect(verify).toContain('Create GitHub Release');
     });
 
-    it('uap-compliance.yml grep pipe bug is fixed', () => {
+    it('uap-compliance.yml checks the CURRENT template contract (no stale v2.2-era greps)', () => {
       const source = readFileSync('.github/workflows/uap-compliance.yml', 'utf-8');
-      // Should NOT have the broken pipe pattern
+      // The workflow was chronically red since PR #935 because it grepped
+      // v2.2-era version strings and section names the current CLAUDE.md
+      // template no longer carries. The version-string greps (broken pipe
+      // form AND the later "fixed" form) must both be gone.
       expect(source).not.toContain('grep -q "v2\\.[2-9]\\|v3\\." CLAUDE.md | head -1');
-      // Should have the fixed version
-      expect(source).toContain('grep -q "v2\\.[2-9]\\|v3\\." CLAUDE.md; then');
+      expect(source).not.toContain('grep -q "v2\\.[2-9]\\|v3\\." CLAUDE.md; then');
+      // It must instead check sections the current template actually
+      // requires, each paired with a substantive command/phrase.
+      expect(source).toContain('UAP-MEMORY-BRIDGE:START');
+      expect(source).toContain('TEMPLATE_VERSION');
+      expect(source).toContain('## WORKTREE GATE');
+      expect(source).toContain('uap worktree create\\|uap worktree ensure');
+      expect(source).toContain('## PRE-EDIT BUILD GATE');
+      expect(source).toContain('## COMPLETION GATES - MANDATORY');
+      expect(source).toContain('minimum 3 times');
+      expect(source).toContain('## PHANTOM ERROR INVESTIGATION');
+      // And score 12 of 12 against them.
+      expect(source).toContain('total=12');
     });
   });
 
