@@ -119,7 +119,7 @@ export function priorQualityRegimes(cls: string): BlueprintQualityRegime[] {
         : t.min !== undefined
           ? `>= ${t.min}`
           : `<= ${t.max}`,
-    howMeasured: `uap quality gap <capture> ${prior.key} (built-in ${cls} class prior, extractor v1 — measures the artifact itself, never a reference)`,
+    howMeasured: `uap quality gap --file <capture> --tier ${prior.key} (built-in ${cls} class prior, extractor v1 — measures the artifact itself, never a reference)`,
   }));
 }
 
