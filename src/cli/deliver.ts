@@ -1450,6 +1450,19 @@ export async function deliverCommand(instruction: string, options: DeliverOption
   // hour on 2026-07-29. No-op unless a detached child inherited an owner pid.
   guardAgainstOwnerExit();
 
+  // U-E (write-path observability): `--pending-status` is the authoritative,
+  // one-command answer to "did my blocked write land?" — queue depth, the last
+  // deterministic replay's outcome, recent archived intents. Deliberately
+  // ahead of the detach decision, exactly like --await-run below: this is a
+  // read-only status, and backgrounding it hands the caller a detach banner
+  // and streams three lines of status to a log file instead of to them
+  // (observed live on 2.71.0: the piped smoke check spawned a detached child
+  // just to print them). It applies nothing and never takes the deliver lock.
+  if (options.pendingStatus) {
+    console.log(formatPendingStatus(resolve(options.projectRoot ?? process.cwd())));
+    return;
+  }
+
   // A mission must outlive the tool call that started it. An agent's bash tool
   // is a short-lived, process-group-killed container; a model that runs
   // `uap deliver` from it was spawning a long mission inside a short one, and
@@ -1773,10 +1786,11 @@ export function resolvePendingGateRoot(
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
 
-  // U-E (write-path observability): `--pending-status` is the authoritative,
-  // one-command answer to "did my blocked write land?" — queue depth, the last
-  // deterministic replay's outcome, recent archived intents. Read-only; sits
-  // before every launch path so it can be checked at any moment.
+  // U-E (write-path observability): `--pending-status` fallback for direct
+  // (non-CLI) callers of runDeliver — the CLI entry answers it BEFORE the
+  // detach decision so a piped invocation prints to the caller instead of
+  // spawning a detached child; this guard keeps the same guarantee for any
+  // code path that reaches runDeliver directly. Read-only: no launch, no lock.
   if (options.pendingStatus) {
     console.log(formatPendingStatus(projectRoot));
     return;
