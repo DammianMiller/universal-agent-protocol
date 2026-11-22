@@ -431,6 +431,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
         projectRoot: dir,
         captures: visual.pages.flatMap((pg) => pg.screenshots.slice(-1)),
         mode: resolveTierGateMode(process.env),
+        maxFidelity: fidelity.max,
       });
       // Silence the non-events (same doctrine as mission-acceptance): an
       // operator who turned the gate off, and tier-less projects, must not see
@@ -438,7 +439,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
       const tierGateSilent =
         tierGate.skipped === 'gate off (UAP_TIER_GATE=off)' || tierGate.skipped === 'no derived tiers';
       if (!tierGateSilent) visualReport += `\n${formatTierGateLine(tierGate)}`;
-      if (tierGate.mode === 'block' && !tierGate.pass) {
+      if ((tierGate.mode === 'block' || tierGate.escalated) && !tierGate.pass) {
         tierBlocks = true;
         if (tierGate.feedback) visualReport += `\n${tierGate.feedback}`;
       }

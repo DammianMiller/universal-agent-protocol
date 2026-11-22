@@ -49,8 +49,11 @@ export function tierContractText(projectRoot: string, tierKey: string): string |
   if (!tier) return null;
   const cls = classOfTierKey(tier.key);
   const spec = resolveClass(cls);
+  const provenance = tier.builtin
+    ? 'built-in class prior — harvested frontier envelope, measured on the artifact itself, no reference media'
+    : `from ${tier.anchorCount} anchor(s)`;
   const lines: string[] = [
-    `TARGET QUALITY CONTRACT — tier ${tier.key} (${spec.artifact} class, extractor v${tier.extractorVersion}, from ${tier.anchorCount} anchor(s))`,
+    `TARGET QUALITY CONTRACT — tier ${tier.key} (${spec.artifact} class, extractor v${tier.extractorVersion}, ${provenance})`,
     'The artifact is measured on these axes; it must land at or inside every band:',
   ];
   for (const [axis, threshold] of Object.entries(tier.thresholds)) {

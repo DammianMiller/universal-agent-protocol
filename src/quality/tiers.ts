@@ -22,6 +22,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { listAnchors, TierVector } from './tier.js';
 import { classOfTierKey, extractorVersionFor, resolveClass } from './classes.js';
+import { builtinPriorTiers } from './class-priors.js';
 
 export const DEFAULT_TOLERANCE = 0.75;
 
@@ -37,6 +38,12 @@ export interface TierProfile {
   extractorVersion: number;
   derivedAt: string;
   tolerance: number;
+  /**
+   * Built-in class prior (U-I frontier regimes): baked from a one-time
+   * frontier harvest, resolved when the class has no derived/published tier.
+   * Never persisted by saveTier — priors live in code, stores stay curated.
+   */
+  builtin?: boolean;
   thresholds: Record<string, TierThreshold>;
 }
 
@@ -164,15 +171,33 @@ export function loadGlobalTiers(env: NodeJS.ProcessEnv = process.env): TierStore
 }
 
 /**
- * The effective tier store: project tiers over the fleet-global store.
- * This is the read site the deliver tier gate, contract composer, gap CLI,
- * and tier-relevance switch all resolve through — the auto-apply seam.
+ * The effective tier store: project tiers over the fleet-global store, over
+ * the built-in class priors (U-I). This is the read site the deliver tier
+ * gate, contract composer, gap CLI, and tier-relevance switch all resolve
+ * through — the auto-apply seam.
+ *
+ * Class priors are the reference-free floor: a prior fills in ONLY when the
+ * merged store carries no tier for the prior's class, so curated anchors and
+ * published global tiers always win. A store that never curated exemplars
+ * still resolves a numeric frontier bar — the tier gate's "no derived tiers"
+ * skip no longer hides projects that simply lacked reference material.
+ * Escape hatch: UAP_TIER_PRIORS=off.
  */
 export function resolveTiers(projectRoot: string, env: NodeJS.ProcessEnv = process.env): TierStore {
   const project = loadTiers(projectRoot);
   const global = loadGlobalTiers(env);
-  if (Object.keys(global.tiers).length === 0) return project;
-  return { version: 1, tiers: { ...global.tiers, ...project.tiers } };
+  const merged: TierStore =
+    Object.keys(global.tiers).length === 0
+      ? { version: 1, tiers: { ...project.tiers } }
+      : { version: 1, tiers: { ...global.tiers, ...project.tiers } };
+  if (env.UAP_TIER_PRIORS !== 'off') {
+    for (const prior of builtinPriorTiers()) {
+      const cls = classOfTierKey(prior.key);
+      const covered = Object.keys(merged.tiers).some((k) => classOfTierKey(k) === cls);
+      if (!covered) merged.tiers[prior.key] = prior;
+    }
+  }
+  return merged;
 }
 
 /** Publish a tier into the fleet-global store (the explicit auto-apply act). */
