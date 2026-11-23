@@ -18467,6 +18467,56 @@ async def messages(request: Request):
                 raise  # control flow: never swallow into a broad handler
             except Exception as exc:
                 logger.warning("DEGENERATE RETRY (stream): failed: %s", exc)
+        elif was_degenerate:
+            # TOOLLESS degenerate turn — the evaluator-verdict shape (JSON
+            # grammar, thinking off, no tools; live-observed three times
+            # 2026-11-22..23: 8/16/35 repeats on 'JSON-RESPONSE grammar
+            # applied (evaluator verdict turn)'). The tools-retry above
+            # skipped this shape entirely, so the truncation handed the
+            # consumer a mid-string-cut JSON verdict: unparseable, silently
+            # corrupt downstream. Retry once text-only (mirroring the
+            # guarded non-stream site: capped wall, cold temperature — the
+            # grammar field copies with the body), and when even the retry
+            # degenerates, say LOUDLY what the consumer is holding.
+            logger.warning(
+                "DEGENERATE RETRY (text): toolless degenerate turn — retrying "
+                "with max_tokens=2048 temp=0.1"
+            )
+            retry_body = dict(openai_body)
+            retry_body["max_tokens"] = 2048
+            retry_body["temperature"] = 0.1
+            retry_body["stream"] = False
+            try:
+                retry_resp = await _post_with_generation_timeout(
+                    client, f"{LLAMA_CPP_BASE}/chat/completions", retry_body,
+                    {"Content-Type": "application/json"},
+                )
+                if retry_resp.status_code == 200:
+                    retry_data = retry_resp.json()
+                    retry_text = _openai_message_text(retry_data)
+                    _, retry_degenerate = _detect_and_truncate_degenerate_repetition(retry_data)
+                    if retry_degenerate:
+                        logger.warning(
+                            "DEGENERATE RETRY (text): retry also degenerate — "
+                            "consumer receives a TRUNCATED (likely unparseable) "
+                            "verdict, finish_reason=length flags it"
+                        )
+                    elif retry_text and len(retry_text) > 50:
+                        logger.info(
+                            "DEGENERATE RETRY (text): success, got clean text (%d chars)",
+                            len(retry_text),
+                        )
+                        openai_resp = retry_data
+                    else:
+                        logger.warning(
+                            "DEGENERATE RETRY (text): retry insufficient — "
+                            "consumer receives a TRUNCATED (likely unparseable) "
+                            "verdict, finish_reason=length flags it"
+                        )
+            except ClientGoneError:
+                raise  # control flow: never swallow into a broad handler
+            except Exception as exc:
+                logger.warning("DEGENERATE RETRY (text): failed: %s", exc)
         anthropic_resp = openai_to_anthropic_response(
             openai_resp, model,
             expose_thinking=isinstance(body.get("thinking"), dict)
