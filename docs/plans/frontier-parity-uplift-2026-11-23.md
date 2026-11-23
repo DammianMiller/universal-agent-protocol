@@ -185,6 +185,23 @@ arms close the process gap.
 1. **Convergence telemetry (2.1):** iterations-to-tier, escalation frequency,
    cut rate, best-of-N win rate per model per class → the docs/performance
    table that directs C and D with numbers.
+
+   **Shipped (PR this branch):** `scripts/convergence-table.ts`
+   (`npm run bench:convergence`) publishes
+   [docs/performance/convergence-table.md](../performance/convergence-table.md)
+   from three sources — the paired harness corpus (`benchmark-results/`, both
+   flat and per-arm layouts, using the harness's own unbiased `passAtK` for
+   pass@1/pass@N), the O1 delivery corpus (`uap memory outcomes`), the quality-ladder
+   convergence log (`uap quality convergence`, per-tier — the CLASS dimension
+   of 2.1, since tier keys are class/name pairs), and the uplift-1.4
+   escalation ledger. First real read: on armC-teamsolve, best-of-3
+   rescues 29.6% of baseline tasks (pass@1 59.3% → pass@3 88.9%) but only
+   18.5% under uap-full (59.3% → 77.8%) — retrying buys more for the bare arm
+   than for the scaffolded one, a first measured input for the C routing
+   decision. Quality-class coverage is a declared
+   empty column until E.2 anchors and E.4 vision-promotion tag runs with
+   classes; `tool_calls.db` cannot serve run-level metrics (its run_id/task_id
+   are all NULL — per-tool-call only).
 2. **Anchor harvesting (2.2):** operator-approved outputs become anchors on the
    approveVisualBaseline precedent — every approved frontier-grade artifact
    raises the bar for free.
