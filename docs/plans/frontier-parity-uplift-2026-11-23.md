@@ -191,6 +191,16 @@ arms close the process gap.
 3. **Re-embed the legacy collection:** promote the daily-log backlog into
    `agent_memory_v768` (nomic) so semantic recall covers history, not just new
    writes.
+
+   **Shipped (PR this branch):** `uap memory promote`'s semantic tier actually
+   embeds now. The branch used to only MARK entries ("Marked for semantic
+   storage") — a promise the pipeline never kept; nothing ever embedded them,
+   so promoted history stayed unrecall-able. Promoted semantic candidates now
+   batch through the same embed + upsert path prepopulate and sync-files use
+   (the configured long-term collection, dimension-probed at runtime), and a
+   failed embed says so plainly instead of reporting a durable write that did
+   not happen. Re-running `uap memory promote` on this fleet embeds the
+   existing daily-log backlog.
 4. **Vision promotion (2.3):** consumes B's per-capture agreement log — B is
    its prerequisite, which is why B runs first. Corroboration is promoted once
    the vision score and the tier vectors agree on a measured run set; then
