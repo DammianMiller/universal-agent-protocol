@@ -18,7 +18,7 @@ import type { MemoryEntry } from '../memory/backends/base.js';
 import type { DiscoveredSkill } from '../memory/prepopulate.js';
 import { statusBadge, miniGauge, divider, keyValue, tree, type TreeNode } from './visualize.js';
 import { evaluateWriteGate, formatGateResult } from '../memory/write-gate.js';
-import { DailyLog } from '../memory/daily-log.js';
+import { DailyLog, DailyLogEntry } from '../memory/daily-log.js';
 import { memoryRoot, qdrantDataPath, shortTermDbPath } from '../memory/paths.js';
 import { storeLongTerm, dimensionedName } from '../memory/long-term.js';
 import { searchByVector, isDimensionMismatch } from '../memory/qdrant-search.js';
@@ -1311,7 +1311,29 @@ async function storeLongTermToQdrant(
   }
 }
 
-async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promise<void> {
+/** Memory types the promote path accepts (shared by working + semantic tiers). */
+const PROMOTE_TYPES = ['goal', 'action', 'observation', 'thought', 'lesson', 'decision'] as const;
+type PromoteType = (typeof PROMOTE_TYPES)[number];
+
+/**
+ * E.3 (wave 2.3): map daily-log entries marked for semantic storage into the
+ * MemoryEntry shape the long-term collection consumes — the same shape
+ * prepopulate and sync-files upsert, so promoted history queries identically.
+ * Pure; exported for tests.
+ */
+export function semanticEntriesFor(pending: DailyLogEntry[]): MemoryEntry[] {
+  return pending.map((e) => ({
+    id: String(e.id),
+    timestamp: e.timestamp || new Date(e.date).toISOString(),
+    type: (PROMOTE_TYPES.includes(e.type as PromoteType) ? e.type : 'observation') as MemoryEntry['type'],
+    content: e.content,
+    tags: ['daily-log', 'promoted'],
+    importance: Math.round(e.gateScore * 10),
+    metadata: { source: 'daily-log-promote', gateScore: e.gateScore },
+  }));
+}
+
+export async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promise<void> {
   console.log(chalk.bold('\n📋 Daily Log Promotion Review\n'));
 
   const config: AgentContextConfig = loadUapConfig(cwd) ?? {
@@ -1344,6 +1366,11 @@ async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promis
     });
 
     let promoted = 0;
+    // E.3 (wave 2.3): the semantic branch used to only MARK entries — nothing
+    // ever embedded them, so "Marked for semantic storage" was a promise the
+    // pipeline never kept. Collect them here, embed + upsert below.
+    const semanticPending: DailyLogEntry[] = [];
+
     for (const candidate of candidates) {
       const { entry, suggestedTier, reason } = candidate;
       console.log(
@@ -1355,17 +1382,8 @@ async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promis
 
       // Auto-promote based on score
       if (suggestedTier === 'working') {
-        const validTypes = [
-          'goal',
-          'action',
-          'observation',
-          'thought',
-          'lesson',
-          'decision',
-        ] as const;
-        type ValidType = (typeof validTypes)[number];
-        const memType: ValidType = validTypes.includes(entry.type as ValidType)
-          ? (entry.type as ValidType)
+        const memType: PromoteType = PROMOTE_TYPES.includes(entry.type as PromoteType)
+          ? (entry.type as PromoteType)
           : 'observation';
         await shortTermDb.store(
           memType as import('../memory/short-term/sqlite.js').ShortTermMemoryType,
@@ -1376,6 +1394,7 @@ async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promis
         promoted++;
         console.log(chalk.green(`    ✓ Promoted to working memory`));
       } else {
+        semanticPending.push(entry);
         dailyLog.markPromoted(entry.id, 'semantic');
         promoted++;
         console.log(chalk.green(`    ✓ Marked for semantic storage`));
@@ -1384,6 +1403,23 @@ async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promis
     }
 
     await shortTermDb.close();
+
+    // E.3: keep the promise — embed the semantic tier into the long-term
+    // collection on the same batch-upsert path prepopulate and sync-files use,
+    // so promoted history is recall-able, not just labeled.
+    if (semanticPending.length > 0) {
+      const entries = semanticEntriesFor(semanticPending);
+      const spinner = ora(`Embedding ${entries.length} semantic entr(y/ies)...`).start();
+      const result = await storeLongTermToQdrant(entries, config);
+      if (result.stored > 0) {
+        spinner.succeed(`Embedded ${result.stored} semantic entr(y/ies) → ${result.backend}`);
+      } else {
+        // Say so plainly: a promoted-but-not-embedded entry is lost to recall.
+        spinner.fail(`Semantic embedding FAILED: ${result.reason || 'unknown'} (${result.backend})`);
+        console.log(chalk.yellow('  The entries are marked promoted but remain unrecall-able.'));
+      }
+    }
+
     dailyLog.close();
     console.log(chalk.bold.green(`\n  Promoted ${promoted} entries.\n`));
   } catch (error) {
