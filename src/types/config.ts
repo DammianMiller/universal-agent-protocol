@@ -350,7 +350,7 @@ export const AgentExecutionSchema = z.object({
   webSearch: z.boolean().default(false),
 
   /** SearXNG endpoint URL for web search. */
-  webSearchEndpoint: z.string().default('http://192.168.1.165:8888'),
+  webSearchEndpoint: z.string().default('http://127.0.0.1:8888'),
 
   /** Pre-execution web research: search online before agent starts.
    *  Results cached in /app/tmp/web_research.txt.
