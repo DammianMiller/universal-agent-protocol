@@ -154,6 +154,21 @@ export interface DiscriminationVerdict {
   pairedCells: number;
   /** Discordant correctness pairs in the PRIMARY comparison (McNemar b+c). */
   discordantPairs: number;
+  /**
+   * Plan G power plan: what this run needs to become decisive, computed from
+   * the CI half-width (observed, or the worst-case 1.96/√n floor when the
+   * observed interval is degenerate) under variance ∝ 1/n scaling. Present
+   * only on underpowered verdicts. `epochsNeeded` is null when the task count
+   * is unknown (cellsNeeded still applies — it can come from more tasks too).
+   * The projection assumes the per-cell variance holds as cells are added;
+   * re-assess after each added epoch batch.
+   */
+  powerPlan?: {
+    cellsNeeded: number;
+    epochsNeeded: number | null;
+    halfWidth: number;
+    target: number;
+  };
 }
 
 export interface DiscriminationOptions {
@@ -169,10 +184,49 @@ export interface DiscriminationOptions {
    * Default 0.25.
    */
   minDetectableEffect?: number;
+  /**
+   * Distinct tasks in the run. With it, an underpowered verdict's powerPlan
+   * carries `epochsNeeded` (cellsNeeded / tasks) — the number the operator can
+   * pass straight to `--epochs`. analyze() fills this from the run's meta.
+   */
+  taskCount?: number;
 }
 
 function finite(n: number | undefined | null): boolean {
   return typeof n === 'number' && Number.isFinite(n);
+}
+
+/**
+ * Plan G: project the paired cells needed to pull the correctness CI half-width
+ * under the detectable-effect target, from the observed half-width (CI width
+ * scales ~ std/√n, so cells ∝ (halfWidth/target)²). Degenerate intervals —
+ * every pair agreeing at tiny n, CI width 0 — are an artifact of resampling a
+ * constant, not evidence of precision: fall back to the worst-case paired-
+ * binary 95% half-width 1.96/√n. Undefined only when there is nothing to
+ * reason about (no cells) — the no-discordant-pairs / floor / ceiling shapes,
+ * which more cells do not fix predictably.
+ */
+function powerPlanFor(
+  d: { n: number; ci: { lower: number; upper: number } } | undefined,
+  taskCount: number | undefined,
+  target: number,
+): DiscriminationVerdict['powerPlan'] {
+  if (!d || !finite(d.ci.lower) || !finite(d.ci.upper) || d.n < 1) return undefined;
+  if (!(target > 0)) return undefined;
+  const observed = (d.ci.upper - d.ci.lower) / 2;
+  const halfWidth = Math.max(observed, 1.96 / Math.sqrt(d.n));
+  const cellsNeeded = Math.max(d.n + 1, Math.ceil(d.n * (halfWidth / target) ** 2));
+  const epochsNeeded =
+    taskCount && taskCount > 0 ? Math.max(2, Math.ceil(cellsNeeded / taskCount)) : null;
+  return { cellsNeeded, epochsNeeded, halfWidth, target };
+}
+
+/** Render the plan as the sentence the operator reads next to the refusal. */
+function powerPlanText(pp: DiscriminationVerdict['powerPlan']): string {
+  if (!pp) return '';
+  const cells = `${pp.cellsNeeded} paired cells`;
+  const epochs = pp.epochsNeeded != null ? ` ⇒ --epochs ${pp.epochsNeeded}` : '';
+  return ` (power plan: at interval ±${pp.halfWidth.toFixed(2)}, ~${cells}${epochs} to exclude ±${pp.target})`;
 }
 
 /**
@@ -271,12 +325,14 @@ export function assessDiscrimination(
     };
   }
   if (pairedCells > 0 && pairedCells < minCells) {
+    const pp = powerPlanFor(d, opts.taskCount, mde);
     return {
       status: 'underpowered',
       usable: false,
       reason:
         `only ${pairedCells} paired cells — too few to distinguish a real effect from noise. ` +
-        `Raise --epochs or add tasks before reading the delta.` + alsoEfficiency,
+        `Raise --epochs or add tasks before reading the delta.${powerPlanText(pp)}` + alsoEfficiency,
+      powerPlan: pp,
       ...base,
     };
   }
@@ -287,13 +343,15 @@ export function assessDiscrimination(
   const ci = d?.ci;
   const significant = Boolean(d?.significant);
   if (!significant && ci && finite(ci.lower) && finite(ci.upper) && ci.lower < mde && ci.upper > -mde) {
+    const pp = powerPlanFor(d, opts.taskCount, mde);
     return {
       status: 'underpowered',
       usable: false,
       reason:
         `the correctness CI [${ci.lower.toFixed(2)}, ${ci.upper.toFixed(2)}] contains both zero and the ` +
         `±${mde} effect worth detecting — this run could not have told a real difference from none. ` +
-        `Raise --epochs or add tasks.` + alsoEfficiency,
+        `Raise --epochs or add tasks.${powerPlanText(pp)}` + alsoEfficiency,
+      powerPlan: pp,
       ...base,
     };
   }
@@ -492,7 +550,10 @@ export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): Analys
       successRate: c.successRate,
       meanTokens: c.meanTokens,
     })),
-    discrimination: assessDiscrimination(perCondition, comparisons, opts.discrimination),
+    discrimination: assessDiscrimination(perCondition, comparisons, {
+      ...opts.discrimination,
+      taskCount,
+    }),
     // Default the card's model to the one the run actually used, so the caller
     // cannot accidentally disclose a different model than it benchmarked.
     ...(opts.harness
