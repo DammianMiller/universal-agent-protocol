@@ -156,12 +156,23 @@ function openStore(cwd: string): Database.Database | null {
         path TEXT,
         latency_ms INTEGER,
         bytes INTEGER,
-        detail TEXT
+        detail TEXT,
+        run_kind TEXT NOT NULL DEFAULT 'live'
       );
       CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id);
       CREATE INDEX IF NOT EXISTS idx_tool_calls_outcome ON tool_calls(outcome);
       CREATE INDEX IF NOT EXISTS idx_tool_calls_component ON tool_calls(component);
     `);
+    // D.3 migration: a corpus written before run_kind existed keeps every
+    // legacy row in the 'live' bucket; new rows carry what the recorder says.
+    try {
+      const cols = db.prepare('PRAGMA table_info(tool_calls)').all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'run_kind')) {
+        db.exec("ALTER TABLE tool_calls ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'live'");
+      }
+    } catch {
+      /* best-effort */
+    }
     // Prune on OPEN, not on an insert counter: a deliver process records ~12
     // rows and exits, so a `% 100` counter reset per process meant the row cap
     // was never enforced and the table grew without bound across runs.
@@ -204,6 +215,13 @@ export interface ToolCallRecord {
   bytes?: number;
   /** Override the derived component (e.g. a middleware-attributed call). */
   component?: HarnessComponent;
+  /**
+   * D.3 run-kind segmentation: 'benchmark' for fixture/benchmark traffic,
+   * 'live' for real agent sessions. When omitted it derives from
+   * UAP_RUN_KIND=benchmark, so a benchmark harness tags its whole corpus
+   * with one env var.
+   */
+  runKind?: 'benchmark' | 'live';
 }
 
 /**
@@ -224,10 +242,12 @@ export function recordToolCall(rec: ToolCallRecord, root = toolCorpusRoot()): To
     const detail = isFailureClass(outcome)
       ? String(rec.result ?? '').split('\n')[0].slice(0, 300)
       : null;
+    const runKind =
+      rec.runKind ?? (process.env.UAP_RUN_KIND === 'benchmark' ? 'benchmark' : 'live');
     db.prepare(
       `INSERT INTO tool_calls
-         (run_id, task_id, component, tool, outcome, failed, turn, path, latency_ms, bytes, detail)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (run_id, task_id, component, tool, outcome, failed, turn, path, latency_ms, bytes, detail, run_kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       rec.runId ?? null,
       rec.taskId ?? null,
@@ -240,6 +260,7 @@ export function recordToolCall(rec: ToolCallRecord, root = toolCorpusRoot()): To
       rec.latencyMs ?? null,
       rec.bytes ?? null,
       detail,
+      runKind,
     );
     if (++insertCount % 100 === 0) {
       // The rows leaving the cap take their days' era numbers with them
@@ -269,6 +290,8 @@ export interface EvidenceSummary {
   failureRate: number;
   /** Failure counts grouped by component, most-costly first. */
   byComponent: Array<{ component: string; failures: number; calls: number }>;
+  /** D.3: benchmark vs live segmentation of the same window. */
+  byRunKind: Array<{ runKind: string; calls: number; failures: number }>;
   /** Failure classes, most frequent first — the evolve stage's work queue. */
   topFailures: ToolFailureRow[];
   /** Edit-tool specific health, because it is the highest-leverage surface. */
@@ -288,6 +311,7 @@ const EMPTY_SUMMARY: EvidenceSummary = {
   failedCalls: 0,
   failureRate: 0,
   byComponent: [],
+  byRunKind: [],
   topFailures: [],
   editHealth: { attempts: 0, exact: 0, tolerant: 0, misses: 0, ambiguous: 0, successRate: 0 },
 };
@@ -321,6 +345,17 @@ export function summarizeToolCalls(runId?: string, root = toolCorpusRoot()): Evi
       )
       .all(...params) as Array<{ component: string; calls: number; failures: number }>;
 
+    // D.3: COALESCE folds pre-migration NULLs (and rows written by an older
+    // recorder between CREATE and ALTER) into 'live'.
+    const byRunKind = db
+      .prepare(
+        `SELECT COALESCE(run_kind,'live') AS run_kind, COUNT(*) AS calls,
+                COALESCE(SUM(failed),0) AS failures
+         FROM tool_calls ${where}
+         GROUP BY COALESCE(run_kind,'live') ORDER BY calls DESC`,
+      )
+      .all(...params) as Array<{ run_kind: string; calls: number; failures: number }>;
+
     const topFailures = db
       .prepare(
         `SELECT component, tool, outcome, COUNT(*) AS count
@@ -350,6 +385,11 @@ export function summarizeToolCalls(runId?: string, root = toolCorpusRoot()): Evi
       failureRate: totals.calls > 0 ? totals.failures / totals.calls : 0,
       byComponent: byComponent.map((r) => ({
         component: r.component,
+        failures: r.failures,
+        calls: r.calls,
+      })),
+      byRunKind: byRunKind.map((r) => ({
+        runKind: r.run_kind,
         failures: r.failures,
         calls: r.calls,
       })),
@@ -385,6 +425,15 @@ export function renderEvidence(summary: EvidenceSummary): string {
     lines.push('By harness component (failures/calls):');
     for (const c of summary.byComponent) {
       lines.push(`  ${c.component.padEnd(10)} ${c.failures}/${c.calls}`);
+    }
+  }
+  if (summary.byRunKind.length > 1) {
+    // D.3: only worth a line once the corpus actually MIXES the kinds — a
+    // corpus that is all-live says nothing a reader does not already know.
+    lines.push('');
+    lines.push('By run kind (failed/calls):');
+    for (const r of summary.byRunKind) {
+      lines.push(`  ${r.runKind.padEnd(10)} ${r.failures}/${r.calls}`);
     }
   }
   const e = summary.editHealth;
