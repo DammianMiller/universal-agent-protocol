@@ -185,6 +185,23 @@ arms close the process gap.
 1. **Convergence telemetry (2.1):** iterations-to-tier, escalation frequency,
    cut rate, best-of-N win rate per model per class → the docs/performance
    table that directs C and D with numbers.
+
+   **Shipped (PR this branch):** `scripts/convergence-table.ts`
+   (`npm run bench:convergence`) publishes
+   [docs/performance/convergence-table.md](../performance/convergence-table.md)
+   from three sources — the paired harness corpus (`benchmark-results/`, both
+   flat and per-arm layouts, using the harness's own unbiased `passAtK` for
+   pass@1/pass@N), the O1 delivery corpus (`uap memory outcomes`), the quality-ladder
+   convergence log (`uap quality convergence`, per-tier — the CLASS dimension
+   of 2.1, since tier keys are class/name pairs), and the uplift-1.4
+   escalation ledger. First real read: on armC-teamsolve, best-of-3
+   rescues 29.6% of baseline tasks (pass@1 59.3% → pass@3 88.9%) but only
+   18.5% under uap-full (59.3% → 77.8%) — retrying buys more for the bare arm
+   than for the scaffolded one, a first measured input for the C routing
+   decision. Quality-class coverage is a declared
+   empty column until E.2 anchors and E.4 vision-promotion tag runs with
+   classes; `tool_calls.db` cannot serve run-level metrics (its run_id/task_id
+   are all NULL — per-tool-call only).
 2. **Anchor harvesting (2.2):** operator-approved outputs become anchors on the
    approveVisualBaseline precedent — every approved frontier-grade artifact
    raises the bar for free.
@@ -227,6 +244,19 @@ excludes ±0.25 — or every TIE stays labeled underpowered and carries no claim
 **Effect:** every FORWARD parity claim made by options B, D, E, and F rides a
 powered run; the existing o7 TIEs remain labeled underpowered and claim
 nothing.
+
+**Shipped (PR this branch):** `assessDiscrimination` now computes the plan
+itself — every underpowered verdict (too-few-cells or CI-admits-both) carries a
+`powerPlan`: the paired cells needed to pull the CI half-width under the
+±minDetectableEffect target, projected from the observed interval (worst-case
+`1.96/√n` floor when a tiny run's interval is degenerate), plus `epochsNeeded`
+once the task count is known — printed right in the refusal the CLI already
+shows ("power plan: at interval ±0.74, ~58 paired cells ⇒ --epochs 7 to exclude
+±0.25"). The operator stops guessing epoch counts: re-run the pilot, read the
+verdict, spend the GPU it names. The paired-bench CI flake (worker-RPC timeout,
+3-for-3 on the #946/#948 runs despite the 2026-10-06 one-worker-per-core cap)
+is fixed alongside: CI gets 3 workers on the 4-core runners, leaving one core
+of headroom for the suite's python harnesses and downloads.
 
 ### H. Wall-clock carryover (R4, unchanged, below D/F)
 
