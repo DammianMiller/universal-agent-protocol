@@ -2966,6 +2966,28 @@ PROXY_EMPTY_MAXTOKENS_RECOVER = os.environ.get(
 PROXY_EMPTY_MAXTOKENS_RETRY_MAX_TOKENS = int(
     os.environ.get("PROXY_EMPTY_MAXTOKENS_RETRY_MAX_TOKENS", "4096")
 )
+# Thinking budget wall (H, 2026-11-23): bound reasoning per REQUEST so the
+# model exits thinking and emits its answer inside the ORIGINAL wall, instead
+# of burning the entire budget on reasoning_content (finish_reason=length,
+# empty message — strata 2026-11-23 15:35: "the reply reached max tokens
+# while still thinking") and falling to the Option-3 thinking-OFF backstop
+# (reasoning lost) or the client's 4x-wall re-request (a full re-decode).
+# Sized as a fraction of the request's own max_tokens — default 0.75, the
+# same ratio the Infernix arms derive server-side (probe req#7: budget 3072
+# against a 4096 wall) — and sent as the top-level `thinking_budget_tokens`
+# the Infernix wire accepts (src/serve/request_validation.cpp kNames:
+# thinking_budget_tokens / thinking_token_budget / thinking_budget /
+# reasoning_budget_tokens). llama.cpp-class servers ignore unknown top-level
+# fields, so it is a harmless no-op there until their templates adopt the
+# key; a strict server that 400s on the field flips the send-then-learn
+# capability latch and never sees it again (same doctrine as
+# TOOL_CHOICE_REQUIRED_SUPPORTED). Set 0 to disable.
+PROXY_THINKING_BUDGET_FRACTION = float(
+    os.environ.get("PROXY_THINKING_BUDGET_FRACTION", "0.75")
+)
+# Send-then-learn latch (see _maybe_strip_unsupported_thinking_budget):
+# optimistic until an upstream 400 names the param.
+THINKING_BUDGET_SUPPORTED = True
 PROXY_TOOL_TURN_TEMPERATURE = float(
     os.environ.get("PROXY_TOOL_TURN_TEMPERATURE", "0.3")
 )
@@ -3709,6 +3731,85 @@ def _is_tool_choice_required_unsupported(status_code: int, error_text: str) -> b
     return "structured_outputs" in text and (
         "not support" in text or "unsupported" in text
     )
+
+
+def _is_thinking_budget_rejection(status_code: int, error_text: str | None) -> bool:
+    """A strict upstream refusing the per-request budget field, the same way
+    ninfer-serve 400'd chat_template_kwargs. Match on any of the wire NAME
+    ALIASES (the Infernix kNames set — a strict server may echo whichever
+    alias its layer canonicalized) so an unrelated 400 (context overflow,
+    grammar) never flips the capability."""
+    if status_code != 400:
+        return False
+    text = (error_text or "").lower()
+    return any(
+        name in text
+        for name in (
+            "thinking_budget_tokens",
+            "thinking_token_budget",
+            "thinking_budget",
+            "reasoning_budget_tokens",
+        )
+    )
+
+
+def _apply_thinking_budget(openai_body: dict) -> None:
+    """H: bound reasoning to a fraction of the request's own wall so the
+    model EXITS thinking and emits its answer inside the original request.
+
+    Fires only when thinking is ON and a max_tokens wall is known — the
+    thinking-runaway event class consumes the ENTIRE wall on
+    reasoning_content, and today's remedies are all second requests: the
+    Option-3 backstop retries with thinking OFF (reasoning lost) and the
+    client re-requests at a 4x wall (a full re-decode). A per-request budget
+    eliminates both in the common case: the model is forced out of thinking
+    with room left to answer.
+
+    Never overrides an explicit caller-supplied budget, and never fires
+    once the send-then-learn latch has seen the field rejected (the
+    capability off state degrades BEFORE the wire, not after a 400).
+    """
+    if not THINKING_BUDGET_SUPPORTED or PROXY_THINKING_BUDGET_FRACTION <= 0:
+        return
+    if "thinking_budget_tokens" in openai_body:
+        return
+    if not _thinking_enabled_on_body(openai_body):
+        return
+    wall = int(openai_body.get("max_tokens") or 0)
+    if wall <= 0:
+        return
+    openai_body["thinking_budget_tokens"] = int(
+        PROXY_THINKING_BUDGET_FRACTION * wall
+    )
+
+
+def _maybe_strip_unsupported_thinking_budget(
+    request_body: dict,
+    status_code: int,
+    error_text: str,
+    source: str,
+) -> bool:
+    """On an upstream 400 that names the thinking budget as unsupported, strip
+    the field and latch the capability off process-wide so later thinking-on
+    turns degrade before they are sent. Returns True when the caller should
+    retry the POST. Mirrors _maybe_relax_unsupported_tool_choice."""
+    global THINKING_BUDGET_SUPPORTED
+    if not _is_thinking_budget_rejection(status_code, error_text):
+        return False
+    if "thinking_budget_tokens" not in request_body:
+        return False
+    del request_body["thinking_budget_tokens"]
+    if THINKING_BUDGET_SUPPORTED:
+        THINKING_BUDGET_SUPPORTED = False
+        logger.warning(
+            "THINKING BUDGET CAPABILITY: upstream rejected "
+            "thinking_budget_tokens (HTTP 400: %s). Degrading this turn and "
+            "ALL future thinking-on turns to no per-request budget for this "
+            "proxy process (%s).",
+            (error_text or "")[:160],
+            source,
+        )
+    return True
 
 
 def _maybe_relax_unsupported_tool_choice(
@@ -17505,6 +17606,11 @@ async def messages(request: Request):
             media_type="application/json",
         )
 
+    # H: bound reasoning to a fraction of the wall BEFORE the wire. Every
+    # downstream retry body copies this one, and the Option-3 backstop stays
+    # armed for arms that ignore the field.
+    _apply_thinking_budget(openai_body)
+
     # Last step before the wire: names llama.cpp's grammar builder can parse.
     _sanitize_tool_names_for_upstream(openai_body)
 
@@ -17555,6 +17661,29 @@ async def messages(request: Request):
                 relaxed = _is_gemma4_peg_parse_failure(strict_resp.status_code, error_text) and \
                     _relax_tool_choice_for_gemma4_peg_retry(strict_body, "strict-stream")
                 if relaxed:
+                    try:
+                        strict_resp = await _post_with_generation_timeout(
+                            client,
+                            f"{LLAMA_CPP_BASE}/chat/completions",
+                            strict_body,
+                            {"Content-Type": "application/json"},
+                        )
+                    except ClientGoneError:
+                        raise  # control flow: never swallow into a broad handler
+                    except Exception:
+                        pass  # fall through to next handler
+            if strict_resp.status_code != 200:
+                error_text = strict_resp.text[:1000]
+                # Capability strip (strict-stream path): a strict upstream
+                # can reject the per-request thinking budget the same way
+                # ninfer-serve rejected chat_template_kwargs — strip it,
+                # latch the capability, retry once without it.
+                if _maybe_strip_unsupported_thinking_budget(
+                    strict_body,
+                    strict_resp.status_code,
+                    error_text,
+                    "strict-stream",
+                ):
                     try:
                         strict_resp = await _post_with_generation_timeout(
                             client,
@@ -17914,6 +18043,34 @@ async def messages(request: Request):
                 error_body = await resp.aread()
                 await resp.aclose()
                 error_text = error_body.decode("utf-8", errors="replace")[:1000]
+            # Capability strip (stream path): a strict upstream rejecting the
+            # per-request thinking budget — strip it, latch the capability,
+            # retry once without it, mirroring the tool_choice relax below.
+            if _maybe_strip_unsupported_thinking_budget(
+                openai_body,
+                resp.status_code,
+                error_text,
+                "stream",
+            ):
+                resp = await client.send(
+                    client.build_request(
+                        "POST",
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        json=openai_body,
+                        headers={"Content-Type": "application/json"},
+                    ),
+                    stream=True,
+                )
+                setattr(resp, "_uap_client", client)
+                if resp.status_code == 200:
+                    return StreamingResponse(
+                        stream_anthropic_response(resp, model, monitor, body),
+                        media_type="text/event-stream",
+                    )
+                # fall through if still failing
+                error_body = await resp.aread()
+                await resp.aclose()
+                error_text = error_body.decode("utf-8", errors="replace")[:1000]
             # Capability relax (stream path): an engine without native
             # tool_choice='required' 400s the first forced turn; relax to
             # 'auto' and retry once before failing the client request. The
@@ -18132,6 +18289,24 @@ async def messages(request: Request):
                     raise  # control flow: never swallow into a broad handler
                 except Exception:
                     pass  # fall through
+        if resp.status_code != 200:
+            error_text = resp.text[:1000]
+            # Capability strip (non-stream path): a strict upstream rejecting
+            # the per-request thinking budget — strip, latch, retry once.
+            if _maybe_strip_unsupported_thinking_budget(
+                openai_body, resp.status_code, error_text, "non-stream"
+            ):
+                try:
+                    resp = await _post_with_generation_timeout(
+                        client,
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        openai_body,
+                        {"Content-Type": "application/json"},
+                    )
+                except ClientGoneError:
+                    raise  # control flow: never swallow into a broad handler
+                except Exception:
+                    pass  # fall through to next handler
         if resp.status_code != 200:
             error_text = resp.text[:1000]
             # Stale served-ids recovery (non-stream path): a 404 that names
