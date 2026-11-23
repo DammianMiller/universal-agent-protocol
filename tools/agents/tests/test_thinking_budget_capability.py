@@ -8,13 +8,22 @@ still thinking"). Today's remedies are all SECOND requests: the Option-3
 backstop retries with thinking OFF (reasoning lost) and the client re-requests
 at a 4x wall (a full re-decode). H bounds reasoning per request instead:
 thinking_budget_tokens = fraction x the request's own wall, so the model exits
-thinking with room left to answer (the Infernix wire accepts the field by
-design; its own server-side default is the same 0.75 ratio, probe req#7:
-budget 3072 against a 4096 wall).
+thinking with room left to answer.
+
+DEFAULT 0 (OFF), measured 2026-11-24 against basalt-fn (direct paired turns,
+:8080 budget-honoring runs): the Infernix build implements the field as a
+TOTAL completion cap shared by reasoning AND text (budget 1500 -> completion
+exactly 1500; budget 2000 under an 8000 wall -> exactly 2000, both parts
+truncated), NOT a thinking-only budget. The earlier "server-side 0.75 ratio"
+observation (probe req#7: 3072 against a 4096 wall) was the same total-cap
+semantics, misread as thinking-only. Injecting fraction x wall therefore
+SHRINKS the caller's effective wall — a pessimization for answer completeness
+— so the default is off and deployments opt in per server.
 
 These tests pin the contract pieces:
   * the 400 detector (error-text keyed: names thinking_budget, status 400)
   * the budget application (thinking-on + wall + fraction -> the field)
+  * the DEFAULT: 0 unless PROXY_THINKING_BUDGET_FRACTION opts in
   * the strip-and-latch (mutate, latch off process-wide, signal retry)
   * wiring: every request path (non-stream, stream, strict-stream) carries
     the strip handler, and the choke point applies the budget before the
@@ -162,6 +171,33 @@ class ThinkingBudgetCapabilityTests(unittest.TestCase):
         body = thinking_on_body(16384)
         proxy._apply_thinking_budget(body)
         self.assertNotIn("thinking_budget_tokens", body)
+
+    def test_default_is_off_unless_env_opts_in(self):
+        # Measured 2026-11-24 (direct paired turns against basalt-fn): the
+        # field acts as a TOTAL completion cap on the Infernix builds (not
+        # thinking-only), so the shipped default is 0 and deployments opt
+        # in per server. A FRESH import must reflect exactly that: env
+        # unset -> 0.0; env set -> the operator's value.
+        import os
+
+        def fresh(env_value):
+            saved = os.environ.pop("PROXY_THINKING_BUDGET_FRACTION", None)
+            try:
+                if env_value is not None:
+                    os.environ["PROXY_THINKING_BUDGET_FRACTION"] = env_value
+                spec = importlib.util.spec_from_file_location(
+                    "anthropic_proxy_fresh", proxy.__file__
+                )
+                m = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(m)
+                return m.PROXY_THINKING_BUDGET_FRACTION
+            finally:
+                os.environ.pop("PROXY_THINKING_BUDGET_FRACTION", None)
+                if saved is not None:
+                    os.environ["PROXY_THINKING_BUDGET_FRACTION"] = saved
+
+        self.assertEqual(fresh(None), 0.0)
+        self.assertEqual(fresh("0.5"), 0.5)
 
     def test_latch_off_degrades_before_the_wire(self):
         proxy.THINKING_BUDGET_SUPPORTED = False

@@ -2972,18 +2972,27 @@ PROXY_EMPTY_MAXTOKENS_RETRY_MAX_TOKENS = int(
 # empty message — strata 2026-11-23 15:35: "the reply reached max tokens
 # while still thinking") and falling to the Option-3 thinking-OFF backstop
 # (reasoning lost) or the client's 4x-wall re-request (a full re-decode).
-# Sized as a fraction of the request's own max_tokens — default 0.75, the
-# same ratio the Infernix arms derive server-side (probe req#7: budget 3072
-# against a 4096 wall) — and sent as the top-level `thinking_budget_tokens`
-# the Infernix wire accepts (src/serve/request_validation.cpp kNames:
-# thinking_budget_tokens / thinking_token_budget / thinking_budget /
-# reasoning_budget_tokens). llama.cpp-class servers ignore unknown top-level
-# fields, so it is a harmless no-op there until their templates adopt the
-# key; a strict server that 400s on the field flips the send-then-learn
+# Sized as a fraction of the request's own max_tokens, sent as the top-level
+# `thinking_budget_tokens` the Infernix wire accepts (src/serve/
+# request_validation.cpp kNames: thinking_budget_tokens /
+# thinking_token_budget / thinking_budget / reasoning_budget_tokens).
+#
+# DEFAULT 0 (OFF) — measured 2026-11-24 against basalt-fn (direct paired
+# turns, /tmp/h-probe-{A,B}.json + the :8080 budget-honoring runs): this
+# build implements the field as a TOTAL completion cap (reasoning AND text
+# share it; budget 1500 -> completion_tokens exactly 1500; budget 2000 under
+# an 8000 wall -> exactly 2000, finish=length, both parts truncated), NOT a
+# thinking-only budget. Injecting fraction x wall therefore SHRINKS the
+# caller's effective wall (4096 -> 3072 at 0.75): turns needing 75-100% of
+# the wall get their answer truncated EARLIER, and runaway turns still come
+# back empty, just 25% sooner. Opt in per deployment only on servers that
+# implement a true thinking-only budget, or when trading completeness for
+# latency deliberately. llama.cpp-class servers ignore unknown top-level
+# fields; a strict server that 400s on the field flips the send-then-learn
 # capability latch and never sees it again (same doctrine as
-# TOOL_CHOICE_REQUIRED_SUPPORTED). Set 0 to disable.
+# TOOL_CHOICE_REQUIRED_SUPPORTED). Set 0 to disable (the default).
 PROXY_THINKING_BUDGET_FRACTION = float(
-    os.environ.get("PROXY_THINKING_BUDGET_FRACTION", "0.75")
+    os.environ.get("PROXY_THINKING_BUDGET_FRACTION", "0")
 )
 # Send-then-learn latch (see _maybe_strip_unsupported_thinking_budget):
 # optimistic until an upstream 400 names the param.
@@ -3763,7 +3772,12 @@ def _apply_thinking_budget(openai_body: dict) -> None:
     Option-3 backstop retries with thinking OFF (reasoning lost) and the
     client re-requests at a 4x wall (a full re-decode). A per-request budget
     eliminates both in the common case: the model is forced out of thinking
-    with room left to answer.
+    with room left to answer — ON SERVERS THAT IMPLEMENT A THINKING-ONLY
+    BUDGET. Measured 2026-11-24 (basalt-fn, direct paired turns): the
+    field acts there as a TOTAL completion cap shared by reasoning and
+    text, so this helper's injection shrinks the caller's wall instead of
+    protecting the answer — which is why the default fraction is 0 (OFF)
+    and deployments opt in. See the PROXY_THINKING_BUDGET_FRACTION note.
 
     Never overrides an explicit caller-supplied budget, and never fires
     once the send-then-learn latch has seen the field rejected (the
