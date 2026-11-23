@@ -116,7 +116,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  publish <class/name> Copy a project tier into the fleet-global store — it then auto-applies');
       console.log('                      (UAP_TIER_STORE or ~/.uap/quality/tiers.json; project tiers override on collision)');
       console.log(chalk.dim('  Classes: visual-scene (PNG), api-behavior (API transcript JSON), bench-score (bench results JSON),'));
-      console.log(chalk.dim('  doc-style (Markdown). Anchors are project-local, gitignored, measuring-only (P39).'));
+      console.log(chalk.dim('  doc-style (Markdown), ideation-outcome (Markdown, one ## section per candidate).'));
+      console.log(chalk.dim('  Anchors are project-local, gitignored, measuring-only (P39).'));
   }
 }
 
