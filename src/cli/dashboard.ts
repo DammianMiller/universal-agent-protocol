@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { TaskService } from '../tasks/service.js';
 import { CoordinationService } from '../coordination/service.js';
 import { SQLiteShortTermMemory } from '../memory/short-term/sqlite.js';
+import { DEFAULT_EMBEDDING_ENDPOINT } from '../memory/embeddings.js';
 import {
   progressBar,
   stackedBar,
@@ -736,7 +737,7 @@ async function showMemoryDashboard(_options: DashboardOptions): Promise<void> {
     console.log('');
 
     // Embeddings (llama.cpp server)
-    const embeddingEndpoint = process.env.UAP_EMBEDDING_ENDPOINT || 'http://192.168.1.165:8081';
+    const embeddingEndpoint = process.env.UAP_EMBEDDING_ENDPOINT || DEFAULT_EMBEDDING_ENDPOINT;
     console.log(sectionHeader('Embeddings (llama.cpp)'));
     console.log('');
 
