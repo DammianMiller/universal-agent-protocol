@@ -444,7 +444,7 @@ export function getExecutionConfig(
     loopEscapeHatch: true,
     loopEscapeThreshold: 3,
     webSearch: false,
-    webSearchEndpoint: 'http://192.168.1.165:8888',
+    webSearchEndpoint: 'http://127.0.0.1:8888',
     preExecWebResearch: false,
     verifierAwareTesting: false,
     reflectionCheckpoints: false,

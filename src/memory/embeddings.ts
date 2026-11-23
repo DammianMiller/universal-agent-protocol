@@ -72,6 +72,14 @@ export interface EmbeddingProvider {
  *     --ctx-size 512 --gpu-layers 0 \
  *     --batch-size 2048 --threads 8
  */
+/**
+ * Default llama.cpp embeddings endpoint — loopback, where the nomic-embed
+ * server runs beside the fleet (uap-embed-server.service, :8081). The
+ * pre-2.74.3 default was a LAN IP that silently died with the subnet move;
+ * loopback fails fast and matches the restored local server.
+ */
+export const DEFAULT_EMBEDDING_ENDPOINT = 'http://127.0.0.1:8081';
+
 export class LlamaCppEmbeddingProvider implements EmbeddingProvider {
   name = 'llama-cpp';
   dimensions = 768; // nomic-embed-text-v2-moe default
@@ -79,7 +87,7 @@ export class LlamaCppEmbeddingProvider implements EmbeddingProvider {
   private available: boolean | null = null;
   private taskPrefix: string;
 
-  constructor(endpoint: string = 'http://192.168.1.165:8081', options: { taskPrefix?: string } = {}) {
+  constructor(endpoint: string = DEFAULT_EMBEDDING_ENDPOINT, options: { taskPrefix?: string } = {}) {
     // Support env var override
     this.endpoint = process.env.UAP_EMBEDDING_ENDPOINT || endpoint;
     // nomic-embed-text-v2 requires task prefixes for best results

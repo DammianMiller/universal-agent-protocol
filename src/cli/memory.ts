@@ -9,7 +9,7 @@ import { execSync } from 'child_process';
 import { getQdrantClientClass } from '../utils/lazy-imports.js';
 import { loadUapConfig } from '../utils/config-loader.js';
 import { inspectQdrantContainer } from '../memory/qdrant-diagnostics.js';
-import { generateEmbedding, generateEmbeddings } from '../memory/embeddings.js';
+import { DEFAULT_EMBEDDING_ENDPOINT, generateEmbedding, generateEmbeddings } from '../memory/embeddings.js';
 import { prepopulateMemory } from '../memory/prepopulate.js';
 import { SQLiteShortTermMemory } from '../memory/short-term/sqlite.js';
 import { ensureSessionSchema } from '../memory/short-term/schema.js';
@@ -268,7 +268,7 @@ async function showStatus(cwd: string): Promise<void> {
   console.log('');
 
   // Embeddings (llama.cpp server)
-  const embeddingEndpoint = process.env.UAP_EMBEDDING_ENDPOINT || 'http://192.168.1.165:8081';
+  const embeddingEndpoint = process.env.UAP_EMBEDDING_ENDPOINT || DEFAULT_EMBEDDING_ENDPOINT;
   try {
     const embedResponse = await fetch(`${embeddingEndpoint}/health`, {
       method: 'GET',
