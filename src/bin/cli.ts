@@ -862,7 +862,7 @@ program
 program
   .command('quality')
   .description('Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types')
-  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile | derive | gap | ladder | contract | publish')
+  .argument('[subcommand]', 'init | check | baseline | report | mutate | anchor | profile | derive | gap | ladder | convergence | approve | contract | publish')
   .argument('[target]', 'Positional target file (check), anchor class (anchor), tier class (derive), or tier key (publish)')
   .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
   .option('--json', 'Emit machine-readable JSON')
@@ -879,8 +879,9 @@ program
   .option('--max-rounds <n>', 'Round ceiling for ladder (default: number of roundNN dirs)')
   .option('--candidates <n>', 'Candidates per ladder round (default: 3)')
   .option('--plateau-rounds <n>', 'Rounds without improvement before the ladder escalates (default: 2)')
+  .option('--from <dir>', 'Run-outputs directory for approve: harvest every readable artifact as anchors, then re-derive the tier')
   .action(async (subcommand, target, options) => {
-    if ((subcommand === 'anchor' || subcommand === 'derive' || subcommand === 'publish') && target) options.target = target;
+    if ((subcommand === 'anchor' || subcommand === 'derive' || subcommand === 'publish' || subcommand === 'approve') && target) options.target = target;
     else if (target && !options.file) options.file = target;
     const cmd = await lazy.quality();
     await cmd(subcommand, options);
