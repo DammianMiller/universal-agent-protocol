@@ -220,6 +220,19 @@ excludes ±0.25 — or every TIE stays labeled underpowered and carries no claim
 powered run; the existing o7 TIEs remain labeled underpowered and claim
 nothing.
 
+**Shipped (PR this branch):** `assessDiscrimination` now computes the plan
+itself — every underpowered verdict (too-few-cells or CI-admits-both) carries a
+`powerPlan`: the paired cells needed to pull the CI half-width under the
+±minDetectableEffect target, projected from the observed interval (worst-case
+`1.96/√n` floor when a tiny run's interval is degenerate), plus `epochsNeeded`
+once the task count is known — printed right in the refusal the CLI already
+shows ("power plan: at interval ±0.74, ~58 paired cells ⇒ --epochs 7 to exclude
+±0.25"). The operator stops guessing epoch counts: re-run the pilot, read the
+verdict, spend the GPU it names. The paired-bench CI flake (worker-RPC timeout,
+3-for-3 on the #946/#948 runs despite the 2026-10-06 one-worker-per-core cap)
+is fixed alongside: CI gets 3 workers on the 4-core runners, leaving one core
+of headroom for the suite's python harnesses and downloads.
+
 ### H. Wall-clock carryover (R4, unchanged, below D/F)
 
 Thinking-budget discipline on tool turns, decode decay at depth, draft
