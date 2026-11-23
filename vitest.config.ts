@@ -27,8 +27,16 @@ export default defineConfig({
     // the PR #834 CI run died on a paired-bench.test.ts worker-RPC timeout
     // with zero failing tests. Give CI one worker per core; keep the dev
     // cap at 16.
-    minWorkers: 4,
-    maxWorkers: process.env.CI ? 4 : 16,
+    //
+    // (2026-11-23) One worker per core is STILL an oversubscription on CI:
+    // the suite also spawns python3 harnesses (placement gates), downloads
+    // cloakbrowser, and runs vitest's own main-thread RPC — the runner's 4
+    // cores are not 4 free cores for tinypool. The paired-bench worker-RPC
+    // timeout came back 3-for-3 on the #946/#948 runs today (all with zero
+    // failing tests) on the 4-worker cap. Leave one core of headroom: CI
+    // gets 3.
+    minWorkers: 3,
+    maxWorkers: process.env.CI ? 3 : 16,
     include: ['test/**/*.test.ts'],
     exclude: ['**/.worktrees/**', 'test/benchmarks/**', 'node_modules/**', 'benchmark-results/**'],
     watch: false,
