@@ -1,11 +1,14 @@
 import chalk from 'chalk';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
+import { rankIdeasByNovelty } from '../quality/ideation.js';
 
 export interface IdeateOptions {
   force?: boolean;
   json?: boolean;
   dir?: string;
+  /** Print the candidates as measurable ideation-outcome Markdown. */
+  render?: boolean;
 }
 
 /** Root directory for ideation projects (open-collider `projects/` contract). */
@@ -137,21 +140,63 @@ export function readCuratedIdeas(dir: string): string[] {
   }
 }
 
-/** `uap ideate ideas <name>` — print curated ideas. */
+/**
+ * Render curated ideas into the measurable ideation-outcome artifact: one `##`
+ * section per candidate (the extractor's section boundary). Inner headings
+ * inside an idea are demoted to plain lines so a candidate stays ONE section.
+ * `uap quality anchor ideation-outcome --file <this>` then measures it.
+ */
+export function renderIdeasMarkdown(ideas: string[]): string {
+  const sections = ideas.map(
+    (idea, i) => `## Candidate ${i + 1}\n\n${idea.replace(/^#{1,6}\s/gm, '').trim()}\n`,
+  );
+  return `# Ideation candidates\n\n${sections.join('\n')}`;
+}
+
+/** `uap ideate ideas <name>` — print curated ideas, ranked by measured novelty. */
 export async function ideateIdeas(name: string, options: IdeateOptions = {}): Promise<void> {
   const dir = projectDir(name, options);
   const ideas = readCuratedIdeas(dir);
+  if (options.render) {
+    if (ideas.length === 0) {
+      console.error(chalk.yellow(`No curated ideas found for "${name}" yet — nothing to render.`));
+      process.exit(2);
+    }
+    process.stdout.write(renderIdeasMarkdown(ideas));
+    return;
+  }
   if (options.json) {
-    process.stdout.write(JSON.stringify({ project: name, count: ideas.length, ideas }, null, 2) + '\n');
+    const ranked = rankIdeasByNovelty(ideas);
+    process.stdout.write(
+      JSON.stringify(
+        {
+          project: name,
+          count: ideas.length,
+          ideas,
+          // Plan F: the judge proposes, the measured distance decides —
+          // rank by mean lexical distance to the other candidates.
+          novelty_rank: ranked.map((r) => ({ index: r.index, novelty: r.novelty })),
+        },
+        null,
+        2,
+      ) + '\n',
+    );
     return;
   }
   if (ideas.length === 0) {
     console.log(chalk.yellow(`\nNo curated ideas found for "${name}" yet. Run: uap ideate run ${name}\n`));
     return;
   }
+  const ranked = rankIdeasByNovelty(ideas);
   console.log(chalk.bold(`\n💡 Curated Ideas — ${name} (${ideas.length})\n`));
   ideas.forEach((idea, i) => console.log(`  ${chalk.cyan(`${i + 1}.`)} ${idea}`));
   console.log('');
+  console.log(chalk.dim('  Ranked by measured novelty (nearest-neighbor lexical distance):'));
+  ranked.slice(0, 3).forEach((r) => {
+    const oneLine = r.idea.replace(/\s+/g, ' ').slice(0, 70);
+    console.log(`    ${chalk.cyan(`#${r.index + 1}`)} distance ${r.novelty.toFixed(3)} — ${oneLine}${r.idea.length > 70 ? '…' : ''}`);
+  });
+  console.log(chalk.dim(`  Render the measurable artifact with: uap ideate ideas ${name} --render\n`));
 }
 
 /** Dispatch for the `uap ideate <subcommand>` group. */

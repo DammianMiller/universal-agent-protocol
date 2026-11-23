@@ -1619,6 +1619,7 @@ ideate
   .description('Print the curated ideas produced for a project')
   .argument('<name>', 'Project name')
   .option('--json', 'Emit JSON instead of a human-readable report')
+  .option('--render', 'Print as the measurable ideation-outcome Markdown (one ## section per candidate) — pipe to a file, then `uap quality anchor ideation-outcome --file`')
   .action(async (name: string, options) => {
     const cmd = await lazy.ideate();
     await cmd('ideas', name, options);

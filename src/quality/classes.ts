@@ -26,6 +26,7 @@ import { extractTierVector, storeAnchorRecord, TierVector } from './tier.js';
 import { extractApiVector } from './api-behavior.js';
 import { extractBenchVector } from './bench-score.js';
 import { extractDocVector } from './doc-style.js';
+import { extractIdeationVector } from './ideation.js';
 
 export type AxisDirection = 'min' | 'max' | 'band';
 
@@ -224,6 +225,35 @@ const DOC_AXES: Record<string, AxisSpec> = {
   },
 };
 
+/* --------------------------- ideation-outcome ---------------------------- */
+
+const IDEATION_AXES: Record<string, AxisSpec> = {
+  stanceShare: {
+    direction: 'min',
+    directives: {
+      low: 'stance: every candidate takes and KEEPS a position — commit language ("we choose X because", "X wins on Y"), never a hedge stack; a candidate that answers "what would we build?" with "it depends" is not a candidate (P48 rule 1)',
+    },
+  },
+  compositionDepth: {
+    direction: 'min',
+    directives: {
+      low: 'composition: decompose each candidate into its parts — mechanism, surface, failure mode as sub-structure (sub-headings, list items), not one flat paragraph of vibes',
+    },
+  },
+  topicDiversity: {
+    direction: 'min',
+    directives: {
+      low: 'coverage: draw from more of the solution space — the anchors set the floor for how many distinct domains and mechanisms a candidate set touches (the ambition floor, generalized out of visual-scene)',
+    },
+  },
+  ideaDistance: {
+    direction: 'min',
+    directives: {
+      low: 'novelty: separate the candidates — nearest-neighbor distance at the floor means the set clusters on one idea (the hivemind failure the open-collider exists to break); vary mechanism, domain, or scale until each candidate is measurably apart',
+    },
+  },
+};
+
 /* ------------------------------- registry -------------------------------- */
 
 const REGISTRY: Record<string, ClassSpec> = {
@@ -263,6 +293,31 @@ const REGISTRY: Record<string, ClassSpec> = {
       (v.scalars?.proseChars ?? 0) < 200
         ? 'degenerate document: under 200 prose characters after stripping code, tables, and links — a config file or a stub is not doc-style evidence'
         : null,
+  },
+  'ideation-outcome': {
+    cls: 'ideation-outcome',
+    extract: (p) => extractIdeationVector(p),
+    axes: IDEATION_AXES,
+    artifact: 'ideation document (Markdown, one ## section per candidate)',
+    // generative class: exploration IS the outcome — novelty is a gated axis,
+    // so the sampling profile runs at least as warm as visual-scene
+    sampling: { temperature: 0.9, topP: 0.95 },
+    degenerate: (v) => {
+      const n = v.scalars?.candidateCount ?? 0;
+      if (n < 2) {
+        return (
+          'degenerate ideation artifact: fewer than 2 candidates measured — the class judges a SET of alternatives. ' +
+          'Render the candidates as one ## section each (uap ideate ideas --render does) and anchor THAT'
+        );
+      }
+      if ((v.scalars?.stanceShare ?? 1) === 0) {
+        return (
+          'degenerate ideation artifact: no candidate carries a stance — a list of maybes cannot support a verdict. ' +
+          'Commit each candidate to a position before gapping (the stanceShare axis then polices the degree)'
+        );
+      }
+      return null;
+    },
   },
 };
 
@@ -313,8 +368,8 @@ export function readArtifactText(path: string): string | null {
 /** The extractor version that defines a class's measurements. */
 export function extractorVersionFor(_cls: string): number {
   // v1 for every shipped class: the visual pipeline is unchanged since 0.1,
-  // and api-behavior/bench-score start at v1. A class whose measurement
-  // definition changes bumps ONLY its version — stored tiers of other classes
-  // must not go stale by association.
+  // and api-behavior/bench-score/doc-style/ideation-outcome start at v1. A
+  // class whose measurement definition changes bumps ONLY its version —
+  // stored tiers of other classes must not go stale by association.
   return 1;
 }
