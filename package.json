@@ -39,7 +39,8 @@
     "update-uap": "bash scripts/maintenance/update-uap-compliance.sh",
     "verify-uap": "bash scripts/maintenance/verify-compliance.sh",
     "check-claude": "bash scripts/maintenance/verify-compliance.sh",
-    "bench:ladder": "tsx scripts/reliability-ladder.ts"
+    "bench:ladder": "tsx scripts/reliability-ladder.ts",
+    "bench:convergence": "tsx scripts/convergence-table.ts"
   },
   "keywords": [
     "claude",

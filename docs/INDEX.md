@@ -138,6 +138,7 @@ the decision record.
 | [P0 anti-vacuous spec](specs/p0-anti-vacuous.md) | The verbatim-operations spec behind deliver's anti-stub hardening |
 | [Performance baseline](performance/baseline-2026-03-27.json) | Machine-recorded perf baseline (heap, query latency) |
 | [Reliability ladder](performance/reliability-ladder.md) | Measured technique-selection table for the decision loop; `npm run bench:ladder` regenerates it from `benchmark-results/` |
+| [Convergence table](performance/convergence-table.md) | Per-model convergence economics (iterations-to-done, escalation frequency, cut rate, best-of-N win rate) across the paired harness + O1 corpus; `npm run bench:convergence` regenerates it (E.1, wave 2.1) |
 | [Deliver outcomes](performance/deliver-outcomes.md) | The aggregated O1 dataset: recorded `[deliver]` lessons per model (gates share, turns) — `uap memory outcomes` regenerates it |
 
 ## Contributing
