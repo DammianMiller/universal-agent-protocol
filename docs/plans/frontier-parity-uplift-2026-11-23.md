@@ -191,8 +191,10 @@ arms close the process gap.
    [docs/performance/convergence-table.md](../performance/convergence-table.md)
    from three sources — the paired harness corpus (`benchmark-results/`, both
    flat and per-arm layouts, using the harness's own unbiased `passAtK` for
-   pass@1/pass@N), the O1 delivery corpus (`uap memory outcomes`), and the
-   uplift-1.4 escalation ledger. First real read: on armC-teamsolve, best-of-3
+   pass@1/pass@N), the O1 delivery corpus (`uap memory outcomes`), the quality-ladder
+   convergence log (`uap quality convergence`, per-tier — the CLASS dimension
+   of 2.1, since tier keys are class/name pairs), and the uplift-1.4
+   escalation ledger. First real read: on armC-teamsolve, best-of-3
    rescues 29.6% of baseline tasks (pass@1 59.3% → pass@3 88.9%) but only
    18.5% under uap-full (59.3% → 77.8%) — retrying buys more for the bare arm
    than for the scaffolded one, a first measured input for the C routing

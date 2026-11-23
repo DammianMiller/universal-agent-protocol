@@ -21,8 +21,9 @@ npm run bench:convergence -- --json  # machine-readable rows + coverage
 ```
 
 Sources: `benchmark-results/` (paired runs, both flat and per-arm layouts), the
-O1 delivery corpus (`uap memory outcomes`), and the uplift-loop escalation
-ledger (`.uap/quality/escalations.jsonl`). Works from worktrees: the reader
+O1 delivery corpus (`uap memory outcomes`), the quality-ladder convergence log
+(`uap quality convergence` — per tier, the class dimension), and the
+uplift-loop escalation ledger (`.uap/quality/escalations.jsonl`). Works from worktrees: the reader
 falls back to the main checkout for the git-ignored `benchmark-results/`.
 
 <!-- CONVERGENCE:BEGIN -->
@@ -48,11 +49,15 @@ pass@1 / pass@N use the unbiased estimator (the harness `passAtK`); N is each ta
 
 Descriptive by construction (no paired arm): observational counts of recorded lessons. It directs where paired runs should spend; it proves nothing about cause.
 
+## Quality-ladder convergence (per tier — the class dimension)
+
+_No ladder runs recorded yet — the section fills when `uap quality ladder --rounds-dir` first runs against a tier (the convergence log then holds the promotion budget)._
+
 ## Escalation ledger (.uap/quality/escalations.jsonl)
 
 _No escalations recorded yet — the ledger appears when an uplift loop first fires `onEscalate` (uplift 1.4)._
 
 ## Quality-class coverage
 
-None yet: neither corpus tags runs with a quality class (visual-scene, doc-style, …). Class-tagged rows arrive with anchor harvesting (E.2) and vision promotion (E.4); the table schema carries the column so they land without a migration.
+Class coverage lives in the quality-ladder section (tier keys are class/name pairs — visual-scene/frontier-prior, doc-style/…). The paired-harness and delivery corpora are not yet class-tagged; their rows gain classes when anchor harvesting (E.2) and vision promotion (E.4) tag runs.
 <!-- CONVERGENCE:END -->

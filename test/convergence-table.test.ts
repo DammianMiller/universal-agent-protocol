@@ -162,33 +162,69 @@ describe('E.1 run discovery — flat and nested benchmark-results layouts', () =
 });
 
 describe('E.1 buildReport + renderMarkdown — the published table', () => {
-  it('renders all three sections with the house-rule framing', () => {
+  it('renders all four sections with the house-rule framing', () => {
     mkdirSync(join(dir, 'run1'));
     writeRun(join(dir, 'run1'), 'local-auto', 2, 'underpowered', false);
     const delivery: DeliverRow[] = [
       { outcome: 'stopped', turns: 1, gatesPct: 67, model: 'qwen35-a3b', task: 't', source: 's' },
     ];
     const ledger = [JSON.stringify({ tier: 'frontier-prior', round: 3 })];
-    const report = buildReport(dir, delivery, ledger, '2026-11-23T00:00:00Z');
+    const ladder = {
+      totalRuns: 2,
+      summaries: [
+        {
+          tier: 'visual-scene/frontier-prior',
+          runs: 2,
+          tierReached: 1,
+          cutRate: 0.5,
+          escalationRate: 0.5,
+          meanRoundsToTier: 3.5,
+          winnerPassRate: 0.5,
+          meanCandidates: 4,
+        },
+        {
+          tier: 'doc-style/shipped',
+          runs: 1,
+          tierReached: 0,
+          cutRate: 1,
+          escalationRate: 0,
+          meanRoundsToTier: null,
+          winnerPassRate: 0,
+          meanCandidates: 2,
+        },
+      ],
+    };
+    const report = buildReport(dir, delivery, ledger, '2026-11-23T00:00:00Z', ladder);
     expect(report.pairedRuns).toHaveLength(1);
     expect(report.deliveryReachable).toBe(true);
     expect(report.escalations!.total).toBe(1);
+    expect(report.ladder!.totalRuns).toBe(2);
 
     const md = renderMarkdown(report);
     expect(md).toContain('## Paired-harness convergence');
     expect(md).toContain('underpowered (⚠)');
     expect(md).toContain('## Delivery-gate convergence (O1 corpus, descriptive)');
+    expect(md).toContain('## Quality-ladder convergence (per tier — the class dimension)');
+    expect(md).toContain('visual-scene/frontier-prior');
+    // a tier nothing reached renders rounds-to-tier as the em-dash, not 0
+    expect(md).toContain('| doc-style/shipped | 1 | 0 | 100.0% | 0.0% | — | 0.0% | 2.0 |');
     expect(md).toContain('## Escalation ledger');
     expect(md).toContain('## Quality-class coverage');
     expect(md).toContain('Descriptive by construction');
   });
 
   it('renders honest absence notes when sources are missing', () => {
+    // ladder omitted -> unreachable note (same wording family as the corpus one)
     const report = buildReport(null, null, null, '2026-11-23T00:00:00Z');
     const md = renderMarkdown(report);
     expect(md).toContain('No paired runs');
     expect(md).toContain('unreachable');
+    expect(md).toContain('`uap quality convergence` unreachable');
     expect(md).toContain('No escalations recorded yet');
+
+    // ladder reachable but empty -> the no-runs-yet note, not an error
+    const empty = buildReport(null, null, null, '2026-11-23T00:00:00Z', { totalRuns: 0, summaries: [] });
+    expect(renderMarkdown(empty)).toContain('No ladder runs recorded yet');
   });
 });
 

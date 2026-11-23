@@ -211,6 +211,51 @@ export function convergeDelivery(rows: DeliverRow[]): ModelDeliveryConvergence[]
 }
 
 // ---------------------------------------------------------------------------
+// Quality-ladder convergence (uap quality convergence — per TIER, the class
+// dimension of wave 2.1: tier keys are class/name pairs)
+// ---------------------------------------------------------------------------
+
+/** Mirrors src/quality/tier-ladder.ts LadderConvergenceSummary. */
+export interface LadderTierSummary {
+  tier: string;
+  runs: number;
+  tierReached: number;
+  cutRate: number;
+  escalationRate: number;
+  meanRoundsToTier: number | null;
+  winnerPassRate: number;
+  meanCandidates: number;
+}
+
+export interface LadderRead {
+  totalRuns: number;
+  summaries: LadderTierSummary[];
+}
+
+/** The quality-ladder convergence log via the quality CLI. Null when unreachable. */
+function readQualityLadder(cwd: string): LadderRead | null {
+  try {
+    const raw = execFileSync('uap', ['quality', 'convergence', '--json'], {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 60_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const parsed = JSON.parse(raw) as { totalRuns?: unknown; summaries?: unknown };
+    if (typeof parsed.totalRuns !== 'number' || !Array.isArray(parsed.summaries)) return null;
+    const summaries: LadderTierSummary[] = [];
+    for (const s of parsed.summaries) {
+      if (typeof s === 'object' && s !== null && typeof (s as LadderTierSummary).tier === 'string') {
+        summaries.push(s as LadderTierSummary);
+      }
+    }
+    return { totalRuns: parsed.totalRuns, summaries };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Run discovery (both layouts: flat <run>/report.json and nested <run>/<arm>/)
 // ---------------------------------------------------------------------------
 
@@ -421,6 +466,9 @@ export interface ConvergenceReport {
   pairedRuns: PairedRunConvergence[];
   delivery: ModelDeliveryConvergence[];
   deliveryReachable: boolean;
+  /** Quality-ladder convergence per tier (the class dimension). Null when the
+   *  quality CLI is unreachable; totalRuns 0 = reachable but no runs yet. */
+  ladder: LadderRead | null;
   escalations: EscalationSummary | null;
 }
 
@@ -428,7 +476,8 @@ export function buildReport(
   resultsDir: string | null,
   delivery: DeliverRow[] | null,
   ledgerLines: string[] | null,
-  now = new Date().toISOString()
+  now = new Date().toISOString(),
+  ladder: LadderRead | null = null
 ): ConvergenceReport {
   const pairedRuns = resultsDir
     ? findRunDirs(resultsDir)
@@ -440,6 +489,7 @@ export function buildReport(
     pairedRuns,
     delivery: delivery ? convergeDelivery(delivery) : [],
     deliveryReachable: delivery != null,
+    ladder,
     escalations: ledgerLines ? summarizeEscalations(ledgerLines) : null,
   };
 }
@@ -510,6 +560,34 @@ export function renderMarkdown(r: ConvergenceReport): string {
     );
   }
 
+  // --- Quality ladder (the class dimension) -------------------------------
+  L.push('');
+  L.push('## Quality-ladder convergence (per tier — the class dimension)');
+  L.push('');
+  if (!r.ladder) {
+    L.push('_.`uap quality convergence` unreachable — no ladder section in this table._');
+  } else if (r.ladder.totalRuns === 0) {
+    L.push(
+      '_No ladder runs recorded yet — the section fills when `uap quality ladder --rounds-dir` ' +
+      'first runs against a tier (the convergence log then holds the promotion budget)._'
+    );
+  } else {
+    L.push('| Tier | Runs | Reached | Cut | Escalated | Rounds→tier | Winner pass | Candidates/run |');
+    L.push('|---|--:|--:|--:|--:|--:|--:|--:|');
+    for (const s of r.ladder.summaries) {
+      const rtt = s.meanRoundsToTier === null ? '—' : s.meanRoundsToTier.toFixed(1);
+      L.push(
+        `| ${s.tier} | ${s.runs} | ${s.tierReached} | ${pct(s.cutRate)} | ${pct(s.escalationRate)} | ` +
+        `${rtt} | ${pct(s.winnerPassRate)} | ${s.meanCandidates.toFixed(1)} |`
+      );
+    }
+    L.push('');
+    L.push(
+      'Descriptive (no controlled arm) — the tier-gate promotion budget for `UAP_TIER_GATE=block`,' +
+      ' per `uap quality convergence`. Tier keys are class/name pairs, so this is the per-class column of wave 2.1.'
+    );
+  }
+
   // --- Escalations --------------------------------------------------------
   L.push('');
   L.push('## Escalation ledger (.uap/quality/escalations.jsonl)');
@@ -531,8 +609,9 @@ export function renderMarkdown(r: ConvergenceReport): string {
   L.push('## Quality-class coverage');
   L.push('');
   L.push(
-    'None yet: neither corpus tags runs with a quality class (visual-scene, doc-style, …). ' +
-    'Class-tagged rows arrive with anchor harvesting (E.2) and vision promotion (E.4); the table schema carries the column so they land without a migration.'
+    'Class coverage lives in the quality-ladder section (tier keys are class/name pairs — ' +
+    'visual-scene/frontier-prior, doc-style/…). The paired-harness and delivery corpora are not yet ' +
+    'class-tagged; their rows gain classes when anchor harvesting (E.2) and vision promotion (E.4) tag runs.'
   );
   return L.join('\n');
 }
@@ -544,7 +623,13 @@ function main(): void {
     : undefined;
   const cwd = process.cwd();
   const resultsDir = resolveResultsDir(cwd, explicit);
-  const report = buildReport(resultsDir, readDeliverCorpus(cwd), readEscalationLedger(cwd));
+  const report = buildReport(
+    resultsDir,
+    readDeliverCorpus(cwd),
+    readEscalationLedger(cwd),
+    undefined,
+    readQualityLadder(cwd)
+  );
   if (args.includes('--json')) {
     console.log(JSON.stringify(report, null, 2));
     return;
