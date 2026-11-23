@@ -205,6 +205,14 @@ arms close the process gap.
 2. **Anchor harvesting (2.2):** operator-approved outputs become anchors on the
    approveVisualBaseline precedent — every approved frontier-grade artifact
    raises the bar for free.
+
+   **Shipped (PR this branch):** `uap quality approve <class> --from <runDir>`
+   — one operator action pins a whole run's outputs: every readable artifact in
+   the directory is measured and stored as a class anchor (non-artifacts skip,
+   dotfiles never read), then the tier re-derives immediately so the approved
+   exemplars raise the bar in the same command. Fail-closed: a directory that
+   anchors nothing changes no tier. Verified end-to-end against a real
+   pagoda capture (PNG anchored, report.json skipped, tier re-derived).
 3. **Re-embed the legacy collection:** promote the daily-log backlog into
    `agent_memory_v768` (nomic) so semantic recall covers history, not just new
    writes.

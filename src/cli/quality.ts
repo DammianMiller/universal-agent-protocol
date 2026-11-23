@@ -10,6 +10,7 @@
  *   profile    measure one PNG capture into a deterministic vector (0.1)
  *   derive     derive a tier (thresholds) from a class's anchors (0.2)
  *   gap        gap a capture against a tier; verdict + critique (0.2)
+ *   approve    pin a run's outputs as anchors + re-derive the tier (E.2, wave 2.2)
  *
  * Gate parity: the Python proxy enforcer `quality_metrics_gate.py` mirrors the fast
  * path (LOC, complexity, any-types) so agent edits are blocked pre-exec with
@@ -62,6 +63,11 @@ export interface QualityOptions {
   candidates?: string;
   /** Rounds without improvement before the ladder escalates. */
   plateauRounds?: string;
+  /** Run-outputs directory for the approve subcommand (E.2): every readable
+   *  artifact file in it becomes an anchor for the class. `fromDir` is the
+   *  programmatic name; commander maps the `--from` flag onto `from`. */
+  fromDir?: string;
+  from?: string;
 }
 
 function resolveDir(o: QualityOptions): string {
@@ -89,6 +95,8 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       return deriveCmd(dir, options);
     case 'gap':
       return gapCmd(dir, options);
+    case 'approve':
+      return approveCmd(dir, options);
     case 'ladder':
       return ladderCmd(dir, options);
     case 'convergence':
@@ -111,6 +119,7 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  derive <class>      Derive a tier from a class\'s anchors (--name, --tolerance)');
       console.log('  gap --file <f>      Gap an artifact against a tier (--tier <class/name>); exit 2 below tier');
       console.log('  ladder --rounds-dir Rank harvested best-of-N rounds against a tier (--tier); escalation + honest cut');
+      console.log('  approve --from <d>  Pin a run\'s outputs as anchors + re-derive the tier (approveVisualBaseline precedent)');
       console.log('  convergence         Per-tier convergence telemetry — the tier-gate promotion budget');
       console.log('  contract --tier <k>  Print the tier contract (the injectable executor-prompt block)');
       console.log('  publish <class/name> Copy a project tier into the fleet-global store — it then auto-applies');
@@ -400,6 +409,94 @@ function deriveCmd(dir: string, options: QualityOptions): void {
     return;
   }
   console.log(chalk.green(`  ✓ tier ${tier.key} (from ${tier.anchorCount} anchor(s), tolerance ${tier.tolerance})`));
+  for (const [axis, th] of Object.entries(tier.thresholds)) {
+    const band = th.min !== undefined && th.max !== undefined
+      ? `${th.min}..${th.max}`
+      : th.min !== undefined
+        ? `>= ${th.min}`
+        : `<= ${th.max}`;
+    console.log(`    ${axis.padEnd(10)} ${band}`);
+  }
+  console.log(chalk.dim('    Review and edit the policy file: .uap/quality/tiers.json'));
+}
+
+/**
+ * `uap quality approve <class> --from <runOutputsDir> [--name <tier>]` — the
+ * approveVisualBaseline precedent for quality classes (E.2, wave 2.2): one
+ * operator action pins a run's outputs as the anchors for their class, then
+ * re-derives the tier — every approved frontier-grade artifact raises the bar
+ * for free. Reads every FILE in --from (non-recursive, sorted): files the
+ * class extractor cannot read (report.json, logs, dotfiles) count as skipped,
+ * not failures — run-output directories are mixed. Exit 2 when the directory
+ * is missing, or when nothing was anchored (nothing approved, no bar change).
+ */
+export function approveCmd(dir: string, options: QualityOptions): void {
+  const cls = options.target;
+  const fromRaw = options.fromDir ?? options.from;
+  if (!cls || !fromRaw) {
+    console.log(
+      chalk.yellow('  Usage: uap quality approve <class> --from <runOutputsDir> [--name <tier>] [--tolerance 0.75]')
+    );
+    process.exitCode = 2;
+    return;
+  }
+  const root = isAbsolute(fromRaw) ? fromRaw : join(dir, fromRaw);
+  if (!existsSync(root) || !statSync(root).isDirectory()) {
+    console.log(chalk.red(`  ✗ ${root} — not a directory`));
+    process.exitCode = 2;
+    return;
+  }
+  const files = readdirSync(root, { withFileTypes: true })
+    .filter((e) => e.isFile() && !e.name.startsWith('.'))
+    .map((e) => join(root, e.name))
+    .sort();
+  if (files.length === 0) {
+    console.log(chalk.red(`  ✗ ${root} — no files to approve`));
+    process.exitCode = 2;
+    return;
+  }
+  const spec = resolveClass(cls);
+  const tolerance = options.tolerance === undefined ? DEFAULT_TOLERANCE : Number(options.tolerance);
+  if (!Number.isFinite(tolerance) || tolerance <= 0 || tolerance > 1) {
+    console.log(chalk.red('  ✗ --tolerance must be a multiplicative floor in (0, 1], e.g. 0.75'));
+    process.exitCode = 2;
+    return;
+  }
+
+  console.log(chalk.bold(`\n  Approving ${files.length} file(s) from ${root} as '${cls}' anchors\n`));
+  let stored = 0;
+  let skipped = 0;
+  for (const p of files) {
+    const rec = storeArtifactAnchor(dir, cls, p);
+    if (!rec) {
+      skipped += 1;
+      console.log(chalk.dim(`  – skipped ${p} — not a readable ${spec.artifact}`));
+      continue;
+    }
+    stored += 1;
+    console.log(chalk.green(`  ✓ anchor ${rec.cls}/${rec.name}`));
+    console.log(chalk.dim(`    ${rec.profilePath}`));
+  }
+  if (stored === 0) {
+    console.log(chalk.red(`\n  ✗ nothing anchored — no tier change (${skipped} file(s) skipped)`));
+    process.exitCode = 2;
+    return;
+  }
+
+  // Re-derive so the approved anchors raise the bar immediately ("for free").
+  const tier = deriveTier(dir, cls, options.name || 'default', tolerance);
+  if (!tier) {
+    console.log(chalk.red('\n  ✗ anchors stored but the tier could not be re-derived (extractor mismatch?)'));
+    process.exitCode = 2;
+    return;
+  }
+  console.log(
+    chalk.green(`\n  ✓ approved: ${stored} anchor(s) added (${skipped} skipped) — tier ${tier.key} re-derived`)
+  );
+  if (options.json) {
+    console.log(JSON.stringify({ cls, stored, skipped, tier }, null, 2));
+    return;
+  }
   for (const [axis, th] of Object.entries(tier.thresholds)) {
     const band = th.min !== undefined && th.max !== undefined
       ? `${th.min}..${th.max}`
