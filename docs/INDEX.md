@@ -129,6 +129,7 @@ the decision record.
 | [System-1 uplift plan](plans/system1-uplift-2026-09-18.md) | Approved uplift from the 2026-09-18 ten-source analysis (Jev/Foreman/Fluent/CEK et al): Wave 0 quick wins + Wave 1 System-1 decision layer, local-only classifier trained from UAP telemetry |
 | [Droid client performance options](plans/droid-client-performance-options.md) | Monitoring findings + ranked option menu for the local Qwen3.8 droid fleet (2026-11-14; nothing starts without an explicit go) |
 | [Quality-tier uplift plan](plans/quality-tier-uplift-2026-11-16.md) | Reference-anchored outcome tiers for every deliverable class (visual, API, docs, bench): anchors digitize the bar, a deterministic tier gate polices it, the gap report drives the loop; the voxel pagoda vs Fable 5.2 High is the reference implementation |
+| [Frontier-parity uplift plan](plans/frontier-parity-uplift-2026-11-23.md) | Monitoring round 5 (2026-11-23): substrate restorations (Qdrant WALs, nomic embedding server, vision judge wiring) + the ranked menu to frontier parity on visual AND non-visual outcomes, including the innovation/aspiration/ideation outcome class |
 
 ## Specs & performance
 
