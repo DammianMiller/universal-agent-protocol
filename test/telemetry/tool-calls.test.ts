@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import {
   recordToolCall,
   summarizeToolCalls,
@@ -145,5 +146,69 @@ describe('tool-call evidence corpus (harness plan D1/D3)', () => {
     const text = renderEvidence(summarizeToolCalls('r', cwd));
     expect(text).toMatch(/edit_file\/edit-miss/);
     expect(text).toMatch(/By harness component/);
+  });
+
+  it('segments benchmark from live traffic in the same corpus (plan D.3)', () => {
+    const cwd = tempProject();
+    recordToolCall({ runId: 'r3', tool: 'read_file', result: 'contents' }, cwd);
+    recordToolCall(
+      { runId: 'r3', tool: 'edit_file', result: 'ERROR: x: old_string not found.', runKind: 'benchmark' },
+      cwd,
+    );
+    const s = summarizeToolCalls('r3', cwd);
+    expect(s.byRunKind.find((r) => r.runKind === 'benchmark')).toEqual({
+      runKind: 'benchmark',
+      calls: 1,
+      failures: 1,
+    });
+    expect(s.byRunKind.find((r) => r.runKind === 'live')).toEqual({
+      runKind: 'live',
+      calls: 1,
+      failures: 0,
+    });
+    // The render line only appears once the corpus actually MIXES kinds.
+    expect(renderEvidence(s)).toMatch(/By run kind/);
+  });
+
+  it('derives run_kind from UAP_RUN_KIND when the record does not say (plan D.3)', () => {
+    const cwd = tempProject();
+    const prev = process.env.UAP_RUN_KIND;
+    process.env.UAP_RUN_KIND = 'benchmark';
+    try {
+      recordToolCall({ runId: 'r4', tool: 'read_file', result: 'ok' }, cwd);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_RUN_KIND;
+      else process.env.UAP_RUN_KIND = prev;
+    }
+    const s = summarizeToolCalls('r4', cwd);
+    expect(s.byRunKind.find((r) => r.runKind === 'benchmark')?.calls).toBe(1);
+    expect(s.byRunKind.find((r) => r.runKind === 'live')).toBeUndefined();
+  });
+
+  it('migrates a legacy corpus — pre-run_kind rows count as live (plan D.3)', () => {
+    const cwd = tempProject();
+    // Hand-build the OLD schema exactly as it was: no run_kind column.
+    const legacy = new Database(join(cwd, 'tool-calls.db'));
+    legacy.exec(`
+      CREATE TABLE tool_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (datetime('now')),
+        run_id TEXT, task_id TEXT, component TEXT NOT NULL, tool TEXT NOT NULL,
+        outcome TEXT NOT NULL, failed INTEGER NOT NULL DEFAULT 0, turn INTEGER,
+        path TEXT, latency_ms INTEGER, bytes INTEGER, detail TEXT
+      );
+      INSERT INTO tool_calls (run_id, component, tool, outcome, failed)
+        VALUES ('legacy', 'tools', 'edit_file', 'edit-miss', 1);
+    `);
+    legacy.close();
+    // The next open migrates in place, and the new row carries its own kind.
+    recordToolCall(
+      { runId: 'r5', tool: 'read_file', result: 'ok', runKind: 'benchmark' },
+      cwd,
+    );
+    const s = summarizeToolCalls(undefined, cwd);
+    expect(s.totalCalls).toBe(2);
+    expect(s.byRunKind.find((r) => r.runKind === 'live')?.calls).toBe(1);
+    expect(s.byRunKind.find((r) => r.runKind === 'benchmark')?.calls).toBe(1);
   });
 });

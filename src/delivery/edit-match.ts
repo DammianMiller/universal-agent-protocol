@@ -331,6 +331,37 @@ function truncateForReport(line: string, max = 200): string {
 }
 
 /**
+ * D.2 nearest-range hint: the cycle-breaking counterpart of fileDigestReport
+ * for LINE-anchored edits. A range that does not resolve gets the file's
+ * total line count plus a bounded, line-numbered excerpt around the requested
+ * lines (clamped into the file), so the model re-anchors in the same turn
+ * instead of guessing line numbers from memory again. The 235 range-invalid
+ * failures on the o7 corpus (2026-11-21/22) are line anchors sent from a
+ * stale line count — this hands back the current one.
+ */
+export function nearestRangeExcerpt(
+  current: string,
+  startLine: number,
+  endLine: number,
+  maxChars = 900
+): string {
+  const lines = current.split('\n');
+  // Same line count applyRangeEdit names in its own refusal — a trailing
+  // newline is not a content line. Two different counts in one error would
+  // be worse than no count at all.
+  const total = current.endsWith('\n') ? lines.length - 1 : lines.length;
+  const s = Math.min(Math.max(1, Math.trunc(startLine) || 1), total);
+  const e = Math.min(Math.max(s, Math.trunc(endLine) || s), total);
+  const from = Math.max(1, s - 3);
+  const to = Math.min(total, e + 3);
+  const parts: string[] = [];
+  for (let i = from; i <= to; i++) parts.push(`${i}: ${lines[i - 1]}`);
+  let excerpt = `The file has ${total} line(s). Lines ${from}-${to} of the CURRENT file:\n${parts.join('\n')}`;
+  if (excerpt.length > maxChars) excerpt = `${excerpt.slice(0, maxChars)}\n… (truncated)`;
+  return excerpt;
+}
+
+/**
  * The empty-nearest-match fallback (U-H): when even the nearest-match report
  * comes up empty — nothing in the CURRENT file resembles the anchor — hand the
  * model the file's actual shape instead of a bare "re-read it": total line
