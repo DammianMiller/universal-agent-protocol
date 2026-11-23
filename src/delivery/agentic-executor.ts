@@ -48,7 +48,14 @@ import {
   type SweepOutcome,
 } from './bash-sweep.js';
 import { detectStub, stubRefusal, stubGuardDisabled } from './stub-detector.js';
-import { resolveEditMatch, applyEditMatch, applyRangeEdit, isIndentSensitive } from './edit-match.js';
+import {
+  resolveEditMatch,
+  applyEditMatch,
+  applyRangeEdit,
+  isIndentSensitive,
+  fileDigestReport,
+  nearestRangeExcerpt,
+} from './edit-match.js';
 import { recordToolCall } from '../telemetry/tool-calls.js';
 
 /**
@@ -1656,6 +1663,23 @@ export interface StateHashStore {
    * already received. Cleared at every turn open — see the block above.
    */
   served: Set<string>;
+  /**
+   * Run-level read-freshness (plan D.1): per absolute path, how many reads
+   * served content and how many successful edit_file/edit_range landed since
+   * the last serving read. The model's own edits invalidate the copy in its
+   * memory — the next anchor it sends is from the OLD version, which is the
+   * measured long-session blind-write failure (1,840 misses on the o7
+   * corpus, 2026-11-21/22: hints live, anchor still stale).
+   */
+  freshness: Map<string, ReadFreshnessEntry>;
+}
+
+/** Read-freshness counters for one path (see StateHashStore.freshness). */
+export interface ReadFreshnessEntry {
+  /** Serving reads this run; a full authoring write_file counts as one. */
+  reads: number;
+  /** Successful edit_file/edit_range since the last serving read/write. */
+  editsSinceRead: number;
 }
 
 /** Stable prefix so the call site can recognise a reference (and not double-nudge it). */
@@ -1665,7 +1689,7 @@ export const STATE_HASH_REF_PREFIX = '[unchanged:';
 export const STATE_HASH_DEFAULT_MIN_BYTES = 1024;
 
 export function newStateHashStore(): StateHashStore {
-  return { entries: new Map(), served: new Set() };
+  return { entries: new Map(), served: new Set(), freshness: new Map() };
 }
 
 /** On by default; UAP_DELIVER_STATE_HASH=0 disables, same env style as the other deliver rails. */
@@ -1727,6 +1751,10 @@ export function stateHashReference(
 export function markStateHashServed(store: StateHashStore, abs: string, offsetLine: number): void {
   if (!stateHashEnabled()) return;
   store.served.add(stateHashKey(abs, offsetLine));
+  // D.1 read-freshness: a serving read refreshes the model's copy of this
+  // path — own-edits-since-read restart from zero.
+  const fresh = store.freshness.get(abs);
+  store.freshness.set(abs, { reads: (fresh?.reads ?? 0) + 1, editsSinceRead: 0 });
 }
 
 /**
@@ -1744,6 +1772,62 @@ export function invalidateStateHash(store: StateHashStore, abs: string): void {
       store.served.delete(key);
     }
   }
+}
+
+/**
+ * D.1 read-freshness: a successful edit_file/edit_range invalidates the copy
+ * of the file the model holds in memory (the applied text can differ from what
+ * it sent — tolerant matches, batch rewrites), so count it.
+ */
+export function recordEditSinceRead(store: StateHashStore, abs: string): void {
+  const fresh = store.freshness.get(abs);
+  store.freshness.set(abs, {
+    reads: fresh?.reads ?? 0,
+    editsSinceRead: (fresh?.editsSinceRead ?? 0) + 1,
+  });
+}
+
+/**
+ * D.1 read-freshness: a successful write_file authored the FULL bytes — the
+ * model's copy is exactly what it sent, so its view stays fresh. Authoring
+ * counts as seeing the content (reads increments): otherwise the next miss
+ * on a freshly-authored file would be misattributed as "never read".
+ */
+export function recordAuthoredSinceRead(store: StateHashStore, abs: string): void {
+  const fresh = store.freshness.get(abs);
+  store.freshness.set(abs, { reads: (fresh?.reads ?? 0) + 1, editsSinceRead: 0 });
+}
+
+/**
+ * D.1 read-freshness attribution: on an edit miss, was the anchor PROVABLY from
+ * memory? Returns the attribution note when the model has not received the
+ * file's current content this run — it never read the file, or its own edits
+ * landed since its last read. Null when its view was fresh, leaving the
+ * ordinary miss note to speak.
+ */
+export function staleAnchorNote(store: StateHashStore | undefined, abs: string): string | null {
+  if (!store) return null;
+  const fresh = store.freshness.get(abs);
+  // Own-edit staleness outranks the never-read case: a blind edit followed by
+  // a miss from memory is EXACTLY the long-session blind-write profile —
+  // reads is 0 (it never read), but the sharper truth is that its own edit
+  // invalidated the copy it is still anchoring on.
+  if (fresh && fresh.editsSinceRead > 0) {
+    const n = fresh.editsSinceRead;
+    return (
+      `STALE ANCHOR — this file has had ${n} of your own edit${n === 1 ? '' : 's'} since you ` +
+      'last saw its current content: your anchor matches the version in your memory, not the ' +
+      'current file. Read the file (or copy from the region shown) and re-anchor on CURRENT content.'
+    );
+  }
+  if (!fresh || fresh.reads === 0) {
+    return (
+      'STALE ANCHOR — you have not read this file this run: your anchor comes from ' +
+      'memory, not from the file. Read the file (or copy from the region shown) and ' +
+      're-anchor on CURRENT content.'
+    );
+  }
+  return null;
 }
 
 /** mtime of a path, or null when it does not exist / is unreadable. */
@@ -2156,7 +2240,12 @@ export function runTool(
       recordAuthorisedWrite(sweep, rel, String(args.content ?? ''));
       writeLedger?.add(rel);
       // The write succeeded: every recorded read of this path is now stale.
-      if (stateHash) invalidateStateHash(stateHash.store, abs);
+      // D.1 read-freshness: a write AUTHORED the full bytes — the model's
+      // copy is exactly what it sent, so its view of this path stays fresh.
+      if (stateHash) {
+        invalidateStateHash(stateHash.store, abs);
+        recordAuthoredSinceRead(stateHash.store, abs);
+      }
       // Per-write compile feedback for Rust: without it, a weak model writes
       // whole turns of code against types it invented, and the turn-end gate
       // reports an avalanche it cannot dig out of (observed live 2026-07-10:
@@ -2258,6 +2347,23 @@ export function runTool(
           // 7, `cargo check` clean at round 10, re-sent at rounds 11 and 12).
           const applied = alreadyAppliedNote(String(args.path), label, updated, newStr);
           if (applied) return applied;
+          // D.1 read-freshness attribution: when the model provably never saw
+          // this file's CURRENT content (never read it this run, or its own
+          // edits landed since its last read), the miss is not "your anchor is
+          // wrong" — it is "your copy is old". Say which. And when the
+          // diagnostics toggle is off, still hand over the digest for a
+          // PROVEN stale anchor: the model needs the current content to
+          // re-anchor, and without it it re-guesses from the same stale
+          // memory (the 1,840 blind-write misses on the o7 corpus,
+          // 2026-11-21/22 — hints were live, the anchors were still old).
+          const stale = staleAnchorNote(stateHash?.store, abs);
+          if (stale) {
+            const bare = match.note ?? 'old_string not found.';
+            const note = editDiagnosticsEnabled()
+              ? bare
+              : `${bare}\n${fileDigestReport(updated)}`;
+            return `ERROR: ${String(args.path)}${label}: ${stale}\n${note}`;
+          }
           // Nothing has been written yet, so the batch aborts clean.
           return `ERROR: ${String(args.path)}${label}: ${match.note ?? 'old_string not found.'}`;
         }
@@ -2320,7 +2426,12 @@ export function runTool(
       recordAuthorisedWrite(sweep, rel, updated);
       writeLedger?.add(rel);
       // The edit succeeded: every recorded read of this path is now stale.
-      if (stateHash) invalidateStateHash(stateHash.store, abs);
+      // D.1 read-freshness: the model's own edit invalidates the copy it
+      // holds — the applied text can differ from what it sent.
+      if (stateHash) {
+        invalidateStateHash(stateHash.store, abs);
+        recordEditSinceRead(stateHash.store, abs);
+      }
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
       const plural = batch.length === 1 ? 'replacement' : 'replacements';
@@ -2362,7 +2473,17 @@ export function runTool(
         String(args.new_text ?? ''),
       );
       if (!ranged.ok || ranged.text == null) {
-        return `ERROR: ${String(args.path)}: ${ranged.error ?? 'invalid range.'}`;
+        // D.2 nearest-range hint: a line anchor sent from a stale line count
+        // gets the CURRENT count and a bounded, line-numbered excerpt around
+        // the requested lines — re-anchor in this turn instead of guessing
+        // line numbers from memory again. With a proven-stale view (D.1),
+        // say that too: the count is wrong because the copy is old.
+        const stale = staleAnchorNote(stateHash?.store, abs);
+        return (
+          `ERROR: ${String(args.path)}: ${ranged.error ?? 'invalid range.'}\n` +
+          `${nearestRangeExcerpt(current, Number(args.start_line), Number(args.end_line))}` +
+          (stale ? `\n${stale}` : '')
+        );
       }
       // Same NO-OP rule as write_file/edit_file: replacing a range with what it
       // already contains is not progress, and reporting it as such lets a model
@@ -2394,7 +2515,12 @@ export function runTool(
       recordAuthorisedWrite(sweep, rel, ranged.text);
       writeLedger?.add(rel);
       // The edit succeeded: every recorded read of this path is now stale.
-      if (stateHash) invalidateStateHash(stateHash.store, abs);
+      // D.1 read-freshness: the model's own edit invalidates the copy it
+      // holds — subsequent line anchors come from the old line count.
+      if (stateHash) {
+        invalidateStateHash(stateHash.store, abs);
+        recordEditSinceRead(stateHash.store, abs);
+      }
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
       return (
