@@ -93,8 +93,9 @@ for that socket; default the checkout's `.uap/proxy.sock`). See ADR 0011.
 `UAP_INFERENCE_ENDPOINT` (base URL; blind path default `http://localhost:4000/v1`),
 `UAP_MODEL_ENDPOINT` (slot probe), `UAP_MODEL_PROFILE`, `UAP_MODEL_LEASE` (`0` disables
 cross-process slot leasing), `UAP_MODEL_HTTP_TIMEOUT_MS` (30 min), `UAP_ACTIVE_MODEL`,
-`UAP_ESCALATE_MODEL`, `UAP_EMBEDDING_ENDPOINT` (default `http://192.168.1.165:8081`, a
-**hardcoded LAN IP** fallback), `UAP_LLM_SERVER`, `UAP_VISION_ENDPOINT`/`_MODEL`/`_API_KEY`.
+`UAP_ESCALATE_MODEL`, `UAP_EMBEDDING_ENDPOINT` (default `http://127.0.0.1:8081`, the
+local nomic-embed server — `uap-embed-server.service`; was a hardcoded LAN IP that
+died with the subnet move, until v2.74.3), `UAP_LLM_SERVER`, `UAP_VISION_ENDPOINT`/`_MODEL`/`_API_KEY`.
 
 ### Proxy lifecycle (TS side)
 `PROXY_PORT` (4000), `UAP_PROXY_RUN_SCRIPT`, `UAP_PROXY_HEALTH_WAIT_MS`,

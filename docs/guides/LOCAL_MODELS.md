@@ -55,7 +55,7 @@ local preset is `qwen35-a3b`:
 {
   "provider": "custom",
   "apiModel": "qwen35-a3b-iq4xs",
-  "endpoint": "http://192.168.1.165:8080/v1",  // llama.cpp OpenAI endpoint
+  "endpoint": "http://127.0.0.1:8080/v1",  // llama.cpp OpenAI endpoint (loopback)
   "maxContextTokens": 262144
 }
 ```
