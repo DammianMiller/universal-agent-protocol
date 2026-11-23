@@ -40,7 +40,8 @@ import {
 } from '../src/benchmarks/paired/adapter.js';
 import { TaskSpecSchema } from '../src/benchmarks/paired/types.js';
 import { runPaired } from '../src/benchmarks/paired/runner.js';
-import { analyze } from '../src/benchmarks/paired/report.js';
+import { analyze, assessDiscrimination } from '../src/benchmarks/paired/report.js';
+import type { Comparison, ConditionSummary } from '../src/benchmarks/paired/report.js';
 import { buildAblationConditions, analyzeAblation } from '../src/benchmarks/paired/ablation.js';
 import {
   makeBaselineCondition,
@@ -468,5 +469,110 @@ describe('end-to-end: runner -> analyze -> ablation (mock adapter)', () => {
     };
     const out = await runPaired(cfg, SMOKE_SUITE, new Date().toISOString());
     expect(() => analyze(out, {})).toThrow(/baseline/);
+  });
+});
+
+describe('G: power plan for underpowered runs', () => {
+  const summary = (label: string, successRate: number): ConditionSummary => ({
+    label,
+    n: 40,
+    successRate,
+    meanTokens: 100,
+    meanTurns: 5,
+    meanCostUsd: null,
+    meanLatencyMs: 10,
+    errorRate: 0,
+    meanQuality: null,
+  });
+
+  /** Minimal Comparison whose paired deltas are exactly `deltas`. */
+  function comparisonWith(deltas: number[], seed = 3): Comparison {
+    const delta = pairedDelta(deltas, { seed, iterations: 800 });
+    const treat = deltas.map((d) => (d > 0 ? 1 : 0));
+    const base = deltas.map(() => 0);
+    return {
+      label: 'uap-full',
+      baseline: 'baseline',
+      correctness: {
+        baselineRate: 0.3,
+        treatmentRate: 0.3,
+        delta,
+        mcnemar: mcnemar(treat, base),
+        verdict: verdict(delta),
+      },
+      metrics: {},
+      metricVerdicts: {},
+    };
+  }
+
+  it('an underpowered CI carries a power plan: cells follow (halfWidth/target)^2 scaling, epochs come from taskCount', () => {
+    // 8 alternating paired cells: mean 0, CI wide enough to admit both zero
+    // and a ±0.25 effect, but not below the min-cells floor of 8.
+    const deltas = [1, -1, 1, -1, 1, -1, 1, -1];
+    const v = assessDiscrimination(
+      [summary('baseline', 0.3), summary('uap-full', 0.3)],
+      [comparisonWith(deltas)],
+      { taskCount: 9, minDetectableEffect: 0.25 }
+    );
+    expect(v.status).toBe('underpowered');
+    expect(v.usable).toBe(false);
+
+    const pp = v.powerPlan;
+    expect(pp).toBeDefined();
+    const d = pairedDelta(deltas, { seed: 3, iterations: 800 });
+    expect(pp!.halfWidth).toBeCloseTo((d.ci.upper - d.ci.lower) / 2, 10);
+    expect(pp!.halfWidth).toBeGreaterThan(0.25);
+    expect(pp!.target).toBe(0.25);
+    // The projection is the 1/n width law applied to the observed interval.
+    const expectedCells = Math.max(9, Math.ceil(8 * (pp!.halfWidth / 0.25) ** 2));
+    expect(pp!.cellsNeeded).toBe(expectedCells);
+    expect(pp!.epochsNeeded).toBe(Math.max(2, Math.ceil(pp!.cellsNeeded / 9)));
+    // The operator reads the number right in the refusal.
+    expect(v.reason).toMatch(new RegExp(`--epochs ${pp!.epochsNeeded}`));
+  });
+
+  it('without a taskCount the plan still carries cellsNeeded but no epoch count', () => {
+    const v = assessDiscrimination(
+      [summary('baseline', 0.3), summary('uap-full', 0.3)],
+      [comparisonWith([1, -1, 1, -1, 1, -1, 1, -1])],
+      { minDetectableEffect: 0.25 }
+    );
+    expect(v.status).toBe('underpowered');
+    expect(v.powerPlan).toBeDefined();
+    expect(v.powerPlan!.epochsNeeded).toBeNull();
+    expect(v.reason).toContain('paired cells');
+    // The generic "Raise --epochs or add tasks" advice is fine, but no epoch
+    // NUMBER may be promised when the task count is unknown.
+    expect(v.reason).not.toMatch(/--epochs \d/);
+  });
+
+  it('a decisive run gets no power plan', () => {
+    // 40 cells all +1: significant, CI [1,1] excludes zero AND the effect —
+    // and the rates (0.3) sit inside the floor/ceiling bands, so it reads ok.
+    const v = assessDiscrimination(
+      [summary('baseline', 0.3), summary('uap-full', 0.3)],
+      [comparisonWith(Array.from({ length: 40 }, () => 1))],
+      { taskCount: 9, minDetectableEffect: 0.25 }
+    );
+    expect(v.status).toBe('ok');
+    expect(v.usable).toBe(true);
+    expect(v.powerPlan).toBeUndefined();
+  });
+
+  it('too-few-cells verdicts also carry the plan, floored at worst-case noise', () => {
+    // 3 all-agreeing pairs: CI degenerate [1,1] — zero observed width is an
+    // artifact, so the plan must fall back to the 1.96/sqrt(n) worst case
+    // rather than claiming no more cells are needed.
+    const v = assessDiscrimination(
+      [summary('baseline', 0.3), summary('uap-full', 0.3)],
+      [comparisonWith([1, 1, 1])],
+      { taskCount: 9, minDetectableEffect: 0.25 }
+    );
+    expect(v.status).toBe('underpowered');
+    expect(v.powerPlan).toBeDefined();
+    const pp = v.powerPlan!;
+    expect(pp.halfWidth).toBeGreaterThanOrEqual(1.96 / Math.sqrt(3) - 1e-9);
+    expect(pp.cellsNeeded).toBe(Math.max(4, Math.ceil(3 * (pp.halfWidth / 0.25) ** 2)));
+    expect(pp.epochsNeeded).toBeGreaterThanOrEqual(2);
   });
 });
