@@ -204,6 +204,16 @@ class DispositionGateTest(unittest.TestCase):
         self.assertFalse(out.get("allowed"), out.get("reason"))
         self.assertIn("justification", out.get("reason", ""))
 
+    def test_carry_forward_short_sha_blocks(self):
+        # A partial/fabricated sha fails before any git call is spent on it.
+        self._write_review(
+            verdict="approve",
+            carry={"since_head": "abc123", "justification": "hand-waved base"},
+        )
+        out = self._run()
+        self.assertFalse(out.get("allowed"), out.get("reason"))
+        self.assertIn("not a sha", out.get("reason", ""))
+
     # --- findings discipline ---------------------------------------------------
 
     def test_findings_open_blocker_blocks(self):
@@ -221,6 +231,36 @@ class DispositionGateTest(unittest.TestCase):
             verdict="approve",
             findings=[{"reviewer": "test-coverage-reviewer", "severity": "blocker",
                        "location": "src/x.ts:12", "disposition": "resolved"}],
+        )
+        out = self._run()
+        self.assertTrue(out.get("allowed"), out.get("reason"))
+
+    def test_findings_blocker_without_disposition_defaults_open(self):
+        # Absent disposition key must mean open — a blocker never silently clears.
+        self._write_review(
+            verdict="approve",
+            findings=[{"reviewer": "test-coverage-reviewer", "severity": "blocker",
+                       "location": "src/x.ts:12"}],
+        )
+        out = self._run()
+        self.assertFalse(out.get("allowed"), out.get("reason"))
+        self.assertIn("open blocker", out.get("reason", ""))
+
+    def test_findings_withdrawn_blocker_ships(self):
+        self._write_review(
+            verdict="approve",
+            findings=[{"reviewer": "test-coverage-reviewer", "severity": "blocker",
+                       "location": "src/x.ts:12", "disposition": "withdrawn"}],
+        )
+        out = self._run()
+        self.assertTrue(out.get("allowed"), out.get("reason"))
+
+    def test_findings_open_non_blocker_severity_ships(self):
+        # Only blocker severity gates — an open concern or note is recorded, not blocking.
+        self._write_review(
+            verdict="approve",
+            findings=[{"reviewer": "code-quality-reviewer", "severity": "concern",
+                       "location": "src/y.ts:8", "disposition": "open"}],
         )
         out = self._run()
         self.assertTrue(out.get("allowed"), out.get("reason"))
