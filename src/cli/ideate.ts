@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { rankIdeasByNovelty } from '../quality/ideation.js';
+import { corpusNovelty } from '../quality/ideation-corpus.js';
 
 export interface IdeateOptions {
   force?: boolean;
@@ -9,6 +10,8 @@ export interface IdeateOptions {
   dir?: string;
   /** Print the candidates as measurable ideation-outcome Markdown. */
   render?: boolean;
+  /** Rank against the fleet's prior art (embedding seam) — the retread axis. */
+  corpus?: boolean;
 }
 
 /** Root directory for ideation projects (open-collider `projects/` contract). */
@@ -165,8 +168,25 @@ export async function ideateIdeas(name: string, options: IdeateOptions = {}): Pr
     process.stdout.write(renderIdeasMarkdown(ideas));
     return;
   }
+  // Corpus-novelty overlay (plan F, the seam half): distance of each
+  // candidate from the NEAREST PRIOR solution in the fleet's semantic
+  // store. Fail-open — a missing seam ranks by in-set distance only and
+  // says why it did.
+  let corpus: Awaited<ReturnType<typeof corpusNovelty>> | null = null;
+  if (options.corpus) {
+    corpus = await corpusNovelty(ideas.map((idea) => ({ prose: idea })), { cwd: process.cwd() });
+    if (!corpus.ok) {
+      console.error(chalk.dim(`  corpus-novelty unavailable: ${corpus.reason ?? 'unknown'} — ranking in-set only`));
+      corpus = null;
+    }
+  }
   if (options.json) {
     const ranked = rankIdeasByNovelty(ideas);
+    const corpusRanked = corpus
+      ? corpus.perCandidate!
+          .map((d, index) => ({ index, corpusDistance: d }))
+          .sort((a, b) => b.corpusDistance - a.corpusDistance)
+      : undefined;
     process.stdout.write(
       JSON.stringify(
         {
@@ -176,6 +196,20 @@ export async function ideateIdeas(name: string, options: IdeateOptions = {}): Pr
           // Plan F: the judge proposes, the measured distance decides —
           // rank by mean lexical distance to the other candidates.
           novelty_rank: ranked.map((r) => ({ index: r.index, novelty: r.novelty })),
+          // The retread axis: nearest-prior-art distance per candidate
+          // (1 = no nearby prior solution; near 0 = the corpus has this).
+          ...(corpus
+            ? {
+                corpus_novelty: {
+                  provider: corpus.provider,
+                  collections: corpus.collections,
+                  mean: corpus.mean,
+                  min: corpus.min,
+                  per_candidate: corpus.perCandidate,
+                  rank: corpusRanked,
+                },
+              }
+            : {}),
         },
         null,
         2,
@@ -196,6 +230,17 @@ export async function ideateIdeas(name: string, options: IdeateOptions = {}): Pr
     const oneLine = r.idea.replace(/\s+/g, ' ').slice(0, 70);
     console.log(`    ${chalk.cyan(`#${r.index + 1}`)} distance ${r.novelty.toFixed(3)} — ${oneLine}${r.idea.length > 70 ? '…' : ''}`);
   });
+  if (corpus) {
+    console.log(chalk.dim(`  Corpus-novelty (prior-art distance, ${corpus.collections.join(' + ')}): mean ${corpus.mean?.toFixed(3)}, closest ${corpus.min?.toFixed(3)}`));
+    corpus.perCandidate!
+      .map((d, index) => ({ index, d }))
+      .sort((a, b) => b.d - a.d)
+      .slice(0, 3)
+      .forEach((r) => {
+        const oneLine = ideas[r.index].replace(/\s+/g, ' ').slice(0, 70);
+        console.log(`    ${chalk.cyan(`#${r.index + 1}`)} prior-art distance ${r.d.toFixed(3)} — ${oneLine}${ideas[r.index].length > 70 ? '…' : ''}`);
+      });
+  }
   console.log(chalk.dim(`  Render the measurable artifact with: uap ideate ideas ${name} --render\n`));
 }
 

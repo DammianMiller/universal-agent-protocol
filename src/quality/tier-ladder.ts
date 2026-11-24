@@ -23,6 +23,7 @@ import { dirname, join } from 'path';
 import { GapReport, gapReport, GapResult, tiersPath } from './tiers.js';
 import { classOfTierKey, resolveClass } from './classes.js';
 import { tierContractText } from './tier-contract.js';
+import { sigWordsOf } from './ideation.js';
 
 /**
  * Record a fired escalation (Wave 1.4, repo-side half): one JSON line in
@@ -61,6 +62,8 @@ export interface LadderRunRecord {
   escalationFired: boolean;
   /** Executor model id when the caller knows it; null when unattributed. */
   model?: string | null;
+  /** N3: mean pairwise divergence of the final round's kept candidates; null when unmeasured. */
+  meanDivergence?: number | null;
   endedAt: string;
 }
 
@@ -155,6 +158,93 @@ export interface TierLadderCandidate {
   strategy?: string;
 }
 
+/**
+ * N3 — divergence between the candidates of one round. The ladder ranks by
+ * tier distance; nothing else said whether the N candidates were N real
+ * explorations or one exploration farmed N times. candidateDivergence is
+ * content-based and deterministic: text-readable artifacts measure Jaccard
+ * distance over significant words (the ideation module's machinery); binary
+ * artifacts (PNGs, etc.) measure byte equality (0 identical, 1 different —
+ * coarse but honest: it can never mistake a clone for an exploration).
+ */
+export function candidateDivergence(a: TierLadderCandidate, b: TierLadderCandidate): number {
+  if (a.artifactPath === b.artifactPath) return 0;
+  // Read as Buffers first: a null byte means binary (PNGs carry 0x00 in
+  // their IHDR dims; a lossy utf8 read of binary data would silently
+  // produce identical garbled word-sets and misreport clones).
+  let ba: Buffer | null = null;
+  let bb: Buffer | null = null;
+  try {
+    ba = readFileSync(a.artifactPath);
+  } catch {
+    return 1; // unreadable: no shared evidence — unknown is not same
+  }
+  try {
+    bb = readFileSync(b.artifactPath);
+  } catch {
+    return 1;
+  }
+  const aIsText = !ba.includes(0);
+  const bIsText = !bb.includes(0);
+  if (aIsText && bIsText) {
+    const ta = ba.toString('utf8');
+    const tb = bb.toString('utf8');
+    const sa = sigWordsOf(ta);
+    const sb = sigWordsOf(tb);
+    if (sa.size === 0 || sb.size === 0) {
+      return ta === tb ? 0 : 1;
+    }
+    let inter = 0;
+    for (const w of sa) if (sb.has(w)) inter += 1;
+    return 1 - inter / (sa.size + sb.size - inter);
+  }
+  return ba.equals(bb) ? 0 : 1;
+}
+
+/** Measured divergence of a round's candidate set, with the duplicates it dropped. */
+export interface RoundDivergence {
+  /** Mean pairwise divergence over the KEPT candidates (0..1). */
+  mean: number;
+  /** The closest kept pair (0..1). */
+  min: number;
+  /** Candidate ids dropped as near-duplicates (pairwise < duplicateThreshold). */
+  droppedDuplicates: string[];
+}
+
+/**
+ * Measure a round's candidate divergence and drop near-duplicates: when two
+ * candidates sit under duplicateThreshold apart the LATER one is dropped
+ * (kept-first is deterministic) — it adds a measurement cost and no
+ * exploration. Returns null for a single-candidate round (no pairs exist).
+ */
+export function roundDivergence(
+  candidates: TierLadderCandidate[],
+  duplicateThreshold: number
+): RoundDivergence | null {
+  if (candidates.length < 2) return null;
+  const kept: TierLadderCandidate[] = [];
+  const dropped: string[] = [];
+  for (const c of candidates) {
+    const dup = kept.some((k) => candidateDivergence(k, c) < duplicateThreshold);
+    if (dup) dropped.push(c.id);
+    else kept.push(c);
+  }
+  const pairs: number[] = [];
+  for (let i = 0; i < kept.length; i++) {
+    for (let j = i + 1; j < kept.length; j++) {
+      pairs.push(candidateDivergence(kept[i], kept[j]));
+    }
+  }
+  if (pairs.length === 0) {
+    return { mean: 0, min: 0, droppedDuplicates: dropped };
+  }
+  return {
+    mean: pairs.reduce((a, b) => a + b, 0) / pairs.length,
+    min: pairs.reduce((a, b) => Math.min(a, b), Infinity),
+    droppedDuplicates: dropped,
+  };
+}
+
 export interface TierLadderMeasurement {
   id: string;
   pass: boolean;
@@ -177,13 +267,16 @@ export interface TierLadderRound {
   escalated: boolean;
   /** Set when the ladder cut AT this round: the reason + the documented gap. */
   cut?: { reason: string; gap: GapReport | null };
+  /** N3: measured divergence of the round's kept candidates + dropped duplicates. */
+  divergence?: RoundDivergence;
 }
 
 export type TierLadderOutcome =
   | 'tier-reached'
   | 'cut-exhausted'
   | 'cut-no-candidates'
-  | 'cut-unmeasurable';
+  | 'cut-unmeasurable'
+  | 'cut-divergence-collapse';
 
 export interface TierLadderResult {
   tier: string;
@@ -227,6 +320,21 @@ export interface TierLadderConfig {
   plateauEpsilon?: number;
   /** Fires when the ladder escalates — the stronger-model switch lives here. */
   onEscalate?: (round: number) => void | Promise<void>;
+  /**
+   * N3: minimum mean pairwise divergence a round's kept candidates must
+   * show. A round under it cuts `cut-divergence-collapse` — best-of-N over
+   * clones is one exploration farmed N times; escalate instead. unset = off.
+   */
+  minDivergence?: number;
+  /**
+   * N3: pairwise distance under which the later candidate drops as a
+   * duplicate. DEFAULT 0 (measure-only) — measured live, api-behavior-class
+   * transcripts share their schema scaffolding so heavily that ok and
+   * degraded variants of the same op sit at Jaccard 0: any positive default
+   * would collapse every same-op round into "duplicates". Set explicitly
+   * per class when the artifact vocabulary is rich enough to carry signal.
+   */
+  duplicateThreshold?: number;
   /** Injection point for tests (defaults to the real seam). */
   gap?: typeof gapReport;
 }
@@ -235,6 +343,7 @@ const DEFAULT_MAX_ROUNDS = 4;
 const DEFAULT_CANDIDATES = 3;
 const DEFAULT_PLATEAU_ROUNDS = 2;
 const DEFAULT_EPSILON = 0.01;
+const DEFAULT_DUPLICATE_THRESHOLD = 0;
 
 /**
  * Rank measurements deterministically: a pass beats everything, then fewer
@@ -306,8 +415,39 @@ export async function runTierLadder(config: TierLadderConfig): Promise<TierLadde
       return cut(config.tierKey, 'cut-no-candidates', rounds, previousBest, bestGap, escalationFired, 'a round produced no candidates');
     }
 
+    // N3: measure candidate divergence, drop near-duplicates before spending
+    // measurements on them, and cut when the survivors are clones — best-of-N
+    // over near-identical artifacts is one exploration farmed N times.
+    const dupThreshold = config.duplicateThreshold ?? DEFAULT_DUPLICATE_THRESHOLD;
+    const divergence = roundDivergence(generated, dupThreshold) ?? undefined;
+    const kept = divergence
+      ? generated.filter((c) => !divergence.droppedDuplicates.includes(c.id))
+      : generated;
+    if (config.minDivergence !== undefined && divergence && divergence.mean < config.minDivergence) {
+      rounds.push({
+        round,
+        candidates: [],
+        best: null,
+        escalated: false,
+        divergence,
+        cut: {
+          reason: `candidate divergence collapsed (mean ${divergence.mean.toFixed(3)} < min ${config.minDivergence}) — the candidates are near-clones`,
+          gap: bestGap,
+        },
+      });
+      return cut(
+        config.tierKey,
+        'cut-divergence-collapse',
+        rounds,
+        previousBest,
+        bestGap,
+        escalationFired,
+        `round ${round}'s candidates were near-clones (mean divergence ${divergence.mean.toFixed(3)})`
+      );
+    }
+
     const measurements: TierLadderMeasurement[] = [];
-    for (const c of generated) {
+    for (const c of kept) {
       const r = measure(config.projectRoot, c.artifactPath, config.tierKey);
       measurements.push(toMeasurement(c, r));
     }
@@ -317,14 +457,14 @@ export async function runTierLadder(config: TierLadderConfig): Promise<TierLadde
 
     if (top.gap === null) {
       // Nothing measured — a broken probe is a documented failure, not a pass.
-      rounds.push({ round, candidates: measurements, best: null, escalated: false, cut: { reason: `no candidate produced a measurable ${resolveClass(cls).artifact}`, gap: null } });
+      rounds.push({ round, candidates: measurements, best: null, escalated: false, divergence, cut: { reason: `no candidate produced a measurable ${resolveClass(cls).artifact}`, gap: null } });
       return cut(config.tierKey, 'cut-unmeasurable', rounds, null, null, escalationFired, 'no candidate was measurable');
     }
 
-    const winner = generated.find((c) => c.id === top.id) ?? generated[0];
+    const winner = kept.find((c) => c.id === top.id) ?? kept[0];
 
     if (top.pass) {
-      rounds.push({ round, candidates: measurements, best: top.id, escalated: false });
+      rounds.push({ round, candidates: measurements, best: top.id, escalated: false, divergence });
       return {
         tier: config.tierKey,
         outcome: 'tier-reached',
@@ -363,7 +503,7 @@ export async function runTierLadder(config: TierLadderConfig): Promise<TierLadde
       await config.onEscalate?.(round);
     }
 
-    rounds.push({ round, candidates: measurements, best: top.id, escalated: escalate });
+    rounds.push({ round, candidates: measurements, best: top.id, escalated: escalate, divergence });
   }
 
   // Rounds exhausted below tier: CUT with the documented gap.
