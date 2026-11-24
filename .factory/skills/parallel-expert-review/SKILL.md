@@ -221,7 +221,10 @@ echo "recorded .uap/reviews/${SLUG}.json for ${HEAD:0:8}"
 ```
 
 Notes:
-- `verdict` must be `approve` for the review to pass. If blockers remain, fix
+- `verdict` must be `approve` for the review to pass. This is the protocol's
+  rule for the writer: the enforcer itself checks `branch`, `head` and the
+  `quality` block, so the verdict field is the recorded outcome a human
+  reviewer reads, not a value the gate parses. If blockers remain, fix
   them and re-run this step so `head` matches the new HEAD (the gate treats a
   review whose `head` ≠ current HEAD as **stale** and re-blocks).
 - The artifact records `branch`, so it cannot be reused on a different branch.
@@ -231,9 +234,13 @@ Notes:
   the machine report (gaming, waivers, trend), they don't replace it. When the
   quality gate is inactive, `"quality": null` (or omit the key) and the check
   fails open.
-- One-off meta-work with no shippable diff can bypass with `UAP_NO_REVIEW=1`
-  (inline prefix on the ship command is honored), or a committable
-  `policies/waivers/*expert-review*.md` file where env vars are stripped.
+- One-off meta-work with no shippable diff can bypass via the operator only:
+  `UAP_NO_REVIEW=1` in the **launch environment**. The inline prefix on the
+  ship command is NOT honored — it was removed deliberately (the agent
+  composes its own command strings, so an inline override was self-granted);
+  `enforcement-self-protect` refuses it with an explicit message. The
+  env-free routes, for harnesses that strip the environment, are committable
+  waiver files: `policies/waivers/*expert-review*.md` or `.uap/reviews/WAIVER`.
 
 ## Skipping Documentation
 
