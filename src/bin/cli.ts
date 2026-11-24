@@ -1621,6 +1621,7 @@ ideate
   .argument('<name>', 'Project name')
   .option('--json', 'Emit JSON instead of a human-readable report')
   .option('--render', 'Print as the measurable ideation-outcome Markdown (one ## section per candidate) — pipe to a file, then `uap quality anchor ideation-outcome --file`')
+  .option('--corpus', 'Also measure each candidate\'s distance from the fleet\'s prior art (the embedding seam — the retread axis)')
   .action(async (name: string, options) => {
     const cmd = await lazy.ideate();
     await cmd('ideas', name, options);
