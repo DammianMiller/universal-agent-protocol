@@ -201,6 +201,15 @@ if [ -f .uap/quality-metrics.json ]; then
   fi
 fi
 
+# The consolidated findings with dispositions (uplift 0.4): the gate blocks
+# at ship time on any blocker-severity finding still "open". Build the array
+# from the consolidation, e.g.:
+#   [{"reviewer":"test-coverage-reviewer","severity":"blocker",
+#     "location":"src/x.ts:12","disposition":"resolved"}]
+# Dispositions: open | resolved (fixed and verified) | withdrawn (the
+# reviewer retracts it, said so in the consolidation).
+FINDINGS_BLOCK="[]"
+
 mkdir -p .uap/reviews
 cat > ".uap/reviews/${SLUG}.json" <<JSON
 {
@@ -214,6 +223,7 @@ cat > ".uap/reviews/${SLUG}.json" <<JSON
     "documentation-accuracy-reviewer",
     "test-coverage-reviewer"
   ],
+  "findings": ${FINDINGS_BLOCK},
   "quality": ${QUALITY_BLOCK}
 }
 JSON
@@ -221,13 +231,25 @@ echo "recorded .uap/reviews/${SLUG}.json for ${HEAD:0:8}"
 ```
 
 Notes:
-- `verdict` must be `approve` for the review to pass. This is the protocol's
-  rule for the writer: the enforcer itself checks `branch`, `head` and the
-  `quality` block, so the verdict field is the recorded outcome a human
-  reviewer reads, not a value the gate parses. If blockers remain, fix
-  them and re-run this step so `head` matches the new HEAD (the gate treats a
-  review whose `head` ≠ current HEAD as **stale** and re-blocks).
+- `verdict` must be `approve` for the review to pass — and the enforcer now
+  PARSES it (uplift 0.4): a `reject`, a `needs-human`, or a missing verdict
+  blocks the ship with the recorded `reason` when one exists. If blockers
+  remain, fix them and re-run this step so `head` matches the new HEAD.
 - The artifact records `branch`, so it cannot be reused on a different branch.
+- **A new HEAD after the review makes it stale.** Two legal moves, never a
+  silent re-point of `head`:
+  1. Re-run the council for the new HEAD and re-record (the default).
+  2. **Carry forward**, only when the delta since the reviewed HEAD is
+     bounded and low-risk (the version-line merge class — package.json,
+     lockfiles, docs, config, tests, assets): re-record with `head` at the
+     new HEAD and add a carry-forward block:
+     `"carry_forward": {"since_head": "<the reviewed sha>", "justification": "<what carried and why>"}`
+     The enforcer verifies the delta itself: `since_head` must be an ancestor
+     of the shipped HEAD, at most 3 commits may sit between, and every file in
+     the delta must be low-risk by the early-allow's classifier. Anything wider
+     needs a fresh council run. (Before 0.4 a stale review was carried by
+     hand-editing `head` with a prose note — invisible and unbounded; this is
+     the declared, checked version of that.)
 - **`quality` block:** when `.uap/quality-metrics.json` exists, run
   `uap quality check --json` and embed `{pass, blocking, report}`. The
   enforcer rejects the ship when `quality.pass` is false — reviewers interpret
