@@ -214,6 +214,36 @@ class DispositionGateTest(unittest.TestCase):
         self.assertFalse(out.get("allowed"), out.get("reason"))
         self.assertIn("not a sha", out.get("reason", ""))
 
+    def test_carry_forward_moving_ref_rejected(self):
+        # A branch/ref would pin nothing — the carry must name the exact
+        # reviewed commit, and a non-hex string never reaches git argv.
+        self._write_review(
+            verdict="approve",
+            carry={"since_head": "origin/master", "justification": "moving ref"},
+        )
+        out = self._run()
+        self.assertFalse(out.get("allowed"), out.get("reason"))
+        self.assertIn("not a sha", out.get("reason", ""))
+
+    def test_carry_forward_non_object_blocks(self):
+        self._write_review(verdict="approve", carry="carry it over, it's fine")
+        out = self._run()
+        self.assertFalse(out.get("allowed"), out.get("reason"))
+        self.assertIn("not an object", out.get("reason", ""))
+
+    def test_carry_forward_suffix_deny_blocks(self):
+        # Not high-risk by pattern, but no low-risk extension either: the
+        # default-deny branch of the classifier, not the HIGH_RISK_PATH_RE one.
+        reviewed = self.head
+        self._commit("src/bootstrap.zig", "const x = 1;\n")
+        self._write_review(
+            verdict="approve",
+            carry={"since_head": reviewed, "justification": "new source file"},
+        )
+        out = self._run()
+        self.assertFalse(out.get("allowed"), out.get("reason"))
+        self.assertIn("non-low-risk", out.get("reason", ""))
+
     # --- findings discipline ---------------------------------------------------
 
     def test_findings_open_blocker_blocks(self):
@@ -264,6 +294,15 @@ class DispositionGateTest(unittest.TestCase):
         )
         out = self._run()
         self.assertTrue(out.get("allowed"), out.get("reason"))
+
+    def test_findings_malformed_entry_fails_closed(self):
+        # An artifact whose findings cannot be read is refused, not waved
+        # through — the same posture as the verdict check.
+        self._write_review(verdict="approve", findings=["see consolidation notes"])
+        out = self._run()
+        self.assertFalse(out.get("allowed"), out.get("reason"))
+        self.assertIn("open blocker", out.get("reason", ""))
+        self.assertIn("malformed entry", out.get("reason", ""))
 
 
 if __name__ == "__main__":

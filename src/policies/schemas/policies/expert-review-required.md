@@ -60,16 +60,23 @@ Three further checks (uplift 0.4):
   prose-scraped.
 - **Bounded carry-forward.** A re-pointed `head` must declare
   `carry_forward.since_head` (where the reviewed code stopped) and the gate
-  verifies the delta itself: `since_head` must be an ancestor of the shipped
-  HEAD, at most 3 commits may sit between, and every file in the delta must be
+  verifies the delta itself: `since_head` must be a full hex sha (sha1 or
+  sha256 — a moving ref like `origin/master` pins nothing) and an ancestor
+  of the shipped HEAD, at most 3 commits may sit between, a non-empty
+  justification must be recorded, and every file in the delta must be
   low-risk by the same classifier the early-allow uses (the version-line
-  merge class: lockfiles, docs, config, tests, assets). An invalid or absent
-  declaration on a carried review blocks — a hand-edit of `head` is no longer
-  an invisible way past a stale review.
+  merge class: lockfiles, docs, config, tests, assets). An invalid declared
+  carry blocks. An ABSENT declaration is not gate-detectable: the artifact
+  is agent-written, so an undeclared rewrite of the whole artifact is
+  outright forgery — a protocol violation for the operator (the UAP_NO_REVIEW
+  class), not something this gate can prove. What the rule gives the
+  protocol is teeth for "declare or re-run".
 - **Findings discipline.** When the artifact carries a `findings` array, no
   blocker-severity finding may still be `open` (`resolved` or `withdrawn`
   clear it). An absent array fails open (legacy artifacts); the verdict still
-  gates.
+  gates. A present-but-malformed entry (a non-object, or a non-string
+  severity) fails closed — an artifact whose findings cannot be read is
+  refused, not waved through.
 
 The optional `quality` block fuses the **quality-metrics gate** into the
 review: when the artifact carries `"quality": {"pass": false, ...}` (written
@@ -94,10 +101,14 @@ a protocol step that was best-effort into an enforced precondition.
 
 Python enforcer `expert_review_required.py` resolves the current branch and
 HEAD via git, then checks `.uap/reviews/<branch-slug>.json` (the same
-percent-encoding slug as above: `%`→`%25`, `/`→`%2F`). Missing artifact →
-block; `branch` mismatch → block; `head` mismatch (stale) → block unless a
-valid `carry_forward` covers the delta; `verdict` ≠ `approve` → block with the
-recorded reason; an `open` blocker in `findings` → block; all satisfied →
+percent-encoding slug as above: `%`→`%25`, `/`→`%2F`). The diff is classified
+first (low-risk early allow, visual-captures for UI files) — both skipped
+when the base is unresolvable. Then the artifact: missing → block; `branch`
+mismatch → block; `head` mismatch (stale) → block — a valid `carry_forward`
+never rescues a mismatched head, because the bounded exception is a
+RE-RECORDED `head` (matching the current HEAD) carrying a declared, valid
+`carry_forward`; `verdict` ≠ `approve` → block with the recorded reason; an
+`open` blocker (or a malformed entry) in `findings` → block; all satisfied →
 allow.
 
 Fail-open: if the branch/HEAD cannot be resolved (detached HEAD, non-git tree),
