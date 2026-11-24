@@ -872,6 +872,7 @@ program
   .option('--update', 'Regenerate the ratchet baseline (baseline subcommand)')
   .option('-f, --file <path>', 'Target file (check; PNG to measure for anchor/profile/gap)')
   .option('--tier <key>', 'Tier key class/name (gap subcommand)')
+  .option('--corpus', 'Gap: corpus-novelty advisory overlay — distance from prior art on the embedding seam (ideation-outcome)')
   .option('--name <name>', 'Tier name (derive subcommand, default: default)')
   .option('--tolerance <n>', 'Multiplicative tolerance floor (derive subcommand, default: 0.75)')
   .option('--class <cls>', 'Outcome class for profile (visual-scene | api-behavior | bench-score)')
