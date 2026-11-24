@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { runTool, toolsFor, protectedKey } from '../../src/delivery/agentic-executor.js';
+import { appliedRegionNote } from '../../src/delivery/edit-match.js';
 
 const EMPTY = new Set<string>();
 
@@ -422,5 +423,116 @@ describe('no-op detection compares CONTENT, not arguments', () => {
     });
     expect(out).toMatch(/^OK: edited/);
     expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toContain('function sub');
+  });
+});
+
+describe('chain-anchor truth feed (A)', () => {
+  let dir: string;
+  const SRC = ['function add(a, b) {', '    return a + b;', '}', ''].join('\n');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'chain-feed-'));
+    writeFileSync(join(dir, 'calc.js'), SRC, 'utf-8');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.UAP_DELIVER_CHAIN_FEED;
+  });
+
+  it('a successful edit hands back the applied region, line-numbered', () => {
+    const out = call(dir, 'edit_file', {
+      path: 'calc.js',
+      old_string: 'return a + b;',
+      new_string: 'return a + b + 0;',
+    });
+    expect(out).toMatch(/^OK: edited/);
+    expect(out).toMatch(/The file now has 3 line/);
+    expect(out).toMatch(/around your applied edit/);
+    // The excerpt shows the APPLIED text with its line number — the anchor
+    // for the model's next chained edit.
+    expect(out).toMatch(/2:\s+return a \+ b \+ 0;/);
+  });
+
+  it('the line count is the truth AFTER the edit — a multi-line replacement updates it', () => {
+    const out = call(dir, 'edit_file', {
+      path: 'calc.js',
+      old_string: 'return a + b;',
+      new_string: 'const sum = a + b;\n    return sum;\n    // done',
+    });
+    expect(out).toMatch(/The file now has 5 line/);
+    expect(out).toContain('// done');
+  });
+
+  it('edit_range success carries the feed around the replaced block', () => {
+    const out = call(dir, 'edit_range', {
+      path: 'calc.js',
+      start_line: 2,
+      end_line: 2,
+      new_text: '    return a - b;',
+    });
+    expect(out).toMatch(/^OK: replaced lines 2-2/);
+    expect(out).toMatch(/The file now has 3 line/);
+    expect(out).toMatch(/return a - b;/);
+  });
+
+  it('UAP_DELIVER_CHAIN_FEED=0 kills the feed (A/B toggle)', () => {
+    process.env.UAP_DELIVER_CHAIN_FEED = '0';
+    const out = call(dir, 'edit_file', {
+      path: 'calc.js',
+      old_string: 'return a + b;',
+      new_string: 'return a + b + 0;',
+    });
+    expect(out).toMatch(/^OK: edited/);
+    expect(out).not.toMatch(/around your applied edit/);
+  });
+
+  it('batch edits feed the LAST-applied span (the one nothing after can shift)', () => {
+    const out = call(dir, 'edit_file', {
+      path: 'calc.js',
+      edits: [
+        { old_string: 'return a + b;', new_string: 'return a + b + 1;' },
+        { old_string: 'function add', new_string: 'function sub' },
+      ],
+    });
+    expect(out).toMatch(/^OK: edited/);
+    // The last applied edit was the function rename — that is the region.
+    expect(out).toMatch(/function sub/);
+    expect(out).toMatch(/The file now has 3 line/);
+  });
+});
+
+describe('appliedRegionNote (A unit)', () => {
+  const TEXT = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', ''].join('\n');
+
+  it('a negative span degrades to the line count alone', () => {
+    expect(appliedRegionNote(TEXT, -1, 0)).toBe('The file now has 7 line(s).');
+  });
+
+  it('centers a ±3 line window on the span, numbered', () => {
+    // 'four' begins at char index 14; a 4-char span covers it.
+    const out = appliedRegionNote(TEXT, 14, 4);
+    expect(out).toContain('The file now has 7 line(s).');
+    expect(out).toContain('1: one');
+    expect(out).toContain('4: four');
+    expect(out).toContain('7: seven');
+    expect(out).not.toContain('… (truncated)');
+  });
+
+  it('clamps the window at the file edges', () => {
+    const out = appliedRegionNote(TEXT, 0, 3); // 'one'
+    expect(out).toContain('1: one');
+    expect(out).not.toMatch(/0: /);
+  });
+
+  it('bounds total output characters', () => {
+    // A WIDE span (8 lines of 100 chars) plus the ±3 window exceeds the
+    // 900-char cap — the note truncates honestly rather than emit a
+    // screenful per success note. (Single long lines cannot reach the cap:
+    // each line is pre-truncated to 160 by truncateForReport.)
+    const long = Array.from({ length: 20 }, () => `${'x'.repeat(100)}`).join('\n');
+    const span = 100 * 8 + 7; // lines 1-8 inclusive, newlines counted
+    const out = appliedRegionNote(long, 0, span);
+    expect(out.length).toBeLessThan(1200);
+    expect(out).toContain('… (truncated)');
   });
 });
