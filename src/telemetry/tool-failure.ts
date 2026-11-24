@@ -24,11 +24,16 @@ export type ToolOutcomeClass =
   | 'ok'
   /**
    * The call was accepted but changed NOTHING — a write or edit whose result
-   * already matched the file. Neither a success nor a failure: the tool did
-   * exactly what it was told, and the turn made no progress. It gets its own
-   * class because folding it into `ok` is what the no-op guards exist to stop —
-   * the corpus would report edit tooling as healthy precisely while a run is
-   * spinning on repeated no-op edits.
+   * already matched the file. The tool did exactly what it was told, and the
+   * turn made no progress: a WASTED call. It gets its own class (not folded
+   * into `ok`) because the corpus would otherwise report edit tooling as
+   * healthy precisely while a run is spinning on repeated no-op edits — and
+   * it is a FAILURE class (wave 4 F) because a wasted call is exactly what
+   * the failure aggregates exist to count: with failed=0 and no detail, the
+   * 857 live-corpus no-ops were invisible in every failure query and their
+   * recovery behavior (does the model stop repeating after the NO-OP note?)
+   * was unmeasurable. The note's first line names the path, so detail
+   * capture makes same-path repetition distinguishable from a one-off.
    */
   | 'no-op'
   /** Succeeded, but only via the whitespace-tolerant edit rung (anchor drift). */
@@ -81,6 +86,11 @@ const FAILURE_CLASSES: ReadonlySet<ToolOutcomeClass> = new Set<ToolOutcomeClass>
   'timeout',
   'unknown-tool',
   'other-error',
+  // Wave 4 F: a no-op call wasted the turn — see the class doc above. This
+  // one is last because it is the newest reclassification: corpus rows
+  // written before it counted no-ops as non-failures, and the era boundary
+  // is this change's release, not a data migration.
+  'no-op',
 ]);
 
 export function isFailureClass(c: ToolOutcomeClass): boolean {

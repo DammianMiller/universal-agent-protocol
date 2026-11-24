@@ -24,6 +24,7 @@ import {
   type AcceptanceResult,
 } from './acceptance-judge.js';
 import { runExecutionGate } from './execution-gate.js';
+import { recordLadderRun } from '../quality/tier-ladder.js';
 import {
   compareCapability,
   capabilityFeedback,
@@ -370,6 +371,32 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
       mode: resolveTierGateMode(process.env),
       maxFidelity: resolveFidelity(root).max,
     });
+    // Wave 4 G — the convergence budget: a real deliver acceptance check that
+    // exercised a tier is a real measured event on a real artifact by a real
+    // model, and it is exactly the evidence the tier gate's shadow→block
+    // promotion decision is starved of ("ladder-only runs are not yet
+    // observed" — the gate's own promotion note; the convergence log held 0
+    // runs because only the harvested `uap quality ladder` CLI ever wrote
+    // it). Record one 1-round, 1-candidate run per (tier, capture) report —
+    // BOTH outcomes: the below-tier cuts are the budget's other half. Best
+    // effort by design: a read-only project root must not fail the delivery.
+    if (!tierGateResult.skipped) {
+      for (const report of tierGateResult.reports) {
+        try {
+          recordLadderRun(root, {
+            tier: report.tier,
+            outcome: report.pass ? 'tier-reached' : 'cut-exhausted',
+            rounds: 1,
+            candidatesMeasured: 1,
+            winnerPassed: report.pass,
+            escalationFired: tierGateResult.escalated === true,
+            model: null, // the acceptance path does not know the executor id
+          });
+        } catch {
+          /* best-effort — the budget must never break the delivery */
+        }
+      }
+    }
     if (!tierGateResult.pass) {
       return { passed: false, feedback: tierGateResult.feedback ?? `TIER GATE — below tier (see ${formatTierGateLine(tierGateResult)})` };
     }

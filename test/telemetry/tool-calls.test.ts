@@ -212,3 +212,77 @@ describe('tool-call evidence corpus (harness plan D1/D3)', () => {
     expect(s.byRunKind.find((r) => r.runKind === 'benchmark')?.calls).toBe(1);
   });
 });
+
+describe('no-op recovery attribution (wave 4 F)', () => {
+  const NOOP_EDIT =
+    'NO-OP: calc.js is unchanged — the replacement produced exactly the content already on disk. ' +
+    'Nothing was written, and repeating this edit cannot change anything. If a gate is still ' +
+    'failing, the cause is elsewhere: read the failure output and target a DIFFERENT anchor.';
+
+  it('classifies a NO-OP result as the no-op class', () => {
+    expect(classifyToolResult('edit_file', NOOP_EDIT)).toBe('no-op');
+  });
+
+  it('the no-op class is a failure: the call wasted the turn', () => {
+    // Pre-F, failed=0 and no detail made every no-op invisible in failure
+    // queries — 857 live-corpus rows with no way to see spinning.
+    expect(isFailureClass('no-op')).toBe(true);
+    expect(isFailureClass('ok-tolerant')).toBe(false);
+  });
+
+  it('a recorded no-op carries failed=1 and the path-bearing first line as detail', () => {
+    const cwd = tempProject();
+    const outcome = recordToolCall(
+      { runId: 'r-noop', tool: 'edit_file', result: NOOP_EDIT, path: 'calc.js', turn: 3 },
+      cwd,
+    );
+    expect(outcome).toBe('no-op');
+    const db = new Database(join(cwd, 'tool-calls.db'), { readonly: true });
+    const row = db
+      .prepare("SELECT failed, detail FROM tool_calls WHERE run_id = 'r-noop'")
+      .get() as { failed: number; detail: string | null };
+    db.close();
+    expect(row.failed).toBe(1);
+    expect(row.detail).toBe(NOOP_EDIT.split('\n')[0].slice(0, 300));
+    expect(row.detail).toContain('NO-OP: calc.js');
+  });
+
+  it('the recovery measurement is now queryable: same-path repetition vs a moved-on call', () => {
+    // Thrash: the same no-op twice, successive turns, same path. Recovery: a
+    // no-op followed by an ok on a DIFFERENT path. Before F this distinction
+    // could not be drawn from the corpus; now detail + failed make it a
+    // plain SQL question.
+    const cwd = tempProject();
+    recordToolCall(
+      { runId: 'r-thrash', tool: 'edit_file', result: NOOP_EDIT, path: 'calc.js', turn: 4 },
+      cwd,
+    );
+    recordToolCall(
+      { runId: 'r-thrash', tool: 'edit_file', result: NOOP_EDIT, path: 'calc.js', turn: 5 },
+      cwd,
+    );
+    recordToolCall(
+      {
+        runId: 'r-recovered',
+        tool: 'edit_file',
+        result: 'OK: edited gate.ts (1 replacement)\nThe file now has 12 line(s).',
+        path: 'gate.ts',
+        turn: 4,
+      },
+      cwd,
+    );
+    const db = new Database(join(cwd, 'tool-calls.db'), { readonly: true });
+    const thrash = db
+      .prepare(
+        "SELECT COUNT(*) n FROM tool_calls WHERE run_id = 'r-thrash' AND failed = 1 " +
+          "AND outcome = 'no-op' AND detail LIKE 'NO-OP: calc.js%'",
+      )
+      .get() as { n: number };
+    const recovered = db
+      .prepare("SELECT outcome, failed FROM tool_calls WHERE run_id = 'r-recovered'")
+      .get() as { outcome: string; failed: number };
+    db.close();
+    expect(thrash.n).toBe(2);
+    expect(recovered).toEqual({ outcome: 'ok', failed: 0 });
+  });
+});

@@ -42,11 +42,16 @@ describe('telemetry report — corpus queries', () => {
     const byTool = new Map(rates.map((r) => [r.tool, r]));
     expect(byTool.get('edit_file')?.failures).toBe(1);
     expect(byTool.get('edit_file')?.calls).toBe(2);
-    // A NO-OP write is not a failure — the refusal-class corpus must not
-    // count deliberate idempotence as waste.
-    expect(byTool.get('write_file')?.failures).toBe(0);
+    // A NO-OP write IS a failure (wave 4 F): the call wasted the turn. The
+    // pre-F policy — deliberate idempotence is not waste, so no-op stayed
+    // failed=0 — made all 857 live-corpus no-ops invisible in every failure
+    // query and the recovery question unmeasurable, which is the opposite of
+    // what the class exists for. Idempotence-only stats remain a
+    // outcome='no-op' filter; the failure aggregates now count the wasted
+    // call. Era boundary: rows written before the F release.
+    expect(byTool.get('write_file')?.failures).toBe(1);
     expect(byTool.get('read_file')?.failureRate).toBe(0);
-    // Highest failure count first.
+    // Highest failure count first; the calls count breaks the 1-1 tie.
     expect(rates[0].tool).toBe('edit_file');
   });
 

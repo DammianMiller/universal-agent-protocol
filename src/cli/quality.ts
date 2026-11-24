@@ -36,6 +36,8 @@ import {
 } from '../quality/tier-ladder.js';
 import { classSamplingProfile, tierContractText, tierKeysFor } from '../quality/tier-contract.js';
 import { DEFAULT_TOLERANCE, deriveTier, gapReport, loadTiers, saveGlobalTier } from '../quality/tiers.js';
+import { CorpusNoveltyOpts, corpusNovelty } from '../quality/ideation-corpus.js';
+import { sectionsOf } from '../quality/ideation.js';
 
 export interface QualityOptions {
   projectDir?: string;
@@ -49,6 +51,8 @@ export interface QualityOptions {
   target?: string;
   /** Tier key (class/name) for the gap subcommand. */
   tier?: string;
+  /** Gap: corpus-novelty advisory overlay (wave 4 H) — live embedding seam. */
+  corpus?: boolean;
   /** Tier name for the derive subcommand. */
   name?: string;
   /** Multiplicative tolerance floor for the derive subcommand (default 0.75). */
@@ -117,7 +121,7 @@ export async function qualityCommand(sub: string | undefined, options: QualityOp
       console.log('  anchor <class>      Measure exemplar artifact(s) into tier anchors (--file/--files)');
       console.log('  profile --file <f>  Measure one artifact into a deterministic vector (--class)');
       console.log('  derive <class>      Derive a tier from a class\'s anchors (--name, --tolerance)');
-      console.log('  gap --file <f>      Gap an artifact against a tier (--tier <class/name>); exit 2 below tier');
+      console.log('  gap --file <f>      Gap an artifact against a tier (--tier <class/name>, --corpus for the advisory novelty overlay); exit 2 below tier');
       console.log('  ladder --rounds-dir Rank harvested best-of-N rounds against a tier (--tier); escalation + honest cut');
       console.log('  approve --from <d>  Pin a run\'s outputs as anchors + re-derive the tier (approveVisualBaseline precedent)');
       console.log('  convergence         Per-tier convergence telemetry — the tier-gate promotion budget');
@@ -509,7 +513,11 @@ export function approveCmd(dir: string, options: QualityOptions): void {
 }
 
 /** `uap quality gap --file <png> --tier <class/name>` — verdict + per-axis critique. */
-function gapCmd(dir: string, options: QualityOptions): void {
+export async function gapCmd(
+  dir: string,
+  options: QualityOptions,
+  corpusSeam: CorpusNoveltyOpts = {}
+): Promise<void> {
   const file = options.file || (options.files ? options.files.split(',')[0] : undefined);
   if (!file || !options.tier) {
     console.log(chalk.yellow('  Usage: uap quality gap --file <artifact> --tier <class/name>'));
@@ -534,8 +542,36 @@ function gapCmd(dir: string, options: QualityOptions): void {
     return;
   }
   const report = res.report;
+  // Wave 4 H — corpus-novelty overlay: the retread axis the deterministic
+  // extractors cannot see. Distance of each ideation candidate from the
+  // fleet's nearest prior solution, measured live on the embedding seam.
+  // ADVISORY by construction: it never changes this command's exit code —
+  // the tier thresholds stay deterministic; promotion to a gating axis is
+  // an explicit operator act once the advisory has evidence behind it.
+  // Fail-open: an unavailable seam says why and the gap still reports.
+  let corpus: Awaited<ReturnType<typeof corpusNovelty>> | null = null;
+  if (options.corpus) {
+    const cls = report.tier.split('/')[0];
+    if (cls !== 'ideation-outcome') {
+      console.log(chalk.dim(`  ◦ corpus-novelty overlay applies to ideation-outcome artifacts (gapping '${cls}') — skipped`));
+    } else {
+      const candidates = sectionsOf(readFileSync(file, 'utf-8'));
+      if (candidates.length === 0) {
+        console.log(chalk.dim('  ◦ corpus_novelty: no candidate sections — skipped (advisory)'));
+      } else {
+        corpus = await corpusNovelty(
+          candidates.map((s) => ({ prose: s.prose })),
+          { cwd: dir, ...corpusSeam }
+        );
+        if (!corpus.ok) {
+          console.log(chalk.dim(`  ◦ corpus_novelty: unavailable — ${corpus.reason ?? 'unknown'} (advisory, non-gating)`));
+          corpus = null;
+        }
+      }
+    }
+  }
   if (options.json) {
-    console.log(JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(corpus ? { ...report, corpus } : report, null, 2));
   } else {
     const head = report.pass ? chalk.green(`  ✓ tier ${report.tier}`) : chalk.red(`  ✗ tier ${report.tier}`);
     console.log(chalk.bold(`\n  ${head} — ${file}`));
@@ -548,6 +584,11 @@ function gapCmd(dir: string, options: QualityOptions): void {
       if (a.directive) console.log(chalk.dim(`      → ${a.directive}`));
     }
     console.log(`\n    ${report.failing} of ${report.axes.length} axes below tier${report.worst ? ` · worst: ${report.worst}` : ''}`);
+    if (corpus) {
+      console.log(chalk.dim(
+        `    ◦ corpus_novelty (advisory, non-gating): mean ${corpus.mean} · closest-to-prior ${corpus.min} · store ${corpus.collections.join(', ') || '(empty)'}`
+      ));
+    }
   }
   if (!report.pass) process.exitCode = 2;
 }
