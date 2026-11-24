@@ -54,6 +54,7 @@ import {
   applyRangeEdit,
   isIndentSensitive,
   fileDigestReport,
+  nearestMatchReport,
   nearestRangeExcerpt,
 } from './edit-match.js';
 import { recordToolCall } from '../telemetry/tool-calls.js';
@@ -1680,6 +1681,16 @@ export interface ReadFreshnessEntry {
   reads: number;
   /** Successful edit_file/edit_range since the last serving read/write. */
   editsSinceRead: number;
+  /**
+   * sha256 of the FULL file bytes at the moment the model last saw or wrote
+   * this path (a serving read, an authoring write_file, or its own applied
+   * edit). The out-of-band gate (Q1) compares it against the bytes on disk
+   * at edit time: equal means the model's copy is current; different means
+   * something OTHER than its own edit_file changed the file — run_bash, a
+   * formatter, another process — and its anchor comes from a version that
+   * no longer exists.
+   */
+  fileHash?: string;
 }
 
 /** Stable prefix so the call site can recognise a reference (and not double-nudge it). */
@@ -1796,6 +1807,74 @@ export function recordEditSinceRead(store: StateHashStore, abs: string): void {
 export function recordAuthoredSinceRead(store: StateHashStore, abs: string): void {
   const fresh = store.freshness.get(abs);
   store.freshness.set(abs, { reads: (fresh?.reads ?? 0) + 1, editsSinceRead: 0 });
+}
+
+/**
+ * Q1 out-of-band bookkeeping: remember the full-file bytes the model last saw
+ * (serving read) or put on disk (its own write_file/edit_file/edit_range).
+ * Keeps the D.1 counters untouched — only the hash column is filled in.
+ */
+export function noteSeenFileHash(store: StateHashStore, abs: string, content: string): void {
+  if (!stateHashEnabled()) return;
+  const fresh = store.freshness.get(abs);
+  store.freshness.set(abs, {
+    reads: fresh?.reads ?? 0,
+    editsSinceRead: fresh?.editsSinceRead ?? 0,
+    fileHash: createHash('sha256').update(content, 'utf-8').digest('hex'),
+  });
+}
+
+/**
+ * The out-of-band gate's payload is a SERVING view: the region it returns is
+ * the file's current content, so a model that re-anchors on it and re-sends
+ * in the SAME round must pass the gate — otherwise the gate would refuse its
+ * own remedy and cost the read round-trip it exists to save. This marks that
+ * handover (reads +1, own-edits reset, hash = the bytes just handed over)
+ * WITHOUT touching the served-window set: the gate serves a report region,
+ * not a readFileWindow, and letting a later read collapse to a reference
+ * would recreate the v1.148.21 deadlock (a pointer to content the model
+ * never actually received).
+ */
+export function markGateServedCurrent(store: StateHashStore, abs: string, content: string): void {
+  if (!stateHashEnabled()) return;
+  const fresh = store.freshness.get(abs);
+  store.freshness.set(abs, {
+    reads: (fresh?.reads ?? 0) + 1,
+    editsSinceRead: 0,
+    fileHash: createHash('sha256').update(content, 'utf-8').digest('hex'),
+  });
+}
+
+/**
+ * Q1 read-freshness contract — the out-of-band half. Fires BEFORE matching:
+ * the model read this file, has NOT edited it since, and the bytes on disk no
+ * longer match what it saw. The only way that combination arises is a change
+ * the model did not make through edit_file/edit_range — run_bash, a
+ * formatter, another process — so its anchor comes from a dead version and
+ * the edit is refused with the CURRENT region instead of being applied blind.
+ *
+ * Deliberately narrow: a never-read file (reads 0) and a file the model itself
+ * edited since its last read (editsSinceRead > 0) stay on the D.1
+ * attribution-on-miss path — the first may hold legitimate prompt-provided
+ * knowledge, the second is already spoken for. This gate catches exactly the
+ * case no existing rail names.
+ */
+export function externalStaleNote(
+  store: StateHashStore | undefined,
+  abs: string,
+  current: string
+): string | null {
+  if (!store || !stateHashEnabled()) return null;
+  const fresh = store.freshness.get(abs);
+  if (!fresh || fresh.reads === 0 || fresh.editsSinceRead > 0) return null;
+  if (!fresh.fileHash) return null;
+  const hash = createHash('sha256').update(current, 'utf-8').digest('hex');
+  if (hash === fresh.fileHash) return null;
+  return (
+    'STALE READ — this file changed on disk since your last read of it, and NOT by your own ' +
+    'edit_file/edit_range (run_bash or another process touched it). Your anchor comes from ' +
+    'the old version. Nothing was written.'
+  );
 }
 
 /**
@@ -2022,6 +2101,10 @@ export function runTool(
         // the model never received is "already in this conversation".
         if (!result.startsWith(PAST_EOF_NOTE_PREFIX)) {
           markStateHashServed(stateHash.store, abs, offsetLine);
+          // Q1: a serving read is the model's freshest view of this path —
+          // record the bytes it just saw so a later out-of-band change is
+          // provable at edit time.
+          noteSeenFileHash(stateHash.store, abs, fullContent);
         }
         return result;
       }
@@ -2245,6 +2328,8 @@ export function runTool(
       if (stateHash) {
         invalidateStateHash(stateHash.store, abs);
         recordAuthoredSinceRead(stateHash.store, abs);
+        // Q1: the authored bytes are now the model's current view of disk.
+        noteSeenFileHash(stateHash.store, abs, String(args.content));
       }
       // Per-write compile feedback for Rust: without it, a weak model writes
       // whole turns of code against types it invented, and the turn-end gate
@@ -2318,6 +2403,30 @@ export function runTool(
         return `ERROR: too many edits in one call (${batch.length} > ${MAX_BATCH_EDITS}) — split them across calls.`;
       }
       const indentSensitive = isIndentSensitive(rel);
+
+      // Q1 read-freshness contract, out-of-band half: the model read this
+      // file, has not edited it since, and the disk bytes no longer match
+      // what it saw — run_bash or another process changed it under it. The
+      // anchor comes from a dead version, so refuse BEFORE matching and hand
+      // over the CURRENT region (O-C auto-context): the model re-anchors in
+      // this same turn instead of burning a miss loop against a file it
+      // cannot see. Narrow by construction: never-read and own-edit-stale
+      // stay on the D.1 attribution path; this fires only when nothing else
+      // explains the mismatch.
+      const extStale = externalStaleNote(stateHash?.store, abs, current);
+      if (extStale) {
+        const first = String((batch[0] ?? {}).old_string ?? '');
+        const region = first
+          ? nearestMatchReport(current, first)
+          : fileDigestReport(current);
+        // The region above IS the current content: mark it as the serving
+        // view so the re-anchored re-send in this same round passes the gate.
+        if (stateHash) markGateServedCurrent(stateHash.store, abs, current);
+        return (
+          `ERROR: ${String(args.path)}: ${extStale}\n${region}\n` +
+          'Re-anchor on the CURRENT region above and re-send the edit — it will now be applied.'
+        );
+      }
 
       let updated = current;
       let tolerantHits = 0;
@@ -2431,6 +2540,9 @@ export function runTool(
       if (stateHash) {
         invalidateStateHash(stateHash.store, abs);
         recordEditSinceRead(stateHash.store, abs);
+        // Q1: the applied bytes are the model's current view of disk — a
+        // LATER hash mismatch is then provably out-of-band, not its own edit.
+        noteSeenFileHash(stateHash.store, abs, updated);
       }
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
@@ -2466,6 +2578,23 @@ export function runTool(
         return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.${nearestPathHint(projectRoot, String(args.path)) ?? ''}`;
       }
       const current = readFileSync(abs, 'utf-8');
+      // Q1 out-of-band gate, ranged half: line anchors sent after an
+      // out-of-band change aim at a line count that no longer exists. The
+      // D.2 hint machinery already shows current content on an INVALID range;
+      // this gate also covers the range that is still numerically valid but
+      // points at shifted lines — the excerpt below is from the file as it is
+      // NOW, so the model can re-aim in this turn.
+      const extStaleRange = externalStaleNote(stateHash?.store, abs, current);
+      if (extStaleRange) {
+        // Same one-round contract as edit_file: the excerpt is the current
+        // content, so the re-aimed re-send must pass the gate.
+        if (stateHash) markGateServedCurrent(stateHash.store, abs, current);
+        return (
+          `ERROR: ${String(args.path)}: ${extStaleRange}\n` +
+          `${nearestRangeExcerpt(current, Number(args.start_line), Number(args.end_line))}\n` +
+          'Re-aim on the CURRENT excerpt above and re-send the edit — it will now be applied.'
+        );
+      }
       const ranged = applyRangeEdit(
         current,
         Number(args.start_line),
@@ -2520,6 +2649,8 @@ export function runTool(
       if (stateHash) {
         invalidateStateHash(stateHash.store, abs);
         recordEditSinceRead(stateHash.store, abs);
+        // Q1: same as edit_file — the applied range bytes are the current view.
+        noteSeenFileHash(stateHash.store, abs, String(ranged.text));
       }
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
