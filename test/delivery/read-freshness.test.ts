@@ -7,6 +7,9 @@ import {
   newStateHashStore,
   staleAnchorNote,
   recordEditSinceRead,
+  noteSeenFileHash,
+  markGateServedCurrent,
+  externalStaleNote,
 } from '../../src/delivery/agentic-executor.js';
 import { nearestRangeExcerpt } from '../../src/delivery/edit-match.js';
 
@@ -255,5 +258,187 @@ describe('staleAnchorNote (plan D.1 unit)', () => {
     recordEditSinceRead(store, '/a/b.ts');
     recordEditSinceRead(store, '/a/b.ts');
     expect(staleAnchorNote(store, '/a/b.ts')).toMatch(/2 of your own edits/);
+  });
+});
+
+describe('read-freshness contract (Q1 — out-of-band gate)', () => {
+  let dir: string;
+  const SRC = [
+    'export function one() {',
+    '  return 1;',
+    '}',
+    'export function two() {',
+    '  return 2;',
+    '}',
+    '',
+  ].join('\n');
+  // What run_bash (or any external process) does to the file mid-run.
+  const MUTATED = SRC.replace('return 2;', 'return 22;');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'read-fresh-q1-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('refuses an edit on a file changed out-of-band since the last read, and writes nothing', () => {
+    writeFileSync(join(dir, 'mod.ts'), SRC, 'utf-8');
+    const store = newStateHashStore();
+    call(dir, 'read_file', { path: 'mod.ts' }, store);
+    writeFileSync(join(dir, 'mod.ts'), MUTATED, 'utf-8'); // the out-of-band change
+    const out = call(
+      dir,
+      'edit_file',
+      { path: 'mod.ts', old_string: 'return 2;', new_string: 'return 3;' },
+      store
+    );
+    expect(out).toMatch(/^ERROR/);
+    expect(out).toMatch(/STALE READ/);
+    expect(out).toMatch(/changed on disk since your last read/);
+    // The gate's payload is the CURRENT region, not the model's stale copy.
+    expect(out).toMatch(/return 22;/);
+    // Refused means refused: the mutation is still the only change on disk.
+    expect(readFileSync(join(dir, 'mod.ts'), 'utf-8')).toBe(MUTATED);
+  });
+
+  it('one-round recovery: the re-anchored re-send applies without a read round-trip', () => {
+    writeFileSync(join(dir, 'mod.ts'), SRC, 'utf-8');
+    const store = newStateHashStore();
+    call(dir, 'read_file', { path: 'mod.ts' }, store);
+    writeFileSync(join(dir, 'mod.ts'), MUTATED, 'utf-8');
+    const gated = call(
+      dir,
+      'edit_file',
+      { path: 'mod.ts', old_string: 'return 2;', new_string: 'return 3;' },
+      store
+    );
+    expect(gated).toMatch(/will now be applied/);
+    // The model re-anchors on the region the gate just handed over — the
+    // current content — and re-sends immediately. No read_file between.
+    const out = call(
+      dir,
+      'edit_file',
+      { path: 'mod.ts', old_string: 'return 22;', new_string: 'return 23;' },
+      store
+    );
+    expect(out).toMatch(/^OK: edited/);
+    expect(readFileSync(join(dir, 'mod.ts'), 'utf-8')).toContain('return 23;');
+  });
+
+  it('no gate when the file is exactly as last read — the edit applies normally', () => {
+    writeFileSync(join(dir, 'mod.ts'), SRC, 'utf-8');
+    const store = newStateHashStore();
+    call(dir, 'read_file', { path: 'mod.ts' }, store);
+    const out = call(
+      dir,
+      'edit_file',
+      { path: 'mod.ts', old_string: 'return 1;', new_string: 'return 10;' },
+      store
+    );
+    expect(out).toMatch(/^OK: edited/);
+  });
+
+  it('own chained edits are NOT gated — only out-of-band changes are', () => {
+    writeFileSync(join(dir, 'mod.ts'), SRC, 'utf-8');
+    const store = newStateHashStore();
+    call(dir, 'read_file', { path: 'mod.ts' }, store);
+    const first = call(
+      dir,
+      'edit_file',
+      { path: 'mod.ts', old_string: 'return 1;', new_string: 'return 10;' },
+      store
+    );
+    expect(first).toMatch(/^OK: edited/);
+    // The model knows what it just wrote; a second edit in the chain must
+    // apply without a forced re-read (editsSinceRead > 0 is D.1 territory).
+    const second = call(
+      dir,
+      'edit_file',
+      { path: 'mod.ts', old_string: 'return 2;', new_string: 'return 20;' },
+      store
+    );
+    expect(second).toMatch(/^OK: edited/);
+  });
+
+  it('an authored write_file is a serving view — a later clobber is gated the same way', () => {
+    const store = newStateHashStore();
+    call(dir, 'write_file', { path: 'gen.ts', content: SRC }, store);
+    writeFileSync(join(dir, 'gen.ts'), MUTATED, 'utf-8'); // clobbered out-of-band
+    const out = call(
+      dir,
+      'edit_file',
+      { path: 'gen.ts', old_string: 'return 2;', new_string: 'return 3;' },
+      store
+    );
+    expect(out).toMatch(/^ERROR/);
+    expect(out).toMatch(/STALE READ/);
+  });
+
+  it('edit_range on shifted line numbers is gated with the current excerpt', () => {
+    writeFileSync(join(dir, 'mod.ts'), SRC, 'utf-8');
+    const store = newStateHashStore();
+    call(dir, 'read_file', { path: 'mod.ts' }, store);
+    // Out-of-band change that INSERTS lines: every later line number shifts.
+    const shifted = `// header added externally\n${SRC}`;
+    writeFileSync(join(dir, 'mod.ts'), shifted, 'utf-8');
+    const out = call(
+      dir,
+      'edit_range',
+      { path: 'mod.ts', start_line: 4, end_line: 6, new_text: 'export function two() {\n  return 2;\n}' },
+      store
+    );
+    expect(out).toMatch(/^ERROR/);
+    expect(out).toMatch(/STALE READ/);
+    // Current content in the excerpt, with the externally added header.
+    expect(out).toMatch(/header added externally/);
+    expect(readFileSync(join(dir, 'mod.ts'), 'utf-8')).toBe(shifted);
+  });
+
+  it('a serving read after the out-of-band change clears the gate', () => {
+    writeFileSync(join(dir, 'mod.ts'), SRC, 'utf-8');
+    const store = newStateHashStore();
+    call(dir, 'read_file', { path: 'mod.ts' }, store);
+    writeFileSync(join(dir, 'mod.ts'), MUTATED, 'utf-8');
+    call(dir, 'read_file', { path: 'mod.ts' }, store); // the model re-reads
+    const out = call(
+      dir,
+      'edit_file',
+      { path: 'mod.ts', old_string: 'return 22;', new_string: 'return 23;' },
+      store
+    );
+    expect(out).toMatch(/^OK: edited/);
+  });
+
+  it('unit: externalStaleNote is null exactly when the view is provably current or out of scope', () => {
+    const store = newStateHashStore();
+    expect(externalStaleNote(undefined, '/a.ts', 'x')).toBeNull();
+    // Never read: D.1 attribution territory, not this gate.
+    expect(externalStaleNote(store, '/a.ts', 'x')).toBeNull();
+    // A serving read marks reads=1, then records the bytes it served.
+    store.freshness.set('/a.ts', { reads: 1, editsSinceRead: 0 });
+    noteSeenFileHash(store, '/a.ts', 'original');
+    // Read, unchanged: fresh view.
+    expect(externalStaleNote(store, '/a.ts', 'original')).toBeNull();
+    // Read, changed out-of-band: the gate speaks.
+    expect(externalStaleNote(store, '/a.ts', 'changed')).toMatch(/STALE READ/);
+    // Own edits pending: D.1 territory again — the gate stays silent.
+    recordEditSinceRead(store, '/a.ts');
+    expect(externalStaleNote(store, '/a.ts', 'changed')).toBeNull();
+  });
+
+  it('unit: noteSeenFileHash preserves the D.1 counters and markGateServedCurrent resets own-edits', () => {
+    const store = newStateHashStore();
+    store.freshness.set('/a.ts', { reads: 2, editsSinceRead: 3 });
+    noteSeenFileHash(store, '/a.ts', 'content');
+    const kept = store.freshness.get('/a.ts');
+    expect(kept?.reads).toBe(2);
+    expect(kept?.editsSinceRead).toBe(3);
+    expect(kept?.fileHash).toBeTruthy();
+    markGateServedCurrent(store, '/a.ts', 'newer');
+    const reset = store.freshness.get('/a.ts');
+    expect(reset?.reads).toBe(3);
+    expect(reset?.editsSinceRead).toBe(0);
+    // The handover is the current bytes: the re-anchored re-send passes.
+    expect(externalStaleNote(store, '/a.ts', 'newer')).toBeNull();
+    expect(externalStaleNote(store, '/a.ts', 'older')).toMatch(/STALE READ/);
   });
 });
