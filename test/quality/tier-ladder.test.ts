@@ -5,10 +5,10 @@
  * api-behavior and bench-score tiers through the same loop).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { rankMeasurements, runTierLadder, TierLadderCandidate, TierLadderMeasurement } from '../../src/quality/tier-ladder.js';
+import { rankMeasurements, runTierLadder, TierLadderCandidate, TierLadderMeasurement, candidateDivergence, roundDivergence } from '../../src/quality/tier-ladder.js';
 import { storeArtifactAnchor } from '../../src/quality/classes.js';
 import { deriveTier } from '../../src/quality/tiers.js';
 import { qualityCommand } from '../../src/cli/quality.js';
@@ -361,5 +361,151 @@ describe('qualityCommand: ladder subcommand', () => {
     await qualityCommand('ladder', { projectDir: tmp, tier: 'api-behavior/fable-high', roundsDir: empty });
     expect(process.exitCode).toBe(2);
     expect(logs.join('\n')).toContain('no roundNN');
+  });
+});
+
+/* --------------------------- N3: divergence ----------------------------- */
+
+describe('best-of-N divergence (N3)', () => {
+  it('candidateDivergence: byte-identical artifacts are 0, distinct text is far, distinct binaries are 1', () => {
+    const a = transcriptFile('div-a.json', [ok(100)]);
+    const b = transcriptFile('div-b.json', [ok(100)]); // same exchanges = same bytes
+    expect(candidateDivergence({ id: 'a', artifactPath: a }, { id: 'b', artifactPath: b })).toBe(0);
+
+    // MEASURED INSIGHT (pinned): ok and degraded variants of the SAME op
+    // measure 0 apart — the differing words ('oops', the response body) are
+    // sub-5-letter or numeric, so schema scaffolding dominates the
+    // significant-word set. This is why duplicateThreshold defaults to 0:
+    // a positive default would collapse every same-op round.
+    const c = transcriptFile('div-c.json', [degraded(900)]);
+    expect(candidateDivergence({ id: 'a', artifactPath: a }, { id: 'c', artifactPath: c })).toBe(0);
+
+    // A genuinely different vocabulary (different op + field names) is far.
+    const rich = join(tmp, 'div-rich.json');
+    writeFileSync(rich, JSON.stringify({
+      version: 1,
+      schema: { required: ['uuid', 'state'], properties: { uuid: 'string', state: 'string', inventory: 'array', quantity: 'integer' } },
+      exchanges: [
+        { request: { op: 'fetch_inventory' }, expected: { uuid: 'warehouse-north', state: 'ready', inventory: ['lumber', 'stone'], quantity: 7 }, response: { uuid: 'warehouse-north', state: 'ready', inventory: ['lumber', 'stone'], quantity: 7 }, latencyMs: 90 },
+      ],
+    }));
+    expect(candidateDivergence({ id: 'a', artifactPath: a }, { id: 'r', artifactPath: rich })).toBeGreaterThan(0.3);
+
+    // binaries: byte comparison, coarse but honest
+    const png1 = pngPath(tmp, 'div-p1.png', 2, 2, () => [200, 30, 40]);
+    const pngCopy = join(tmp, 'div-p1-copy.png');
+    writeFileSync(pngCopy, readFileSync(png1));
+    expect(candidateDivergence({ id: 'p1', artifactPath: png1 }, { id: 'p2', artifactPath: pngCopy })).toBe(0);
+    const png2 = pngPath(tmp, 'div-p2.png', 2, 2, () => [30, 200, 40]);
+    expect(candidateDivergence({ id: 'p1', artifactPath: png1 }, { id: 'o', artifactPath: png2 })).toBe(1);
+  });
+
+  it('roundDivergence drops near-duplicates kept-first, deterministically', () => {
+    const base = transcriptFile('rd-a.json', [ok(100)]);
+    const clone = transcriptFile('rd-clone.json', [ok(100)]); // identical bytes
+    // a genuinely different vocabulary — the kept pair must sit ABOVE the threshold
+    const distinct = join(tmp, 'rd-c.json');
+    writeFileSync(distinct, JSON.stringify({
+      version: 1,
+      schema: { required: ['uuid', 'state'], properties: { uuid: 'string', state: 'string', inventory: 'array', quantity: 'integer' } },
+      exchanges: [
+        { request: { op: 'fetch_inventory' }, expected: { uuid: 'warehouse-north', state: 'ready', inventory: ['lumber', 'stone'], quantity: 7 }, response: { uuid: 'warehouse-north', state: 'ready', inventory: ['lumber', 'stone'], quantity: 7 }, latencyMs: 90 },
+      ],
+    }));
+    const r = roundDivergence(
+      [
+        { id: 'a', artifactPath: base },
+        { id: 'clone', artifactPath: clone },
+        { id: 'c', artifactPath: distinct },
+      ],
+      0.05
+    )!;
+    expect(r.droppedDuplicates).toEqual(['clone']);
+    expect(r.min).toBeGreaterThan(0.05); // the kept pair is above the threshold
+    expect(r.mean).toBeCloseTo(r.min, 5); // exactly one kept pair
+  });
+
+  it('returns null for a single-candidate round (no pairs exist)', () => {
+    expect(roundDivergence([{ id: 'solo', artifactPath: transcriptFile('solo.json', [ok(100)]) }], 0.05)).toBeNull();
+  });
+
+  it('the ladder drops exact clones before measuring and records them', async () => {
+    const tierKey = apiTier();
+    const good = transcriptFile('n3-good.json', [ok(100), ok(150)]);
+    const goodClone = transcriptFile('n3-clone.json', [ok(100), ok(150)]);
+    // genuinely different vocabulary — must NOT be dropped, only the exact clone
+    const mid = join(tmp, 'n3-mid.json');
+    writeFileSync(mid, JSON.stringify({
+      version: 1,
+      schema: { required: ['uuid', 'state'], properties: { uuid: 'string', state: 'string', inventory: 'array', quantity: 'integer' } },
+      exchanges: [
+        { request: { op: 'fetch_inventory' }, expected: { uuid: 'warehouse-north', state: 'ready', inventory: ['lumber', 'stone'], quantity: 7 }, response: { uuid: 'warehouse-north', state: 'ready', inventory: ['lumber', 'stone'], quantity: 7 }, latencyMs: 90 },
+      ],
+    }));
+    const result = await runTierLadder({
+      projectRoot: tmp,
+      tierKey,
+      duplicateThreshold: 0.05,
+      generate: () => [
+        { id: 'good', artifactPath: good },
+        { id: 'clone', artifactPath: goodClone },
+        { id: 'mid', artifactPath: mid },
+      ],
+      maxRounds: 1,
+    });
+    const round = result.rounds[0];
+    expect(round.divergence?.droppedDuplicates).toEqual(['clone']);
+    expect(round.candidates.map((c) => c.id).sort()).toEqual(['good', 'mid']);
+  });
+
+  it('minDivergence cuts a clone-collapse round instead of farming it', async () => {
+    const tierKey = apiTier();
+    // Three same-schema transcripts: pairwise distance is small (shared
+    // scaffolding, differing outcome words) but above the duplicate
+    // threshold — nothing drops, yet the set is one exploration farmed N times.
+    const t1 = transcriptFile('col-1.json', [ok(100)]);
+    const t2 = transcriptFile('col-2.json', [degraded(200)]);
+    const t3 = transcriptFile('col-3.json', [degraded(300)]);
+    const result = await runTierLadder({
+      projectRoot: tmp,
+      tierKey,
+      generate: () => [
+        { id: 't1', artifactPath: t1 },
+        { id: 't2', artifactPath: t2 },
+        { id: 't3', artifactPath: t3 },
+      ],
+      maxRounds: 2,
+      duplicateThreshold: 0.02,
+      minDivergence: 0.3,
+    });
+    expect(result.outcome).toBe('cut-divergence-collapse');
+    expect(result.rounds[0].divergence?.mean).toBeLessThan(0.3);
+    expect(result.summary).toContain('near-clones');
+    expect(result.rounds[0].candidates).toEqual([]);
+  });
+
+  it('a genuinely diverse round is untouched by minDivergence', async () => {
+    const tierKey = apiTier();
+    const rich1 = transcriptFile('rich-1.json', [ok(100)]);
+    // a transcript with a genuinely different vocabulary: different op + fields
+    writeFileSync(join(tmp, 'rich-2.json'), JSON.stringify({
+      version: 1,
+      schema: { required: ['uuid', 'state'], properties: { uuid: 'string', state: 'string', inventory: 'array', quantity: 'integer' } },
+      exchanges: [
+        { request: { op: 'fetch_inventory' }, expected: { uuid: 'warehouse-north', state: 'ready', inventory: ['lumber', 'stone'], quantity: 7 }, response: { uuid: 'warehouse-north', state: 'ready', inventory: ['lumber', 'stone'], quantity: 7 }, latencyMs: 90 },
+      ],
+    }));
+    const result = await runTierLadder({
+      projectRoot: tmp,
+      tierKey,
+      generate: () => [
+        { id: 'r1', artifactPath: rich1 },
+        { id: 'r2', artifactPath: join(tmp, 'rich-2.json') },
+      ],
+      maxRounds: 1,
+      minDivergence: 0.2,
+    });
+    expect(result.outcome).not.toBe('cut-divergence-collapse');
+    expect(result.rounds[0].divergence?.mean ?? 0).toBeGreaterThan(0.2);
   });
 });
