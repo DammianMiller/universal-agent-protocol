@@ -122,8 +122,8 @@ docs(architecture): rewrite protocol spec
 1. Work inside a worktree (`uap worktree create <slug>`).
 2. Make changes; keep the build green between edits.
 3. Pass all completion gates (above) and bump the version on the branch.
-4. For non-trivial changes, run parallel review (correctness, security, architecture) before opening the PR. Note any skipped review in the PR body.
-5. Open the PR against `master` (`uap worktree pr`).
+4. Run the review line before opening the PR. The full protocol is documented in [PR Review](docs/guides/PR_REVIEW.md): the deterministic pre-pass (`uap review prepass --write`), then the parallel reviewer council for non-trivial diffs, consolidated into the verdict artifact `.uap/reviews/<branch-slug>.json`. Doc-only changes run `documentation-accuracy-reviewer` solo. Note any deliberate skip in the PR body; the `expert-review-required` gate blocks ship actions until the artifact exists and covers the current HEAD.
+5. Open the PR against `master` (`uap worktree pr <id>`, the worktree id from create).
 6. Ensure CI is green; address review feedback.
 7. After merge, run `uap worktree finish` to clean up.
 

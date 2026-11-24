@@ -25,7 +25,7 @@ UAP is organized like a delivery line. If you know which part of the pipeline yo
 | **Build** (make the thing) | Plausible-but-wrong code, stubs, empty output | [`uap deliver`](guides/DELIVER.md) · [Local Models](guides/LOCAL_MODELS.md) · [Inference Proxy](guides/PROXY.md) |
 | **QC / verify** (prove it runs) | "Done" on code that never ran | [`uap deliver`](guides/DELIVER.md) · [Policies](guides/POLICIES.md) · [Quality gate](../CLAUDE.md) (`uap quality check`) · [AutoMode risk](reference/automode-risk.md) · [Evidence-bound ship](reference/evidence-bound-ship.md) |
 | **Coordination** (many workers, one floor) | Parallel agents colliding, stale branches overwriting landed work | [Parallel Agents](guides/PARALLEL_AGENTS.md) · [Coordination](guides/COORDINATION.md) · [Deploy Batching](guides/DEPLOY_BATCHING.md) · [Semantic Supervisor](reference/semantic-supervisor.md) (`uap supervise`) |
-| **Shipping** (out the door safely) | Regressions, red CI, skipped bumps | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) · [Policies](guides/POLICIES.md) |
+| **Shipping** (out the door safely) | Regressions, red CI, skipped bumps, unread diffs | [PR Review](guides/PR_REVIEW.md) · [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) · [Policies](guides/POLICIES.md) |
 | **Capacity** (services inside their budgets) | Silent OOMs, crash loops, headroom loss | [Capacity Policy](guides/CAPACITY_POLICY.md) (`uap doctor`) |
 | **Inference** (the model still doing useful work) | Throughput decaying with uptime, starved checkpoints, KV at its quality floor | [Inference Health](guides/INFERENCE_HEALTH.md) (`uap inference health`) |
 | **Feedback** (the floor learns) | The same mistake every session | [Memory](guides/MEMORY.md) · [Self-Harness](design/SELF_HARNESS.md) · [Self-Tuning](guides/SELF_TUNING.md) |
@@ -58,6 +58,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) | Branch-per-feature isolation, auto-PR, enforcement |
 | [Sandbox](guides/SANDBOX.md) | Kernel-level (bubblewrap) write isolation: the boundary that survives `--dangerously-skip-permissions` |
 | [Policies](guides/POLICIES.md) | Executable policy gates that block non-compliant tool calls |
+| [**PR Review**](guides/PR_REVIEW.md) | The review line end to end: pre-pass, parallel reviewer council, verdict artifact, ship gates, what the operator keeps ⭐ |
 | [**Policy Selection & Recommendations**](guides/POLICY_SELECTION.md) | Which policies to enable for your workflow: a recommended core + tailored sets by scenario; `uap policy recommend` ⭐ |
 | [Pay2U Policy Pack](guides/POLICY_PACK_PAY2U.md) | The pay2u-tailored policy bundle |
 | [Multi-Model Routing](guides/MULTI_MODEL.md) | Plan → route → execute across 7 model profiles |

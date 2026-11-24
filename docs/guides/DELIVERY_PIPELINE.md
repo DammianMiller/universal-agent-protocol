@@ -101,6 +101,7 @@ Two things run the length of the whole line: **policy gates** (the rules are *ex
 
 **What UAP puts here:**
 - **Worktree → PR flow** with completion and version gates, so merges are clean and versioned.
+- **Parallel expert review** ([PR Review](PR_REVIEW.md)), a deterministic pre-pass plus a council of specialist reviewers before ship actions unlock, with the verdict recorded in an artifact the gates check; the merge stays an operator act.
 - **CI feedback watcher**, when CI goes red after a push, the loop re-converges instead of walking away.
 - **Never-regress + git-safety**, destructive git operations are guarded; passing work stays passing.
 - **Policy liveness + operator overrides**, the gates themselves are watched: a liveness registry tracks whether each liveness-declaring policy's compliant path (its tools, dirs, skills) is still satisfiable, and emergency bypasses live in a root-owned, expiring `.uap/operator-overrides.json`, so an agent can neither quietly let a gate rot nor mint its own exemption.
