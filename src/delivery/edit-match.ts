@@ -362,6 +362,53 @@ export function nearestRangeExcerpt(
 }
 
 /**
+ * A. Chain-anchor truth feed (Q1 follow-up, 2026-11-24): a SUCCESS note that
+ * carries the applied region, line-numbered. The success note previously said
+ * only "OK: edited (1 replacement)" — the model then chained its next anchor
+ * on the text it SENT, but tolerant matches and batch rewrites mean APPLIED ≠
+ * SENT, and every replacement shifts line numbers for edit_range. The own-edit
+ * slice is the dominant residual of the 1,852 edit-misses on the live corpus,
+ * so hand the truth over in the SAME round: the current line count plus a
+ * bounded, line-numbered excerpt around the applied span.
+ *
+ * Span semantics: callers pass the LAST-applied replacement's span in the
+ * final text — later batch entries shift earlier spans, the last one cannot
+ * be shifted by anything after it. A span of -1 means "not locatable" (the
+ * caller degrades to the line count alone, still the truth the model lacks).
+ */
+export function appliedRegionNote(
+  updated: string,
+  spanStart: number,
+  spanLength: number,
+  maxChars = 900
+): string {
+  const lines = updated.split('\n');
+  const total = updated.endsWith('\n') ? lines.length - 1 : lines.length;
+  const head = `The file now has ${total} line(s).`;
+  if (spanStart < 0) return head;
+  // The span's start and end line, by one cumulative-offset walk each. An
+  // index past EOF (cannot arise from a span in this text) falls to `total`.
+  const lineOf = (idx: number): number => {
+    let off = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (idx <= off + lines[i].length) return i + 1;
+      off += lines[i].length + 1;
+    }
+    return total;
+  };
+  const startLine = lineOf(spanStart);
+  const endLine = lineOf(spanStart + Math.max(spanLength - 1, 0));
+  // Same ±3 context the D.2 excerpt gives a missed range.
+  const from = Math.max(1, startLine - 3);
+  const to = Math.min(total, endLine + 3);
+  const parts: string[] = [];
+  for (let i = from; i <= to; i++) parts.push(`${i}: ${truncateForReport(lines[i - 1], 160)}`);
+  let out = `Lines ${from}-${to} around your applied edit:\n${parts.join('\n')}`;
+  if (out.length > maxChars) out = `${out.slice(0, maxChars)}\n… (truncated)`;
+  return `${head}\n${out}`;
+}
+
+/**
  * The empty-nearest-match fallback (U-H): when even the nearest-match report
  * comes up empty — nothing in the CURRENT file resembles the anchor — hand the
  * model the file's actual shape instead of a bare "re-read it": total line
