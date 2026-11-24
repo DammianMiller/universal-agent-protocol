@@ -54,6 +54,7 @@ import {
   applyRangeEdit,
   isIndentSensitive,
   fileDigestReport,
+  appliedRegionNote,
   nearestMatchReport,
   nearestRangeExcerpt,
 } from './edit-match.js';
@@ -79,6 +80,16 @@ export function editToleranceEnabled(): boolean {
  */
 export function editDiagnosticsEnabled(): boolean {
   return process.env.UAP_EDIT_DIAGNOSTICS !== '0';
+}
+
+/**
+ * A. Chain-anchor truth feed (knob `UAP_DELIVER_CHAIN_FEED`, on by default):
+ * does a SUCCESSFUL edit_file/edit_range hand back the applied region,
+ * line-numbered, so the model's next chained edit anchors on the bytes on
+ * disk instead of the text it sent?
+ */
+export function chainFeedEnabled(): boolean {
+  return process.env.UAP_DELIVER_CHAIN_FEED !== '0';
 }
 
 /**
@@ -2430,6 +2441,11 @@ export function runTool(
 
       let updated = current;
       let tolerantHits = 0;
+      // A. Chain-anchor truth feed: the LAST-applied replacement's span in
+      // the final text (later batch entries shift earlier spans; the last
+      // cannot be shifted). -1 = none applied yet.
+      let appliedIndex = -1;
+      let appliedLen = 0;
       for (let i = 0; i < batch.length; i++) {
         const spec = batch[i] ?? {};
         const oldStr = String(spec.old_string ?? '');
@@ -2478,6 +2494,8 @@ export function runTool(
         }
         if (match.kind === 'tolerant') tolerantHits++;
         updated = applyEditMatch(updated, match, newStr);
+        appliedIndex = match.index;
+        appliedLen = newStr.length;
       }
       const editNote =
         tolerantHits > 0
@@ -2547,7 +2565,16 @@ export function runTool(
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
       const plural = batch.length === 1 ? 'replacement' : 'replacements';
-      return `OK: edited ${String(args.path)} (${batch.length} ${plural})${pathNote}${rustCheckNote}${jsCheckNote}${editNote}`;
+      // A. Chain-anchor truth feed: the APPLIED region, line-numbered, so the
+      // next chained edit anchors on what is on disk — not on the text the
+      // model SENT (tolerant matches and batch rewrites make them differ, and
+      // every replacement shifts edit_range's line numbers). The own-edit
+      // slice is the dominant residual of the 1,852 corpus edit-misses.
+      // UAP_DELIVER_CHAIN_FEED=0 kills the feed for A/B runs.
+      const chainFeed = chainFeedEnabled()
+        ? `\n${appliedRegionNote(updated, appliedIndex, appliedLen)}`
+        : '';
+      return `OK: edited ${String(args.path)} (${batch.length} ${plural})${pathNote}${rustCheckNote}${jsCheckNote}${editNote}${chainFeed}`;
     }
     if (name === 'edit_range') {
       // Line-anchored replace. Shares edit_file's whole protection surface —
@@ -2654,9 +2681,30 @@ export function runTool(
       }
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
+      // A. Chain-anchor truth feed, ranged half: the replaced block in the
+      // FINAL text is the new_text's lines starting at start_line — compute
+      // its char span so the excerpt centers on what now sits there.
+      const finalText = String(ranged.text);
+      const newLineCount = String(args.new_text ?? '').split('\n').length;
+      const fl = finalText.split('\n');
+      let spanStartR = 0;
+      for (let i = 0; i < Number(args.start_line) - 1 && i < fl.length; i++) {
+        spanStartR += fl[i].length + 1;
+      }
+      let spanLenR = 0;
+      for (
+        let i = Number(args.start_line) - 1;
+        i < Number(args.start_line) - 1 + newLineCount && i < fl.length;
+        i++
+      ) {
+        spanLenR += fl[i].length + 1;
+      }
+      const chainFeedR = chainFeedEnabled()
+        ? `\n${appliedRegionNote(finalText, spanStartR, spanLenR)}`
+        : '';
       return (
         `OK: replaced lines ${Number(args.start_line)}-${Number(args.end_line)} ` +
-        `(${ranged.replacedLines} lines) in ${String(args.path)}${pathNote}${rustCheckNote}${jsCheckNote}`
+        `(${ranged.replacedLines} lines) in ${String(args.path)}${pathNote}${rustCheckNote}${jsCheckNote}${chainFeedR}`
       );
     }
     if (name === 'run_bash') {
