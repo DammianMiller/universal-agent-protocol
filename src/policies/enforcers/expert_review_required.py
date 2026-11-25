@@ -9,9 +9,20 @@ policy" claim real rather than advisory.
 
 Review artifact: .uap/reviews/<branch-slug>.json, written by the
 parallel-expert-review flow on consolidation. Recognised shape:
-    { "head": "<sha>", "verdict": "approve|...", "reviewers": [...] }
+    { "branch": "<name>", "head": "<sha>", "verdict": "approve",
+      "reviewers": [...],
+      "carry_forward": {"since_head": "<reviewed sha>", "justification": "..."},
+      "findings": [{"reviewer": "...", "severity": "blocker|concern|note",
+                    "location": "file:line", "disposition": "open|resolved|withdrawn"}],
+      "quality": {...} }
 If the artifact carries a `head` that differs from the current HEAD, the review
-is stale and the op is blocked.
+is stale and the op is blocked — unless `head` was re-recorded with a
+`carry_forward` block, in which case the gate verifies the delta itself
+(ancestor, <= CARRY_MAX_COMMITS hops, non-empty justification, low-risk files
+only). Only a verdict of "approve" ships: a reject, needs-human, or absent
+verdict blocks with the recorded reason. When a `findings` array rides in the
+artifact, no blocker-severity finding may still be open; malformed entries
+fail closed.
 
 Fail-open: if branch/HEAD cannot be resolved, the op is allowed — non-UAP repos
 and detached states are unaffected. Override: set UAP_NO_REVIEW=1 to bypass.
@@ -273,6 +284,77 @@ def _is_low_risk(f: str) -> bool:
     return Path(f).suffix.lower() in LOW_RISK_EXT
 
 
+# --- Verdict disposition + carry-forward + findings (uplift 0.4) -------------
+# A new HEAD normally needs a fresh council run. The one bounded exception is
+# a DECLARED carry-forward: the artifact says where the reviewed code stopped
+# (carry_forward.since_head) and the gate verifies the delta itself. This
+# mirrors Rewind's verifier-mode intent (pushes usually address findings rather
+# than new scope) but with deterministic bounds instead of model judgement —
+# after PR #960 a version-line merge commit was carried by hand-editing `head`
+# with a prose note, which the gate could neither see nor bound.
+CARRY_MAX_COMMITS = 3
+# A blocker finding blocks while it is `open`; `resolved` (fixed and verified)
+# and `withdrawn` (the reviewer retracts it, said so in the consolidation)
+# clear it. The disposition record is the floor's version of the feedback
+# loops Reddit (Diffit accept/edit/dismiss) and Intercom published: which
+# findings were useful becomes data the council can ratchet on.
+BLOCKER_CLEARED = frozenset({"resolved", "withdrawn"})
+
+# Artifact fields and repo filenames interpolate into block reasons that
+# downstream consumers may print to an operator terminal — control characters
+# are stripped at interpolation (CWE-117), not trusted to the JSON layer.
+_CTRL_CH_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _san(s: str) -> str:
+    """Strip control characters from a string bound for a block reason."""
+    return _CTRL_CH_RE.sub("", s)
+
+
+def _carry_forward_valid(root: Path, carry: object, head: str) -> tuple[bool, str]:
+    """(True, "") when the declared carry-forward may stand, else (False, why).
+
+    Bounds, all deterministic: since_head must name an ancestor of the shipped
+    HEAD, the hops since the reviewed commit are at most CARRY_MAX_COMMITS, a
+    justification must be recorded, and every file in the delta must be
+    low-risk by the same classifier the early-allow uses (the version-bump
+    merge class: package.json, lockfiles, docs, config, tests, assets).
+    An invalid carry means a fresh council run, never a silent re-point."""
+    if not isinstance(carry, dict):
+        return False, "carry_forward is not an object"
+    since = carry.get("since_head")
+    why = carry.get("justification")
+    # Hex object id, sha1 (40) or sha256 (64) — not merely "length ≥ 7": a
+    # moving ref like "origin/master" would pin nothing (the carry must name
+    # the exact reviewed commit), and a hex-only sha can never smuggle a git
+    # option into the merge-base/rev-list/diff argv below.
+    if not isinstance(since, str) or not re.fullmatch(
+        r"[0-9a-f]{40}|[0-9a-f]{64}", since.lower()
+    ):
+        return False, "carry_forward.since_head is missing or not a sha"
+    if not isinstance(why, str) or not why.strip():
+        return False, "carry_forward.justification is missing (say what carried and why)"
+    rc, _, _ = run(["git", "merge-base", "--is-ancestor", since, head], cwd=root, timeout=10)
+    if rc != 0:
+        return False, f"since_head {_san(since[:7])} is not an ancestor of the shipped HEAD"
+    rc, out, _ = run(["git", "rev-list", "--count", f"{since}..{head}"], cwd=root, timeout=10)
+    hops = out.strip() if rc == 0 and out.strip().isdigit() else ""
+    if not hops or int(hops) > CARRY_MAX_COMMITS:
+        return False, (
+            f"{hops or 'an unresolvable number of'} commits since the reviewed head"
+            f" (max {CARRY_MAX_COMMITS})"
+        )
+    rc, out, _ = run(["git", "diff", "--name-only", since, head], cwd=root, timeout=10)
+    if rc != 0:
+        return False, "the delta since the reviewed head is not resolvable"
+    risky = [f for f in (ln.strip() for ln in out.splitlines()) if f and not _is_low_risk(f)]
+    if risky:
+        return False, "the delta touches non-low-risk files: " + ", ".join(
+            _san(f) for f in risky[:3]
+        )
+    return True, ""
+
+
 # --- Visual-captures gate (uplift 0.3) --------------------------------------
 # A diff touching UI files is not done until before/after captures are bound
 # to the review — code review cannot see what the user sees. The captures live
@@ -333,7 +415,8 @@ def _check_visual_captures(root: Path, slug: str, ui_files: list[str]) -> None:
         data = json.loads(artifact.read_text())
     except Exception:  # noqa: BLE001
         data = {}
-    captures = data.get("captures") if isinstance(data, dict) else None
+    data = data if isinstance(data, dict) else {}  # a JSON list/string reads as no fields
+    captures = data.get("captures")
     pairs = [c for c in (captures or []) if isinstance(c, dict) and c.get("before") and c.get("after")]
     if not pairs:
         emit(
@@ -578,10 +661,14 @@ def main() -> None:
         data = json.loads(review.read_text())
     except Exception:  # noqa: BLE001
         data = {}
+    # A well-formed artifact is a JSON object; anything else (list, string,
+    # null) reads as {} here so the checks below are plain .get()s instead of
+    # a repeated isinstance guard per field.
+    data = data if isinstance(data, dict) else {}
 
     # Defense-in-depth against artifact reuse across branches: if the artifact
     # records the branch it covers, it must match the current branch.
-    artifact_branch = data.get("branch") if isinstance(data, dict) else None
+    artifact_branch = data.get("branch")
     if artifact_branch and artifact_branch != branch:
         emit(
             False,
@@ -591,7 +678,7 @@ def main() -> None:
         )
 
     # Stale check relative to current HEAD.
-    reviewed_head = data.get("head") if isinstance(data, dict) else None
+    reviewed_head = data.get("head")
     if reviewed_head and head and reviewed_head != head:
         emit(
             False,
@@ -601,13 +688,85 @@ def main() -> None:
             "Override: UAP_NO_REVIEW=1.",
         )
 
+    # Verdict disposition (uplift 0.4): the recorded outcome is gate-parsed,
+    # not just recorded. Only an approving verdict ships; a reject /
+    # needs-human verdict, or an artifact that predates the field, blocks with
+    # the reason on record when one exists. Reddit's merge dispositions carry
+    # machine-readable reason codes for exactly this: downstream tools should
+    # never scrape prose to learn why a ship is refused.
+    verdict = data.get("verdict")
+    if verdict != "approve":
+        reason = data.get("reason")
+        detail = (
+            f" Reason on record: {_san(reason)}"
+            if isinstance(reason, str) and reason.strip()
+            else ""
+        )
+        emit(
+            False,
+            f"expert-review-required: review at .uap/reviews/{slug}.json carries "
+            f"verdict {verdict!r}, not 'approve' — the council did not clear this "
+            f"change.{detail} Fix the findings and re-run the review, then record "
+            "the new verdict. Override: UAP_NO_REVIEW=1.",
+        )
+
+    # Declared carry-forward (uplift 0.4): a review whose `head` was re-pointed
+    # at a new HEAD must say where the reviewed code stopped, and the gate
+    # verifies the delta itself — a DECLARED carry is bounded (ancestor, hop
+    # count, low-risk delta) or the ship is blocked. What this cannot do is
+    # detect an undeclared rewrite of the whole artifact: the artifact is
+    # agent-written, so outright forgery is a protocol violation for the
+    # operator (the UAP_NO_REVIEW class), not something this gate can prove;
+    # the change is that the protocol rule "declare or re-run" now has teeth.
+    # After PR #960, that rule's only enforcement was a hand-edit of `head`
+    # with a prose note the gate could neither see nor bound.
+    carry = data.get("carry_forward")
+    # `and head` — an unresolvable HEAD skips validation: fail-open, the same
+    # posture as the risk-scope check above, not an oversight.
+    if carry is not None and head:
+        ok, why = _carry_forward_valid(root, carry, head)
+        if not ok:
+            emit(
+                False,
+                f"expert-review-required: carry-forward on .uap/reviews/{slug}.json "
+                f"is not valid ({why}). Re-run the parallel expert review for the "
+                "current HEAD. Override: UAP_NO_REVIEW=1.",
+            )
+
+    # Findings discipline (uplift 0.4): when the consolidated findings ride in
+    # the artifact, no blocker-severity finding may still be open. Absent array
+    # fails open (legacy artifacts; the verdict still gates above); a present
+    # but malformed entry fails closed, the same posture as the verdict check.
+    findings = data.get("findings")
+    if isinstance(findings, list):
+        open_blockers = [
+            f for f in findings
+            if not isinstance(f, dict)
+            or not isinstance(f.get("severity"), str)
+            or (f["severity"].lower() == "blocker"
+                and str(f.get("disposition", "open")).lower() not in BLOCKER_CLEARED)
+        ]
+        if open_blockers:
+            locs = ", ".join(
+                _san(str(f.get("location") or f.get("reviewer") or "?"))
+                if isinstance(f, dict) else "malformed entry"
+                for f in open_blockers[:3]
+            )
+            emit(
+                False,
+                f"expert-review-required: review at .uap/reviews/{slug}.json still "
+                f"carries {len(open_blockers)} open blocker finding(s) ({locs}). "
+                "Resolve or withdraw each — with the reviewer's acknowledgment in "
+                "the consolidation — then re-record. Override: UAP_NO_REVIEW=1.",
+            )
+
     # Quality-metrics fusion: when the review artifact carries a `quality`
     # block (written from `uap quality check --json` by the
     # parallel-expert-review flow), a failing machine report vetoes the
     # approval — reviewers adjudicate the numbers, they cannot outvote them.
     # Absent block -> fail-open (repos without .uap/quality-metrics.json and
     # pre-existing artifacts keep working).
-    quality = data.get("quality") if isinstance(data, dict) else None
+    quality = data.get("quality")
     if isinstance(quality, dict) and quality.get("pass") is False:
         blocking = quality.get("blocking")
         detail = f" ({blocking} blocking violation(s))" if isinstance(blocking, int) else ""
@@ -620,10 +779,15 @@ def main() -> None:
             "Override: UAP_NO_REVIEW=1.",
         )
 
+    carry_note = ""
+    if isinstance(carry, dict) and isinstance(carry.get("since_head"), str):
+        # Carry validation ran only when HEAD was resolvable; sanitize anyway.
+        carry_note = f", carried from {_san(carry['since_head'][:8])}"
     emit(
         True,
         f"expert-review satisfied (.uap/reviews/{slug}.json"
         + (f", head {reviewed_head[:8]}" if reviewed_head else "")
+        + carry_note
         + ")",
     )
 
