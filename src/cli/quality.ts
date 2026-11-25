@@ -29,11 +29,14 @@ import { scanContent } from '../quality/scanner.js';
 import { TierVector } from '../quality/tier.js';
 import { resolveClass, storeArtifactAnchor } from '../quality/classes.js';
 import {
+  LadderConvergenceSummary,
   TierLadderCandidate,
   recordLadderRun,
   runTierLadder,
+  summarizeBenchMirror,
   summarizeLadderRuns,
 } from '../quality/tier-ladder.js';
+import { benchTelemetryDir } from '../telemetry/tool-calls.js';
 import { classSamplingProfile, tierContractText, tierKeysFor } from '../quality/tier-contract.js';
 import { DEFAULT_TOLERANCE, deriveTier, gapReport, loadTiers, saveGlobalTier } from '../quality/tiers.js';
 import { CorpusNoveltyOpts, corpusNovelty } from '../quality/ideation-corpus.js';
@@ -623,8 +626,20 @@ function ladderInt(raw: string | undefined, fallback: number, min: number, max: 
  */
 function convergenceCmd(dir: string, options: QualityOptions): void {
   const { summaries, totalRuns, logPath } = summarizeLadderRuns(dir);
+  const mirror = summarizeBenchMirror(benchTelemetryDir());
   if (options.json) {
-    console.log(JSON.stringify({ totalRuns, logPath, summaries }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          totalRuns,
+          logPath,
+          summaries,
+          ...(mirror.totalRuns > 0 ? { benchMirror: mirror } : {}),
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
   console.log(chalk.bold(`\n  Tier-ladder convergence (${totalRuns} recorded run(s))`));
@@ -671,7 +686,42 @@ function convergenceCmd(dir: string, options: QualityOptions): void {
         '    Descriptive (no controlled arm).'
     )
   );
+  renderBenchMirror(mirror);
   console.log('');
+}
+
+/**
+ * The bench-mirror section (wave 6, item 1): ladder runs recorded inside
+ * paired-bench cells, mirrored home-level because the cells are deleted with
+ * their workdirs. This is where a 90-mission power run's convergence
+ * evidence lands — the promotion budget no longer starves on throwaway
+ * roots. Rendered only when the mirror holds runs; JSON mode inlines it as
+ * `benchMirror` (computed by the caller before the early return).
+ */
+function renderBenchMirror(mirror: {
+  summaries: LadderConvergenceSummary[];
+  totalRuns: number;
+  logPath: string;
+}): void {
+  const { summaries, totalRuns, logPath } = mirror;
+  if (totalRuns === 0) return;
+  console.log(chalk.bold(`\n  Bench-mirror convergence (${totalRuns} run(s) from paired cells)`));
+  console.log(chalk.dim(`    log: ${logPath}`));
+  for (const s of summaries) {
+    const rtt = s.meanRoundsToTier === null ? '—' : s.meanRoundsToTier.toFixed(1);
+    const agree = s.agreementRuns > 0 ? String(s.agreementRuns) : '—';
+    const fp =
+      s.shadowFalsePositiveRate === null
+        ? '—'
+        : `${(s.shadowFalsePositiveRate * 100).toFixed(0)}%${s.shadowFalsePositives > 0 ? chalk.yellow('⚠') : ''}`;
+    const cut = `${(s.cutRate * 100).toFixed(0)}%`;
+    const mark = s.cutRate >= 0.5 ? chalk.red : s.cutRate > 0 ? chalk.yellow : chalk.green;
+    console.log(
+      `    ${s.tier.padEnd(28)}${String(s.runs).padStart(5)}  ${String(s.tierReached).padStart(7)}  ` +
+        `${mark(cut.padStart(6))}  ${rtt.padStart(11)}  ${(s.winnerPassRate * 100).toFixed(0).padStart(4)}%  ` +
+        `${s.meanCandidates.toFixed(1)}  ${agree.padStart(5)}  ${fp.padStart(4)}`
+    );
+  }
 }
 
 /**

@@ -17,6 +17,7 @@ import { dirname, join, relative, resolve } from 'path';
 
 import { applyScaffolding, scaffoldEnv } from './scaffold.js';
 import { sanitizedEnv } from './suite.js';
+import { benchTelemetryDir } from '../../telemetry/tool-calls.js';
 import { AgentAdapter, AgentRunContext, AgentRunResult, StopReason, TurnTrace, isBaseline } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -795,6 +796,19 @@ export class DeliverCliAdapter implements AgentAdapter {
       // scratch dirs the runner had already deleted (paired-uplift-v1204-r3,
       // 2026-08-13).
       UAP_DELIVER_NO_DETACH: '1',
+      // Wave 6, item 1 — bench attribution for the instruments. Without
+      // these, the 2026-11-25 power run's corpus rows landed as unattributed
+      // 'live' traffic and its convergence records died with the throwaway
+      // cells: neither the corpus nor the tier-gate promotion budget could
+      // see the 90 missions the run actually drove. UAP_RUN_KIND segments
+      // the corpus rows; UAP_BENCH_* give them cell coordinates; the mirror
+      // env carries the convergence log home-level.
+      UAP_RUN_KIND: 'benchmark',
+      UAP_BENCH_RUN_ID: `${ctx.task.id}/${ctx.condition.label}#${ctx.seed}`,
+      UAP_BENCH_TASK: ctx.task.id,
+      UAP_BENCH_CONDITION: ctx.condition.label,
+      UAP_BENCH_SEED: String(ctx.seed),
+      UAP_QUALITY_LOG_MIRROR: benchTelemetryDir(),
     };
     if (ctx.condition.lazy) env.UAP_DELIVER_LAZY = '1';
     const timeoutMs = deliverCellTimeoutMs(ctx.task.agentTimeoutSec);
