@@ -324,6 +324,22 @@ for key in keys:
         if not isinstance(m, dict):
             continue
         label = str(m.get("id") or m.get("model") or m.get(DK) or "<unnamed>")
+        # A self-managed entry (apiKeyHelper set) manages its OWN routing:
+        # the operator's fleet-arm-ensure class, where the helper switches
+        # the Inference Panel arm, ensures the proxy, and registers the
+        # client BEFORE the request, and prints the token the entry rides
+        # (its stdout contract REPLACES whatever apiKey the entry carries).
+        # The sync cannot know what a helper does, so converging the model
+        # under one would pair a qwen id with an inkling arm-ensure (or vice
+        # versa) — corrupted, silently. Such entries are deliberate by
+        # construction: never converged, never re-capped, never deduped
+        # away, key untouched (the helper owns it). FIRST in the loop, before
+        # the marker branches: a helper entry whose id happens to match a
+        # marker shape must not have its apiKey overwritten or its caps
+        # re-stamped by the maintain-never-migrate rules — the marker
+        # branches are this sync's own stakes, and this entry is not one.
+        if m.get("apiKeyHelper"):
+            continue
         # Deliberate 27B family listing: the marker id is this sync's own
         # stake, so it is exempt from convergence — repointing it would
         # erase the second family from the picker. Maintain, never migrate:
@@ -380,18 +396,6 @@ for key in keys:
             if camel and ink_base and not m.get("baseModelId"):
                 m["baseModelId"] = ink_base
                 changed.append(f"{label} [baseModelId={ink_base}]")
-            continue
-        # A self-managed entry (apiKeyHelper set) manages its OWN routing:
-        # the operator's fleet-arm-ensure class, where the helper switches
-        # the Inference Panel arm, ensures the proxy, and registers the
-        # client BEFORE the request, and prints the token the entry rides
-        # (its stdout contract REPLACES whatever apiKey the entry carries).
-        # The sync cannot know what a helper does, so converging the model
-        # under one would pair a qwen id with an inkling arm-ensure (or vice
-        # versa) — corrupted, silently. Such entries are deliberate by
-        # construction: never converged, never re-capped, never deduped
-        # away, key untouched (the helper owns it).
-        if m.get("apiKeyHelper"):
             continue
         base = m.get(BK)
         base = base if isinstance(base, str) else ""

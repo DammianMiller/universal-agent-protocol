@@ -150,6 +150,51 @@ describe('models measure (CLI) — kv_resident 0 from a live backend', () => {
     expect(existsSync(localPath)).toBe(false);
   });
 
+  it('keeps a config-level vision pin through the measured write (text-only arm of a vision family)', async () => {
+    // The 035 regression: the measured write REPLACES the local overlay
+    // entry wholesale (local wins the merge), so an identity allowlist
+    // that omitted `vision` would drop a config-level "none" and let the
+    // family's declaration win — image requests would forward into the
+    // text-only arm's silent drop. The measured entry must carry the
+    // capability the config declared, exactly like unit/files/note.
+    const { repoPath, localPath } = writeRegistryFixture('vision-pin');
+    writeFileSync(repoPath, JSON.stringify({
+      version: 1,
+      devices: { gpu0: { kind: 'gpu' }, cpu0: { kind: 'cpu' } },
+      models: {
+        'inkling2': {
+          display: 'Inkling 2 Mini',
+          advertises: ['Inkling 2 Mini'],
+          vision: 'dynamic',
+          configs: {
+            'squid-fp8': {
+              status: 'unmeasured',
+              vision: 'none',
+              files: [{ path: join(dir, 'model.safetensors'), repo: 'thinkingmachines/Inkling-2-Mini', bytes: 3 }],
+            },
+          },
+        },
+      },
+    }));
+    stubMetrics({
+      engine: {
+        model: 'Inkling 2 Mini',
+        max_context: 524288,
+        context: 524288,
+        kv: 'q4',
+        kv_resident: 524288,
+        vram_free_mib: 999,
+        version: 'squid5090',
+      },
+    });
+    const code = await modelsCommand('measure', { repoPath, localPath, endpoint: 'http://127.0.0.1:8080' });
+    expect(code).toBe(0);
+    const cfg = readLocal(localPath).models['inkling2'].configs['squid-fp8'];
+    expect(cfg.vision).toBe('none');
+    expect(cfg.kv_resident_cells).toBe(524288);
+    expect(loadModelRegistry(dir, { repoPath, localPath }).errors).toEqual([]);
+  });
+
   it('a zero kv_resident_cells in the local registry is what breaks loading — the reason the fallback exists', () => {
     const { repoPath, localPath } = writeRegistryFixture('zero');
     // The OLD behavior's write: the raw engine reading, zero and all.

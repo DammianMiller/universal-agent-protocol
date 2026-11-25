@@ -39,7 +39,8 @@ export interface AdmissionResult {
   requested: string;
   /** Does the request map to any registry config at all? */
   matched: boolean;
-  /** not_resident_only | not_in_registry | no_measured_config | ok */
+  /** not_resident_only | not_in_registry | no_measured_config |
+   * no_vision_capable_config | no_image_capable_config | ok */
   reason: string;
   options: PlacementOption[];
   /** Why each candidate that was not offered was refused. */
@@ -72,24 +73,6 @@ export function visionCapableConfigs(registry: ModelRegistry): Array<{ model: st
   for (const [mKey, model] of Object.entries(registry.models)) {
     for (const [cKey, entry] of Object.entries(model.configs)) {
       if (effectiveVision(model, entry) === 'cpu' || effectiveVision(model, entry) === 'gpu') out.push({ model: mKey, config: cKey, entry });
-    }
-  }
-  return out;
-}
-
-/** All configs of arms that can serve an image request AT ALL ('cpu', 'gpu'
- * or 'dynamic'): the candidate set for an image-bearing request. Unlike
- * visionCapableConfigs this INCLUDES 'dynamic' arms — they can encode an
- * image; the OOM that later parks one is a memory event, not a
- * capability gap, and is resolved by the switch targets above. Used so an
- * image request never auto-loads or reuses a text-only arm (a 'none' arm
- * would silently drop the image blocks and answer from the text alone —
- * the exact silent-degradation class this fleet refuses). */
-export function imageCapableConfigs(registry: ModelRegistry): Array<{ model: string; config: string; entry: ModelRegistry['models'][string]['configs'][string] }> {
-  const out: Array<{ model: string; config: string; entry: ModelRegistry['models'][string]['configs'][string] }> = [];
-  for (const [mKey, model] of Object.entries(registry.models)) {
-    for (const [cKey, entry] of Object.entries(model.configs)) {
-      if (effectiveVision(model, entry) !== 'none') out.push({ model: mKey, config: cKey, entry });
     }
   }
   return out;
@@ -156,18 +139,27 @@ function freedHostMiB(victims: LedgerResident[]): number | null {
 export function optionsForPending(
   registry: ModelRegistry,
   ledger: PlacementLedger,
-  pending: { requested_model: string; cells?: number; capability?: 'vision'; reason?: string },
+  pending: { requested_model: string; cells?: number; capability?: 'vision' | 'image'; reason?: string },
 ): AdmissionResult {
+  if (pending.capability === 'image') {
+    // An image-bearing park (text-only resident, reason
+    // vision_text_only_arm, or a cold not-resident image load): the
+    // candidates are the requested family's image-capable configs — the
+    // text-only arm is excluded by the 'image' filter itself, so the
+    // operator's pending/apply list can never offer loading an arm that
+    // would silently drop the image blocks.
+    return computeOptions(registry, ledger, pending.requested_model, {
+      cells: pending.cells,
+      capability: 'image',
+    });
+  }
   if (pending.capability === 'vision') {
-    // Two vision classes, two candidate sets. An encoder-OOM park switches
-    // ACROSS the registry to the cpu/gpu arms (the starved arm's own cost
-    // is understated by the encoder it failed to load). A text-only park
-    // switches WITHIN the requested family to its image-capable config:
-    // the family's vision arm advertises the SAME wire ids, so the
-    // client's retry re-resolves in place; a cross-family target would
-    // park not_resident on the next admit and ping-pong the fleet. The
-    // text-only arm is excluded by the 'image' filter itself, so no
-    // excludeReuseOf is needed (and the OOM class keeps its own).
+    // The encoder-OOM switch class: cross-registry to the cpu/gpu arms
+    // (the starved arm's own cost is understated by the encoder it failed
+    // to load), excluding reuse of the failed arm. Legacy text-only-arm
+    // entries written before the 'image' class existed stamped 'vision'
+    // with reason vision_text_only_arm — resolve those within the family
+    // to its image-capable configs, same as the 'image' class.
     if (pending.reason === 'vision_text_only_arm') {
       return computeOptions(registry, ledger, pending.requested_model, {
         cells: pending.cells,
@@ -192,14 +184,15 @@ export interface ComputeOptionsOpts {
    * (its encoder cannot get device memory). `requested` then only names
    * the origin of the park, never the candidate set.
    *
-   * `'image'` narrows the requested model's OWN configs to the
-   * image-capable ones (effective vision 'cpu'/'gpu'/'dynamic'): used for
-   * image-bearing requests — a text-only arm resident (or not) must
-   * neither forward nor auto-load for them. Family-scoped on purpose: the
-   * family's own vision arm serves the SAME wire ids, so the client's
-   * retry re-resolves without a park; a cross-family switch target that
-   * does not advertise the asked id would ping-pong (switch away, park
-   * not_resident, switch back). */
+   * `'image'` narrows the configs of EVERY registry family advertising
+   * the requested id (matchingConfigs is id-scoped, not family-scoped:
+   * cross-advertised ids like qwen3.8-27b span families) to the
+   * image-capable ones (effective vision 'cpu'/'gpu'/'dynamic'): used
+   * for image-bearing requests — a text-only arm resident (or not) must
+   * neither forward nor auto-load for them. Every candidate advertises
+   * the asked id, so the client's retry re-resolves in place without a
+   * ping-pong; the id-scoped (not single-family) reach is what makes a
+   * cross-advertised id resolve its image-capable arm wherever it lives. */
   capability?: 'vision' | 'image';
   /** Skip reuse options for this model — the arm that just failed the
    * image request; reusing it would resolve nothing. */
@@ -211,8 +204,8 @@ export interface ComputeOptionsOpts {
  * largest displace. Unknown anything = refused, with a note saying why.
  * With `capability: 'vision'` the candidates are the registry's
  * vision-capable arms (switch targets), not the requested model's; with
- * `capability: 'image'` they are the requested model's image-capable
- * configs. */
+ * `capability: 'image'` they are the image-capable configs of every
+ * family advertising the requested id. */
 export function computeOptions(
   registry: ModelRegistry,
   ledger: PlacementLedger,
@@ -232,7 +225,16 @@ export function computeOptions(
     return {
       requested,
       matched: false,
-      reason: 'not_in_registry',
+      // The image class gets its own reason: the model IS registered —
+      // every arm advertising the id is text-only — and reason-keyed
+      // consumers (the dashboard's matched:false surface) would misreport
+      // an image refusal as an unknown-model case.
+      reason:
+        opts?.capability === 'vision'
+          ? 'no_vision_capable_config'
+          : opts?.capability === 'image'
+            ? 'no_image_capable_config'
+            : 'not_in_registry',
       options: [],
       notes: [
         opts?.capability === 'vision'

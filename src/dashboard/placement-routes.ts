@@ -403,11 +403,25 @@ export function getPlacementAdmit(
   // a guess. The resident still serves TEXT for this id (no park for
   // text requests), so only the image-bearing request class diverts.
   const carriesImage = request.carries_image === true;
+  // Image requests prefer an image-capable resident when more than one
+  // resident serves the asked id (cross-advertised ids: basalt-27b and
+  // the squid arm both advertise qwen3.8-27b) — a text-only pick would
+  // park an image request while a hot image-capable resident serves it,
+  // an avoidable 409+attention cycle. Text requests keep the first-match
+  // scan (any resident serves text).
+  const servesRequested = (r: PlacementLedger['residents'][number]): boolean =>
+    r.state !== 'draining' && residentServes(r, requested, registry);
+  const imageCapableResident = (r: PlacementLedger['residents'][number]): boolean =>
+    effectiveVision(
+      registry.models[r.model] ?? { display: '', configs: {} },
+      registry.models[r.model]?.configs[r.config],
+    ) !== 'none';
   const servingResident = visionOom
     ? undefined
-    : ledger.residents.find(
-        (r) => r.state !== 'draining' && residentServes(r, requested, registry),
-      );
+    : carriesImage
+      ? (ledger.residents.find((r) => servesRequested(r) && imageCapableResident(r)) ??
+        ledger.residents.find(servesRequested))
+      : ledger.residents.find(servesRequested);
   const residentTextOnly =
     carriesImage &&
     servingResident !== undefined &&
@@ -524,11 +538,12 @@ export function getPlacementAdmit(
   const clientKey = client ?? '';
   // A vision park and a not-resident park for the same (model, client) are
   // DIFFERENT decisions — one wants a switch, the other a load — so the
-  // dedupe key carries the capability class too. The text-only park is
-  // the same capability class ('vision'): an image retry must hit the
-  // image park, while a TEXT retry for the same model must forward —
-  // the resident still serves text.
-  const capabilityKey = visionOom || residentTextOnly ? 'vision' : '';
+  // dedupe key carries the capability class too. Every IMAGE-bearing park
+  // (text-only resident OR cold not-resident) shares the 'image' class: an
+  // image retry must hit the image park, while a TEXT retry for the same
+  // model must forward — the resident still serves text, and a cold text
+  // request wants the plain identity candidates, not the image-scoped set.
+  const capabilityKey = visionOom ? 'vision' : residentTextOnly || carriesImage ? 'image' : '';
   const matchesPending = (p: LedgerPending): boolean =>
     p.requested_model === requested &&
     (p.client ?? '') === clientKey &&
@@ -558,8 +573,17 @@ export function getPlacementAdmit(
     cells,
     // Both vision-class parks carry the structured capability — the CLI's
     // pending list recomputes a vision entry's SWITCH options, and the
-    // proxy's image-burst dedupe keys on it.
-    ...(visionOom || residentTextOnly ? { capability: 'vision' as const } : {}),
+    // proxy's image-burst dedupe keys on it. Image-bearing parks (text-only
+    // resident OR cold not-resident) carry 'image' so the operator's
+    // pending/apply list stays family-image-scoped: offering the text-only
+    // arm as a resolution would load an arm that silently drops the image
+    // blocks and answers hallucinated text — the exact class this park
+    // exists to prevent.
+    ...(visionOom
+      ? { capability: 'vision' as const }
+      : residentTextOnly || carriesImage
+        ? { capability: 'image' as const }
+        : {}),
   };
   let placementId = pending.id;
   let raceWinnerReason: string | undefined;

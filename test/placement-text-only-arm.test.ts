@@ -14,17 +14,23 @@
  * same wire ids, so the client's retry re-resolves in place instead of
  * ping-ponging across families.
  */
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { computeOptions, imageCapableConfigs, optionsForPending, visionCapableConfigs } from '../src/placement/admission.js';
+import { computeOptions, optionsForPending, visionCapableConfigs } from '../src/placement/admission.js';
 import { getPlacementAdmit, resetColdProbeForTests } from '../src/dashboard/placement-routes.js';
 import { effectiveVision, ModelEntrySchema, ConfigEntrySchema } from '../src/placement/registry.js';
 import type { ModelRegistry } from '../src/placement/registry.js';
 import { loadLedger, withLedger, type LedgerResident } from '../src/placement/ledger.js';
 import { resetAutoSchedulerForTests, type AutoPolicy } from '../src/placement/auto.js';
 import * as autoPolicyModule from '../src/placement/auto.js';
+import {
+  resolvePendingPlacement,
+  type EnforceDeps,
+  type EnforceTimeouts,
+} from '../src/placement/enforce.js';
+import { listAttention } from '../src/delivery/attention.js';
 
 // The live 5090 fleet shape this round ships: the inkling2 family with TWO
 // engine arms — basalt 0.5.7 on the native NVFP4-MX8 pack (vision
@@ -205,10 +211,25 @@ describe('config-level vision override', () => {
   });
 
   it('image-capable candidates include dynamic arms (they encode; OOM is a memory event) and exclude none', () => {
-    const capable = imageCapableConfigs(registry).map((c) => `${c.model}/${c.config}`).sort();
-    expect(capable).toEqual(['basalt-fn/nvfp4-dq6', 'inkling2/nvfp4-mx8'].sort());
-    // The squid config is the family's own arm and still excluded.
-    expect(capable).not.toContain('inkling2/squid-fp8');
+    // The PRODUCTION predicate: computeOptions with capability 'image' —
+    // the one filter the admit, pending, apply, and auto paths share
+    // (no separate whole-registry enumeration to drift from it). A roomy
+    // ledger so the fit math never hides a candidate.
+    const ledgerPath = freshLedger();
+    withLedger(ledgerPath, (l) => {
+      l.devices.gpu0.free_mib = 30000;
+    });
+    const ledger = loadLedger(ledgerPath);
+    const inkling = computeOptions(registry, ledger, 'Inkling 2 Mini', { capability: 'image' });
+    expect(inkling.options.map((o) => `${o.model}/${o.config}`)).toEqual(['inkling2/nvfp4-mx8']);
+    // The family's own text-only arm is excluded by the filter itself even
+    // though it advertises the same id and would fit.
+    expect(inkling.options.map((o) => `${o.model}/${o.config}`)).not.toContain('inkling2/squid-fp8');
+    // Cross-family: another family's advertised id resolves its own
+    // image-capable arm the same way (the filter is per-request-id, not
+    // inkling-specific).
+    const fn = computeOptions(registry, ledger, 'qwen3.8-fn-basalt-nvfp4', { capability: 'image' });
+    expect(fn.options.map((o) => `${o.model}/${o.config}`)).toEqual(['basalt-fn/nvfp4-dq6']);
   });
 });
 
@@ -235,6 +256,12 @@ describe('image-bearing requests against a text-only resident', () => {
     expect(option.model).toBe('inkling2');
     expect(option.config).toBe('nvfp4-mx8');
     expect(option.kind).toBe('displace');
+    // The auto run's ENFORCEMENT CONTEXT: the family image class, never the
+    // OOM shape — a cross-registry candidate set (capability 'vision' +
+    // excludeReuseOf) would lack inkling2/nvfp4-mx8 and refuse the family's
+    // own switch as "drift", parking every image request forever.
+    expect(enforce.mock.calls[0]![3]).toMatchObject({ capability: 'image' });
+    expect((enforce.mock.calls[0]![3] as { excludeReuseOf?: string }).excludeReuseOf).toBeUndefined();
   });
 
   it('forwards TEXT requests to the same resident — the text-only arm still serves text', () => {
@@ -288,14 +315,87 @@ describe('image-bearing requests against a text-only resident', () => {
       carries_image: true,
     }, { loaded, ledgerPath, auto: { policy: autoOff } });
     const pending = loadLedger(ledgerPath).pending[0]!;
-    expect(pending.capability).toBe('vision');
+    // The 'image' class (not the OOM 'vision' class): the candidates are
+    // the family's image-capable configs.
+    expect(pending.capability).toBe('image');
     expect(pending.reason).toBe('vision_text_only_arm');
-    // optionsForPending branches on the park reason: the text-only class is
-    // family-scoped (same wire ids, retry re-resolves in place), the OOM
-    // class stays cross-registry cpu/gpu.
     const family = optionsForPending(registry, loadLedger(ledgerPath), pending).options;
     expect(family.map((o) => `${o.model}/${o.config}`)).toEqual(['inkling2/nvfp4-mx8']);
     expect(family.every((o) => o.kind === 'displace')).toBe(true);
+  });
+
+  it('an image retry dedupes onto the parked entry; a TEXT retry after the park still forwards', () => {
+    const ledgerPath = freshLedger([squidResident()]);
+    const ask = {
+      model_id: 'Inkling 2 Mini',
+      client: 'claude-code',
+      session: 's1',
+      cells: 4096,
+      carries_image: true,
+    };
+    const first = getPlacementAdmit(dir, ask, { loaded, ledgerPath, auto: { policy: autoOff } });
+    expect(first.decision).toBe('park');
+    // The retry inside the TTL re-parks with the SAME placement id — one
+    // pending entry, not a flood (the dedupe key carries the capability
+    // class, so only image retries hit it).
+    const retry = getPlacementAdmit(dir, ask, { loaded, ledgerPath, auto: { policy: autoOff } });
+    expect(retry.decision).toBe('park');
+    expect(retry.placement_id).toBe(first.placement_id);
+    expect(loadLedger(ledgerPath).pending).toHaveLength(1);
+    // A TEXT request for the same model+client keys the plain identity
+    // class: the resident still serves text, the park entry stays untouched.
+    const text = getPlacementAdmit(dir, {
+      model_id: 'Inkling 2 Mini',
+      client: 'claude-code',
+      session: 's1',
+      cells: 4096,
+    }, { loaded, ledgerPath });
+    expect(text.decision).toBe('forward');
+    expect(loadLedger(ledgerPath).pending).toHaveLength(1);
+  });
+
+  it('a COLD image park carries the image capability class — the operator apply list stays image-scoped', () => {
+    const ledgerPath = freshLedger([]); // nothing resident: the cold class
+    const answer = getPlacementAdmit(dir, {
+      model_id: 'Inkling 2 Mini',
+      client: 'claude-code',
+      session: 's1',
+      cells: 4096,
+      carries_image: true,
+    }, { loaded, ledgerPath, auto: { policy: autoOff } });
+    expect(answer.decision).toBe('park');
+    const pending = loadLedger(ledgerPath).pending[0]!;
+    // Without the class, optionsForPending recomputes from the FULL config
+    // set and would offer loading the text-only squid arm for a park minted
+    // by an image request — the exact wrong resolution.
+    expect(pending.capability).toBe('image');
+    const options = optionsForPending(registry, loadLedger(ledgerPath), pending).options;
+    expect(options.map((o) => `${o.model}/${o.config}`)).toEqual(['inkling2/nvfp4-mx8']);
+    expect(options.map((o) => `${o.model}/${o.config}`)).not.toContain('inkling2/squid-fp8');
+  });
+
+  it('forwards an image request to an unmeasured-but-RESIDENT image-capable arm (fail-closed to load, fail-open to a capable resident)', () => {
+    const unmeasured: ModelRegistry = {
+      ...registry,
+      models: {
+        ...registry.models,
+        'inkling2': {
+          ...registry.models['inkling2']!,
+          configs: {
+            'squid-fp8': registry.models['inkling2']!.configs['squid-fp8']!,
+            'nvfp4-mx8': { engine: 'basalt', unit: 'uap-basalt-inkling2-server', status: 'unmeasured' },
+          },
+        },
+      },
+    };
+    const ledgerPath = freshLedger([residentOf('inkling2', 'nvfp4-mx8', 'uap-basalt-inkling2-server', 29050)]);
+    const answer = getPlacementAdmit(dir, {
+      model_id: 'Inkling 2 Mini',
+      client: 'claude-code',
+      cells: 4096,
+      carries_image: true,
+    }, { loaded: { ...loaded, registry: unmeasured }, ledgerPath });
+    expect(answer.decision).toBe('forward');
   });
 
   it('an image-bearing cold request auto-loads only an image-capable config of the model', async () => {
@@ -314,6 +414,10 @@ describe('image-bearing requests against a text-only resident', () => {
     await vi.waitFor(() => expect(enforce).toHaveBeenCalledTimes(1));
     const option = enforce.mock.calls[0]![2] as { model: string; config: string };
     expect(option.config).toBe('nvfp4-mx8'); // never squid-fp8 for an image
+    // Same enforcement context as the resident-switch case: family image
+    // class, no excludeReuseOf.
+    expect(enforce.mock.calls[0]![3]).toMatchObject({ capability: 'image' });
+    expect((enforce.mock.calls[0]![3] as { excludeReuseOf?: string }).excludeReuseOf).toBeUndefined();
   });
 
   it('refuses with the honest note when the family is all text-only', () => {
@@ -331,6 +435,134 @@ describe('image-bearing requests against a text-only resident', () => {
     const ledgerPath = freshLedger([squidResident()]);
     const result = computeOptions(allTextOnly, loadLedger(ledgerPath), 'inkling2', { capability: 'image' });
     expect(result.matched).toBe(false);
+    // The family IS registered — every arm text-only — so the refusal says
+    // the capability class, not "not in registry".
+    expect(result.reason).toBe('no_image_capable_config');
     expect(result.notes[0]).toContain('no image-capable config');
+  });
+});
+
+describe('the operator apply path resolves a text-only park to the family image arm', () => {
+  const timeouts: EnforceTimeouts = { drainMs: 20, startMs: 20, freeMs: 20, pollMs: 1 };
+
+  /** The vision-switch suite's fakeDeps shape, on THIS fixture's numbers:
+   * the squid unit holds 24200 MiB; stopping it returns the card's room. */
+  function fakeDeps(): { deps: EnforceDeps; started: string[] } {
+    const started: string[] = [];
+    const active = ['uap-squid-inkling2-server'];
+    let clock = 0;
+    let stopped = false;
+    const deps: EnforceDeps = {
+      isUnitActive: (u) => active.includes(u),
+      stopUnit: async (u) => {
+        stopped = true;
+        active.splice(active.indexOf(u), 1);
+      },
+      startUnit: async (u) => {
+        started.push(u);
+        active.push(u);
+      },
+      gpuFreeMiB: () => (stopped ? 31600 : 400),
+      inflightForTarget: async () => [],
+      httpGetJson: async (url) =>
+        url.endsWith('/health')
+          ? { status: 'ok' }
+          : { data: [{ id: 'Inkling 2 Mini' }, { id: 'qwen3.8-fn-basalt-nvfp4' }] },
+      refreshProxy: async () => true,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      nowMs: () => clock,
+      probeDevices: () => ({
+        gpu0: { kind: 'gpu', total_mib: 32607, free_mib: 400, reserved_mib: 512, source: 'nvidia-smi' },
+        cpu0: { kind: 'cpu', total_mib: 182000, free_mib: 76000, reserved_mib: 8192, source: 'MemAvailable' },
+      }),
+    };
+    return { deps, started };
+  }
+
+  it('resolvePendingPlacement applies the family IMAGE arm, not a cross-registry switch', async () => {
+    const ledgerPath = freshLedger([squidResident()]);
+    withLedger(ledgerPath, (l) => {
+      l.pending.push({
+        id: 'plc-t1t1t1',
+        requested_model: 'inkling2',
+        client: 'claude-code',
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        reason: 'vision_text_only_arm',
+        capability: 'image',
+        cells: 4096,
+      });
+    });
+    const repoPath = join(dir, 'model-registry.json');
+    writeFileSync(repoPath, JSON.stringify(registry));
+    const { deps, started } = fakeDeps();
+    const result = await resolvePendingPlacement(process.cwd(), 'plc-t1t1t1', 1, {
+      ledgerPath,
+      repoPath,
+      localPath: join(dir, 'no-local-overlay.json'),
+      deps,
+      timeouts,
+    });
+    expect(result.ok).toBe(true);
+    // The family's image arm — never the text-only squid unit again, and
+    // never basalt-fn (the cross-registry cpu/gpu switch class the OOM
+    // park uses; it does not advertise the asked id).
+    expect(started).toEqual(['uap-basalt-inkling2-server']);
+    expect(loadLedger(ledgerPath).pending.some((p) => p.id === 'plc-t1t1t1')).toBe(false);
+  });
+});
+
+describe('attention rail: a text-only-arm park is a visible, correctly-shaped ask', () => {
+  it('actionable when the family has an image-capable arm — the ask names the apply command', () => {
+    delete process.env.UAP_ATTENTION_OFF;
+    const ledgerPath = freshLedger([squidResident()]);
+    const answer = getPlacementAdmit(dir, {
+      model_id: 'Inkling 2 Mini',
+      client: 'claude-code',
+      cells: 4096,
+      carries_image: true,
+    }, { loaded, ledgerPath, auto: { policy: autoOff } });
+    expect(answer.decision).toBe('park');
+    const items = listAttention(dir);
+    expect(items.length).toBe(1);
+    expect(items[0]!.source).toBe(`placement:${answer.placement_id}`);
+    expect(items[0]!.title).toBe('Vision parked: inkling2 (text-only serving arm)');
+    // The detail says what actually broke — the ARM is text-only, not the
+    // request wrong or the memory short — and names the operator's apply.
+    expect(items[0]!.detail).toContain('TEXT-ONLY');
+    expect(items[0]!.detail).toContain('1 image-capable switch option(s) registered');
+    expect(items[0]!.detail).toContain(`uap models apply ${answer.placement_id} <n>`);
+    expect(items[0]!.safeDefault?.decision).toContain('expire');
+  });
+
+  it('plain no-option ask when the family has no image-capable arm at all', () => {
+    delete process.env.UAP_ATTENTION_OFF;
+    const textOnlyFamily: ModelRegistry = {
+      ...registry,
+      models: {
+        ...registry.models,
+        'inkling2': {
+          ...registry.models['inkling2']!,
+          configs: { 'squid-fp8': registry.models['inkling2']!.configs['squid-fp8']! },
+        },
+      },
+    };
+    const ledgerPath = freshLedger([squidResident()]);
+    const answer = getPlacementAdmit(dir, {
+      model_id: 'Inkling 2 Mini',
+      client: 'claude-code',
+      cells: 4096,
+      carries_image: true,
+    }, { loaded: { ...loaded, registry: textOnlyFamily }, ledgerPath, auto: { policy: autoOff } });
+    expect(answer.decision).toBe('park');
+    const items = listAttention(dir);
+    expect(items.length).toBe(1);
+    expect(items[0]!.title).toBe('Vision parked: inkling2 (text-only serving arm)');
+    // Not actionable: nothing to approve — it must not invite a decision
+    // that cannot be made.
+    expect(items[0]!.detail).toContain('No registered option serves it');
+    expect(items[0]!.detail).not.toContain('uap models apply');
   });
 });

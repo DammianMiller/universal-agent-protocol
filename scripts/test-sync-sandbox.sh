@@ -183,6 +183,11 @@ cat > "$SANDBOX/.factory/settings.json" <<EOF
     "apiKeyHelper": "/sandbox/fleet-arm-ensure-basalt-inkling2.sh", "apiKeyHelperTtlMs": 300000,
     "baseModelId": "claude-opus-5-5", "maxOutputTokens": 84000, "maxContextLimit": 1048576,
     "id": "custom:Inkling-helper-0" },
+  { "displayName": "Inkling 2 Mini Basalt NVFP4-q8 (UAP-local)", "model": "Inkling 2 Mini",
+    "baseUrl": "http://127.0.0.1:4000", "provider": "anthropic",
+    "apiKeyHelper": "/sandbox/fleet-arm-ensure-basalt-inkling2-alt.sh", "apiKeyHelperTtlMs": 300000,
+    "baseModelId": "claude-opus-5-5", "maxOutputTokens": 84000, "maxContextLimit": 1048576,
+    "id": "custom:Inkling-helper-1" },
   { "displayName": "GPT-5.1 Codex (router)", "model": "gpt-5.1-codex",
     "baseUrl": "http://localhost:8317/v1", "apiKey": "router-key",
     "id": "custom:GPT-5.1-Codex-0" },
@@ -522,7 +527,15 @@ MI = _re.compile(r"^custom:Inkling-2-Mini-UAP-local-\d+$")
 imark = [m for m in models if isinstance(m.get("id"), str) and MI.match(m["id"])]
 assert len(imark) == 0, f"marker listing added although the family is already listed: {len(imark)}"
 ih = [m for m in models if m.get("apiKeyHelper")]
-assert len(ih) == 1, f"expected the one self-managed entry, got {len(ih)}"
+# BOTH self-managed entries survive — including the one that shares its
+# (model, baseUrl, displayName) group with the other: the dedupe drop loop
+# skips helper members (a group's "keep" member would not carry the
+# helper's own model/route pairing). One helper + one non-helper in the
+# same group would drop the helper without the guard; two helpers prove it
+# holds even when the group's keep preference lands on the other member.
+assert len(ih) == 2, f"expected the two self-managed entries, got {len(ih)}"
+assert {m["id"] for m in ih} == {"custom:Inkling-helper-0", "custom:Inkling-helper-1"}, \
+    f"a self-managed entry was deduped away: {[m.get('id') for m in ih]}"
 im = ih[0]
 assert im["model"] == pin_i, f"self-managed entry converged away: {im.get('model')}"
 assert im["displayName"] == "Inkling 2 Mini Basalt NVFP4-q8 (UAP-local)", im.get("displayName")
@@ -532,6 +545,9 @@ assert im["maxContextLimit"] == 1048576, "self-managed entry re-capped (operator
 assert im["maxOutputTokens"] == 84000, "self-managed entry output re-capped"
 assert "apiKey" not in im, "self-managed entry gained an apiKey (helper owns the token)"
 assert im.get("baseModelId") == "claude-opus-5-5", "self-managed baseModelId touched"
+im1 = ih[1]
+assert im1["apiKeyHelper"] == "/sandbox/fleet-arm-ensure-basalt-inkling2-alt.sh", \
+    "duplicate-group helper entry's helper touched"
 entries = [m for m in models if m.get("model") == alias]
 # the ex-qwen35 anthropic-shape entry keeps the Messages ROOT (no /v1), gains
 # baseModelId, keeps its own apiKey, and is session-sized
@@ -591,8 +607,12 @@ assert lan[0]["apiKey"] == "lan", "LAN entry key clobbered"
 g = [m for m in models if m.get("model") == "gpt-5.4"]
 assert len(g) == 1, f"expected the duplicate cloud pair collapsed, got {len(g)}"
 assert g[0]["id"] == "custom:GPT-5.4-0" and g[0]["apiKey"] == "router-new", g[0]
-# no duplicate picker line survives anywhere in the file
-sigs = [(m.get("model"), m.get("baseUrl"), m.get("displayName")) for m in models]
+# no duplicate picker line survives anywhere in the file — EXCEPT the
+# self-managed class (apiKeyHelper set): the sync never dedupes those by
+# contract (the helper owns the model/route pairing), so they are exempt
+# from the picker-line invariant exactly as they are from the drop loop.
+sigs = [(m.get("model"), m.get("baseUrl"), m.get("displayName"))
+        for m in models if not m.get("apiKeyHelper")]
 assert len(sigs) == len(set(sigs)), "duplicate picker line survived dedupe"
 # dead favorites: BOTH qwen-era pins repoint onto the surviving local entry
 # (here the session-default-pinned chat survivor, the only proxy-route entry

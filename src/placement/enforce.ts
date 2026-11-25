@@ -612,11 +612,13 @@ export async function resolvePendingPlacement(
   const result = await enforceOption(loaded, pending.requested_model, approved, {
     ...opts,
     cells: pending.cells,
-    ...(pending.capability === 'vision'
-      ? pending.reason === 'vision_text_only_arm'
-        ? { capability: 'image' as const }
-        : { capability: 'vision' as const, excludeReuseOf: pending.requested_model }
-      : {}),
+    ...(pending.capability === 'image'
+      ? { capability: 'image' as const }
+      : pending.capability === 'vision'
+        ? pending.reason === 'vision_text_only_arm'
+          ? { capability: 'image' as const }
+          : { capability: 'vision' as const, excludeReuseOf: pending.requested_model }
+        : {}),
   });
   if (result.ok) {
     withLedger(ledgerPath, (l) => {
