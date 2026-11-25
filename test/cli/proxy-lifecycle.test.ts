@@ -180,6 +180,93 @@ describe('proxy lifecycle — start / adopt / refcount / release', () => {
   });
 });
 
+describe('proxy upstream validation — the ensure TTL as the CLI proxy\'s only supervisor', () => {
+  let rt: string;
+  beforeEach(() => {
+    rt = mkdtempSync(join(tmpdir(), 'uap-proxy-up-'));
+  });
+  afterEach(() => rmSync(rt, { recursive: true, force: true }));
+
+  /** fakeDeps + a controllable upstream probe. `upstream` is a function so a
+   *  test can kill the engine between ensure calls, the way the fleet really
+   *  strands a proxy. */
+  function fakeUpstreamDeps(ownable: boolean, upstream: () => 'ok' | 'unreachable' | null) {
+    const state = { up: false, started: 0, stopped: 0 };
+    const deps: LifecycleDeps = {
+      probeHealth: async () => state.up,
+      startProxy: async (port): Promise<StartResult> => {
+        state.started++;
+        state.up = true;
+        const owner: OwnerRecord | null = ownable
+          ? { kind: 'process', pid: 999999, startToken: 'tok', port, startedAt: now() }
+          : null;
+        return { healthy: true, owner };
+      },
+      stopProxy: async () => {
+        state.stopped++;
+        state.up = false;
+      },
+      now,
+      probeUpstreamHealth: async () => {
+        const u = upstream();
+        return u ? { upstream: u, upstreamUrl: 'http://127.0.0.1:8080/v1' } : null;
+      },
+    };
+    return { state, deps };
+  }
+
+  it('a healthy proxy with a live upstream is left alone', async () => {
+    const { state, deps } = fakeUpstreamDeps(true, () => 'ok');
+    const r = await ensureProxy(rt, client('A'), 4000, deps);
+    expect(r.action).toBe('started');
+    expect(r.upstream).toBe('ok');
+    expect(state.stopped).toBe(0);
+    expect(state.started).toBe(1);
+  });
+
+  it('bounces an OWNED proxy stranded on a dead upstream — the restart re-resolves it', async () => {
+    // The stranded-proxy class this exists for: the proxy pins the engine,
+    // hours later the engine moves/dies, the proxy keeps "healthy"-answering
+    // while every request through it fails. The next ensure TTL is the only
+    // supervisor that will ever notice.
+    const { state, deps } = fakeUpstreamDeps(true, () => 'unreachable');
+    await ensureProxy(rt, client('A'), 4000, deps); // starts + owns (upstream dead at birth)
+    expect(state.started).toBe(2); // started, then bounced + restarted
+    expect(state.stopped).toBe(1);
+    const r = await ensureProxy(rt, client('B'), 4000, deps); // next TTL
+    expect(r.upstream).toBe('restarted');
+    expect(r.action).toBe('started'); // the bounce's ensure re-started it
+    expect(state.started).toBe(3); // 1 birth + 2 bounce restarts
+    expect(readOwner(rt)?.kind).toBe('process'); // still owned, still reapable
+  });
+
+  it('NEVER stops a proxy it does not own (systemd/adopted) — reports unreachable instead', async () => {
+    const { state, deps } = fakeUpstreamDeps(false, () => 'unreachable');
+    const r = await ensureProxy(rt, client('A'), 4000, deps);
+    expect(r.upstream).toBe('unreachable');
+    expect(state.stopped).toBe(0); // not ours — its supervisor owns the restart
+    expect(state.started).toBe(1); // born once, never bounced
+  });
+
+  it('a probe it cannot answer is unknown, never a bounce (fail-open)', async () => {
+    const { state, deps } = fakeUpstreamDeps(true, () => null);
+    const r = await ensureProxy(rt, client('A'), 4000, deps);
+    expect(r.upstream).toBe('unknown');
+    expect(state.stopped).toBe(0);
+    expect(state.started).toBe(1);
+  });
+
+  it('no probeUpstreamHealth dep → the pre-validation contract, no upstream field', async () => {
+    const { state, deps } = fakeUpstreamDeps(true, () => 'unreachable');
+    const bare = { ...deps } as LifecycleDeps;
+    delete bare.probeUpstreamHealth;
+    const r = await ensureProxy(rt, client('A'), 4000, bare);
+    expect(r.action).toBe('started');
+    expect(r.upstream).toBeUndefined();
+    expect(state.stopped).toBe(0); // a dead upstream is NOT acted on blind
+  });
+});
+
 describe('start lock', () => {
   let rt: string;
   beforeEach(() => {

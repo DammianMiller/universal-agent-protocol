@@ -273,6 +273,14 @@ export interface LifecycleDeps {
   /** ISO timestamp (injectable for deterministic tests). */
   now: () => string;
 
+  /** OPTIONAL — the proxy's view of its own upstream, from its /health body
+   *  ("upstream": "ok" | "unreachable", "upstream_url"). Absent in tests and
+   *  older callers: ensure then skips upstream validation entirely (fail-open).
+   *  Supplied by proxy.ts: a CLI-spawned proxy has no systemd supervisor, so
+   *  nothing else would ever notice it stranded on a dead upstream — the
+   *  2026-11-25 uplift left one serving model-not-found for ~1h50m. */
+  probeUpstreamHealth?: (port: number) => Promise<ProxyUpstreamHealth | null>;
+
   // --- Co-located dashboard (optional). Present only when the caller wants the
   // monitoring UI to ride along with the proxy; all three must be supplied for
   // the dashboard to be managed at all. ---
@@ -284,6 +292,14 @@ export interface LifecycleDeps {
   stopDashboard?: (owner: OwnerRecord) => Promise<void>;
 }
 
+/** What the proxy reports about the engine it forwards to. `null` from the
+ *  probe means "could not ask" — treated as unknown, never as unreachable. */
+export interface ProxyUpstreamHealth {
+  upstream: 'ok' | 'unreachable';
+  /** The base URL the proxy is pinned to, when it reports one. */
+  upstreamUrl?: string;
+}
+
 export type EnsureAction = 'reused' | 'started' | 'start-failed';
 export interface ServiceEnsureResult {
   action: EnsureAction;
@@ -292,6 +308,11 @@ export interface ServiceEnsureResult {
 }
 export interface EnsureResult extends ServiceEnsureResult {
   clients: number;
+  /** The proxy's upstream as observed by this ensure. Absent when no
+   *  probeUpstreamHealth dep was supplied (older callers, fail-open).
+   *  'restarted' = the proxy was bounced because its upstream was dead and
+   *  the fresh start re-resolved it. */
+  upstream?: 'ok' | 'unreachable' | 'unknown' | 'restarted';
   /** Present only when a dashboard was requested AND adapters were supplied. */
   dashboard?: ServiceEnsureResult;
 }
@@ -385,14 +406,51 @@ export async function ensureProxy(
   const dash = opts.dashboard;
   const wantDash = Boolean(dash?.enabled && deps.probeDashHealth && deps.startDashboard);
 
-  const [proxy, dashboard] = await Promise.all([
+  const [initial, dashboard] = await Promise.all([
     ensureService(rt, 'proxy', port, deps.probeHealth, deps.startProxy),
     wantDash
       ? ensureService(rt, 'dash', dash!.port, deps.probeDashHealth!, deps.startDashboard!)
       : Promise.resolve(undefined),
   ]);
 
-  return { ...proxy, clients: listClients(rt).length, dashboard };
+  // Upstream validation — the ensure TTL is the only supervisor a
+  // CLI-spawned proxy has (the systemd watcher is INVOCATION_ID-gated, and
+  // "unsupervised, stopping the proxy is the end of it" made the run script
+  // leave them alone). A proxy can outlive its upstream: the engine moves or
+  // dies hours after the proxy pinned it, every request through it 529s or
+  // 404s, and nothing restarts it because IT is still healthy. When the proxy
+  // reports its upstream unreachable and we hold a stoppable owner for it,
+  // bounce: stop, then re-ensure — the run script re-resolves the upstream on
+  // every start, so the fresh proxy pins the LIVE engine. A dead upstream
+  // means in-flight requests were already failing, so the bounce costs
+  // nothing that was working. NOT owned (systemd / adopted) → report
+  // 'unreachable' and let the caller warn: the unit's own watcher owns the
+  // restart there. Never throws: validation failure degrades to 'unknown'.
+  let proxy = initial;
+  let upstream: EnsureResult['upstream'] | undefined;
+  if (deps.probeUpstreamHealth && initial.action !== 'start-failed') {
+    try {
+      const observed = await deps.probeUpstreamHealth(port);
+      if (observed && observed.upstream === 'unreachable') {
+        const owner = initial.owner ?? readOwner(rt, 'proxy');
+        if (owner) {
+          await deps.stopProxy(owner);
+          proxy = await ensureService(rt, 'proxy', port, deps.probeHealth, deps.startProxy);
+          upstream = proxy.action === 'start-failed' ? 'unknown' : 'restarted';
+        } else {
+          upstream = 'unreachable';
+        }
+      } else if (observed) {
+        upstream = 'ok';
+      } else {
+        upstream = 'unknown';
+      }
+    } catch {
+      upstream = 'unknown';
+    }
+  }
+
+  return { ...proxy, clients: listClients(rt).length, dashboard, ...(upstream ? { upstream } : {}) };
 }
 
 export type ReleaseAction =

@@ -58,6 +58,7 @@ import {
   type StartResult,
   type OwnerRecord,
   type ClientRecord,
+  type ProxyUpstreamHealth,
 } from './proxy-lifecycle.js';
 
 const PROXY_UNIT = 'uap-anthropic-proxy.service';
@@ -81,6 +82,36 @@ async function probeHealth(port: number, timeoutMs = 1500): Promise<boolean> {
     return res.ok;
   } catch {
     return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** The proxy's own view of its upstream, from the /health BODY. The proxy
+ *  probes the engine it forwards to and reports "upstream": "ok" |
+ *  "unreachable" (+ "upstream_url") — the signal ensureProxy needs to notice
+ *  a proxy that outlived its engine (a proxy can be perfectly healthy while
+ *  every request through it 529s). null on any failure = unknown, never a
+ *  false "unreachable" (fail-open: a proxy we cannot ask is left alone). */
+async function probeUpstreamHealth(
+  port: number,
+  timeoutMs = 2000
+): Promise<ProxyUpstreamHealth | null> {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { upstream?: string; upstream_url?: string };
+    if (body.upstream === 'ok' || body.upstream === 'unreachable') {
+      return {
+        upstream: body.upstream,
+        ...(body.upstream_url ? { upstreamUrl: body.upstream_url } : {}),
+      };
+    }
+    return null; // pre-upstream-field proxy — unknown, leave it alone
+  } catch {
+    return null;
   } finally {
     clearTimeout(t);
   }
@@ -510,6 +541,7 @@ function deps(dash?: DashboardSettings, root: string = process.cwd()): Lifecycle
     startProxy,
     stopProxy,
     now: () => new Date().toISOString(),
+    probeUpstreamHealth: (p) => probeUpstreamHealth(p),
     probeDashHealth: (p) => probeDashHealth(p, 1500, { host: d.host, root }),
     startDashboard: (p) => startDashboard(p, d.host, root),
     stopDashboard: (owner) => stopDashboard(owner, d.host),
@@ -609,6 +641,10 @@ export async function proxyCommand(
         if (r.action === 'reused') say(chalk.dim(`✓ proxy already running on :${port} (reused, ${r.clients} client${r.clients === 1 ? '' : 's'})`));
         else if (r.action === 'started') say(chalk.green(`✓ proxy started on :${port}${r.owner ? ` (${r.owner.kind})` : ' (systemd)'}`));
         else say(chalk.yellow(`⚠ proxy could not be started on :${port}; continuing without it`));
+        if (r.upstream === 'restarted')
+          say(chalk.yellow(`⚠ proxy was stranded on a dead upstream — bounced; the restart re-resolved it`));
+        else if (r.upstream === 'unreachable')
+          say(chalk.yellow(`⚠ proxy's upstream is unreachable and it is not ours to restart (systemd/adopted) — requests will fail until its supervisor recycles it`));
         sayDashboard(r.dashboard);
       } catch (e) {
         say(chalk.yellow(`⚠ proxy ensure skipped: ${(e as Error).message}`));
