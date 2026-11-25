@@ -273,6 +273,75 @@ print(json.dumps(asyncio.run(main())))
     expect(out.reason2).toBe('auto_loading');
   });
 
+  it('image-bearing requests split the burst key and pass carries_image to the controller (text-only arm class)', () => {
+    // The squid5090 class: a text-only serving arm inside a vision family.
+    // The image park is keyed model:vision so (a) a burst of image retries
+    // collapses to one ask and (b) the model's TEXT traffic never re-parks
+    // behind the image switch it does not need — the controller also gets
+    // carries_image so it can scope the switch to image-capable configs.
+    const out = runPython(GATE_PREAMBLE
+      .replace('__MODE__', 'ask')
+      .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
+      .replace('__IDS__', "['Inkling 2 Mini']")
+      + sliceFunction(source, '_content_has_multimodal_block')
+      + sliceFunction(source, '_request_carries_image')
+      + `
+asks = []
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
+    asks.append([client_id, model_id, carries_image])
+    return {"decision": "park", "reason": "vision_text_only_arm", "placement_id": f"plc-{len(asks)}"}
+
+async def main():
+    wire = {"model": "Inkling 2 Mini"}
+    r1 = await _placement_admit('Inkling 2 Mini', 'claude-code', 's1', None, wire, carries_image=True)
+    r2 = await _placement_admit('Inkling 2 Mini', 'claude-code', 's2', None, wire, carries_image=True)
+    r3 = await _placement_admit('Inkling 2 Mini', 'claude-code', 's3', None, wire)
+    b1 = json.loads(r1.body)["error"]
+    b2 = json.loads(r2.body)["error"]
+    b3 = json.loads(r3.body)["error"]
+    return {
+        "asks": asks,
+        "pid1": b1["placement_id"], "pid2": b2["placement_id"], "pid3": b3["placement_id"],
+        "reason1": b1["reason"], "msg1": b1["message"], "resolve1": b1["resolve_with"],
+        "detect": {
+            "anthropic_block": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}]}]}),
+            "openai_block": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}}]}]}),
+            "nested_tool_result": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "tool_result", "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}]}]}]}),
+            "text_string": _request_carries_image({"messages": [{"role": "user", "content": "just text"}]}),
+            "text_blocks": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}),
+        },
+    }
+print(json.dumps(asyncio.run(main())))
+`);
+    // ONE controller ask for the two image requests (the model:vision burst
+    // key collapses them, same placement id re-parked); the text request
+    // asked separately under the plain model key.
+    expect(out.asks).toEqual([
+      ['claude-code', 'Inkling 2 Mini', true],
+      ['claude-code', 'Inkling 2 Mini', false],
+    ]);
+    expect(out.pid1).toBe('plc-1');
+    expect(out.pid2).toBe('plc-1');
+    expect(out.pid3).toBe('plc-2');
+    expect(out.reason1).toBe('vision_text_only_arm');
+    // The park must say what actually broke: the ARM is text-only, not the
+    // request wrong or the memory short — and text requests still forward.
+    expect(String(out.msg1)).toContain('TEXT-ONLY');
+    expect(String(out.msg1)).toContain('Inkling 2 Mini');
+    expect(String(out.msg1)).toContain('text requests');
+    expect(String(out.resolve1)).toContain("family's image-capable arm");
+    expect(String(out.resolve1)).toContain('unaffected');
+    // Detection covers the Anthropic block, the OpenAI image_url, and the
+    // nested tool_result — the three shapes an image rides — and nothing else.
+    expect(out.detect).toEqual({
+      anthropic_block: true,
+      openai_block: true,
+      nested_tool_result: true,
+      text_string: false,
+      text_blocks: false,
+    });
+  });
+
   it('ask mode dedupes (client, model) retries onto one placement_id', () => {
     const out = runPython(GATE_PREAMBLE
       .replace('__MODE__', 'ask')
