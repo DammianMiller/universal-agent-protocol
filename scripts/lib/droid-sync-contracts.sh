@@ -117,6 +117,30 @@ _UAP_DROID_SYNC_CONTRACTS_LOADED=1
 # field; set it only if the catalog ever gains a Gemma family.
 : "${DROID_GEMMA_BASE_MODEL:=}"
 
+# DROID_LOCAL_INKLING2_PIN / DROID_LOCAL_INKLING2_DISPLAY — the FOURTH local
+# family the Droid pickers list: the registry's inkling2 family (Inkling 2
+# Mini — two engine arms, basalt on the NVFP4-MX8 pack and squid5090 on the
+# original HF checkpoint, sharing the :8080 slot and the wire id; the entry
+# is a FAMILY LISTING, not a route switch — the placement gate serves
+# whichever arm is resident and auto-switches for image traffic, since the
+# family's vision is dynamic on the basalt arm and none at config level on
+# the squid arm). Same rules as the 27B/gemma pins: the pin must be an id
+# that family advertises — checked against config/model-registry.json at
+# sync time, fail-closed to skip-adding. A camelCase entry carrying the
+# inkling2 marker id (custom:Inkling-2-Mini-UAP-local-N) is a DELIBERATE
+# listing: the convergence loop never repoints or renames it, it only
+# refreshes the token, maintains the caps to the inkling2 profile geometry,
+# and stamps baseModelId when absent AND the base-model variable is set.
+: "${DROID_LOCAL_INKLING2_PIN:=Inkling 2 Mini}"
+: "${DROID_LOCAL_INKLING2_DISPLAY:=Inkling 2 Mini (UAP local)}"
+
+# DROID_INKLING2_BASE_MODEL — the Factory BUILT-IN written into baseModelId
+# of the inkling2 listing, "" by default: the Factory catalog carries no
+# Inkling built-in, so the honest entry ships WITHOUT baseModelId (Droid's
+# unrecognized-model path applies) — the same empty-by-design rule as the
+# gemma base. Set it only if the catalog ever gains an Inkling family.
+: "${DROID_INKLING2_BASE_MODEL:=}"
+
 # DROID_SYNC_LOCK — lock file serialising concurrent Droid config writes
 # (session-start hook + manual installer run + a second Droid window).
 # Without it two writers read-modify-write the same JSON and one set of
@@ -148,7 +172,9 @@ fi
 #   CTX_SESSION, CTX_POOL, MAX_OUTPUT, DROID_ANTHROPIC_BASE_MODEL,
 #   DROID_CHAT_BASE_MODEL, DROID_LOCAL_27B_PIN, DROID_LOCAL_27B_DISPLAY,
 #   DROID_LOCAL_GEMMA_PIN, DROID_LOCAL_GEMMA_DISPLAY, DROID_GEMMA_BASE_MODEL,
-#   GEMMA_CTX, GEMMA_OUT, PROXY_TOKEN (via UAP_SYNC_TOKEN env), DRY_RUN.
+#   GEMMA_CTX, GEMMA_OUT, DROID_LOCAL_INKLING2_PIN, DROID_LOCAL_INKLING2_DISPLAY,
+#   DROID_INKLING2_BASE_MODEL, INK_CTX, INK_OUT, PROXY_TOKEN (via
+#   UAP_SYNC_TOKEN env), DRY_RUN.
 #   Migration rules (idempotent; no change => file left byte-identical):
 #     * entries whose model is a RETIRED local id — already the live alias,
 #       a FLEET wire id (any registry advertises entry) pointed at this
@@ -157,12 +183,14 @@ fi
 #       the compat names collide with real cloud ids, so a cloud-router
 #       entry carrying one survives untouched);
 #     * a camelCase entry whose id carries the 27B marker
-#       (custom:Qwen…-27B-UAP-local-N) or the gemma marker
-#       (custom:gemma-4…-UAP-local-N) is a DELIBERATE family listing:
+#       (custom:Qwen…-27B-UAP-local-N), the gemma marker
+#       (custom:gemma-4…-UAP-local-N) or the inkling2 marker
+#       (custom:Inkling-2-Mini-UAP-local-N) is a DELIBERATE family listing:
 #       it is skipped by the convergence loop (only apiKey is refreshed,
-#       and baseModelId is stamped when absent AND that family's base-model
-#       variable is non-empty) and is preferred over non-marker members
-#       in its dedupe group;
+#       caps are re-maintained to that family's geometry, and baseModelId
+#       is stamped when absent AND that family's base-model variable is
+#       non-empty) and is preferred over non-marker members in its dedupe
+#       group;
 #     * route by existing shape: baseUrl with :8080 -> direct strata route
 #       (pool-sized); :4000 WITHOUT /v1 -> Anthropic Messages root (proxy
 #       root + baseModelId=DROID_ANTHROPIC_BASE_MODEL + apiKey only if
@@ -178,13 +206,21 @@ fi
 #       canonical proxy entry (add-if-missing), gains the 27B family
 #       entry (model=DROID_LOCAL_27B_PIN on the proxy chat route, marker
 #       id, baseModelId) when the pin is an id the registry's qwen3.8-27b
-#       family advertises, and gains the gemma family entry
+#       family advertises, gains the gemma family entry
 #       (model=DROID_LOCAL_GEMMA_PIN on the proxy chat route, marker id,
 #       noImageSupport=true — the arm has no mmproj — caps GEMMA_CTX/
 #       GEMMA_OUT, baseModelId only when DROID_GEMMA_BASE_MODEL is set)
 #       when the pin is an id the registry's gemma-4-31b family
-#       advertises — the three-family listing: Flash-Next live alias +
-#       the 27B family + the gemma family, side by side in every picker;
+#       advertises, and gains the inkling2 family entry
+#       (model=DROID_LOCAL_INKLING2_PIN on the proxy chat route, marker
+#       id, noImageSupport=false — the family's vision is dynamic on the
+#       basalt arm and the placement gate auto-switches for images, caps
+#       INK_CTX/INK_OUT read from the inkling2 model profile,
+#       baseModelId only when DROID_INKLING2_BASE_MODEL is set) when the
+#       pin is an id the registry's inkling2 family advertises — the
+#       four-family listing: Flash-Next live alias + the 27B family +
+#       the gemma family + the inkling2 family, side by side in every
+#       picker;
 #     * the 192.168.1.165:8317 split-brain host is fixed everywhere;
 #     * writes are atomic (tmp file in the same directory + os.replace),
 #       under the flock, with backups taken by the caller's backup().

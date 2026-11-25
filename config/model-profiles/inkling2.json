@@ -1,0 +1,55 @@
+{
+    "_profile": "inkling2",
+    "_description": "Inkling 2 Mini — ThinkingMachines' small reasoning model, the inkling2 fleet family (two engine arms sharing the :8080 slot and the wire id: basalt 0.5.7 on the native NVFP4-MX8 pack via uap-basalt-inkling2-server, and squid5090 on the original HF ModelOpt NVFP4 checkpoint via uap-squid-inkling2-server). Family vision is DYNAMIC on the basalt arm and NONE at config level on the squid arm (the engine has no image parser at all — an image-bearing request would return HTTP 200 with hallucinated text over the silent drop, live-probed 2026-11-25), so the placement gate parks image traffic with carries_image and auto-switches arms within the family. Routes through the anthropic-proxy for the tool/finalize guardrails. Codex cannot reach this family: codex speaks the Responses API only and neither arm serves /v1/responses.",
+    "_engine": "Two arms, one wire id. BASELT ARM (uap-basalt-inkling2-server, engine 0.5.7 since the 2026-11-25 uplift from 0.5.5/q8): native pack Inkling-2-Mini-NVFP4-MX8.basalt (sha256 28ec7072…, KLD 0.00297/97.83% vs the retired q8 pack's 0.00305/97.76%), kv fp8, max-context 1048576, vision dynamic, DSpark speculative decoding on by default with the pack (window 8, up to 7 drafts/pass). SQUID ARM (uap-squid-inkling2-server, squid5090 built at fda96e9d, Zig 0.17.1, pinned rev c9d02830 of thinkingmachines/Inkling-2-Mini): fp8 weights/q4 KV, ctx 524288, DSpark drafter mtp.safetensors with --mtp 7 --spec-threshold 0.80, single-user c=1, text-only. Measured 2026-11-25 (squid smoke, basalt displaced): cold load ~2.5 s, decode 322-605 tok/s across code/counting/chat, TTFT ~30 ms, ~24.2 GiB VRAM; thinking-first SSE (reasoning_content deltas before content). Both arms advertise exactly 'Inkling 2 Mini' at /v1/models — the squid arm was deliberately served under --model-name 'Inkling 2 Mini' to pin the family wire id, and the basalt arm VALIDATES the model field.",
+    "model": "Inkling 2 Mini",
+    "_model_comment": "The family wire id both arms serve. basalt (llama-server class) validates the model field, so requests must carry exactly this id; squid does not validate but was pinned to the same id at serve time so a placement arm-switch is invisible to the client. The proxy's placement gate resolves the family by this id, and the profile rewrite puts this id on the wire for every profiled client.",
+    "max_tokens": 65536,
+    "_max_tokens_comment": "Inkling 2 Mini is THINKING-FIRST: reasoning streams in a separate reasoning_content field and spends completion budget before any content, so reasoning + answer share this budget. A tight cap produces an EMPTY content field with finish_reason=length (the smoke run's 512-token cap consumed the whole budget in reasoning and returned no content — the same class as the qwen38 lesson). 65536 is 25% of the 262144 session cap: generous for reasoning-heavy turns while the proxy's tool-turn clamp (32768) disciplines agentic turns. Do not lower without re-measuring content compliance on agent traffic.",
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "_sampling_comment": "The engine's own serve defaults (the smoke flags --temp 1.0 --top-p 0.95), carried as the honest baseline: this family has never been tool-call-tuned on this box (unlike qwen38's 0.3/0.9, which were measured against llama.cpp GSQ-RCO). Re-tune with `uap tune` before deviating. No top_k/min_p pins: the arms' speculative decoding (DSpark) has its own acceptance threshold (--spec-threshold 0.80 on squid) that interacts with tail truncation.",
+    "timeout_ms": 300000,
+    "context_window": 262144,
+    "_context_window_comment": "THIS IS A PER-SESSION CAP, AND IT IS OPT-IN BY PROFILE HEADER (same gap as qwen38: a client that sends no x-uap-model-profile header gets the whole pool — factory/droid custom models cannot send it, so their listings carry maxContextLimit client-side instead). 262144 deliberately sits below the SMALLEST arm pool: squid's --ctx 524288 (q4 KV) and basalt's 1048576 (fp8 KV) both leave >= 2x headroom, so a session at the cap cannot crowd the engine's own working room (prompt scratch, DSpark drafter state, prefix cache) under EITHER arm — a placement arm-switch mid-session must not invalidate the cap. Admission defaults 4: four hot sessions at cap demand 1048576 cells — exact fit on the basalt arm, 2x overcommit on squid — contention degrades to queueing (idle sessions prune at the 90s TTL, waiters force-admit at 300s by evicting the LRU admission), the same operator-accepted arithmetic as qwen38.",
+    "optimize_for_tool_calls": true,
+    "mode_switch_buffer_tokens": 500,
+    "enable_thinking": true,
+    "_thinking_comment": "Thinking-first by model design — reasoning_content deltas precede content on every turn. The proxy probes the backend once and adapts (PROXY_CHAT_TEMPLATE_KWARGS=auto); squid answers the OpenAI reasoning_content shape natively and basalt separates reasoning the same way.",
+    "dynamic_temperature": {
+        "enabled": true,
+        "decay": 0.5,
+        "floor": 0.2,
+        "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
+    },
+    "tool_call_batching": {
+        "enabled": true,
+        "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+        "_comment": "Reduces round-trips by encouraging multi-tool emission in one turn."
+    },
+    "concurrency": {
+        "max_parallel_requests": 1,
+        "_comment": "One arm resident at a time (the arms conflict on :8080), and each arm serves single-user decode: squid is c=1 by engine design, basalt 0.5.6+ could run --parallel N but the shared-context split (N x ctx/N KV) trades the single-request ceiling and the uplift round measured parallelism OFF for now. PROXY_CONCURRENCY_LIMIT/UAP_MODEL_SLOTS follow at 1 with the arm. SESSION ADMISSION stays 4 (the durable operator default 2026-11-18).",
+        "kv_capacity_shared": true,
+        "_kv_shared_comment": "One arm, one pool: a session addresses the WHOLE pool rather than owning a slice."
+    },
+    "server_optimization": {
+        "kv_dtype": "fp8",
+        "_kv_dtype_comment": "The basalt arm's KV class (kv fp8 over the 1048576-cell pool). The squid arm serves q4 KV over its 524288 ctx — the registry's per-config measurements carry each arm's exact posture; this field names the family default arm.",
+        "prefill_chunk": 2048,
+        "max_context": 1048576,
+        "kv_capacity": 1048576,
+        "_capacity_comment": "The basalt arm's pool (1048576 fp8 KV); the squid arm's pool is 524288 q4. Per-session allowance is context_window above (262144, deliberately under both).",
+        "parallel_rails": 1,
+        "speculative_decoding": {
+            "enabled": true,
+            "type": "dspark",
+            "draft_model": "mtp.safetensors",
+            "draft_max": 7,
+            "draft_conf": 0.8,
+            "_comment": "DSpark MTP drafting with the vendor's own drafter head (mtp.safetensors, 636 MB, sha256 7c3b6513…). squid arm: --mtp 7 --spec-threshold 0.80 (up to 7 drafts/pass, threshold-verified live). basalt arm: DSpark on by default with the MX8 pack, window 8, up to 7 drafts/pass (0.5.6 release notes). Both arms draft in-engine — no external draft artifact to pin beyond the checkpoint file the registry records."
+        },
+        "_comment": "The flags the serve units actually run with. squid: --mode fp8 --kv q4 --ctx 524288 --mtp 7 --spec-threshold 0.80 --temp 1.0 --top-p 0.95, LD_LIBRARY_PATH cuda-13.4 lib64, graphs on, prefix cache on. basalt: config basalt-inkling2-mx8.json (gpu 0, kv fp8, max-context 1048576, vision dynamic, port 8080), unit Env carries the cuda-libs redist path."
+    },
+    "_vision_comment": "Family vision is dynamic (basalt arm encodes; the squid arm declares config-level vision none in the registry). Image-bearing requests through the proxy carry carries_image: the placement gate parks them on a text-only resident with reason vision_text_only_arm and auto-switches to the image-capable arm — the client's retry forwards with the image intact. Text requests are never parked for an image switch (the model:vision burst-key split)."
+}
