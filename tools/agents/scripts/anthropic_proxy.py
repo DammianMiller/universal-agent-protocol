@@ -2438,20 +2438,35 @@ async def _probe_chat_template_kwargs() -> None:
 
 # Model ids the upstream actually answers to, or None when not yet known.
 _upstream_model_ids: list[str] | None = None
+# Negative cache (uplift: full automation): a failed /models fetch is
+# remembered for this window so a hung/unreachable upstream costs ONE 10s
+# timeout per window, not one per caller. Without it, a custom-local BYOK
+# request pays the handler's warmup fetch AND the placement resolver's
+# fetch — two serial 10s stalls per request precisely when the upstream is
+# memory-starved (the encoder-OOM condition this machinery targets). A
+# SUCCESS still caches for the process lifetime (invalidated wholesale by
+# invalidate_upstream_caches); only the FAILURE backoff is windowed, and
+# the window is short so a recovering upstream is picked up on the next
+# request, not the next process.
+_UPSTREAM_IDS_RETRY_SECS = 5.0
+_upstream_ids_failed_at: float = 0.0
 # Ids we have already reported as unservable, so the log says it once per id.
 _rewritten_model_ids: set[str] = set()
 
 
 async def _upstream_model_ids_cached() -> list[str] | None:
     """The upstream's advertised model ids, fetched at most once per process."""
-    global _upstream_model_ids
+    global _upstream_model_ids, _upstream_ids_failed_at
     if _upstream_model_ids is not None:
         return _upstream_model_ids
     if http_client is None:
         return None
+    if time.time() - _upstream_ids_failed_at < _UPSTREAM_IDS_RETRY_SECS:
+        return None  # recent failure — one timeout per window, not per caller
     try:
         r = await http_client.get(f"{LLAMA_CPP_BASE}/models", timeout=10.0)
         if r.status_code != 200:
+            _upstream_ids_failed_at = time.time()
             return None
         data = (r.json() or {}).get("data") or []
         # Aliases count as served ids. llama-server reports ONE primary `id`
@@ -2470,8 +2485,11 @@ async def _upstream_model_ids_cached() -> list[str] | None:
                     ids.append(str(alias))
         if ids:
             _upstream_model_ids = ids
-        return ids or None
+            return _upstream_model_ids
+        _upstream_ids_failed_at = time.time()
+        return None
     except Exception:  # noqa: BLE001 - discovery must never take the proxy down
+        _upstream_ids_failed_at = time.time()
         return None
 
 
@@ -3077,12 +3095,18 @@ def invalidate_upstream_caches() -> list[str]:
     global _upstream_model_ids, _ctk_supported, _ctk_probed, _ctk_probe_attempts
     global default_context_window, _context_window_measured, _last_ctx_recheck_ts
     global upstream_vision, _last_vision_recheck_ts
-    global _placement_pending, _slot_save_supported
+    global _placement_pending, _slot_save_supported, _upstream_ids_failed_at
     cleared: list[str] = []
     if _upstream_model_ids is not None:
         _upstream_model_ids = None
         _rewritten_model_ids.clear()
         cleared.append("upstream_model_ids")
+    # A swap IS new upstream knowledge: retire any failure-window backoff
+    # with the same stroke, or the resolver would ask raw (spurious operator
+    # park) for up to _UPSTREAM_IDS_RETRY_SECS after the refresh.
+    if _upstream_ids_failed_at != 0.0:
+        _upstream_ids_failed_at = 0.0
+        cleared.append("upstream_ids_backoff")
     if PROXY_CHAT_TEMPLATE_KWARGS == "auto" and _ctk_probed:
         # Only 'auto' mode holds a probe result; an operator pin (on/off) is
         # an assertion about THIS operator's backends and must survive a swap.

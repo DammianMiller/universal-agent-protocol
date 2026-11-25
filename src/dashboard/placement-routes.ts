@@ -291,34 +291,39 @@ export function getPlacementAdmit(
     return { decision: 'park', reason: 'invalid_request' };
   }
   // The registry loads BEFORE the charset gate because it IS the gate's
-  // trust anchor for the id itself. Backends serve human-readable wire ids
-  // ("Inkling 2 Mini", "Qwen3.8-Flash-Next NVIDIA-NVFP4") that the raw
-  // charset check refuses — but an off-charset id that EXACTLY matches a
-  // registry `advertises` entry is not client-controlled prose; it is a
-  // string the operator's own registry declared. It resolves to the
-  // registry model key here, and the RESOLVED key flows everywhere
-  // downstream (resident check, options, pending entry, attention text) —
-  // charset-safe and operator-actionable (`uap models apply` names registry
-  // keys, never wire ids). An id that already satisfies the charset gate
-  // is used as-is; matchingConfigs resolves charset-safe wire ids the same
-  // way downstream. Everything else parks as invalid_request BEFORE any
-  // queue write — the original injection property is unchanged: a hostile
-  // id still never becomes a durable, self-reasserting injection channel
-  // wearing the queue's trusted framing, because the only strings that
-  // resolve are ones the operator's registry declared, and only registry
-  // keys ever reach the queue text.
+  // trust anchor for the id itself. Backends serve wire ids the registry
+  // declares in `advertises` — human-readable ones ("Inkling 2 Mini",
+  // spaces and all) that the raw charset check refuses, AND charset-safe
+  // alias ids ("inkling2-mini-basalt-nvfp4") that pass it. BOTH resolve
+  // to the registry model key here through the same EXACT-match scan, so
+  // the id that flows everywhere downstream (resident check, options,
+  // excludeReuseOf, pending entry, attention text) is uniform: every
+  // comparison is key-to-key and the operator's apply surface never sees
+  // a wire id. The injection property in MODEL_ID_RE's docstring holds
+  // unchanged — only strings the registry declared resolve, only keys
+  // reach the queue text. (A charset-safe id the registry does not
+  // declare flows RAW: unknown_model is its decision class downstream,
+  // not invalid_request.)
   const loaded = opts?.loaded ?? loadModelRegistry(projectDir);
   const registry = loaded.registry;
   let requested = request.model_id;
-  if (!MODEL_ID_RE.test(requested)) {
+  // Off-charset registry keys enter the scan too (asked directly they
+  // resolve or park either way) — the condition below is the ONLY split
+  // between "already the right id" and "needs resolution".
+  if (registry.models[requested] === undefined || !MODEL_ID_RE.test(requested)) {
     const advertised = Object.entries(registry.models).find(([, m]) =>
       (m.advertises ?? []).includes(requested),
     );
     const resolvedKey = advertised?.[0];
-    if (resolvedKey === undefined || !MODEL_ID_RE.test(resolvedKey)) {
+    if (resolvedKey !== undefined) {
+      if (!MODEL_ID_RE.test(resolvedKey)) {
+        return { decision: 'park', reason: 'invalid_request' };
+      }
+      requested = resolvedKey;
+    } else if (!MODEL_ID_RE.test(requested)) {
+      // Off-charset AND declared by no registry model: the injection class.
       return { decision: 'park', reason: 'invalid_request' };
     }
-    requested = resolvedKey;
   }
   // Request-driven context need: the proxy's honest estimate, clamped to
   // positive integers; anything off-shape degrades to the computeOptions
@@ -404,9 +409,10 @@ export function getPlacementAdmit(
   // state is irrelevant, the failure is about its encoder, not its load.
   let reason: string = visionOom ? 'vision_encoder_oom' : 'not_resident';
   if (!visionOom) {
-    const modelEntry =
-      registry.models[requested] ??
-      Object.values(registry.models).find((m) => (m.advertises ?? []).includes(requested));
+    // The resolution above guarantees `requested` is a registry key or an
+    // unregistered charset-safe id — never a raw advertised alias — so
+    // the direct lookup is the only one that can fire.
+    const modelEntry = registry.models[requested];
     if (!modelEntry) {
       reason = 'unknown_model';
     } else if (!Object.values(modelEntry.configs).some(isPlaceable)) {

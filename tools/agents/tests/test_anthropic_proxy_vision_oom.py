@@ -768,7 +768,27 @@ class TestByokAskResolution(unittest.TestCase):
     def test_non_custom_ids_pass_through_untouched(self):
         # Only the custom-local class resolves — every other id asks raw so
         # an unknown model stays the operator's parked decision, never a
-        # silent rewrite to the live arm.
+        # silent rewrite to the live arm. The near-misses pin the class
+        # BOUNDARY of the regex: sharing the `custom` prefix, the colon, or
+        # the (UAP-local) marker is not enough — only the full
+        # custom:<name>-(UAP-local)-<digits> shape rewrites, and even then
+        # only when a served id exists to rewrite to.
+        near_misses = (
+            "custom-finetune-7b",  # hyphen, not colon — a user's own model name
+            "custom:gpt-4o",  # remote BYOK id, not the local harness class
+            "custom:Foo-(UAP-local)",  # missing the trailing -<digits>
+            "my-custom-model",
+        )
+
+        async def ids():
+            return ["Inkling 2 Mini", "qwen35-a3b-iq4xs"]
+
+        for raw in near_misses:
+            with unittest.mock.patch.object(proxy, "_upstream_model_ids_cached", ids):
+                # A populated served-id cache makes the rewrite POSSIBLE —
+                # these must still pass through because the class doesn't
+                # match, not because there was nothing to rewrite to.
+                self.assertEqual(self._run(proxy._placement_ask_model(raw)), raw)
         for raw in ("Inkling 2 Mini", "qwen3.8-27b", None):
             self.assertEqual(self._run(proxy._placement_ask_model(raw)), raw)
 
@@ -781,6 +801,66 @@ class TestByokAskResolution(unittest.TestCase):
         with unittest.mock.patch.object(proxy, "_upstream_model_ids_cached", none_ids):
             got = self._run(proxy._placement_ask_model("custom:Foo-(UAP-local)-0"))
         self.assertEqual(got, "custom:Foo-(UAP-local)-0")
+
+    def test_failed_models_fetch_backs_off_within_the_window(self):
+        # One timeout per window, not one per caller (performance review,
+        # CONCERN 1): a hung upstream must cost the custom-local resolver
+        # ONE 10s fetch per retry window — the second call inside the window
+        # returns None with NO round-trip, so a BYOK request cannot stall
+        # warmup(10s) + resolver(10s) serially on a starved arm.
+        calls = []
+
+        class _Hung:
+            async def get(self, url, timeout=None):
+                calls.append(url)
+                raise RuntimeError("upstream hung")
+
+        saved_ids, saved_failed_at = proxy._upstream_model_ids, proxy._upstream_ids_failed_at
+        proxy._upstream_model_ids = None
+        proxy._upstream_ids_failed_at = 0.0
+        try:
+            with unittest.mock.patch.object(proxy, "http_client", _Hung()):
+                first = self._run(proxy._upstream_model_ids_cached())
+                second = self._run(proxy._upstream_model_ids_cached())
+            self.assertIsNone(first)
+            self.assertIsNone(second)
+            self.assertEqual(len(calls), 1)  # ONE fetch; the window served the rest
+            self.assertGreater(proxy._upstream_ids_failed_at, 0.0)
+        finally:
+            proxy._upstream_model_ids = saved_ids
+            proxy._upstream_ids_failed_at = saved_failed_at
+
+    def test_models_fetch_success_still_caches_for_the_process_lifetime(self):
+        # A success keeps the process-lifetime cache (only the FAILURE
+        # backoff is windowed) — one fetch, every later call served warm.
+        calls = []
+
+        class _Ok:
+            async def get(self, url, timeout=None):
+                calls.append(url)
+
+                class R:
+                    status_code = 200
+
+                    @staticmethod
+                    def json():
+                        return {"data": [{"id": "Inkling 2 Mini"}]}
+
+                return R()
+
+        saved_ids, saved_failed_at = proxy._upstream_model_ids, proxy._upstream_ids_failed_at
+        proxy._upstream_model_ids = None
+        proxy._upstream_ids_failed_at = 0.0
+        try:
+            with unittest.mock.patch.object(proxy, "http_client", _Ok()):
+                first = self._run(proxy._upstream_model_ids_cached())
+                second = self._run(proxy._upstream_model_ids_cached())
+            self.assertEqual(first, ["Inkling 2 Mini"])
+            self.assertEqual(second, ["Inkling 2 Mini"])
+            self.assertEqual(len(calls), 1)
+        finally:
+            proxy._upstream_model_ids = saved_ids
+            proxy._upstream_ids_failed_at = saved_failed_at
 
     def test_placement_admit_asks_by_the_resolved_id_and_keys_the_burst_by_it(self):
         fake = _FakeClient(
