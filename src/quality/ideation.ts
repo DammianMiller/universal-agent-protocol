@@ -14,8 +14,16 @@
  *                      candidate carries a stance when it holds at least one
  *                      committed sentence and no more hedged than committed.
  *   compositionDepth   mean sub-structure lines per candidate (sub-headings,
- *                      list items) — a candidate built of parts, not one
- *                      flat paragraph (composition-hierarchy).
+ *                      list items, bold-label part-lines like "**Stance:**")
+ *                      — a candidate built of parts, not one flat paragraph
+ *                      (composition-hierarchy). Format-aware since extractor
+ *                      v2 (wave 6, item 5): the 2026-11-25 A.2 parity probes
+ *                      found the free-form condition scored compositionDepth
+ *                      0 against the tier-contract condition's 14.29 purely
+ *                      on format — inkling composes candidates from
+ *                      **Label:** part-lines, which the markdown-only
+ *                      counter never saw. A labeled part-line is composition
+ *                      evidence regardless of the marker it uses.
  *   topicDiversity     distinct significant words / total significant words —
  *                      how much of the solution space the set draws on
  *                      (subsystem-coverage: the ambition floor generalized
@@ -34,7 +42,8 @@
  */
 import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
-import { TIER_EXTRACTOR_VERSION, TierVector } from './tier.js';
+import { extractorVersionFor } from './classes.js';
+import { TierVector } from './tier.js';
 
 const r5 = (x: number): number => Math.round(x * 1e5) / 1e5;
 
@@ -72,7 +81,21 @@ export function sectionsOf(raw: string): IdeationSection[] {
   const blocks = raw.split(/^##\s+/m).slice(1);
   for (const block of blocks) {
     const body = block.slice(block.indexOf('\n') + 1);
-    const subLines = (body.match(/^(?:#{3,}\s|\s*(?:[-*+]|\d+[.)])\s)/gm) || []).length;
+    // Sub-structure = a composed part-line. Three marker families, one role:
+    //   ### sub-headings            — markdown composition
+    //   - / * / 1. list items       — markdown composition
+    //   **Short label** at line start — bold-label parts (wave 6, item 5).
+    // The bold-label family is what free-form ideation actually emits
+    // ("**Stance:** …", "**Mechanism:** …"); counting only the markdown
+    // families scored genuinely composed candidates as flat prose, a
+    // format-conditional zero the tier-contract condition could not produce.
+    // A short span (<49 chars) at line start is a label; a whole bold
+    // SENTENCE opening a paragraph is emphasis, not a part-label.
+    const subLines = (
+      body.match(
+        /^(?:#{3,}\s|\s*(?:[-*+]|\d+[.)])\s|\s*\*\*[^*\n]{1,48}\*\*)/gm,
+      ) || []
+    ).length;
     const prose = body
       .replace(/```[\s\S]*?```/g, ' ')
       .replace(/`[^`\n]*`/g, ' ')
@@ -218,7 +241,11 @@ export function extractIdeationVector(path: string): TierVector | null {
   };
 
   return {
-    extractorVersion: TIER_EXTRACTOR_VERSION,
+    // The class's own extractor version (v2: format-aware composition
+    // depth), not the global baseline — this vector's semantics are what
+    // the class version names, and extractorVersionFor is the source of
+    // truth the tier staleness check compares against.
+    extractorVersion: extractorVersionFor('ideation-outcome'),
     canonicalWidth: 0,
     canonicalHeight: 0,
     sha256: createHash('sha256').update(raw).digest('hex'),

@@ -30,6 +30,12 @@ import {
 import { basename, join } from 'path';
 import { decodePng, DecodedImage } from '../delivery/visual-baseline.js';
 
+// Global extractor baseline. A class whose MEASUREMENT DEFINITION changes
+// bumps its own version in extractorVersionFor (classes.ts), not this
+// constant — stored tiers of other classes must not go stale by
+// association. Current per-class versions: ideation-outcome v2 (2026-11-26,
+// format-aware compositionDepth — bold-label part-lines count as
+// sub-structure); every other class v1.
 export const TIER_EXTRACTOR_VERSION = 1;
 export const CANONICAL_WIDTH = 1200;
 export const CANONICAL_HEIGHT = 750;
