@@ -243,11 +243,16 @@ export function resetColdProbeForTests(): void {
 }
 
 /** Model ids are opaque tokens, not prose. The registry's own ids never
- * leave [A-Za-z0-9._-], and the client's model_id flows verbatim into
- * operator-facing attention-queue text (title/detail) and from there into
- * the session-start prompt — a hostile id must park as invalid_request
- * BEFORE any queue write, so it can never become a durable, self-reasserting
- * injection channel wearing the queue's trusted framing. */
+ * leave [A-Za-z0-9._-]. An id that fails this class of check can still be
+ * legitimate: backends serve human-readable WIRE ids ("Inkling 2 Mini"),
+ * and those resolve to registry keys through the exact-match `advertises`
+ * scan in getPlacementAdmit BEFORE this gate decides — the registry is the
+ * trust anchor, and only its own keys ever flow into operator-facing
+ * attention-queue text (title/detail) and from there into the session-start
+ * prompt. An id that matches nothing the registry declared parks as
+ * invalid_request BEFORE any queue write, so a hostile id can never become
+ * a durable, self-reasserting injection channel wearing the queue's
+ * trusted framing. */
 const MODEL_ID_RE = /^[A-Za-z0-9._-]+$/;
 
 /** Admission decision for one gated request (spec §4.3).
@@ -282,8 +287,38 @@ export function getPlacementAdmit(
     deviceProbe?: typeof probeDeviceStates;
   },
 ): PlacementAdmitAnswer {
-  if (!request.model_id || typeof request.model_id !== 'string' || !MODEL_ID_RE.test(request.model_id)) {
+  if (typeof request.model_id !== 'string' || !request.model_id) {
     return { decision: 'park', reason: 'invalid_request' };
+  }
+  // The registry loads BEFORE the charset gate because it IS the gate's
+  // trust anchor for the id itself. Backends serve human-readable wire ids
+  // ("Inkling 2 Mini", "Qwen3.8-Flash-Next NVIDIA-NVFP4") that the raw
+  // charset check refuses — but an off-charset id that EXACTLY matches a
+  // registry `advertises` entry is not client-controlled prose; it is a
+  // string the operator's own registry declared. It resolves to the
+  // registry model key here, and the RESOLVED key flows everywhere
+  // downstream (resident check, options, pending entry, attention text) —
+  // charset-safe and operator-actionable (`uap models apply` names registry
+  // keys, never wire ids). An id that already satisfies the charset gate
+  // is used as-is; matchingConfigs resolves charset-safe wire ids the same
+  // way downstream. Everything else parks as invalid_request BEFORE any
+  // queue write — the original injection property is unchanged: a hostile
+  // id still never becomes a durable, self-reasserting injection channel
+  // wearing the queue's trusted framing, because the only strings that
+  // resolve are ones the operator's registry declared, and only registry
+  // keys ever reach the queue text.
+  const loaded = opts?.loaded ?? loadModelRegistry(projectDir);
+  const registry = loaded.registry;
+  let requested = request.model_id;
+  if (!MODEL_ID_RE.test(requested)) {
+    const advertised = Object.entries(registry.models).find(([, m]) =>
+      (m.advertises ?? []).includes(requested),
+    );
+    const resolvedKey = advertised?.[0];
+    if (resolvedKey === undefined || !MODEL_ID_RE.test(resolvedKey)) {
+      return { decision: 'park', reason: 'invalid_request' };
+    }
+    requested = resolvedKey;
   }
   // Request-driven context need: the proxy's honest estimate, clamped to
   // positive integers; anything off-shape degrades to the computeOptions
@@ -293,8 +328,6 @@ export function getPlacementAdmit(
     typeof request.cells === 'number' && Number.isInteger(request.cells) && request.cells > 0
       ? request.cells
       : undefined;
-  const loaded = opts?.loaded ?? loadModelRegistry(projectDir);
-  const registry = loaded.registry;
   const ledgerPath = opts?.ledgerPath ?? placementLedgerPath();
   // One read feeds the resident check, the auto option math, and the
   // dedupe scan (the locked write below re-reads — it must see the
@@ -346,7 +379,7 @@ export function getPlacementAdmit(
   const resident = visionOom
     ? undefined
     : ledger.residents.find(
-        (r) => r.state !== 'draining' && residentServes(r, request.model_id, registry),
+        (r) => r.state !== 'draining' && residentServes(r, requested, registry),
       );
   if (resident) {
     // Idle-sweep clock (§4.4.2): a gated request just used this model.
@@ -372,8 +405,8 @@ export function getPlacementAdmit(
   let reason: string = visionOom ? 'vision_encoder_oom' : 'not_resident';
   if (!visionOom) {
     const modelEntry =
-      registry.models[request.model_id] ??
-      Object.values(registry.models).find((m) => (m.advertises ?? []).includes(request.model_id));
+      registry.models[requested] ??
+      Object.values(registry.models).find((m) => (m.advertises ?? []).includes(requested));
     if (!modelEntry) {
       reason = 'unknown_model';
     } else if (!Object.values(modelEntry.configs).some(isPlaceable)) {
@@ -397,21 +430,21 @@ export function getPlacementAdmit(
   let visionOptionCount = 0;
   let autoPlan: ReturnType<typeof autoOptionFor> = null;
   if (visionOom) {
-    const options = computeOptions(registry, ledger, request.model_id, {
+    const options = computeOptions(registry, ledger, requested, {
       cells,
       capability: 'vision',
-      excludeReuseOf: request.model_id,
+      excludeReuseOf: requested,
     }).options;
     visionOptionCount = options.length;
-    autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), request.model_id);
+    autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), requested);
     // A DISTINCT reason, additive per the §4.3 contract: the generic
     // auto_loading message says "model X is being loaded" — false for a
     // switch, where a DIFFERENT vision-capable arm is loaded and the
     // starved one may be displaced. The 409 body says what is happening.
     if (autoPlan) reason = 'vision_auto_loading';
   } else if (reason === 'not_resident') {
-    const options = computeOptions(registry, ledger, request.model_id, { cells }).options;
-    autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), request.model_id);
+    const options = computeOptions(registry, ledger, requested, { cells }).options;
+    autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), requested);
     if (autoPlan) reason = 'auto_loading';
   }
 
@@ -431,7 +464,7 @@ export function getPlacementAdmit(
   // dedupe key carries the capability class too.
   const capabilityKey = visionOom ? 'vision' : '';
   const matchesPending = (p: LedgerPending): boolean =>
-    p.requested_model === request.model_id &&
+    p.requested_model === requested &&
     (p.client ?? '') === clientKey &&
     (p.capability ?? '') === capabilityKey &&
     p.expires_at > now.toISOString();
@@ -448,7 +481,9 @@ export function getPlacementAdmit(
 
   const pending: LedgerPending = {
     id: `plc-${randomBytes(3).toString('hex')}`,
-    requested_model: request.model_id,
+    // The registry key (wire ids resolved above): the operator's apply
+    // surface names registry keys, so the entry must too.
+    requested_model: requested,
     client,
     session,
     created_at: now.toISOString(),
@@ -505,7 +540,7 @@ export function getPlacementAdmit(
     // enforcement for exactly this placement id (a concurrent winner
     // schedules its own). The client retries on the floor and forwards
     // once the load lands.
-    scheduleAutoResolution(registry, request.model_id, autoPlan, placementId, {
+    scheduleAutoResolution(registry, requested, autoPlan, placementId, {
       ledgerPath,
       // The run's step-0 re-derive must see the same context need the
       // option was computed against, or a small-pool load refuses itself.
@@ -515,7 +550,7 @@ export function getPlacementAdmit(
       // not the requested model's — its approved option loads a DIFFERENT
       // arm, and the model-scoped re-derivation would flag exactly that as
       // "drift" and refuse its own switch.
-      ...(visionOom ? { capability: 'vision' as const, excludeReuseOf: request.model_id } : {}),
+      ...(visionOom ? { capability: 'vision' as const, excludeReuseOf: requested } : {}),
     });
     return { decision: 'park', placement_id: placementId, reason };
   }
@@ -545,13 +580,13 @@ export function getPlacementAdmit(
   enqueueAttention(projectDir, {
     kind: 'review-request',
     title: visionOom
-      ? `Vision parked: ${request.model_id} (image encoder OOM)`
-      : `Placement parked: ${request.model_id}`,
+      ? `Vision parked: ${requested} (image encoder OOM)`
+      : `Placement parked: ${requested}`,
     detail: actionable
       ? visionOom
-        ? `The resident arm '${request.model_id}' cannot encode images right now (its image encoder cannot get device memory). ${visionOptionCount} vision-capable switch option(s) registered. Approve a switch with: uap models apply ${pending.id} <n> — or do nothing.`
-        : `A gated request wants '${request.model_id}' (reason: ${reason}, placement ${pending.id}). Approve a swap with: uap models apply ${pending.id} <n> — or do nothing.`
-      : `A gated request wants '${request.model_id}' (reason: ${reason}, placement ${pending.id}). No registered option serves it — nothing to approve; it expires on its own.`,
+        ? `The resident arm '${requested}' cannot encode images right now (its image encoder cannot get device memory). ${visionOptionCount} vision-capable switch option(s) registered. Approve a switch with: uap models apply ${pending.id} <n> — or do nothing.`
+        : `A gated request wants '${requested}' (reason: ${reason}, placement ${pending.id}). Approve a swap with: uap models apply ${pending.id} <n> — or do nothing.`
+      : `A gated request wants '${requested}' (reason: ${reason}, placement ${pending.id}). No registered option serves it — nothing to approve; it expires on its own.`,
     source: `placement:${pending.id}`,
     expiresAt: pending.expires_at,
     safeDefault: {

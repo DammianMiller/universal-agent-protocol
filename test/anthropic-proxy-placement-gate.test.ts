@@ -86,9 +86,11 @@ LLAMA_CPP_BASE = 'http://harness.invalid/v1'
 _upstream_model_ids = __IDS__
 _current_placement_target = contextvars.ContextVar('t', default=None)
 _placement_pending = {}
+_BYOK_LOCAL_RE = re.compile(r"^custom:.*-\\(UAP-local\\)-\\d+$")
 
 ${sliceFunction(source, '_placement_controller_admit')}
 ${sliceFunction(source, '_upstream_model_ids_cached')}
+${sliceFunction(source, '_placement_ask_model')}
 ${sliceFunction(source, '_placement_park_response')}
 ${sliceFunction(source, '_placement_admit')}
 `;

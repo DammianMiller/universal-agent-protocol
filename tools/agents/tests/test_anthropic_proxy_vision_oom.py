@@ -268,6 +268,47 @@ class TestVisionRelayWiring(unittest.TestCase):
         # The ONLY upstream round-trip is the text one.
         self.assertEqual(len(http.upstream_posts), 1)
 
+    def test_custom_local_id_asks_by_the_served_arm_end_to_end(self):
+        # Full automation (uplift): a BYOK custom-local id names the local
+        # BACKEND, not a registry model — every placement ask it produces
+        # (the request gate's forward ask AND the vision park's switch ask)
+        # must carry the RESOLVED served id, and the pre-request burst keys
+        # must agree with the park response's keys so a retry collapses to
+        # one vision ask instead of re-asking per retry.
+        async def ids():
+            return ["Inkling 2 Mini"]
+
+        http = _FakeHttp()
+        proxy.PROXY_PLACEMENT_MODE = "ask"
+        proxy.PROXY_PLACEMENT_CONTROLLER = "http://127.0.0.1:3847"
+        tc = self._client(http)
+        body = dict(
+            _IMAGE_REQUEST, model="custom:Inkling-2-Mini-Basalt-NVFP4-q8-(UAP-local)-0"
+        )
+        with unittest.mock.patch.object(proxy, "_upstream_model_ids_cached", ids):
+            first = tc.post("/v1/messages", json=body)
+        self.assertEqual(first.status_code, 409)
+        self._assert_park_body(first.json())
+        # The gate ask AND the vision ask both named the ARM, never the
+        # custom string (the registry declares wire ids, not BYOK strings).
+        self.assertEqual(len(http.controller_asks), 2)
+        for ask in http.controller_asks:
+            self.assertEqual(ask["model_id"], "Inkling 2 Mini")
+        self.assertEqual(
+            [a.get("reason") for a in http.controller_asks],
+            [None, "vision_encoder_oom"],
+        )
+        # The retry, inside the armed window, burst-dedupes: the gate may
+        # re-ask (its answer is a forward, not a park — nothing cached), but
+        # the VISION ask happens once for the burst.
+        with unittest.mock.patch.object(proxy, "_upstream_model_ids_cached", ids):
+            second = tc.post("/v1/messages", json=body)
+        self.assertEqual(second.status_code, 409)
+        vision_asks = [
+            a for a in http.controller_asks if a.get("reason") == "vision_encoder_oom"
+        ]
+        self.assertEqual(len(vision_asks), 1)
+
     def test_window_without_controller_strips_images_and_forwards(self):
         # No controller: a park with nothing to switch to is a dead request,
         # so the window routes image blocks through the existing
@@ -701,6 +742,83 @@ class TestAdmitReasonPayload(unittest.TestCase):
 
         with unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_CONTROLLER", ""):
             self.assertIsNone(asyncio.run(call()))
+
+
+class TestByokAskResolution(unittest.TestCase):
+    """BYOK custom-local ids resolve to the served id for placement asks
+    (uplift: full automation). The registry declares the WIRE ids a backend
+    serves; the harness's `custom:<name>-(UAP-local)-<n>` strings name the
+    local backend itself and are declared nowhere — without this resolution
+    every BYOK request parks as invalid_request/unroutable the moment the
+    placement gate turns on."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_custom_local_resolves_to_the_served_id(self):
+        async def ids():
+            return ["Inkling 2 Mini", "qwen35-a3b-iq4xs"]
+
+        with unittest.mock.patch.object(proxy, "_upstream_model_ids_cached", ids):
+            got = self._run(
+                proxy._placement_ask_model("custom:Inkling-2-Mini-Basalt-NVFP4-q8-(UAP-local)-0")
+            )
+        self.assertEqual(got, "Inkling 2 Mini")
+
+    def test_non_custom_ids_pass_through_untouched(self):
+        # Only the custom-local class resolves — every other id asks raw so
+        # an unknown model stays the operator's parked decision, never a
+        # silent rewrite to the live arm.
+        for raw in ("Inkling 2 Mini", "qwen3.8-27b", None):
+            self.assertEqual(self._run(proxy._placement_ask_model(raw)), raw)
+
+    def test_no_upstream_knowledge_asks_raw(self):
+        # Fail-open shape: nothing served-known → ask raw, the controller
+        # parks it, the operator decides.
+        async def none_ids():
+            return None
+
+        with unittest.mock.patch.object(proxy, "_upstream_model_ids_cached", none_ids):
+            got = self._run(proxy._placement_ask_model("custom:Foo-(UAP-local)-0"))
+        self.assertEqual(got, "custom:Foo-(UAP-local)-0")
+
+    def test_placement_admit_asks_by_the_resolved_id_and_keys_the_burst_by_it(self):
+        fake = _FakeClient(
+            [
+                _FakeResponse(
+                    {"decision": "park", "placement_id": "plc-byok1", "reason": "not_resident"},
+                    200,
+                )
+            ]
+        )
+
+        async def ids():
+            return ["Inkling 2 Mini"]
+
+        with unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_MODE", "ask"), \
+                unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_CONTROLLER", "http://c"), \
+                unittest.mock.patch.object(proxy, "http_client", fake), \
+                unittest.mock.patch.object(proxy, "_upstream_model_ids_cached", ids):
+            response = self._run(
+                proxy._placement_admit(
+                    "custom:Inkling-2-Mini-Basalt-NVFP4-q8-(UAP-local)-0",
+                    "byok-droid",
+                    None,
+                )
+            )
+        # Parked through the controller's answer, and the ASK named the arm.
+        self.assertEqual(response.status_code, 409)
+        payload = fake.requests[0]["kwargs"]["json"]
+        self.assertEqual(payload["model_id"], "Inkling 2 Mini")
+        # The burst key is the RESOLVED id — a client retry after the arm
+        # switches would resolve the same way and re-park cleanly, while the
+        # raw custom string would never match anything again.
+        self.assertIn(("byok-droid", "Inkling 2 Mini"), proxy._placement_pending)
+        self.assertNotIn(
+            ("byok-droid", "custom:Inkling-2-Mini-Basalt-NVFP4-q8-(UAP-local)-0"),
+            proxy._placement_pending,
+        )
+        proxy._placement_pending.clear()
 
 
 if __name__ == "__main__":

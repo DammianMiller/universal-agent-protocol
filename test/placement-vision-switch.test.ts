@@ -485,6 +485,89 @@ describe('attention rail: a vision park is a visible, correctly-shaped ask', () 
   });
 });
 
+describe('wire ids resolve through the registry (full automation)', () => {
+  // Backends serve human-readable wire ids ("Inkling 2 Mini") that the raw
+  // charset gate refuses — the exact class that parked every inkling
+  // request as invalid_request when the gate turned on live. The registry's
+  // advertises table is the trust anchor: an off-charset id that EXACTLY
+  // matches an advertised entry resolves to the registry model key, and
+  // only the KEY flows into the ledger and attention text.
+  const wireRegistry: ModelRegistry = {
+    ...registry,
+    models: {
+      ...registry.models,
+      'inkling2': {
+        ...registry.models['inkling2']!,
+        advertises: ['Inkling 2 Mini', 'inkling2-mini-basalt-nvfp4'],
+      },
+    },
+  };
+  const wireLoaded = { registry: wireRegistry, measuredFrom: new Map(), errors: [] };
+  const wireAsk = { model_id: 'Inkling 2 Mini', client: 'byok-droid' };
+
+  it('forwards a resident ask made by the space-containing wire id', () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(process.cwd(), wireAsk, { loaded: wireLoaded, ledgerPath });
+    // The decisive regression: this was invalid_request before the uplift.
+    expect(answer.decision).toBe('forward');
+  });
+
+  it('a non-resident wire-id park keys the pending entry by the REGISTRY id', () => {
+    const ledgerPath = freshLedger(); // inkling not resident
+    const answer = getPlacementAdmit(process.cwd(), wireAsk, { loaded: wireLoaded, ledgerPath });
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('not_resident'); // was invalid_request
+    const entry = loadLedger(ledgerPath).pending[0]!;
+    // The operator surface names registry keys — the entry must carry one.
+    expect(entry.requested_model).toBe('inkling2');
+    // And the wire-id ask dedupes against a registry-key ask (same entry).
+    const byKey = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'inkling2', client: 'byok-droid' },
+      { loaded: wireLoaded, ledgerPath },
+    );
+    expect(byKey.placement_id).toBe(answer.placement_id);
+  });
+
+  it('a vision ask via the wire id parks with the switch context keyed by the registry id', () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { ...wireAsk, reason: 'vision_encoder_oom' },
+      { loaded: wireLoaded, ledgerPath },
+    );
+    expect(answer.reason).toBe('vision_encoder_oom');
+    const vision = loadLedger(ledgerPath).pending.find((p) => p.capability === 'vision')!;
+    expect(vision.requested_model).toBe('inkling2');
+  });
+
+  it('an unregistered off-charset id still parks invalid_request — no ledger write', () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'Inkling <script> 2 Mini', client: 'byok-droid' },
+      { loaded: wireLoaded, ledgerPath },
+    );
+    // The injection property is unchanged: only registry-declared strings
+    // resolve, and a hostile id parks before any durable write.
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('invalid_request');
+    expect(loadLedger(ledgerPath).pending.length).toBe(0);
+  });
+
+  it('the attention ask carries the registry key, never the raw wire id', () => {
+    delete process.env.UAP_ATTENTION_OFF;
+    const ledgerPath = freshLedger(); // not resident → lingering park → ask
+    getPlacementAdmit(dir, wireAsk, { loaded: wireLoaded, ledgerPath });
+    const items = listAttention(dir);
+    expect(items.length).toBe(1);
+    // Charset-safe queue text: the wire id (with spaces) never reaches the
+    // session-start prompt through the queue's trusted framing.
+    expect(items[0]!.title).toBe('Placement parked: inkling2');
+    expect(items[0]!.detail).toContain("'inkling2'");
+  });
+});
+
 describe('CLI: uap models pending/apply carry the vision switch context', () => {
   const visionAsk = { model_id: 'inkling2', client: 'byok-droid', reason: 'vision_encoder_oom' };
   const timeouts: EnforceTimeouts = { drainMs: 20, startMs: 20, freeMs: 20, pollMs: 1 };

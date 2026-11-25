@@ -2756,6 +2756,11 @@ async def _vision_oom_park_response(
     the arm gets one image request again; a still-broken encoder re-arms
     from that request's 400).
     """
+    # BYOK custom-local ids resolve to the served id (uplift: full
+    # automation) so the controller ask, the burst keys, and the
+    # client-facing 409 all name the arm that actually failed — a custom
+    # string parks as invalid_request/unroutable otherwise.
+    wire_model = await _placement_ask_model(wire_model)
     global _upstream_vision_broken_until
     if rearm:
         _upstream_vision_broken_until = time.time() + PROXY_VISION_OOM_DEGRADE_SECS
@@ -2875,6 +2880,32 @@ def _placement_park_response(wire_model: str, placement_id: str, reason: str) ->
     )
 
 
+async def _placement_ask_model(wire_model: str | None) -> str | None:
+    """The id a placement ASK carries (uplift: full automation).
+
+    A BYOK custom-local id (`custom:<display-name>-(UAP-local)-<n>`,
+    detected by _BYOK_LOCAL_RE) resolves to the upstream's served id
+    (ids[0] — the reconciler's own semantics, but ONLY for this id class):
+    the ask then names the arm the request will actually hit, so the
+    controller's park/forward decision is about THAT arm and the
+    burst-dedupe keys stay consistent across the request gate, the vision
+    park, and the relay hooks. Fails open on no upstream knowledge (asks
+    raw — the controller parks it, the operator decides).
+
+    Every OTHER id asks raw: an unknown id stays the operator's parked
+    decision, never a silent rewrite — the reconciler's blanket ids[0]
+    fallback was deliberately retired in gate mode for exactly that
+    reason (a stale cache would rewrite a just-evicted arm to the previous
+    backend's id).
+    """
+    if wire_model is None or not _BYOK_LOCAL_RE.match(wire_model):
+        return wire_model
+    ids = await _upstream_model_ids_cached()
+    if not ids:
+        return wire_model
+    return ids[0]
+
+
 async def _placement_admit(
     wire_model: str | None, client_id: str, session_id: str | None, cells: int | None = None
 ) -> Response | None:
@@ -2900,6 +2931,14 @@ async def _placement_admit(
     """
     if PROXY_PLACEMENT_MODE == "off" or not wire_model:
         return None
+
+    # BYOK custom-local ids name the backend, not a registry model: resolve
+    # to the served id ONCE HERE so the ask, the burst keys, and the park
+    # body all carry the arm the request will actually hit (uplift: full
+    # automation — without this, every BYOK request parks as
+    # invalid_request/unroutable because no registry declares the custom
+    # string).
+    wire_model = await _placement_ask_model(wire_model)
 
     # Burst dedupe: a (client, model) parked within the short window
     # re-parks with the SAME placement_id, so a burst of concurrent requests
@@ -6822,6 +6861,13 @@ _current_request_client: contextvars.ContextVar[str | None] = contextvars.Contex
 # semaphore per request and quietly multiply the concurrency budget, so an
 # off-shape answer falls back to the default bucket instead.
 _PLACEMENT_TARGET_RE = re.compile(r"^[A-Za-z0-9_.\-]+:\S+$")
+# BYOK custom-local ids (uplift: full automation): the harness's
+# bring-your-own-key form names the LOCAL BACKEND itself —
+# `custom:<display-name>-(UAP-local)-<n>` — not a model any registry or
+# upstream enumerates. The controller's placement decision needs an id the
+# registry declares, and the registry declares the wire ids the backend
+# actually serves.
+_BYOK_LOCAL_RE = re.compile(r"^custom:.*-\(UAP-local\)-\d+$")
 # Cap on per-target semaphores: real deployments have a handful of devices.
 # Overflow falls back to the default bucket rather than growing unboundedly.
 _PLACEMENT_MAX_TARGETS = 8
@@ -17859,6 +17905,11 @@ async def messages(request: Request):
     # the window), so a text-only answer is still produced.
     if _vision_park_due() and _request_carries_image(body):
         wire_model_for_vision = model if isinstance(model, str) and model != "default" else None
+        # BYOK custom-local ids resolve to the served id (uplift: full
+        # automation) — the burst keys this gate READS must be the same
+        # resolved keys _vision_oom_park_response WRITES, or every retry
+        # mints a fresh controller ask.
+        wire_model_for_vision = await _placement_ask_model(wire_model_for_vision)
         # Burst dedupe: the entry _vision_oom_park_response writes, keyed
         # with a ':vision' suffix so the TEXT-request burst key in
         # _placement_admit can never serve it — the starved arm still
