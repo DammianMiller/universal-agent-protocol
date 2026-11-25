@@ -65,6 +65,7 @@ import {
   unloadPlacement,
   writePlacementUnitDropins,
   fetchProxyInflight,
+  type EnforceOpts,
 } from '../placement/enforce.js';
 import { resolveAttentionBySource } from '../delivery/attention.js';
 import {
@@ -431,6 +432,9 @@ export interface ModelsApplyOptions extends ModelsStatusOptions {
   placementId?: string;
   option?: number;
   yes?: boolean;
+  /** Automation/test seam: forwarded verbatim to resolvePendingPlacement
+   * (hermetic deps, pinned registry). Production callers leave it unset. */
+  enforce?: Partial<EnforceOpts>;
 }
 
 export async function modelsApplyCommand(opts: ModelsApplyOptions = {}): Promise<number> {
@@ -486,6 +490,7 @@ export async function modelsApplyCommand(opts: ModelsApplyOptions = {}): Promise
   const result = await resolvePendingPlacement(projectDir, placementId, option, {
     ledgerPath,
     expectedVictims: (approved.victims ?? []).map((v) => ({ model: v.model, config: v.config })),
+    ...opts.enforce,
   });
   for (const s of result.steps) console.log(`${s.ok ? 'ok  ' : 'FAIL'} ${s.name}${s.detail ? ` — ${s.detail}` : ''}`);
   if (!result.ok) {

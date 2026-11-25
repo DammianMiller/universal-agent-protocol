@@ -2684,7 +2684,13 @@ def _is_vision_encoder_oom(status_code: int, error_message: str) -> bool:
     cause. Either alone means something else: a corrupt image is an
     image-class 400 a model switch cannot fix, and a KV-pool OOM is a
     memory-class 400 that hits text requests too and belongs to the
-    upstream-retry machinery, not the vision switch.
+    upstream-retry machinery, not the vision switch. The memory-class arm
+    is two-tiered the same way: "no device memory"/"out of vram" are
+    device-specific and decisive alone, while the generic phrases ("out of
+    memory", "cannot allocate", "insufficient memory") only count when an
+    ENCODER is named — otherwise a host-RAM image-decode failure on one
+    pathological image (a condition no arm switch can fix) would park all
+    image traffic and churn switches for nothing.
     """
     if status_code != 400:
         return False
@@ -2692,14 +2698,12 @@ def _is_vision_encoder_oom(status_code: int, error_message: str) -> bool:
     image_class = (
         "could not be read" in m or "image encoder" in m or "vision encoder" in m
     )
-    memory_class = (
-        "no device memory" in m
-        or "out of memory" in m
-        or "out of vram" in m
-        or "cannot allocate" in m
-        or "insufficient memory" in m
+    device_class = "no device memory" in m or "out of vram" in m
+    generic_memory_with_encoder = (
+        ("out of memory" in m or "cannot allocate" in m or "insufficient memory" in m)
+        and ("encoder" in m)
     )
-    return image_class and memory_class
+    return image_class and (device_class or generic_memory_with_encoder)
 
 
 def _request_carries_image(body: dict) -> bool:
@@ -2726,12 +2730,12 @@ async def _vision_oom_park_response(
     client_id: str,
     session_id: str | None,
     cells: int | None = None,
+    rearm: bool = True,
 ) -> Response:
     """The vision-encoder-OOM park (uplift: dynamic vision switching).
 
     Reached from the upstream error relays (the 400 already arrived) and the
-    pre-request gate (the degrade window is active). Marks the arm's vision
-    broken for the degrade window, then parks:
+    pre-request gate (the degrade window is active). Parks:
     - with a live placement gate + controller: through the admit ask with
       reason vision_encoder_oom — the controller mints the pending entry
       and, auto policy on, switches to a vision-capable arm (load-alongside
@@ -2740,25 +2744,67 @@ async def _vision_oom_park_response(
     - without one: a self-describing 409. The raw 400 told the client
       nothing actionable; this says what broke, how long the degrade
       lasts, and the fixes.
+
+    ``rearm`` controls whether the call ARMS the degrade window. Only the
+    error relays (the 400 was seen) arm or re-arm it; the pre-request park
+    passes False. Arming on every park would make the window self-sustaining:
+    the 409 tells the client to retry, each retry re-parks, each re-park
+    re-arms — and vision stays degraded for every session as long as any
+    client keeps retrying inside the window, with the window only ever
+    expiring after 600s of NO image-bearing requests. The documented design
+    is the opposite: re-arm on the 400, expire on the clock (after expiry
+    the arm gets one image request again; a still-broken encoder re-arms
+    from that request's 400).
     """
     global _upstream_vision_broken_until
-    _upstream_vision_broken_until = time.time() + PROXY_VISION_OOM_DEGRADE_SECS
-    logger.error(
-        "VISION ENCODER OOM: upstream cannot encode images (model=%s) — vision "
-        "degraded for %ss, image requests park until it clears",
-        wire_model,
-        int(PROXY_VISION_OOM_DEGRADE_SECS),
-    )
+    if rearm:
+        _upstream_vision_broken_until = time.time() + PROXY_VISION_OOM_DEGRADE_SECS
+        logger.error(
+            "VISION ENCODER OOM: upstream cannot encode images (model=%s) — vision "
+            "degraded for %ss, image requests park until it clears",
+            wire_model,
+            int(PROXY_VISION_OOM_DEGRADE_SECS),
+        )
+    else:
+        logger.info(
+            "VISION PARK (window active, no re-arm): image request parked "
+            "while the encoder degrade window runs (model=%s)",
+            wire_model,
+        )
     if PROXY_PLACEMENT_MODE != "off" and PROXY_PLACEMENT_CONTROLLER and wire_model:
         answer = await _placement_controller_admit(
             wire_model, client_id, session_id, cells, reason="vision_encoder_oom"
         )
         if isinstance(answer, dict) and answer.get("decision") == "park":
-            return _placement_park_response(
-                wire_model,
-                str(answer.get("placement_id") or ""),
-                str(answer.get("reason") or "vision_encoder_oom"),
-            )
+            park_reason = str(answer.get("reason") or "vision_encoder_oom")
+            # Burst dedupe, same entry shape _placement_admit writes — but
+            # under a ':vision'-suffixed key: the 409 tells the client to
+            # retry, so a parked image client that retries every
+            # retry_after_ms must NOT re-ask the controller (a second 2s ask,
+            # and a second full token estimate) per retry — and the plain
+            # (client, model) key would ALSO park that client's TEXT requests
+            # (the starved arm serves text fine; the vision gate's own
+            # lookup serves this entry for image requests only).
+            now = time.time()
+            placement_id = str(answer.get("placement_id") or "")
+            _placement_pending[(client_id, f"{wire_model}:vision")] = {
+                "placement_id": placement_id,
+                "reason": park_reason,
+                "created_at": now,
+                "expires_at": now + _PLACEMENT_BURST_DEDUPE_SECS,
+            }
+            if park_reason == "vision_auto_loading":
+                # Model-only vision key too (the auto_loading rationale):
+                # rotating the client-id header must not mint a fresh ask
+                # per request while the controller's background switch runs
+                # — for IMAGE requests; text forwards throughout.
+                _placement_pending[("__auto__", f"{wire_model}:vision")] = {
+                    "placement_id": placement_id,
+                    "reason": park_reason,
+                    "created_at": now,
+                    "expires_at": now + _PLACEMENT_BURST_DEDUPE_SECS,
+                }
+            return _placement_park_response(wire_model, placement_id, park_reason)
     body = {
         "type": "error",
         "error": {
@@ -2770,9 +2816,12 @@ async def _vision_oom_park_response(
             "requested_model": wire_model,
             "reason": "vision_encoder_oom",
             "retry_after_ms": 2000,
+            # No placement_id and no "uap models pending" arm here: without
+            # a controller answer no pending entry exists to resolve, so the
+            # honest resolutions are freeing encoder headroom, switching the
+            # arm, or turning the controller on.
             "resolve_with": (
                 "free encoder VRAM / switch to a vision-cpu arm"
-                "  |  uap models pending"
                 "  |  enable PROXY_PLACEMENT_MODE + controller for auto-switching"
             ),
         },
@@ -3015,6 +3064,17 @@ def invalidate_upstream_caches() -> list[str]:
     # interval gate would otherwise suppress the re-probe for up to 60s
     # after the swap.
     _last_vision_recheck_ts = 0.0
+    global _upstream_vision_broken_until
+    if _upstream_vision_broken_until > 0.0:
+        # The OOM degrade window is a measured fact about the OLD backend's
+        # encoder. After a switch it must not keep parking image requests
+        # for the remaining window — each park mints a fresh pending and a
+        # no-op auto run at retry cadence, while the 409 promises "forwards
+        # when the switch completes". Same reasoning as the probe re-arm
+        # directly above; the new backend gets probed (or gets one image
+        # request) on its own merits.
+        _upstream_vision_broken_until = 0.0
+        cleared.append("vision_oom_window")
     if globals().get("_slot_save_supported") is False:
         _slot_save_supported = None
         cleared.append("slot_save_support")
@@ -17772,6 +17832,10 @@ async def messages(request: Request):
     # default) — byte-identical to the pre-placement proxy. Covers every
     # local route: they all funnel through this handler, and cloud
     # passthrough returned before here, so it is exempt by construction.
+    # The request's context need is shared by both gates below (the
+    # placement admit and the vision pre-request park): estimate_total_tokens
+    # walks the whole body, so compute it ONCE rather than once per gate.
+    placement_cells = _placement_request_cells(body)
     parked = await _placement_admit(
         # The model the CLIENT asked for (the handler's resolved `model`
         # above), NOT openai_body's — build_openai_request injects the
@@ -17781,7 +17845,7 @@ async def messages(request: Request):
         model if isinstance(model, str) and model != "default" else None,
         client_id,
         session_id,
-        _placement_request_cells(body),
+        placement_cells,
     )
     if parked is not None:
         return parked
@@ -17794,11 +17858,29 @@ async def messages(request: Request):
     # existing strip-and-notice conversion (vision_enabled() is False for
     # the window), so a text-only answer is still produced.
     if _vision_park_due() and _request_carries_image(body):
+        wire_model_for_vision = model if isinstance(model, str) and model != "default" else None
+        # Burst dedupe: the entry _vision_oom_park_response writes, keyed
+        # with a ':vision' suffix so the TEXT-request burst key in
+        # _placement_admit can never serve it — the starved arm still
+        # serves text, and a vision park on a text request would be a
+        # needless 409 for a request that forwards fine. The suffix also
+        # routes around _placement_admit's model-only '__auto__' key: an
+        # auto SWITCH must park image retries, not all traffic.
+        vision_burst = _placement_pending.get(
+            (client_id, f"{wire_model_for_vision}:vision")
+        ) or _placement_pending.get(("__auto__", f"{wire_model_for_vision}:vision"))
+        if vision_burst is not None and vision_burst["expires_at"] > time.time():
+            return _placement_park_response(
+                wire_model_for_vision,
+                vision_burst["placement_id"],
+                vision_burst.get("reason") or "vision_encoder_oom",
+            )
         return await _vision_oom_park_response(
-            model if isinstance(model, str) and model != "default" else None,
+            wire_model_for_vision,
             client_id,
             session_id,
-            _placement_request_cells(body),
+            placement_cells,
+            rearm=False,  # the window is already armed; a park is not evidence
         )
 
     # Only the WIRE body is touched. The Anthropic response still echoes the

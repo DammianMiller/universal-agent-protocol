@@ -410,6 +410,11 @@ print(json.dumps(asyncio.run(main())))
     // clears with everything else (spec §4.6 step 7).
     expect(resultAuto.cleared).toContain('placement_pending');
     expect(resultAuto.placement_pending).toBe(0);
+    // And the degrade window clears too: the switched arm must not inherit
+    // the starved arm's window (it would park that arm's healthy images
+    // for the window's remainder).
+    expect(resultAuto.cleared).toContain('vision_oom_window');
+    expect(resultAuto.vision_oom_window).toBe(0);
     expect(resultAuto.ctk_supported).toBeNull();
     expect(resultAuto.ctk_probed).toBe(false);
     expect(resultAuto.ctk_attempts).toBe(0);
@@ -437,6 +442,10 @@ _context_window_measured = True
 _last_ctx_recheck_ts = 123.0
 upstream_vision = True
 _last_vision_recheck_ts = 5.0
+# The vision-encoder-OOM degrade window (uplift: dynamic vision switching):
+# a live window parks image requests; a swap clears it — the switched arm
+# gets its images back without waiting out the old arm's window.
+_upstream_vision_broken_until = 5.0
 _admitted_sessions = OrderedDict({'s1': 1.0, 's2': 2.0})
 _now = time.time()
 _placement_pending = {
@@ -456,6 +465,7 @@ print(json.dumps({
     "ctx_measured": _context_window_measured,
     "vision": upstream_vision,
     "vision_recheck_armed": _last_vision_recheck_ts == 0.0,
+    "vision_oom_window": _upstream_vision_broken_until,
     "admitted": len(_admitted_sessions),
     "placement_pending": len(_placement_pending),
     "ctk_supported": _ctk_supported,

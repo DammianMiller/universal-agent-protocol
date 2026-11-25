@@ -190,13 +190,34 @@ export function computeOptions(
       ].filter((n) => n.length > 0),
     };
   }
+  // The failed arm leaves the CANDIDATE set entirely, not just the reuse
+  // list: a vision:cpu-marked arm whose encoder demonstrably just OOMed is
+  // runtime evidence contradicting that marking, and offering its own
+  // load_alongside/displace (a second copy of the starved arm) resolves
+  // nothing while adding device pressure. Park, apply, and enforcement all
+  // derive through this one function, so every surface agrees.
+  const pool =
+    opts?.excludeReuseOf === undefined
+      ? candidates
+      : candidates.filter((c) => c.model !== opts.excludeReuseOf);
+  if (pool.length === 0) {
+    const failedArm = opts?.excludeReuseOf;
+    return {
+      requested,
+      matched: false,
+      reason: 'not_in_registry',
+      options: [],
+      notes: [
+        `${failedArm} is the only vision-capable arm in the registry — a switch cannot resolve its own encoder failure; register or measure a different vision-capable arm`,
+      ],
+    };
+  }
   const notes: string[] = [];
   const options: PlacementOption[] = [];
 
   // 1. reuse — a resident already satisfies the request. Unmeasured configs
   // are servable when resident; that is the fail-closed rule's other half.
-  for (const c of candidates) {
-    if (opts?.excludeReuseOf !== undefined && c.model === opts.excludeReuseOf) continue;
+  for (const c of pool) {
     const resident = ledger.residents.find((r) => r.model === c.model && r.config === c.config && r.state === 'hot');
     if (resident) {
       options.push({ kind: 'reuse', model: c.model, config: c.config, device: resident.device, cost_mib: null });
@@ -205,7 +226,7 @@ export function computeOptions(
   if (options.length > 0) return { requested, matched: true, reason: 'ok', options, notes };
 
   // 2/3. load_alongside and displace — both need a measured config.
-  const measured = candidates.filter((c) => isMeasuredConfig(c.entry));
+  const measured = pool.filter((c) => isMeasuredConfig(c.entry));
   if (measured.length === 0) {
     return {
       requested,

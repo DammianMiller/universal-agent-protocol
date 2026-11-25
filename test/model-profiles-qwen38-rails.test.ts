@@ -147,28 +147,33 @@ describe('qwen38 profile — strata geometry invariants', () => {
 describe('qwen38 profile — matches the backend that is actually serving', () => {
   const profile = readJson('config/model-profiles/qwen38.json');
 
-  it.skipIf(geom === null || geom.pool === null)('records the live pool size', () => {
-    expect(profile.server_optimization.kv_capacity).toBe(geom!.pool);
-  });
-
-  it.skipIf(geom === null || geom.rails === null)('records the live rail count', () => {
-    expect(profile.server_optimization.parallel_rails).toBe(geom!.rails);
-  });
-
-  it.skipIf(geom === null || geom.pool === null || geom.rails === null)('derives the session cap under the servable pool, not a guess', () => {
-    expect(profile.context_window).toBeLessThanOrEqual(geom!.pool! / geom!.rails!);
-  });
-
   // The fleet's arms are panel-switchable and the operator changes them freely
   // (abliterated-iq2_xs/iq3_s, swift, …); this profile documents the DEFAULT
   // arm (v31). The alias assertion can only run while the default is the arm
   // actually serving — otherwise it fails on every operator arm switch, which
-  // is not drift (the geometry assertions above still hold for every arm).
+  // is not drift.
   // 2026-11-14: a version bump was blocked by exactly this, the fleet healthy
-  // on a different arm. Geometry checks stay live-gated; the alias check is
-  // default-gated.
-  const aliasIsFleetDefault = geom !== null && geom.alias === profile.model;
-  it.skipIf(!aliasIsFleetDefault)('uses the model alias the backend advertises', () => {
+  // on a different arm. The alias check was default-gated then.
+  // 2026-11-25: the Inkling 2 Mini arm (1M-cell KV pool vs the default arm's
+  // 262144) broke the assumption that geometry is uniform across arms — the
+  // exact-equality pool/rails checks fail on a healthy non-default arm the
+  // same way the alias check did. Geometry checks are default-gated too; the
+  // pool-independent invariants (cap under pool, margin floors, compaction
+  // ordering) stay unconditional in the describes above.
+  const defaultArmServing = geom !== null && geom.alias === profile.model;
+  it.skipIf(!defaultArmServing || geom === null || geom.pool === null)('records the live pool size', () => {
+    expect(profile.server_optimization.kv_capacity).toBe(geom!.pool);
+  });
+
+  it.skipIf(!defaultArmServing || geom === null || geom.rails === null)('records the live rail count', () => {
+    expect(profile.server_optimization.parallel_rails).toBe(geom!.rails);
+  });
+
+  it.skipIf(!defaultArmServing || geom === null || geom.pool === null || geom.rails === null)('derives the session cap under the servable pool, not a guess', () => {
+    expect(profile.context_window).toBeLessThanOrEqual(geom!.pool! / geom!.rails!);
+  });
+
+  it.skipIf(!defaultArmServing)('uses the model alias the backend advertises', () => {
     expect(profile.model).toBe(geom!.alias);
   });
 });

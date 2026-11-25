@@ -14,7 +14,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeOptions, optionsForPending, visionCapableConfigs } from '../src/placement/admission.js';
-import { getPlacementAdmit, resetColdProbeForTests } from '../src/dashboard/placement-routes.js';
+import { getPlacementAdmit, getPlacementPreview, resetColdProbeForTests } from '../src/dashboard/placement-routes.js';
+import { listAttention } from '../src/delivery/attention.js';
+import { modelsApplyCommand } from '../src/cli/models.js';
 import { resolvePendingPlacement, type EnforceDeps, type EnforceTimeouts, type PlacementInflightEntry } from '../src/placement/enforce.js';
 import { ModelEntrySchema } from '../src/placement/registry.js';
 import type { ModelRegistry } from '../src/placement/registry.js';
@@ -334,6 +336,246 @@ describe('getPlacementAdmit: vision-encoder OOM park', () => {
     // The bogus reason is ignored; the resident-forward branch runs as usual.
     expect(answer.decision).toBe('forward');
   });
+
+  it('an off-allowlist reason on a NON-resident ask behaves exactly like an absent one', () => {
+    const ledgerPath = freshLedger([inklingResident()]); // basalt-27b not resident
+    const bogus = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'basalt-27b', client: 'byok-droid', reason: 'not_resident_please' },
+      { loaded, ledgerPath },
+    );
+    expect(bogus.decision).toBe('park');
+    expect(bogus.reason).toBe('not_resident');
+    expect(bogus.placement_id).toBeDefined();
+    // The same ask without the reason dedupes onto the same entry — the
+    // bogus string never minted a second, differently-shaped park.
+    const plain = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'basalt-27b', client: 'byok-droid' },
+      { loaded, ledgerPath },
+    );
+    expect(plain.reason).toBe('not_resident');
+    expect(plain.placement_id).toBe(bogus.placement_id);
+    expect(loadLedger(ledgerPath).pending.length).toBe(1);
+  });
+
+  it('a pre-upgrade pending entry (no capability field) never satisfies a vision ask', () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    withLedger(ledgerPath, (l) => {
+      l.pending.push({
+        id: 'plc-legacy',
+        requested_model: 'basalt-27b',
+        client: 'byok-droid',
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        reason: 'not_resident',
+      });
+    });
+    // The vision ask must mint a FRESH entry, not ride the capability-less
+    // one (its options are load options, not switch options).
+    const vision = getPlacementAdmit(process.cwd(), visionAsk, { loaded, ledgerPath });
+    expect(vision.placement_id).not.toBe('plc-legacy');
+    expect(vision.reason).toBe('vision_encoder_oom');
+    // The legacy entry still dedupes plain asks — both live side by side.
+    const plain = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'basalt-27b', client: 'byok-droid' },
+      { loaded, ledgerPath },
+    );
+    expect(plain.placement_id).toBe('plc-legacy');
+    const pending = loadLedger(ledgerPath).pending;
+    expect(pending.filter((p) => p.capability === 'vision').length).toBe(1);
+    expect(pending.filter((p) => p.capability === undefined).length).toBe(1);
+  });
+});
+
+describe('preview drift: a vision entry previews by ENTRY, not by model', () => {
+  // Quality-review blocker: the pending card previewed via
+  // ?model=<requested> while Apply enforced optionsForPending — a vision
+  // park showed the starved arm's own load/reuse options and Apply then
+  // enforced a DIFFERENT list (and its victim-drift check would refuse
+  // with a list the operator never saw). ?placement=<id> previews the
+  // exact list apply will enforce.
+  const visionAsk = { model_id: 'inkling2', client: 'byok-droid', reason: 'vision_encoder_oom' };
+
+  it('model-scoped preview offers the starved arm; placement-scoped previews the switch list apply enforces', () => {
+    // A cpu-encoder variant of the starved arm: vision-capable, so the
+    // model-scoped preview offers its own reuse — the drift class.
+    const cpuEncoderArm: ModelRegistry = {
+      ...registry,
+      models: {
+        ...registry.models,
+        'inkling2': { ...registry.models['inkling2']!, vision: 'cpu' },
+      },
+    };
+    const cpuLoaded = { registry: cpuEncoderArm, measuredFrom: new Map(), errors: [] };
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(process.cwd(), visionAsk, { loaded: cpuLoaded, ledgerPath });
+    expect(answer.reason).toBe('vision_encoder_oom');
+    // The OLD surface (by model) — what the dashboard used to fetch.
+    const byModel = getPlacementPreview(process.cwd(), 'inkling2', {
+      registry: cpuEncoderArm, ledgerPath,
+    });
+    expect(byModel.options.some((o) => o.model === 'inkling2' && o.kind === 'reuse')).toBe(true);
+    // The NEW surface (by entry) — what the pending card + apply share.
+    const byEntry = getPlacementPreview(process.cwd(), 'inkling2', {
+      registry: cpuEncoderArm, ledgerPath, placementId: answer.placement_id,
+    });
+    expect(byEntry.options.every((o) => o.model !== 'inkling2')).toBe(true);
+    // And it IS the apply list — byte-identical to optionsForPending.
+    const entry = loadLedger(ledgerPath).pending.find((p) => p.id === answer.placement_id)!;
+    expect(byEntry).toEqual(optionsForPending(cpuEncoderArm, loadLedger(ledgerPath), entry));
+  });
+
+  it('a resolved-or-expired placement id previews as a clear not-found, not a stale list', () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const stale = getPlacementPreview(process.cwd(), 'inkling2', {
+      registry, ledgerPath, placementId: 'plc-gone',
+    });
+    expect(stale.matched).toBe(false);
+    expect(stale.notes[0]).toContain('plc-gone not found');
+  });
+});
+
+describe('attention rail: a vision park is a visible, correctly-shaped ask', () => {
+  const visionAsk = { model_id: 'inkling2', client: 'byok-droid', reason: 'vision_encoder_oom' };
+
+  it('actionable when a switch target exists — the ask names the apply command and the option count', () => {
+    delete process.env.UAP_ATTENTION_OFF;
+    const ledgerPath = freshLedger([inklingResident()]);
+    // projectDir = the temp dir, so the ask writes under it (hermetic),
+    // mirroring the dashboard-routes attention pattern.
+    const answer = getPlacementAdmit(dir, visionAsk, { loaded, ledgerPath });
+    expect(answer.decision).toBe('park');
+    const items = listAttention(dir);
+    expect(items.length).toBe(1);
+    expect(items[0]!.source).toBe(`placement:${answer.placement_id}`);
+    expect(items[0]!.title).toBe('Vision parked: inkling2 (image encoder OOM)');
+    // gpu free 505 MiB with the starved arm resident → both basalt arms
+    // displace → 2 switch options.
+    expect(items[0]!.detail).toContain('cannot encode images right now');
+    expect(items[0]!.detail).toContain('2 vision-capable switch option(s) registered');
+    expect(items[0]!.detail).toContain(`uap models apply ${answer.placement_id} <n>`);
+    // The safe default remains expiry — approving is a choice, never owed.
+    expect(items[0]!.safeDefault?.decision).toContain('expire');
+  });
+
+  it('plain no-option ask when no vision-capable arm is registered', () => {
+    delete process.env.UAP_ATTENTION_OFF;
+    const noVision: ModelRegistry = {
+      ...registry,
+      models: {
+        'inkling2': registry.models['inkling2']!, // dynamic — not a target
+        'text-only-arm': registry.models['text-only-arm']!, // no vision field
+      },
+    };
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(
+      dir, visionAsk,
+      { loaded: { registry: noVision, measuredFrom: new Map(), errors: [] }, ledgerPath },
+    );
+    expect(answer.reason).toBe('vision_encoder_oom');
+    const items = listAttention(dir);
+    expect(items.length).toBe(1);
+    expect(items[0]!.title).toBe('Vision parked: inkling2 (image encoder OOM)');
+    // Not actionable: nothing to approve — it must not invite a decision
+    // that cannot be made.
+    expect(items[0]!.detail).toContain('No registered option serves it');
+    expect(items[0]!.detail).not.toContain('uap models apply');
+  });
+});
+
+describe('CLI: uap models pending/apply carry the vision switch context', () => {
+  const visionAsk = { model_id: 'inkling2', client: 'byok-droid', reason: 'vision_encoder_oom' };
+  const timeouts: EnforceTimeouts = { drainMs: 20, startMs: 20, freeMs: 20, pollMs: 1 };
+
+  it('modelsApplyCommand resolves a vision park by switching arms (option 1 = the ranked switch)', async () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(process.cwd(), visionAsk, { loaded, ledgerPath });
+    expect(answer.reason).toBe('vision_encoder_oom');
+    const repoPath = join(dir, 'model-registry.json');
+    writeFileSync(repoPath, JSON.stringify(registry));
+    const { deps, started } = fakeDepsCli();
+    const rc = await modelsApplyCommand({
+      projectDir: process.cwd(),
+      ledgerPath,
+      repoPath,
+      localPath: join(dir, 'no-local-overlay.json'),
+      placementId: answer.placement_id,
+      option: 1,
+      yes: true,
+      enforce: { repoPath, localPath: join(dir, 'no-local-overlay.json'), deps, timeouts },
+    });
+    expect(rc).toBe(0);
+    // The SWITCH ran through the CLI path: starved arm stopped, the
+    // vision-cpu arm started — a plain load of inkling2 would restart
+    // the same unit instead.
+    expect(started).toEqual(['uap-basalt-fn-server']);
+    expect(loadLedger(ledgerPath).pending.length).toBe(0);
+  });
+
+  it('modelsApplyCommand refuses an out-of-range option without touching anything', async () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(process.cwd(), visionAsk, { loaded, ledgerPath });
+    const repoPath = join(dir, 'model-registry.json');
+    writeFileSync(repoPath, JSON.stringify(registry));
+    const { deps, started } = fakeDepsCli();
+    const rc = await modelsApplyCommand({
+      projectDir: process.cwd(),
+      ledgerPath,
+      repoPath,
+      localPath: join(dir, 'no-local-overlay.json'),
+      placementId: answer.placement_id,
+      option: 99,
+      yes: true,
+      enforce: { deps, timeouts },
+    });
+    expect(rc).toBe(1);
+    expect(started).toEqual([]);
+    expect(loadLedger(ledgerPath).pending.length).toBe(1);
+  });
+
+  // The resolve describe's fakeDeps, but with the switch pre-armed (the CLI
+  // test's registry file pin lives in `dir`, which freshLedger re-mints).
+  function fakeDepsCli(): { deps: EnforceDeps; started: string[] } {
+    const started: string[] = [];
+    const active = ['uap-basalt-inkling2-server'];
+    let clock = 0;
+    let stopped = false;
+    const deps: EnforceDeps = {
+      isUnitActive: (u) => active.includes(u),
+      stopUnit: async (u) => {
+        stopped = true;
+        active.splice(active.indexOf(u), 1);
+      },
+      startUnit: async (u) => {
+        started.push(u);
+        active.push(u);
+      },
+      gpuFreeMiB: () => (stopped ? 31505 : 505),
+      inflightForTarget: async () => [],
+      httpGetJson: async (url) =>
+        url.endsWith('/health')
+          ? { status: 'ok' }
+          : {
+              data: [
+                { id: 'inkling2-mini-basalt-nvfp4' },
+                { id: 'qwen3.8-fn-basalt-nvfp4' },
+                { id: 'qwen3.8-27b-basalt-nvfp4' },
+              ],
+            },
+      refreshProxy: async () => true,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      nowMs: () => clock,
+      probeDevices: () => ({
+        gpu0: { kind: 'gpu', total_mib: 32607, free_mib: 505, reserved_mib: 512, source: 'nvidia-smi' },
+        cpu0: { kind: 'cpu', total_mib: 182000, free_mib: 76000, reserved_mib: 8192, source: 'MemAvailable' },
+      }),
+    };
+    return { deps, started };
+  }
 });
 
 describe('resolve + pending display share the capability context', () => {

@@ -39,6 +39,16 @@ class _FakeResponse:
     def json(self):
         return self._payload
 
+    @property
+    def text(self):
+        return json.dumps(self._payload)
+
+    async def aread(self):
+        return self.text.encode()
+
+    async def aclose(self):
+        pass
+
 
 class _FakeClient:
     def __init__(self, responses):
@@ -56,6 +66,236 @@ LIVE_SIGNATURE = (
     "the image could not be read: inkling2: no device memory for the "
     "image encoder (792 MiB)"
 )
+
+_UPSTREAM_400_PAYLOAD = {
+    "error": {"type": "invalid_request_error", "message": LIVE_SIGNATURE}
+}
+
+
+class _FakeHttp:
+    """One fake httpx.AsyncClient routing by URL: the placement controller's
+    admit endpoint vs the upstream backend, so the relay-site tests below can
+    drive messages() end-to-end (the real wiring) instead of the helpers.
+
+    NOTE: the ``json`` kwarg name shadows the module inside methods, so no
+    method here may use the json module — precompute payloads instead."""
+
+    def __init__(self, upstream_response=None):
+        self.upstream_posts = []   # captured upstream request bodies
+        self.controller_asks = [] # captured admit payloads
+        self._upstream = upstream_response
+
+    def _controller_answer(self, payload):
+        # The placement admit (request-side, no reason) forwards: the arm IS
+        # resident and serving. The vision ask (response-side,
+        # reason=vision_encoder_oom) parks.
+        if isinstance(payload, dict) and payload.get("reason") == "vision_encoder_oom":
+            return {
+                "decision": "park",
+                "placement_id": "plc-relay9",
+                "reason": "vision_encoder_oom",
+            }
+        return {"decision": "forward", "target_id": "gpu0:http://127.0.0.1:8080"}
+
+    async def post(self, url, json=None, **kwargs):
+        url = str(url)
+        if "placement/admit" in url:
+            self.controller_asks.append(json)
+            return _FakeResponse(self._controller_answer(json), 200)
+        self.upstream_posts.append(json)
+        if self._upstream is not None:
+            return self._upstream
+        return _FakeResponse(_UPSTREAM_400_PAYLOAD, 400)
+
+    def build_request(self, method, url, **kwargs):
+        return {"method": method, "url": url, "kwargs": kwargs}
+
+    async def send(self, request, stream=False):
+        return await self.post(
+            request["url"], json=request["kwargs"].get("json")
+        )
+
+
+_IMAGE_REQUEST = {
+    "model": "inkling2-mini",
+    "max_tokens": 32,
+    "stream": False,
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo=",
+                    },
+                },
+                {"type": "text", "text": "what is in this image?"},
+            ],
+        }
+    ],
+}
+
+
+class TestVisionRelayWiring(unittest.TestCase):
+    """The three relay hooks in messages() — the wiring, not the helpers.
+
+    Deleting the hooks leaves every helper-level test green, so these tests
+    pin the actual production paths: the non-stream relay, the stream relay
+    (the default client path), and the pre-request park during an armed
+    window (which must not round-trip upstream and must not re-arm the
+    window)."""
+
+    def setUp(self):
+        self._window = proxy._upstream_vision_broken_until
+        self._saved = {
+            attr: getattr(proxy, attr)
+            for attr in (
+                "PROXY_VISION",
+                "PROXY_PLACEMENT_MODE",
+                "PROXY_PLACEMENT_CONTROLLER",
+                "PROXY_VISION_OOM_DEGRADE_SECS",
+                "PROXY_AUTH_TOKEN",
+                "http_client",
+                "PROXY_UPSTREAM_RETRY_MAX",
+                "upstream_vision",
+            )
+        }
+        proxy._placement_pending.clear()
+        proxy.PROXY_VISION = "on"  # force image forwarding, no probe needed
+        proxy.PROXY_PLACEMENT_MODE = "off"
+        proxy.PROXY_PLACEMENT_CONTROLLER = ""
+        proxy.PROXY_VISION_OOM_DEGRADE_SECS = 600.0
+        proxy.PROXY_AUTH_TOKEN = ""
+        proxy.PROXY_UPSTREAM_RETRY_MAX = 1
+
+    def tearDown(self):
+        for attr, value in self._saved.items():
+            setattr(proxy, attr, value)
+        proxy._placement_pending.clear()
+        proxy._upstream_vision_broken_until = self._window
+
+    def _client(self, http):
+        # NO context manager: entering one runs the app's lifespan startup,
+        # which re-creates http_client as a real AsyncClient and silently
+        # replaces this fake — the request then hits the LIVE backend and
+        # controller (observed: 529s and a live unknown_model park). Without
+        # the context the routes still serve; only lifespan is skipped.
+        from fastapi.testclient import TestClient
+
+        proxy.http_client = http
+        return TestClient(proxy.app)
+
+    def _assert_park_body(self, response_json):
+        err = response_json["error"]
+        self.assertEqual(err["type"], "model_placement_pending")
+        self.assertEqual(err["reason"], "vision_encoder_oom")
+
+    def test_non_stream_relay_parks_instead_of_relaying_the_raw_400(self):
+        http = _FakeHttp()
+        tc = self._client(http)
+        r = tc.post("/v1/messages", json=_IMAGE_REQUEST)
+        # The wiring: the 400 was classified and PARKED, not relayed.
+        self.assertEqual(r.status_code, 409)
+        self._assert_park_body(r.json())
+        # Evidence the round-trip happened and the window armed.
+        self.assertEqual(len(http.upstream_posts), 1)
+        self.assertGreater(proxy._upstream_vision_broken_until, time.time())
+
+    def test_stream_relay_parks_instead_of_relaying_the_raw_400(self):
+        http = _FakeHttp()
+        request = dict(_IMAGE_REQUEST, stream=True)
+        tc = self._client(http)
+        r = tc.post("/v1/messages", json=request)
+        self.assertEqual(r.status_code, 409)
+        self._assert_park_body(r.json())
+        self.assertEqual(len(http.upstream_posts), 1)
+        self.assertGreater(proxy._upstream_vision_broken_until, time.time())
+
+    def test_pre_request_park_no_upstream_round_trip_no_rearm(self):
+        # Window armed + placement on + controller reachable: an image
+        # request parks BEFORE the wire, without re-arming the window (the
+        # parked retry is not evidence), and the burst dedupe collapses the
+        # controller ask so the client's retry re-parks with zero network.
+        http = _FakeHttp()
+        proxy.PROXY_PLACEMENT_MODE = "ask"
+        proxy.PROXY_PLACEMENT_CONTROLLER = "http://127.0.0.1:3847"
+        armed_until = time.time() + 600.0
+        proxy._upstream_vision_broken_until = armed_until
+        tc = self._client(http)
+        r1 = tc.post("/v1/messages", json=_IMAGE_REQUEST)
+        r2 = tc.post("/v1/messages", json=_IMAGE_REQUEST)
+        for r in (r1, r2):
+            self.assertEqual(r.status_code, 409)
+            err = r.json()["error"]
+            self.assertEqual(err["reason"], "vision_encoder_oom")
+            self.assertEqual(err["placement_id"], "plc-relay9")
+        # No upstream round-trip for either request — the encoder is known
+        # broken; sending the image again would just burn the encode.
+        self.assertEqual(http.upstream_posts, [])
+        # The window was NOT extended by the parks (rearm=False): the parked
+        # retries the 409 itself tells the client to make are not evidence.
+        self.assertEqual(proxy._upstream_vision_broken_until, armed_until)
+        # Exactly ONE vision ask served both requests: the first minted the
+        # burst-dedupe entry, the retry re-parked from the map with no
+        # controller round-trip.
+        vision_asks = [a for a in http.controller_asks if a and a.get("reason")]
+        self.assertEqual(len(vision_asks), 1)
+        self.assertEqual(vision_asks[0]["reason"], "vision_encoder_oom")
+
+    def test_vision_park_never_parks_text_requests(self):
+        # The starved arm still serves text — a vision park keyed on the
+        # plain (client, model) burst key would 409 the same client's TEXT
+        # requests with "cannot encode images" for a request that forwards
+        # fine. The ':vision'-suffixed key serves image requests only.
+        http = _FakeHttp(
+            upstream_response=_FakeResponse(
+                {"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+                200,
+            )
+        )
+        proxy.PROXY_PLACEMENT_MODE = "ask"
+        proxy.PROXY_PLACEMENT_CONTROLLER = "http://127.0.0.1:3847"
+        proxy._upstream_vision_broken_until = time.time() + 600.0
+        tc = self._client(http)
+        parked = tc.post("/v1/messages", json=_IMAGE_REQUEST)
+        self.assertEqual(parked.status_code, 409)
+        text_request = dict(_IMAGE_REQUEST, messages=[{"role": "user", "content": "text only"}])
+        forwarded = tc.post("/v1/messages", json=text_request)
+        self.assertEqual(forwarded.status_code, 200)
+        # The ONLY upstream round-trip is the text one.
+        self.assertEqual(len(http.upstream_posts), 1)
+
+    def test_window_without_controller_strips_images_and_forwards(self):
+        # No controller: a park with nothing to switch to is a dead request,
+        # so the window routes image blocks through the existing
+        # strip-and-notice path — the upstream must see a text-only body.
+        # PROXY_VISION='auto' (not 'on'): the explicit pin dominates the
+        # window, and this test needs the WINDOW to dominate the probe.
+        http = _FakeHttp(
+            upstream_response=_FakeResponse(
+                {
+                    "choices": [
+                        {"message": {"role": "assistant", "content": "a text answer"}}
+                    ]
+                },
+                200,
+            )
+        )
+        proxy.PROXY_VISION = "auto"
+        proxy.upstream_vision = True
+        proxy._upstream_vision_broken_until = time.time() + 600.0
+        tc = self._client(http)
+        r = tc.post("/v1/messages", json=_IMAGE_REQUEST)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(http.upstream_posts), 1)
+        forwarded = http.upstream_posts[0]
+        self.assertIsNotNone(forwarded, "upstream request must be captured")
+        dumped = json.dumps(forwarded)
+        self.assertNotIn("image_url", dumped)
+        self.assertNotIn('"image"', dumped)
 
 
 class TestVisionEncoderOomClassifier(unittest.TestCase):
@@ -80,6 +320,24 @@ class TestVisionEncoderOomClassifier(unittest.TestCase):
         self.assertFalse(
             proxy._is_vision_encoder_oom(
                 400, "no device memory available for the KV cache pool"
+            )
+        )
+
+    def test_generic_memory_without_an_encoder_named_is_not_the_switch_condition(self):
+        # A host-RAM decode failure on one pathological image: image-class
+        # AND memory-class words, but no device memory and no encoder named —
+        # no arm switch can fix it, so it must not park image traffic or
+        # churn switches.
+        self.assertFalse(
+            proxy._is_vision_encoder_oom(
+                400, "the image could not be read: out of memory while decoding"
+            )
+        )
+
+    def test_generic_memory_with_an_encoder_named_is_the_switch_condition(self):
+        self.assertTrue(
+            proxy._is_vision_encoder_oom(
+                400, "the image could not be read: out of memory in the image encoder"
             )
         )
 
@@ -196,6 +454,31 @@ class TestVisionOomParkResponse(_VisionWindowTestCase):
         self.assertEqual(response.status_code, 409)
         self.assertGreater(proxy._upstream_vision_broken_until, time.time())
 
+    def test_pre_request_park_does_not_rearm_the_window(self):
+        # The 409 tells the client to retry. If every parked retry re-armed
+        # the window, a compliant retrying client would hold vision degraded
+        # for every session as long as it kept retrying inside the window
+        # (the window would only expire after 600s of NO image requests).
+        # Only the 400-classified relays arm/re-arm; the pre-request park
+        # serves the 409 without extending the window.
+        with unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_MODE", "ask"), \
+                unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_CONTROLLER", ""), \
+                unittest.mock.patch.object(proxy, "PROXY_VISION_OOM_DEGRADE_SECS", 600.0):
+            armed_until = self._run(
+                proxy._vision_oom_park_response("inkling2-mini", "byok-droid", None)
+            )
+            self.assertEqual(armed_until.status_code, 409)
+            first_until = proxy._upstream_vision_broken_until
+            # A parked retry arrives well inside the window.
+            time.sleep(0.01)
+            response = self._run(
+                proxy._vision_oom_park_response(
+                    "inkling2-mini", "byok-droid", None, rearm=False
+                )
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(proxy._upstream_vision_broken_until, first_until)
+
     def test_self_describing_409_without_controller(self):
         with unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_MODE", "ask"), \
                 unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_CONTROLLER", ""):
@@ -270,6 +553,99 @@ class TestVisionOomParkResponse(_VisionWindowTestCase):
         body = json.loads(response.body)
         self.assertEqual(body["error"]["reason"], "vision_encoder_oom")
         self.assertNotIn("placement_id", body["error"])
+
+    def test_controller_auto_switch_park_body_names_the_switch(self):
+        # The auto-approved switch parks with its OWN message: the operator
+        # step is "wait", not "resolve" — the client's retry forwards when
+        # the background switch lands.
+        proxy._placement_pending.clear()
+        fake = _FakeClient(
+            [
+                _FakeResponse(
+                    {
+                        "decision": "park",
+                        "placement_id": "plc-v002",
+                        "reason": "vision_auto_loading",
+                    },
+                    200,
+                )
+            ]
+        )
+        with unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_MODE", "ask"), \
+                unittest.mock.patch.object(
+                    proxy, "PROXY_PLACEMENT_CONTROLLER", "http://127.0.0.1:3847"
+                ), \
+                unittest.mock.patch.object(proxy, "http_client", fake):
+            response = self._run(
+                proxy._vision_oom_park_response("inkling2-mini", "byok-droid", "s1")
+            )
+        self.assertEqual(response.status_code, 409)
+        body = json.loads(response.body)
+        err = body["error"]
+        self.assertEqual(err["reason"], "vision_auto_loading")
+        self.assertEqual(err["placement_id"], "plc-v002")
+        self.assertIn("switched to automatically", err["message"])
+        self.assertIn("retrying is correct", err["message"])
+        self.assertIn("wait for the automatic switch", err["resolve_with"])
+        self.assertIn("uap models auto --disable", err["resolve_with"])
+        # The model-keyed burst entry (`__auto__`) covers a client that
+        # rotates its id header mid-burst: one ask per model, not per id.
+        entries = proxy._placement_pending
+        self.assertIn(("byok-droid", "inkling2-mini:vision"), entries)
+        self.assertIn(("__auto__", "inkling2-mini:vision"), entries)
+        self.assertEqual(
+            entries[("__auto__", "inkling2-mini:vision")]["reason"],
+            "vision_auto_loading",
+        )
+        proxy._placement_pending.clear()
+
+    def test_controller_forward_answer_still_parks_self_describing(self):
+        # A dict-but-not-park answer (e.g. the controller says forward for
+        # the arm) cannot un-fail the encoder: this park was reached BECAUSE
+        # the upstream demonstrably failed to encode. Fail closed to the
+        # self-describing 409 — never relay the raw 400, never forward the
+        # doomed image request, never mint a burst entry for a non-park.
+        proxy._placement_pending.clear()
+        fake = _FakeClient(
+            [
+                _FakeResponse(
+                    {"decision": "forward", "target_id": "gpu0:http://127.0.0.1:8080"},
+                    200,
+                )
+            ]
+        )
+        with unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_MODE", "ask"), \
+                unittest.mock.patch.object(
+                    proxy, "PROXY_PLACEMENT_CONTROLLER", "http://127.0.0.1:3847"
+                ), \
+                unittest.mock.patch.object(proxy, "http_client", fake):
+            response = self._run(
+                proxy._vision_oom_park_response("inkling2-mini", "byok-droid", None)
+            )
+        self.assertEqual(response.status_code, 409)
+        body = json.loads(response.body)
+        self.assertEqual(body["error"]["reason"], "vision_encoder_oom")
+        self.assertNotIn("placement_id", body["error"])
+        self.assertEqual(proxy._placement_pending, {})
+
+    def test_secs_zero_disables_the_window_not_the_conversion(self):
+        # SECS=0 is the operator's "no sustained degrade" switch: the park
+        # still converts the raw 400 into the clean 409 (that conversion is
+        # not window-gated), but the window arms to NOW — instantly expired
+        # — so no pre-request parks and advertised vision follows the probe.
+        with unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_MODE", "ask"), \
+                unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_CONTROLLER", ""), \
+                unittest.mock.patch.object(proxy, "PROXY_VISION_OOM_DEGRADE_SECS", 0.0):
+            response = self._run(
+                proxy._vision_oom_park_response("inkling2-mini", "byok-droid", None)
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertLessEqual(proxy._upstream_vision_broken_until, time.time())
+        with unittest.mock.patch.object(proxy, "upstream_vision", True):
+            self.assertTrue(proxy.vision_enabled())
+        with unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_MODE", "ask"), \
+                unittest.mock.patch.object(proxy, "PROXY_PLACEMENT_CONTROLLER", "http://c"):
+            self.assertFalse(proxy._vision_park_due())
 
 
 class TestAdmitReasonPayload(unittest.TestCase):

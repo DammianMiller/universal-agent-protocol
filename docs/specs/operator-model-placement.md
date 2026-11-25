@@ -561,7 +561,9 @@ changes, all applied):
   added additively.
 - `placement_id` is 24 bits within a 120s dedupe window: ~3e-6 collision at
   ~10 concurrent pendings. Widen only if pending volume exceeds ~100 per
-  window.
+  window. It is **optional by variant**: the controller-less vision park
+  carries no id (no pending entry exists to resolve), so consumers must
+  treat `placement_id` as absent-possible and key on `type` + `reason`.
 
 `409` rather than a hang: the client keeps control, the proxy holds no socket
 open across an unbounded operator decision, and a client that understands the
@@ -597,12 +599,18 @@ anything else is ignored and the request-side branches run as usual.
 
 That failure arms a **degrade window** (`PROXY_VISION_OOM_DEGRADE_SECS`,
 default 600s, `0` disables): for the window, the arm's advertised vision is
-dominated by the demonstrated failure, and image-bearing requests are handled
-before the round-trip — they park through the controller (the retry forwards
-to the switched arm with the image intact) when placement mode is on and a
-controller is reachable; they take the existing strip-and-notice path when
-it is not (a text-only answer beats a dead request, and a park with nothing
-to switch to is just a dead request). Text requests forward throughout.
+dominated by the demonstrated failure. The **triggering** request — the one
+that got the 400 — parks with the self-describing 409 **regardless of
+placement mode**: the raw 400 told the client nothing actionable, and this
+is the uplift's value even with the gate off (with placement on and a
+controller reachable, it instead parks through the admit ask, whose answer
+may already be a switch). **Window** requests are then handled before the
+round-trip: image-bearing requests park through the controller (the retry
+forwards to the switched arm with the image intact) when placement mode is
+on and a controller is reachable; they take the existing strip-and-notice
+path when it is not (a text-only answer beats a dead request, and a park
+with nothing to switch to is just a dead request). Text requests forward
+throughout.
 After the window the arm gets one image request again: if the operator freed
 encoder headroom meanwhile, images resume; otherwise the 400 re-arms the
 window.

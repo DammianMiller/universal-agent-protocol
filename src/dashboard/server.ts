@@ -380,6 +380,20 @@ export function startDashboardServer(
           res.end(JSON.stringify({ error: 'placement admit is loopback-only' }));
           return;
         }
+        // Same-origin guard as the WS upgrade below: loopback alone does not
+        // stop the operator's OWN browser — a page visited on the open
+        // internet can POST to http://localhost:3847 (the loopback check
+        // passes, the peer is local) and mint parks, and with auto policy on
+        // drive arm switches, without the dashboard token. Browsers always
+        // send Origin on a cross-origin POST; the proxy (httpx) sends none,
+        // so requiring "no Origin, or an Origin naming this server" costs
+        // the proxy nothing and closes the browser-shaped hole (CWE-352).
+        const originHeader = req.headers.origin;
+        if (!originAllowed(typeof originHeader === 'string' ? originHeader : undefined)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'cross-origin placement admit refused' }));
+          return;
+        }
         const body = await readBody(req);
         const parsed = parseJsonBody(body);
         const modelId = typeof parsed.model_id === 'string' ? parsed.model_id : '';
@@ -407,15 +421,21 @@ export function startDashboardServer(
       if (url.startsWith('/api/placement/preview')) {
         const urlObj = new URL(url, `http://${host}:${boundPort}`);
         const model = urlObj.searchParams.get('model');
-        if (!model) {
+        // Uplift: preview by pending entry — `?placement=<id>` previews the
+        // SAME option list apply will enforce (per-request cells, capability
+        // class), where `?model=` alone is model-scoped and would show a
+        // vision park the starved arm's own load options.
+        const placement = urlObj.searchParams.get('placement');
+        if (!model && !placement) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'missing ?model=<id>' }));
+          res.end(JSON.stringify({ error: 'missing ?model=<id> or ?placement=<id>' }));
           return;
         }
         const cells = Number(urlObj.searchParams.get('cells'));
         try {
-          const preview = getPlacementPreview(cwd, model, {
+          const preview = getPlacementPreview(cwd, model ?? '', {
             cells: Number.isFinite(cells) && cells > 0 ? cells : undefined,
+            ...(placement ? { placementId: placement } : {}),
           });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(preview));

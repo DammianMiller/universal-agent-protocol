@@ -65,6 +65,10 @@
     not_resident: 'idle', unknown_model: 'failed', no_measured_config: 'failed',
     auto_loading: 'running', auto_failed: 'failed', no_controller: 'failed',
     unroutable_target: 'failed', invalid_request: 'failed',
+    // Dynamic vision switching: the arm is resident and serving text, but
+    // its image encoder cannot get device memory — a switch is the
+    // resolution, in flight when the auto policy approved it.
+    vision_encoder_oom: 'idle', vision_auto_loading: 'running',
   };
 
   // ── throttled placement-state fetch (10s; sync is probe-heavy) ──
@@ -150,7 +154,7 @@
 
   function pendingCard(q) {
     var tone = REASON_TONE[q.reason] || 'idle';
-    var isAuto = q.reason === 'auto_loading';
+    var isAuto = q.reason === 'auto_loading' || q.reason === 'vision_auto_loading';
     // Remaining TTL, not timeAgo: expires_at is in the FUTURE for a live
     // pending request, and timeAgo clamps future stamps to "0s ago" — which
     // read as "already expired" for the entry's whole lifetime.
@@ -172,7 +176,7 @@
     head.addEventListener('click', function () { head.classList.toggle('open'); body.classList.toggle('open'); });
 
     if (isAuto) {
-      inner.appendChild(el('div', { class: 'muted', text: 'auto load in flight — retrying clients forward when it completes; a manual apply races the background run' }));
+      inner.appendChild(el('div', { class: 'muted', text: q.reason === 'vision_auto_loading' ? 'auto vision SWITCH in flight — image retries forward to the switched arm when it completes; a manual apply races the background run' : 'auto load in flight — retrying clients forward when it completes; a manual apply races the background run' }));
     }
 
     var optionsBox = el('div', {});
@@ -180,7 +184,11 @@
     var loadOptions = function () {
       UAP.clear(optionsBox);
       optionsBox.appendChild(el('div', { class: 'muted', text: 'Computing options…' }));
-      get('/api/placement/preview?model=' + encodeURIComponent(q.requested_model)).then(function (r) {
+      // Preview BY ENTRY, not by model: a vision park's options are the
+      // vision-capable switch list apply will enforce — a model-scoped
+      // preview would show the starved (resident) arm's own load options
+      // while Apply enforces a different arm.
+      get('/api/placement/preview?placement=' + encodeURIComponent(q.id)).then(function (r) {
         UAP.clear(optionsBox);
         optionsBox.appendChild(kv('options', r.reason + (r.matched === false ? ' — not in registry' : ''), r.reason === 'ok' ? 'green' : 'yellow'));
         (r.notes || []).forEach(function (n) { optionsBox.appendChild(el('div', { class: 'empty', text: n })); });

@@ -30,7 +30,7 @@ import {
   type ModelRegistry,
   type RegistryLoadResult,
 } from '../placement/registry.js';
-import { computeOptions } from '../placement/admission.js';
+import { computeOptions, optionsForPending } from '../placement/admission.js';
 import {
   autoOptionFor,
   autoPolicyPath,
@@ -132,15 +132,47 @@ export function getPlacementPending(ledgerPath: string = placementLedgerPath()):
 }
 
 /** Ranked options + victim previews for a requested model — the same
- * computation the phase-2 proxy gate and phase-3 preview routes use. */
+ * computation the phase-2 proxy gate and phase-3 preview routes use.
+ *
+ * `placementId` (uplift: dynamic vision switching) previews THE PENDING
+ * ENTRY: options come from `optionsForPending`, so the list the operator
+ * previews is the list `uap models apply` / the resolve route will enforce —
+ * same cells, same capability class. A vision park previewed by model
+ * instead would show the starved arm's own reuse/load options (the arm IS
+ * resident) while Apply enforces a DIFFERENT vision option, and the
+ * `expectedVictims` drift check would refuse the apply with a
+ * victim-set-changed error for a list the UI never showed. */
 export function getPlacementPreview(
   projectDir: string,
   requestedModel: string,
-  opts?: { cells?: number; taskKind?: string; registry?: ModelRegistry; ledgerPath?: string },
+  opts?: {
+    cells?: number;
+    taskKind?: string;
+    registry?: ModelRegistry;
+    ledgerPath?: string;
+    placementId?: string;
+  },
 ): ReturnType<typeof computeOptions> {
   const registry = opts?.registry ?? loadModelRegistry(projectDir).registry;
-  const ledger = loadLedger(opts?.ledgerPath ?? placementLedgerPath());
-  return computeOptions(registry, ledger, requestedModel, { cells: opts?.cells, taskKind: opts?.taskKind });
+  const ledgerPath = opts?.ledgerPath ?? placementLedgerPath();
+  const ledger = loadLedger(ledgerPath);
+  if (opts?.placementId !== undefined) {
+    const pending = ledger.pending.find((p) => p.id === opts.placementId);
+    if (!pending) {
+      return {
+        requested: requestedModel,
+        matched: false,
+        reason: 'not_in_registry',
+        options: [],
+        notes: [`pending placement ${opts.placementId} not found (expired or resolved)`],
+      };
+    }
+    return optionsForPending(registry, ledger, pending);
+  }
+  return computeOptions(registry, ledger, requestedModel, {
+    cells: opts?.cells,
+    taskKind: opts?.taskKind,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -458,8 +490,15 @@ export function getPlacementAdmit(
     // sees the 409 in the client; the dashboard has no pending row for it
     // yet) and say so. No auto scheduling: the entry is not persisted, so
     // a resolved pending would have nothing to remove — and the reason
-    // must not promise a load that will never run.
-    return { decision: 'park', placement_id: placementId, reason: autoPlan ? 'not_resident' : reason };
+    // must not promise a load that will never run. A vision park keeps its
+    // own class here too: 'not_resident' would say the arm is not loaded
+    // (it is — its encoder OOMed) and point the client at an apply step for
+    // an entry that was never persisted.
+    return {
+      decision: 'park',
+      placement_id: placementId,
+      reason: autoPlan ? (visionOom ? 'vision_encoder_oom' : 'not_resident') : reason,
+    };
   }
   if (autoPlan && placementId === pending.id) {
     // Our entry won the race and auto-load applies: fire the background
