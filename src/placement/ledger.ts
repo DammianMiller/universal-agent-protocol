@@ -69,6 +69,14 @@ export const LedgerPendingSchema = z.object({
    * against the 32k default instead of what the parked client needs.
    * Absent on entries parked by older proxies → the default applies. */
   cells: z.number().int().positive().optional(),
+  /** The capability class the parked request needs satisfied. Set only by
+   * vision-encoder-OOM parks (the proxy's response-side classification): a
+   * 'vision' entry resolves by SWITCHING to a vision-capable arm, not by
+   * loading the requested model — its options are computed across the
+   * registry's vision-capable models, excluding reuse of the failed arm.
+   * Closed literal, additive later. Absent = a model-identity park (the
+   * §4.3 admission case). */
+  capability: z.literal('vision').optional(),
 });
 export type LedgerPending = z.infer<typeof LedgerPendingSchema>;
 

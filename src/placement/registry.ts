@@ -126,6 +126,20 @@ export const ModelEntrySchema = z.object({
   task_affinity: z.array(z.string()).optional(),
   affinity: z.object({ device: z.array(z.string()) }).optional(),
   advertises: z.array(z.string()).optional(),
+  /** Where this arm serves the vision/image encoder from.
+   *  - 'cpu': encoder resident on host memory — immune to device-memory
+   *    exhaustion (the fleet's "vision cpu" launch posture).
+   *  - 'gpu': encoder resident on the device, its footprint INCLUDED in the
+   *    config's measured resident_gpu_mib.
+   *  - 'dynamic': encoder loaded on-device on the first image — its cost is
+   *    NOT in the measurement, and an elastic KV pool can starve it (the
+   *    inkling2 vision-encoder-OOM class).
+   *  - 'none' / absent: the arm does not serve images.
+   * Capability-aware option computation treats only 'cpu' and 'gpu' as
+   * vision-capable SWITCH TARGETS (fail-closed: a 'dynamic' arm's
+   * measurement does not include the encoder it would need, and an absent
+   * field is an unknown, never a capability). */
+  vision: z.enum(['none', 'cpu', 'gpu', 'dynamic']).optional(),
   configs: z.record(z.string(), ConfigEntrySchema),
 });
 export type ModelEntry = z.infer<typeof ModelEntrySchema>;

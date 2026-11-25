@@ -56,7 +56,7 @@ import {
   type LedgerResident,
   type PlacementLedger,
 } from '../placement/ledger.js';
-import { computeOptions } from '../placement/admission.js';
+import { optionsForPending } from '../placement/admission.js';
 import { buildVictimPreviews } from '../placement/preview.js';
 import {
   resolvePendingPlacement,
@@ -65,6 +65,7 @@ import {
   unloadPlacement,
   writePlacementUnitDropins,
   fetchProxyInflight,
+  type EnforceOpts,
 } from '../placement/enforce.js';
 import { resolveAttentionBySource } from '../delivery/attention.js';
 import {
@@ -400,11 +401,13 @@ export async function modelsPendingCommand(opts: ModelsStatusOptions = {}): Prom
     console.log(`${p.id}  ${p.requested_model}`);
     console.log(`  client ${p.client ?? '?'}${p.session ? `, session ${p.session}` : ''}${p.pid ? `, pid ${p.pid}` : ''}`);
     console.log(`  parked ${p.created_at}, expires ${p.expires_at} (${expires > now ? `${Math.round((expires - now) / 1000)}s left` : 'EXPIRED'})`);
-    console.log(`  reason: ${p.reason ?? 'parked'}`);
+    console.log(`  reason: ${p.reason ?? 'parked'}${p.capability === 'vision' ? ' (capability: vision — resolves by switching to a vision-capable arm)' : ''}`);
     // Options are per-request (spec §4.4): recompute against the context the
     // parked request actually needs, when the proxy recorded it — the 32k
     // default would fail-closed-refuse a small-pool config that fits fine.
-    const options = computeOptions(loaded.registry, ledger, p.requested_model, { cells: p.cells }).options;
+    // A vision entry recomputes its SWITCH options (vision-capable arms),
+    // the same list the park was computed with.
+    const options = optionsForPending(loaded.registry, ledger, p).options;
     if (options.length === 0) {
       console.log('  no viable option (unmeasured, unknown cost, or nothing fits)');
     }
@@ -429,6 +432,9 @@ export interface ModelsApplyOptions extends ModelsStatusOptions {
   placementId?: string;
   option?: number;
   yes?: boolean;
+  /** Automation/test seam: forwarded verbatim to resolvePendingPlacement
+   * (hermetic deps, pinned registry). Production callers leave it unset. */
+  enforce?: Partial<EnforceOpts>;
 }
 
 export async function modelsApplyCommand(opts: ModelsApplyOptions = {}): Promise<number> {
@@ -448,10 +454,9 @@ export async function modelsApplyCommand(opts: ModelsApplyOptions = {}): Promise
   const loaded = loadModelRegistry(projectDir, { repoPath: opts.repoPath, localPath: opts.localPath });
   // The operator approves the option list the PARKED REQUEST computed against
   // its own context need (recorded in the entry) — not the 32k default, which
-  // can refuse a config that serves this request fine.
-  const options = computeOptions(loaded.registry, loadLedger(ledgerPath), pending.requested_model, {
-    cells: pending.cells,
-  }).options;
+  // can refuse a config that serves this request fine. A vision entry
+  // approves its SWITCH options (vision-capable arms).
+  const options = optionsForPending(loaded.registry, loadLedger(ledgerPath), pending).options;
   const approved = options[option - 1];
   if (!approved) {
     console.error(`option ${option} does not exist (1-${options.length})`);
@@ -485,6 +490,7 @@ export async function modelsApplyCommand(opts: ModelsApplyOptions = {}): Promise
   const result = await resolvePendingPlacement(projectDir, placementId, option, {
     ledgerPath,
     expectedVictims: (approved.victims ?? []).map((v) => ({ model: v.model, config: v.config })),
+    ...opts.enforce,
   });
   for (const s of result.steps) console.log(`${s.ok ? 'ok  ' : 'FAIL'} ${s.name}${s.detail ? ` — ${s.detail}` : ''}`);
   if (!result.ok) {

@@ -177,6 +177,7 @@ context size. The entry below is **measured on this machine**, not estimated:
       "rails_source": "metrics:expert_slots",
       "task_affinity": ["code", "general"],
       "affinity": { "device": ["gpu0"] },
+      "vision": "dynamic",
       "configs": {
         "strata-iq3_s": {
           "resident_gpu_mib": 21812,
@@ -246,6 +247,15 @@ Rules:
 - **`measured_on` gates reuse.** A footprint measured on `gpu0` (24 GiB, sm_86)
   is not valid for another device class or a different engine build. A stale or
   mismatched measurement is treated as unknown.
+- **`vision` marks switch targets, fail-closed.** `cpu` or `gpu` means the
+  image encoder runs off-device or on-device respectively, and the arm is a
+  vision **switch target**. `dynamic` means the encoder loads on demand, so
+  the measured `resident_gpu_mib` excludes the encoder's cost — the exact
+  understated number behind the live failure (encoder needs 792 MiB with
+  505 MiB free on the card). Absent or `none` is unknown-or-incapable
+  either way. Only `cpu`/`gpu` arms are candidates when a vision park
+  computes its switch options; `dynamic` and absent never are, because
+  switching to another on-demand encoder repeats the same failure class.
 - **Host RAM gates placement too.** `host_rss_mib` is checked against host
   availability alongside `resident_gpu_mib`; §4.1.1 is why.
 - **Cross-check against `config/capacity-policy.json`.** `uap models validate`
@@ -530,6 +540,18 @@ changes, all applied):
   deliberately says so instead of pointing at `uap models pending`),
   `auto_failed` (phase 4: the auto attempt failed; the pending entry survives
   marked with this reason and the operator resolves it like any other park),
+  `vision_encoder_oom` (uplift: a **response-side** park — the arm is
+  resident and serving text, but its image encoder cannot get device memory
+  at encode time, the "vision dynamic" launch class where an elastic KV pool
+  eats the encoder's headroom; the resolution is a SWITCH to a
+  vision-capable arm, not a load of the requested model, and the
+  resident-forward branch is skipped on purpose because it feeds the same
+  request back to the failure),
+  `vision_auto_loading` (uplift: the auto policy approved the switch, a
+  vision-capable arm is being loaded and the starved one may be displaced;
+  the client's retry is the protocol, same shape as `auto_loading` but it
+  never says "model X is being loaded" about a switch that loads a
+  different arm),
   `unroutable_target` (the controller vouched for a resident on another
   endpoint; this proxy posts to one discovered upstream, so the id is not
   sent to it raw), `no_controller` (read-only admission with no reachable
@@ -539,7 +561,9 @@ changes, all applied):
   added additively.
 - `placement_id` is 24 bits within a 120s dedupe window: ~3e-6 collision at
   ~10 concurrent pendings. Widen only if pending volume exceeds ~100 per
-  window.
+  window. It is **optional by variant**: the controller-less vision park
+  carries no id (no pending entry exists to resolve), so consumers must
+  treat `placement_id` as absent-possible and key on `type` + `reason`.
 
 `409` rather than a hang: the client keeps control, the proxy holds no socket
 open across an unbounded operator decision, and a client that understands the
@@ -555,6 +579,41 @@ so a resolved placement forwards on the very next request, while the
 controller's ledger pending entry dedupes for **120s**, the operator-prompt
 window. The controller re-checks the ledger and answers `forward` the moment a
 live resident serves the id, so the long window never outlives a resolution.
+The dedupe key carries the **capability class** too: a vision park and a
+not-resident park for the same `(client, model)` are different decisions — one
+wants a switch, the other a load — so they mint separate entries rather than
+letting whichever arrived first absorb the other.
+
+#### The vision park class (response-side)
+
+Every other park reason is **request-side**: admission looked at the registry
+and ledger before anything was sent. `vision_encoder_oom` is classified by
+the **proxy after the upstream answered** — the backend advertised vision
+(so image blocks forwarded), then its encoder failed at encode time with a
+400 whose message is image-class AND memory-class (both, on purpose: a
+corrupt image is image-class but a switch cannot fix it; a KV-pool OOM is
+memory-class but it hits text requests too and belongs to the upstream-retry
+machinery). The park ask reaches the controller with `reason:
+vision_encoder_oom`, the only response-side reason in the (closed) allowlist;
+anything else is ignored and the request-side branches run as usual.
+
+That failure arms a **degrade window** (`PROXY_VISION_OOM_DEGRADE_SECS`,
+default 600s, `0` disables): for the window, the arm's advertised vision is
+dominated by the demonstrated failure. The **triggering** request — the one
+that got the 400 — parks with the self-describing 409 **regardless of
+placement mode**: the raw 400 told the client nothing actionable, and this
+is the uplift's value even with the gate off (with placement on and a
+controller reachable, it instead parks through the admit ask, whose answer
+may already be a switch). **Window** requests are then handled before the
+round-trip: image-bearing requests park through the controller (the retry
+forwards to the switched arm with the image intact) when placement mode is
+on and a controller is reachable; they take the existing strip-and-notice
+path when it is not (a text-only answer beats a dead request, and a park
+with nothing to switch to is just a dead request). Text requests forward
+throughout.
+After the window the arm gets one image request again: if the operator freed
+encoder headroom meanwhile, images resume; otherwise the 400 re-arms the
+window.
 
 Admission is two-tier. With `PROXY_PLACEMENT_CONTROLLER` set (emitted by
 `uap setup` as the co-located dashboard, loopback), the proxy asks it: the
@@ -777,6 +836,21 @@ Generated options, in ranking order:
 Ranking: reuse > load_alongside with matching `task_affinity` > load_alongside
 > smallest displacement > largest displacement. The operator always sees the
 full list; the ranking only sets default order and the recommended row.
+
+Options can also be computed **for a capability, not a model** (uplift):
+`computeOptions` with `capability: 'vision'` draws its candidates from the
+registry's vision-capable arms (`vision: cpu|gpu`, the field above) instead of
+the requested model's configs, because the resolution of a vision-encoder OOM
+is a SWITCH, and the requested arm is not among its own candidates. Two
+refinements ride with it: `excludeReuseOf` drops the failed arm's own reuse
+(a switch that reloads the arm that just OOMed resolves nothing), and every
+surface that re-derives options for a parked entry — `uap models pending`,
+`uap models apply`, auto-resolution, enforcement's step-0 re-derivation —
+computes from the capability class recorded on the pending entry, so they all
+show and enforce the same switch list the park was minted with. Without the
+capability context the enforcement re-derivation would flag its own approved
+switch as drift (it loads a different arm than the requested model) and
+refuse it.
 
 #### 4.4.1 Auto-resolution policy (phase 4)
 A parked request whose option list is non-empty does not have to wait for a

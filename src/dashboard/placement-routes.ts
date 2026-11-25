@@ -30,7 +30,7 @@ import {
   type ModelRegistry,
   type RegistryLoadResult,
 } from '../placement/registry.js';
-import { computeOptions } from '../placement/admission.js';
+import { computeOptions, optionsForPending } from '../placement/admission.js';
 import {
   autoOptionFor,
   autoPolicyPath,
@@ -132,15 +132,47 @@ export function getPlacementPending(ledgerPath: string = placementLedgerPath()):
 }
 
 /** Ranked options + victim previews for a requested model — the same
- * computation the phase-2 proxy gate and phase-3 preview routes use. */
+ * computation the phase-2 proxy gate and phase-3 preview routes use.
+ *
+ * `placementId` (uplift: dynamic vision switching) previews THE PENDING
+ * ENTRY: options come from `optionsForPending`, so the list the operator
+ * previews is the list `uap models apply` / the resolve route will enforce —
+ * same cells, same capability class. A vision park previewed by model
+ * instead would show the starved arm's own reuse/load options (the arm IS
+ * resident) while Apply enforces a DIFFERENT vision option, and the
+ * `expectedVictims` drift check would refuse the apply with a
+ * victim-set-changed error for a list the UI never showed. */
 export function getPlacementPreview(
   projectDir: string,
   requestedModel: string,
-  opts?: { cells?: number; taskKind?: string; registry?: ModelRegistry; ledgerPath?: string },
+  opts?: {
+    cells?: number;
+    taskKind?: string;
+    registry?: ModelRegistry;
+    ledgerPath?: string;
+    placementId?: string;
+  },
 ): ReturnType<typeof computeOptions> {
   const registry = opts?.registry ?? loadModelRegistry(projectDir).registry;
-  const ledger = loadLedger(opts?.ledgerPath ?? placementLedgerPath());
-  return computeOptions(registry, ledger, requestedModel, { cells: opts?.cells, taskKind: opts?.taskKind });
+  const ledgerPath = opts?.ledgerPath ?? placementLedgerPath();
+  const ledger = loadLedger(ledgerPath);
+  if (opts?.placementId !== undefined) {
+    const pending = ledger.pending.find((p) => p.id === opts.placementId);
+    if (!pending) {
+      return {
+        requested: requestedModel,
+        matched: false,
+        reason: 'not_in_registry',
+        options: [],
+        notes: [`pending placement ${opts.placementId} not found (expired or resolved)`],
+      };
+    }
+    return optionsForPending(registry, ledger, pending);
+  }
+  return computeOptions(registry, ledger, requestedModel, {
+    cells: opts?.cells,
+    taskKind: opts?.taskKind,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +191,13 @@ export interface PlacementAdmitRequest {
    * never be placed for a 1.5k-token request. Sanitized: an absent,
    * non-finite, or non-positive value falls back to the default. */
   cells?: number;
+  /** Park CLASS, sent by the proxy on a response-side park (the upstream
+   * answered, so the proxy — not the controller — knows why). Closed
+   * allowlist: only 'vision_encoder_oom' is honored, everything else is
+   * ignored and the admission reason is derived as usual. The value is
+   * never persisted free-form; the ledger records the structured
+   * `capability` field, not this string. */
+  reason?: string;
 }
 
 export interface PlacementAdmitAnswer {
@@ -293,11 +332,22 @@ export function getPlacementAdmit(
     }
   }
 
+  // A vision-encoder-OOM park (proxy response-side classification): the
+  // requested arm IS resident and serving text, but its image encoder
+  // cannot get device memory. The resident-forward branch below is exactly
+  // the bug in that case — it would forward straight back into the
+  // failure — so a vision park skips it: the resolution is a SWITCH, and
+  // the options come from the registry's vision-capable arms, never from
+  // the requested model's own configs.
+  const visionOom = request.reason === 'vision_encoder_oom';
+
   // Forward on reuse: a live resident serves this id. Draining residents
   // don't count — a swap is in flight.
-  const resident = ledger.residents.find(
-    (r) => r.state !== 'draining' && residentServes(r, request.model_id, registry),
-  );
+  const resident = visionOom
+    ? undefined
+    : ledger.residents.find(
+        (r) => r.state !== 'draining' && residentServes(r, request.model_id, registry),
+      );
   if (resident) {
     // Idle-sweep clock (§4.4.2): a gated request just used this model.
     // Fail-soft by design — the touch only delays a future idle unload,
@@ -317,14 +367,18 @@ export function getPlacementAdmit(
 
   // Park. The reason comes from the registry, never a guess: unknown model,
   // known but unmeasured (fail closed), or known+measured but not loaded.
-  const modelEntry =
-    registry.models[request.model_id] ??
-    Object.values(registry.models).find((m) => (m.advertises ?? []).includes(request.model_id));
-  let reason = 'not_resident';
-  if (!modelEntry) {
-    reason = 'unknown_model';
-  } else if (!Object.values(modelEntry.configs).some(isPlaceable)) {
-    reason = 'no_measured_config';
+  // A vision park keeps its own reason — the requested model's registry
+  // state is irrelevant, the failure is about its encoder, not its load.
+  let reason: string = visionOom ? 'vision_encoder_oom' : 'not_resident';
+  if (!visionOom) {
+    const modelEntry =
+      registry.models[request.model_id] ??
+      Object.values(registry.models).find((m) => (m.advertises ?? []).includes(request.model_id));
+    if (!modelEntry) {
+      reason = 'unknown_model';
+    } else if (!Object.values(modelEntry.configs).some(isPlaceable)) {
+      reason = 'no_measured_config';
+    }
   }
 
   // Auto-resolution (phase 4): a known, placeable model that is not
@@ -335,8 +389,27 @@ export function getPlacementAdmit(
   // and neither does a model in its failure cooldown or past the
   // in-flight cap — autoOptionFor gates all of it so the reason never
   // promises a run that will be refused.
+  // For a vision park the auto target is a DIFFERENT arm: the
+  // vision-capable options (load_alongside first, displacement of the
+  // starved arm only for allowlisted models — the same standing-consent
+  // rule, now guarding a switch as well as a load). The starved arm is
+  // never a reuse candidate: reusing it resolves nothing.
+  let visionOptionCount = 0;
   let autoPlan: ReturnType<typeof autoOptionFor> = null;
-  if (reason === 'not_resident') {
+  if (visionOom) {
+    const options = computeOptions(registry, ledger, request.model_id, {
+      cells,
+      capability: 'vision',
+      excludeReuseOf: request.model_id,
+    }).options;
+    visionOptionCount = options.length;
+    autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), request.model_id);
+    // A DISTINCT reason, additive per the §4.3 contract: the generic
+    // auto_loading message says "model X is being loaded" — false for a
+    // switch, where a DIFFERENT vision-capable arm is loaded and the
+    // starved one may be displaced. The 409 body says what is happening.
+    if (autoPlan) reason = 'vision_auto_loading';
+  } else if (reason === 'not_resident') {
     const options = computeOptions(registry, ledger, request.model_id, { cells }).options;
     autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), request.model_id);
     if (autoPlan) reason = 'auto_loading';
@@ -353,8 +426,15 @@ export function getPlacementAdmit(
   const client = request.client ? request.client.slice(0, 128) : undefined;
   const session = request.session ? request.session.slice(0, 128) : undefined;
   const clientKey = client ?? '';
+  // A vision park and a not-resident park for the same (model, client) are
+  // DIFFERENT decisions — one wants a switch, the other a load — so the
+  // dedupe key carries the capability class too.
+  const capabilityKey = visionOom ? 'vision' : '';
   const matchesPending = (p: LedgerPending): boolean =>
-    p.requested_model === request.model_id && (p.client ?? '') === clientKey && p.expires_at > now.toISOString();
+    p.requested_model === request.model_id &&
+    (p.client ?? '') === clientKey &&
+    (p.capability ?? '') === capabilityKey &&
+    p.expires_at > now.toISOString();
 
   const existing = ledger.pending.find(matchesPending);
   if (existing) {
@@ -375,6 +455,7 @@ export function getPlacementAdmit(
     expires_at: expiresAt,
     reason,
     cells,
+    ...(visionOom ? { capability: 'vision' as const } : {}),
   };
   let placementId = pending.id;
   let raceWinnerReason: string | undefined;
@@ -409,8 +490,15 @@ export function getPlacementAdmit(
     // sees the 409 in the client; the dashboard has no pending row for it
     // yet) and say so. No auto scheduling: the entry is not persisted, so
     // a resolved pending would have nothing to remove — and the reason
-    // must not promise a load that will never run.
-    return { decision: 'park', placement_id: placementId, reason: autoPlan ? 'not_resident' : reason };
+    // must not promise a load that will never run. A vision park keeps its
+    // own class here too: 'not_resident' would say the arm is not loaded
+    // (it is — its encoder OOMed) and point the client at an apply step for
+    // an entry that was never persisted.
+    return {
+      decision: 'park',
+      placement_id: placementId,
+      reason: autoPlan ? (visionOom ? 'vision_encoder_oom' : 'not_resident') : reason,
+    };
   }
   if (autoPlan && placementId === pending.id) {
     // Our entry won the race and auto-load applies: fire the background
@@ -423,6 +511,11 @@ export function getPlacementAdmit(
       // option was computed against, or a small-pool load refuses itself.
       cells,
       enforce: opts?.auto?.enforce,
+      // A vision run re-derives against the vision-capable candidate set,
+      // not the requested model's — its approved option loads a DIFFERENT
+      // arm, and the model-scoped re-derivation would flag exactly that as
+      // "drift" and refuse its own switch.
+      ...(visionOom ? { capability: 'vision' as const, excludeReuseOf: request.model_id } : {}),
     });
     return { decision: 'park', placement_id: placementId, reason };
   }
@@ -443,15 +536,21 @@ export function getPlacementAdmit(
   // generic 300s grace would outlive the 120s TTL and advertise an
   // actionable swap for a pending that is already dead — and a sweep
   // adopting "let it expire" before the expiry would be a false record.
-  // `not_resident` is the only park reason with options to apply; the
-  // no-option reasons (unknown_model, no_measured_config) ask the
-  // operator to LOOK, not to decide — the detail says so plainly.
-  const actionable = reason === 'not_resident';
+  // `not_resident` is the only load-park reason with options to apply; a
+  // vision park is actionable when a vision-capable switch target exists.
+  // The no-option reasons (unknown_model, no_measured_config, a vision park
+  // with no capable arm) ask the operator to LOOK, not to decide — the
+  // detail says so plainly.
+  const actionable = reason === 'not_resident' || (visionOom && visionOptionCount > 0);
   enqueueAttention(projectDir, {
     kind: 'review-request',
-    title: `Placement parked: ${request.model_id}`,
+    title: visionOom
+      ? `Vision parked: ${request.model_id} (image encoder OOM)`
+      : `Placement parked: ${request.model_id}`,
     detail: actionable
-      ? `A gated request wants '${request.model_id}' (reason: ${reason}, placement ${pending.id}). Approve a swap with: uap models apply ${pending.id} <n> — or do nothing.`
+      ? visionOom
+        ? `The resident arm '${request.model_id}' cannot encode images right now (its image encoder cannot get device memory). ${visionOptionCount} vision-capable switch option(s) registered. Approve a switch with: uap models apply ${pending.id} <n> — or do nothing.`
+        : `A gated request wants '${request.model_id}' (reason: ${reason}, placement ${pending.id}). Approve a swap with: uap models apply ${pending.id} <n> — or do nothing.`
       : `A gated request wants '${request.model_id}' (reason: ${reason}, placement ${pending.id}). No registered option serves it — nothing to approve; it expires on its own.`,
     source: `placement:${pending.id}`,
     expiresAt: pending.expires_at,
