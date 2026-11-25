@@ -578,11 +578,15 @@ changes, all applied):
   A **BYOK custom-local id** (`custom:<name>-(UAP-local)-<n>`, the
   harness's name for the local backend itself) resolves proxy-side to the
   upstream's served id before the ask — the ask, the burst-dedupe keys,
-  and the park body all name the arm the request will actually hit. Every
-  other id asks raw: an unknown model stays the operator's parked
-  decision, never a silent rewrite. (With no controller reachable and an
-  empty served-id cache, a custom-local id parks naming itself — the
-  resolution, not the placement, is what failed.)
+  and the park body all name the arm the request will actually hit, and on
+  a forward the WIRE body rides with the resolved served id (the basalt
+  engine validates the model field — unlike llama.cpp, which ignored it —
+  so the raw custom string would 404 at the upstream; the rewrite is
+  scoped to exactly this resolution class, never a blanket ids[0]
+  fallback). Every other id asks raw: an unknown model stays the
+  operator's parked decision, never a silent rewrite. (With no controller
+  reachable and an empty served-id cache, a custom-local id parks naming
+  itself — the resolution, not the placement, is what failed.)
 - `placement_id` is 24 bits within a 120s dedupe window: ~3e-6 collision at
   ~10 concurrent pendings. Widen only if pending volume exceeds ~100 per
   window. It is **optional by variant**: the controller-less vision park

@@ -106,6 +106,37 @@ describe('proxy placement gate', () => {
     expect(source).toContain('_PLACEMENT_TARGET_RE = re.compile(r"^[A-Za-z0-9_.\\-]+:\\S+$")');
   });
 
+  it('a resolved custom-local id rides the wire as the served id (forward rewrite)', () => {
+    // The basalt engine validates the model field (llama.cpp ignored it),
+    // so a forwarded custom string 404s at the upstream; the gate rewrites
+    // the WIRE body at the forward answer. Scoped to the custom-local
+    // class: an unserved NON-custom id still parks — no blanket rewrite
+    // returned with the reconciler's retirement.
+    const out = runPython(GATE_PREAMBLE
+      .replace('__MODE__', 'ask')
+      .replace('__CONTROLLER__', '')
+      .replace('__IDS__', "['served-arm-id']")
+      + `
+wire = {"model": "custom:Inkling-2-Mini-Basalt-NVFP4-q8-(UAP-local)-0"}
+res = asyncio.run(_placement_admit(wire["model"], 'claude-code', 's1', None, wire))
+other = {"model": "Qwen3.8-27B"}
+res2 = asyncio.run(_placement_admit(other["model"], 'claude-code', 's2', None, other))
+out = {
+    "forwarded": res is None,
+    "wire_model": wire["model"],
+    "other_parked": res2 is not None,
+    "other_model": other["model"],
+    "pending_map": len(_placement_pending),
+}
+print(json.dumps(out))
+`);
+    expect(out.forwarded).toBe(true);
+    expect(out.wire_model).toBe('served-arm-id');
+    expect(out.other_parked).toBe(true);
+    expect(out.other_model).toBe('Qwen3.8-27B');
+    expect(out.pending_map).toBe(1);
+  });
+
   it('mode=off is byte-identical: the gate forwards before touching anything', () => {
     const out = runPython(GATE_PREAMBLE
       .replace('__MODE__', 'off')

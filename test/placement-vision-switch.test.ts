@@ -22,6 +22,7 @@ import { ModelEntrySchema } from '../src/placement/registry.js';
 import type { ModelRegistry } from '../src/placement/registry.js';
 import { loadLedger, withLedger, type LedgerResident } from '../src/placement/ledger.js';
 import { resetAutoSchedulerForTests, type AutoPolicy } from '../src/placement/auto.js';
+import * as autoPolicyModule from '../src/placement/auto.js';
 
 // The 5090 fleet shape: inkling2 is the starved dynamic-vision arm;
 // the basalt arms run the encoder on CPU ("vision cpu") — immune to the
@@ -158,6 +159,16 @@ beforeEach(() => {
   resetAutoSchedulerForTests();
   resetColdProbeForTests();
   vi.restoreAllMocks();
+  // Hermeticity, same class as the attention kill switch above: the admit's
+  // auto fallback reads the OPERATOR's real ~/.uap/placement-auto.json — a
+  // policy enabled live (mid-032-validation) flipped every "parks
+  // vision_encoder_oom" assertion into vision_auto_loading. Tests that
+  // exercise auto behavior pass an explicit policy; every other admit must
+  // see a disabled one.
+  vi.spyOn(autoPolicyModule, 'loadAutoPolicy').mockReturnValue({
+    enabled: false,
+    allow_displace: [],
+  });
 });
 afterEach(() => {
   if (savedAttentionOff === undefined) delete process.env.UAP_ATTENTION_OFF;

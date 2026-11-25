@@ -309,6 +309,45 @@ class TestVisionRelayWiring(unittest.TestCase):
         ]
         self.assertEqual(len(vision_asks), 1)
 
+    def test_custom_local_id_rides_the_wire_as_the_served_id(self):
+        # The basalt engine VALIDATES the model field (llama.cpp ignored
+        # it), so a forwarded custom-local id 404s at the upstream unless
+        # the gate rewrites the WIRE body to the resolved served id.
+        # mode=off relied on the reconciler's rewrite for exactly this;
+        # gate mode retired it, so the rewrite lives in the gate's forward
+        # answer now — scoped to the custom-local class only (every other
+        # id forwards as the client asked it).
+        async def ids():
+            return ["Inkling 2 Mini"]
+
+        http = _FakeHttp(
+            upstream_response=_FakeResponse(
+                {"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+                200,
+            )
+        )
+        proxy.PROXY_PLACEMENT_MODE = "ask"
+        proxy.PROXY_PLACEMENT_CONTROLLER = "http://127.0.0.1:3847"
+        proxy._upstream_vision_broken_until = 0.0  # no window: a clean forward
+        tc = self._client(http)
+        body = {
+            "model": "custom:Inkling-2-Mini-Basalt-NVFP4-q8-(UAP-local)-0",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "text only"}],
+        }
+        with unittest.mock.patch.object(proxy, "_upstream_model_ids_cached", ids):
+            r = tc.post("/v1/messages", json=body)
+        self.assertEqual(r.status_code, 200)
+        # The ask named the ARM; the WIRE body carries the served id...
+        self.assertEqual(http.controller_asks[0]["model_id"], "Inkling 2 Mini")
+        self.assertEqual(len(http.upstream_posts), 1)
+        self.assertEqual(http.upstream_posts[0]["model"], "Inkling 2 Mini")
+        # ...and the client-facing response still echoes the id the client
+        # asked for (clients check it).
+        self.assertEqual(
+            r.json()["model"], "custom:Inkling-2-Mini-Basalt-NVFP4-q8-(UAP-local)-0"
+        )
+
     def test_window_without_controller_strips_images_and_forwards(self):
         # No controller: a park with nothing to switch to is a dead request,
         # so the window routes image blocks through the existing
