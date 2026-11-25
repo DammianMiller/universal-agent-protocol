@@ -173,6 +173,11 @@ export interface DashboardServerOptions {
   /** Fired once the server is listening, with the actually-bound port — the only
    *  reliable way to learn the port when `port: 0` was requested. */
   onListening?: (info: { port: number; host: string }) => void;
+  /** The project directory the placement routes resolve the registry from.
+   * Defaults to the process working directory at boot. Injectable so the
+   * route tests can point a REAL server at a fixture project without
+   * chdir-ing a vitest worker (which the worker forbids). */
+  projectDir?: string;
 }
 
 export function startDashboardServer(
@@ -204,7 +209,7 @@ export function startDashboardServer(
 
   // Track SSE clients for live event streaming
   const sseClients = new Set<ServerResponse>();
-  const cwd = process.cwd();
+  const cwd = options.projectDir ?? process.cwd();
   // In-flight /api/doctor run (probes block the loop; concurrent requests
   // coalesce onto one sweep instead of serializing N of them).
   let doctorInFlight: Promise<unknown> | null = null;
@@ -413,6 +418,10 @@ export function startDashboardServer(
           // the proxy knows why). Closed allowlist inside getPlacementAdmit:
           // only 'vision_encoder_oom' is honored, anything else is ignored.
           reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
+          // True when the request body carries an image block (the proxy's
+          // body walk). The admit never forwards an image-bearing request
+          // to a text-only arm — see getPlacementAdmit.
+          carries_image: parsed.carries_image === true,
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(answer));

@@ -258,7 +258,13 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
   const device = opts.device ?? Object.entries(loaded.registry.devices).find(([, d]) => d.kind === 'gpu')?.[0] ?? 'gpu0';
   // Identity fields (unit/profile/service/... and the files manifest) come
   // from the merged entry so the measured write never drops how the config
-  // was found — or what ensure needs to recover its weights.
+  // was found — or what ensure needs to recover its weights. `vision` is
+  // load-bearing here: the measured write REPLACES the local overlay entry
+  // wholesale (local wins the merge), so a config-level "none" (a
+  // text-only engine arm inside a vision family) that the measure path
+  // dropped would fall back to the family's declaration and let image
+  // requests forward into the arm's silent drop — the exact class the
+  // vision gate exists to prevent.
   const measured = {
     engine: entry.engine,
     unit: entry.unit,
@@ -267,6 +273,7 @@ export async function modelsMeasureCommand(opts: ModelsMeasureOptions = {}): Pro
     note: entry.note,
     flags: entry.flags,
     rails: entry.rails,
+    vision: entry.vision,
     files: entry.files,
     resident_gpu_mib: residentGpu,
     host_rss_mib: rss,
@@ -401,7 +408,7 @@ export async function modelsPendingCommand(opts: ModelsStatusOptions = {}): Prom
     console.log(`${p.id}  ${p.requested_model}`);
     console.log(`  client ${p.client ?? '?'}${p.session ? `, session ${p.session}` : ''}${p.pid ? `, pid ${p.pid}` : ''}`);
     console.log(`  parked ${p.created_at}, expires ${p.expires_at} (${expires > now ? `${Math.round((expires - now) / 1000)}s left` : 'EXPIRED'})`);
-    console.log(`  reason: ${p.reason ?? 'parked'}${p.capability === 'vision' ? ' (capability: vision — resolves by switching to a vision-capable arm)' : ''}`);
+    console.log(`  reason: ${p.reason ?? 'parked'}${p.capability === 'vision' ? ' (capability: vision — resolves by switching to a vision-capable arm)' : p.capability === 'image' ? ' (capability: image — resolves within this family to its image-capable arm)' : ''}`);
     // Options are per-request (spec §4.4): recompute against the context the
     // parked request actually needs, when the proxy recorded it — the 32k
     // default would fail-closed-refuse a small-pool config that fits fine.

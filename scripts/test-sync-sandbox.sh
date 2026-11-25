@@ -56,12 +56,21 @@ NAME27="$DROID_LOCAL_27B_DISPLAY"
 PING="$DROID_LOCAL_GEMMA_PIN"
 NAMEG="$DROID_LOCAL_GEMMA_DISPLAY"
 GEMMA_BASE="$DROID_GEMMA_BASE_MODEL"
+PINI="$DROID_LOCAL_INKLING2_PIN"
+NAMEI="$DROID_LOCAL_INKLING2_DISPLAY"
+INK_BASE="$DROID_INKLING2_BASE_MODEL"
 # The gemma listing's geometry, read from the installer itself so these
 # assertions never transcribe them (the same one-contract rule as the rest
 # of the suite).
 GCTX=$(grep -oP '^GEMMA_CTX=\K[0-9]+' "$HERE/sync-local-agent-configs.sh")
 GOUT=$(grep -oP '^GEMMA_OUT=\K[0-9]+' "$HERE/sync-local-agent-configs.sh")
 [ -n "$GCTX" ] && [ -n "$GOUT" ] || { echo "sandbox: cannot read GEMMA_CTX/GEMMA_OUT from the installer"; exit 1; }
+# The inkling2 listing's geometry lives in ITS profile (the installer reads
+# the same file at runtime) and the proxy tool-turn cap (the installer's
+# MAX_OUTPUT, which the listing's output cap pins to) — never transcribed.
+ICTX=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['context_window'])" "$HERE/../config/model-profiles/inkling2.json" 2>/dev/null)
+IOUT=$(grep -oP '^MAX_OUTPUT=\K[0-9]+' "$HERE/sync-local-agent-configs.sh")
+[ -n "$ICTX" ] && [ -n "$IOUT" ] || { echo "sandbox: cannot read the inkling2 geometry (profile ctx / installer MAX_OUTPUT)"; exit 1; }
 # Sourcing is side-effect free — snapshot it HERE, before the installer
 # run below legitimately creates the (sandbox-redirected) lock file.
 CONTRACT_CLEAN=$([ ! -e "$DROID_SYNC_LOCK" ] && echo clean || echo dirty)
@@ -169,6 +178,16 @@ cat > "$SANDBOX/.factory/settings.json" <<EOF
     "baseUrl": "http://127.0.0.1:4000/v1", "apiKey": "stale",
     "id": "custom:Qwen3.8-27B-UAP-local-31", "index": 31,
     "provider": "generic-chat-completion-api" },
+  { "displayName": "Inkling 2 Mini Basalt NVFP4-q8 (UAP-local)", "model": "Inkling 2 Mini",
+    "baseUrl": "http://127.0.0.1:4000", "provider": "anthropic",
+    "apiKeyHelper": "/sandbox/fleet-arm-ensure-basalt-inkling2.sh", "apiKeyHelperTtlMs": 300000,
+    "baseModelId": "claude-opus-5-5", "maxOutputTokens": 84000, "maxContextLimit": 1048576,
+    "id": "custom:Inkling-helper-0" },
+  { "displayName": "Inkling 2 Mini Basalt NVFP4-q8 (UAP-local)", "model": "Inkling 2 Mini",
+    "baseUrl": "http://127.0.0.1:4000", "provider": "anthropic",
+    "apiKeyHelper": "/sandbox/fleet-arm-ensure-basalt-inkling2-alt.sh", "apiKeyHelperTtlMs": 300000,
+    "baseModelId": "claude-opus-5-5", "maxOutputTokens": 84000, "maxContextLimit": 1048576,
+    "id": "custom:Inkling-helper-1" },
   { "displayName": "GPT-5.1 Codex (router)", "model": "gpt-5.1-codex",
     "baseUrl": "http://localhost:8317/v1", "apiKey": "router-key",
     "id": "custom:GPT-5.1-Codex-0" },
@@ -235,16 +254,20 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=1; }
 
 # 0. shared Droid sync contract — names + installer structure
 bash -n "$CONTRACT" && ok "contract: valid bash" || bad "contract: bash -n failed"
-for V in MODELS_ONLY REPO_ROOT PROJECT_FACTORY_SET DROID_ANTHROPIC_BASE_MODEL DROID_CHAT_BASE_MODEL DROID_LOCAL_27B_PIN DROID_LOCAL_27B_DISPLAY DROID_LOCAL_GEMMA_PIN DROID_LOCAL_GEMMA_DISPLAY DROID_SYNC_LOCK; do
+for V in MODELS_ONLY REPO_ROOT PROJECT_FACTORY_SET DROID_ANTHROPIC_BASE_MODEL DROID_CHAT_BASE_MODEL DROID_LOCAL_27B_PIN DROID_LOCAL_27B_DISPLAY DROID_LOCAL_GEMMA_PIN DROID_LOCAL_GEMMA_DISPLAY DROID_LOCAL_INKLING2_PIN DROID_LOCAL_INKLING2_DISPLAY DROID_SYNC_LOCK; do
   [ -n "${!V:-}" ] && ok "contract: $V defined" || bad "contract: $V undefined"
 done
-# The gemma base model is DELIBERATELY empty by default (the Factory catalog
-# carries no Gemma built-in), so the non-empty rule above cannot apply to it —
-# assert it is defined (set), and when it IS set, the registry block below
-# keeps it from ever being a local wire id.
+# The gemma AND inkling2 base models are DELIBERATELY empty by default (the
+# Factory catalog carries neither a Gemma nor an Inkling built-in), so the
+# non-empty rule above cannot apply to them — assert they are defined (set),
+# and when they ARE set, the registry block below keeps them from ever being
+# a local wire id.
 [ "${DROID_GEMMA_BASE_MODEL+x}" = x ] \
   && ok "contract: DROID_GEMMA_BASE_MODEL defined (empty by design)" \
   || bad "contract: DROID_GEMMA_BASE_MODEL undefined"
+[ "${DROID_INKLING2_BASE_MODEL+x}" = x ] \
+  && ok "contract: DROID_INKLING2_BASE_MODEL defined (empty by design)" \
+  || bad "contract: DROID_INKLING2_BASE_MODEL undefined"
 # Sourcing must be side-effect free: no lock file, no repo config writes.
 [ "$CONTRACT_CLEAN" = "clean" ] && ok "contract: sourcing creates no lock file" || bad "contract: sourcing wrote $DROID_SYNC_LOCK"
 # REPO_ROOT must resolve to the checkout the script lives in, not $PWD.
@@ -311,6 +334,31 @@ if gbase:
     assert gbase not in advertised and gbase not in (reg.get("retired_local_aliases") or []), \
         f"gemma base model is a local wire id: {gbase}"
 PY
+# The inkling2 listing pin must be an id the registry's inkling2 family
+# advertises (same fail-closed rule as the 27B/gemma pins), the inkling2
+# base model must never be a local wire id when set, and the pin must agree
+# with the inkling2 model profile's model field — the profile rewrite puts
+# the profile model on the wire, so a disagreement would route the family
+# listing to the wrong arm.
+python3 - "$REPO_ROOT/config/model-registry.json" "$PINI" "$INK_BASE" "$REPO_ROOT/config/model-profiles/inkling2.json" <<'PY' \
+  && ok "contract: DROID_LOCAL_INKLING2_PIN is advertised by the inkling2 family (and agrees with the profile)" \
+  || bad "contract: DROID_LOCAL_INKLING2_PIN is not an inkling2 advertises id (or disagrees with the profile)"
+import json, sys
+reg = json.load(open(sys.argv[1])); pin = sys.argv[2]; ibase = sys.argv[3]
+prof = json.load(open(sys.argv[4]))
+fam = (reg.get("models") or {}).get("inkling2") or {}
+adv = [a for a in (fam.get("advertises") or []) if isinstance(a, str)]
+assert pin in adv, f"pin {pin} not in the inkling2 family's advertises: {adv}"
+assert pin not in (reg.get("retired_local_aliases") or []), \
+    f"pin {pin} is still retired — a listed family id must not be drift"
+assert prof.get("model") == pin, \
+    f"profile model {prof.get('model')!r} != pin {pin!r} — the profile rewrite would misroute"
+if ibase:
+    advertised = {a for f in (reg.get("models") or {}).values()
+                  for a in (f.get("advertises") or [])}
+    assert ibase not in advertised and ibase not in (reg.get("retired_local_aliases") or []), \
+        f"inkling2 base model is a local wire id: {ibase}"
+PY
 # The bodies live in the installer (the contract stays stub-free — no dead
 # code), so assert them textually against it.
 INSTALLER="$HERE/sync-local-agent-configs.sh"
@@ -329,10 +377,11 @@ grep -q '^PROXY_LOG_LEVEL=INFO$'           "$env_f" && ok "proxy: unrelated keys
 [ "$(grep -c '^PROXY_CONCURRENCY_LIMIT=' "$env_f")" = "1" ] && ok "proxy: no duplicate keys" || bad "proxy: duplicated key"
 
 # 2. opencode — including what must NOT change
-python3 - "$SANDBOX/.config/opencode/opencode.json" "$FAKE_TOKEN" "$CLOUD_KEY" "$ALIAS" "$CTX" "$POOL" <<'PY' && ok "opencode: shape, scoping and preservation" || bad "opencode: assertions failed"
+python3 - "$SANDBOX/.config/opencode/opencode.json" "$FAKE_TOKEN" "$CLOUD_KEY" "$ALIAS" "$CTX" "$POOL" "$ICTX" "$IOUT" <<'PY' && ok "opencode: shape, scoping and preservation" || bad "opencode: assertions failed"
 import json,sys
 d=json.load(open(sys.argv[1])); tok, cloud, alias, ctx, pool = sys.argv[2:7]
 ctx, pool = int(ctx), int(pool)
+ctx_i, out_i = int(sys.argv[7]), int(sys.argv[8])
 p=d["provider"]["qwen-proxy"]
 # BOTH local families are listed: the Flash-Next default and the 27B family
 # (keyed by the registry family id, not the old default string — that
@@ -346,6 +395,21 @@ for m in (fl, m27):
     assert m["reasoning"] is True and m["tool_call"] is True and m["attachment"] is True
 assert fl["name"]=="Qwen3.8 Flash-Next (UAP guardrail proxy)", fl.get("name")
 assert m27["name"]=="Qwen3.8 27B (UAP guardrail proxy)", m27.get("name")
+# The inkling2 family is its OWN provider with its OWN profile header: the
+# profile's model field is what the proxy puts ON THE WIRE, so an inkling2
+# listing under qwen-proxy would send the qwen38 profile and silently reroute
+# every Inkling request to the qwen alias. Own provider, own profile, same
+# proxy, same token.
+pi = d["provider"]["inkling2-proxy"]
+assert pi["options"]["baseURL"]=="http://127.0.0.1:4000/v1"
+assert pi["options"]["headers"]["x-uap-model-profile"]=="inkling2", pi["options"]["headers"]
+assert pi["options"]["apiKey"]==tok, "inkling2 provider not on the scoped token"
+assert set(pi["models"]) == {"Inkling 2 Mini"}, set(pi["models"])
+im = pi["models"]["Inkling 2 Mini"]
+assert im["name"]=="Inkling 2 Mini (UAP guardrail proxy)", im.get("name")
+assert im["limit"]=={"context":ctx_i,"output":out_i}, im["limit"]
+assert im["reasoning"] is True and im["tool_call"] is True and im["attachment"] is True, \
+    "inkling2 listing lost reasoning/tool_call/attachment"
 # The token must come from qwen-proxy, NOT the cloud provider listed first.
 assert p["options"]["apiKey"]==tok, f"expected scoped token, got {p['options']['apiKey']!r}"
 assert p["options"]["headers"]["x-uap-proxy-token"]==tok
@@ -354,6 +418,7 @@ assert p["options"]["headers"]["x-uap-proxy-token"]==tok
 assert d["provider"]["anthropic"]["options"]["apiKey"]==cloud, "clobbered the cloud provider's own key"
 assert cloud not in json.dumps(p), "CLOUD KEY copied into the qwen-proxy provider"
 assert cloud not in json.dumps(d["provider"]["llama.cpp-direct"]), "CLOUD KEY copied into the direct provider"
+assert cloud not in json.dumps(pi), "CLOUD KEY copied into the inkling2 provider"
 # cloud-pinned agent must survive; local one must be repointed to the DEFAULT
 # (the legacy "qwen-proxy/Qwen3.8-27B" pin predates the two-family menu — it
 # meant "the local default", so it follows the default, not the 27B listing)
@@ -407,11 +472,12 @@ assert len(cloud) == 1, "cloud entry vanished"
 assert cloud[0]["base_url"] == "http://localhost:8317", "8317 host not fixed"
 assert cloud[0]["api_key"] == "local", "cloud entry key clobbered"
 PY
-python3 - "$SANDBOX/.factory/settings.json" settings "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$BASE_MODEL" "$CHAT_BASE_MODEL" "$PING" "$GCTX" "$GOUT" <<PY && ok "factory/settings.json: anthropic route + baseModelId + no force-add" || bad "factory/settings.json: assertions failed"
+python3 - "$SANDBOX/.factory/settings.json" settings "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$BASE_MODEL" "$CHAT_BASE_MODEL" "$PING" "$GCTX" "$GOUT" "$PINI" "$ICTX" "$IOUT" <<PY && ok "factory/settings.json: anthropic route + baseModelId + no force-add" || bad "factory/settings.json: assertions failed"
 import json, sys
 d = json.load(open(sys.argv[1]))
 alias, tok, ctx, pool, base_model, chat_base = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7], sys.argv[8]
 pin_g, ctx_g, out_g = sys.argv[9], int(sys.argv[10]), int(sys.argv[11])
+pin_i, ctx_i, out_i = sys.argv[12], int(sys.argv[13]), int(sys.argv[14])
 models = d["customModels"]
 import re as _re
 M27 = _re.compile(r"^custom:Qwen[\d.]+-27B-UAP-local-\d+$")
@@ -449,6 +515,39 @@ assert g["noImageSupport"] is True, "gemma listing claims vision (arm has no mmp
 assert g["maxContextLimit"] == ctx_g, f"gemma listing ctx wrong: {g.get('maxContextLimit')}"
 assert g["maxOutputTokens"] == out_g, f"gemma listing output wrong: {g.get('maxOutputTokens')}"
 assert "baseModelId" not in g, "gemma listing gained a baseModelId — catalog has no Gemma built-in"
+# The inkling2 family in THIS file is the operator's SELF-MANAGED entry
+# (apiKeyHelper set: the fleet-arm-ensure class, where the helper switches
+# the panel arm and prints the token). The sync treats such entries as
+# deliberate by construction — never converged (a model rewrite would pair
+# the qwen alias with an inkling arm-ensure), never re-capped, never
+# deduped — and because the family is already listed through it, the sync's
+# own marker listing is NOT added here (the add-if-missing guard keys on
+# the model).
+MI = _re.compile(r"^custom:Inkling-2-Mini-UAP-local-\d+$")
+imark = [m for m in models if isinstance(m.get("id"), str) and MI.match(m["id"])]
+assert len(imark) == 0, f"marker listing added although the family is already listed: {len(imark)}"
+ih = [m for m in models if m.get("apiKeyHelper")]
+# BOTH self-managed entries survive — including the one that shares its
+# (model, baseUrl, displayName) group with the other: the dedupe drop loop
+# skips helper members (a group's "keep" member would not carry the
+# helper's own model/route pairing). One helper + one non-helper in the
+# same group would drop the helper without the guard; two helpers prove it
+# holds even when the group's keep preference lands on the other member.
+assert len(ih) == 2, f"expected the two self-managed entries, got {len(ih)}"
+assert {m["id"] for m in ih} == {"custom:Inkling-helper-0", "custom:Inkling-helper-1"}, \
+    f"a self-managed entry was deduped away: {[m.get('id') for m in ih]}"
+im = ih[0]
+assert im["model"] == pin_i, f"self-managed entry converged away: {im.get('model')}"
+assert im["displayName"] == "Inkling 2 Mini Basalt NVFP4-q8 (UAP-local)", im.get("displayName")
+assert im["baseUrl"] == "http://127.0.0.1:4000", im.get("baseUrl")
+assert im["apiKeyHelper"] == "/sandbox/fleet-arm-ensure-basalt-inkling2.sh", "helper entry's helper touched"
+assert im["maxContextLimit"] == 1048576, "self-managed entry re-capped (operator calibration)"
+assert im["maxOutputTokens"] == 84000, "self-managed entry output re-capped"
+assert "apiKey" not in im, "self-managed entry gained an apiKey (helper owns the token)"
+assert im.get("baseModelId") == "claude-opus-5-5", "self-managed baseModelId touched"
+im1 = ih[1]
+assert im1["apiKeyHelper"] == "/sandbox/fleet-arm-ensure-basalt-inkling2-alt.sh", \
+    "duplicate-group helper entry's helper touched"
 entries = [m for m in models if m.get("model") == alias]
 # the ex-qwen35 anthropic-shape entry keeps the Messages ROOT (no /v1), gains
 # baseModelId, keeps its own apiKey, and is session-sized
@@ -508,8 +607,12 @@ assert lan[0]["apiKey"] == "lan", "LAN entry key clobbered"
 g = [m for m in models if m.get("model") == "gpt-5.4"]
 assert len(g) == 1, f"expected the duplicate cloud pair collapsed, got {len(g)}"
 assert g[0]["id"] == "custom:GPT-5.4-0" and g[0]["apiKey"] == "router-new", g[0]
-# no duplicate picker line survives anywhere in the file
-sigs = [(m.get("model"), m.get("baseUrl"), m.get("displayName")) for m in models]
+# no duplicate picker line survives anywhere in the file — EXCEPT the
+# self-managed class (apiKeyHelper set): the sync never dedupes those by
+# contract (the helper owns the model/route pairing), so they are exempt
+# from the picker-line invariant exactly as they are from the drop loop.
+sigs = [(m.get("model"), m.get("baseUrl"), m.get("displayName"))
+        for m in models if not m.get("apiKeyHelper")]
 assert len(sigs) == len(set(sigs)), "duplicate picker line survived dedupe"
 # dead favorites: BOTH qwen-era pins repoint onto the surviving local entry
 # (here the session-default-pinned chat survivor, the only proxy-route entry
@@ -523,11 +626,12 @@ assert not any(str(m.get("id", "")).startswith("custom:Qwen3.8-UAP-local-") for 
     "canonical entry added although local entries exist"
 PY
 # the project settings had NO local entry — it must have GAINED the canonical
-python3 - "$PSET" project "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$CHAT_BASE_MODEL" "$PIN27" "$PING" "$GCTX" "$GOUT" <<PY && ok "project settings: gained the canonical entry (add-if-missing)" || bad "project settings: add-if-missing failed"
+python3 - "$PSET" project "$ALIAS" "$FAKE_TOKEN" "$CTX" "$POOL" "$CHAT_BASE_MODEL" "$PIN27" "$PING" "$GCTX" "$GOUT" "$PINI" "$ICTX" "$IOUT" <<PY && ok "project settings: gained the canonical entry (add-if-missing)" || bad "project settings: add-if-missing failed"
 import json, sys
 d = json.load(open(sys.argv[1]))
 alias, tok, ctx, pool, chat_base, pin27 = sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7], sys.argv[8]
 pin_g, ctx_g, out_g = sys.argv[9], int(sys.argv[10]), int(sys.argv[11])
+pin_i, ctx_i, out_i = sys.argv[12], int(sys.argv[13]), int(sys.argv[14])
 models = d["customModels"]
 # the cloud router entry is untouched
 assert models[0]["model"] == "gpt-5.1" and models[0]["apiKey"] == "router-key", "cloud entry clobbered"
@@ -569,6 +673,21 @@ assert ge["maxOutputTokens"] == out_g, "gemma entry output cap wrong"
 assert ge["noImageSupport"] is True, "gemma entry claims vision (arm has no mmproj)"
 assert "baseModelId" not in ge, "gemma entry gained a baseModelId — catalog has no Gemma built-in"
 assert ge["displayName"] == "Gemma 4 31B (UAP local)", ge.get("displayName")
+# ...and the FOURTH family: the inkling2 listing, added after the other
+# three (index 4 here — the entry id is hyphenated while the model field
+# keeps the spaced wire id both arms serve)
+fi2 = [m for m in models if m.get("model") == pin_i]
+assert len(fi2) == 1, f"expected exactly one inkling2 family entry, got {len(fi2)}"
+ie = fi2[0]
+assert ie["id"] == "custom:Inkling-2-Mini-UAP-local-4" and ie["index"] == 4, (ie.get("id"), ie.get("index"))
+assert _re2.match(r"^custom:Inkling-2-Mini-UAP-local-\d+$", ie["id"]), ie["id"]
+assert ie["baseUrl"] == "http://127.0.0.1:4000/v1", ie["baseUrl"]
+assert ie["apiKey"] == tok, "inkling2 entry not on the scoped token"
+assert ie["maxContextLimit"] == ctx_i, "inkling2 entry not sized to the family profile"
+assert ie["maxOutputTokens"] == out_i, "inkling2 entry output cap wrong"
+assert ie["noImageSupport"] is False, "inkling2 entry lost vision (family is dynamic)"
+assert "baseModelId" not in ie, "inkling2 entry gained a baseModelId — catalog has no Inkling built-in"
+assert ie["displayName"] == "Inkling 2 Mini (UAP local)", ie.get("displayName")
 PY
 
 # 4. codex — additive, converging, loadable, idempotent
@@ -583,7 +702,7 @@ grep -q '^model = "some-cloud-model"'           "$c" && ok "codex: existing defa
 grep -q 'qwen38-gsq-rco-27b'                    "$c" && bad "codex: retired id still present" || ok "codex: retired id gone"
 [ "$(grep -c '^\[profiles.qwen38\]' "$c")" = "1" ] && ok "codex: single profile block (no duplicates)" || bad "codex: duplicated the block"
 
-# 5. claude-local: mode, no embedded secret, header
+# 5. claude-local: mode, no embedded secret, header — BOTH wrappers
 w="$SANDBOX/.local/bin/claude-local"
 [ -x "$w" ] && ok "claude-local: created and executable" || bad "claude-local: missing/not executable"
 mode=$(stat -c '%a' "$w" 2>/dev/null || echo "?")
@@ -591,6 +710,14 @@ mode=$(stat -c '%a' "$w" 2>/dev/null || echo "?")
 grep -q "$FAKE_TOKEN" "$w" && bad "claude-local: TOKEN IS EMBEDDED in the wrapper" || ok "claude-local: no embedded secret"
 grep -q 'ANTHROPIC_CUSTOM_HEADERS' "$w" && ok "claude-local: sends the profile header (cap applies)" || bad "claude-local: no profile header -> uncapped"
 grep -Fq "ANTHROPIC_MODEL=\"\${ANTHROPIC_MODEL:-$ALIAS}\"" "$w" && ok "claude-local: ANTHROPIC_MODEL is the served alias" || bad "claude-local: ANTHROPIC_MODEL is not the served alias"
+wi="$SANDBOX/.local/bin/claude-local-inkling2"
+[ -x "$wi" ] && ok "claude-local-inkling2: created and executable" || bad "claude-local-inkling2: missing/not executable"
+modei=$(stat -c '%a' "$wi" 2>/dev/null || echo "?")
+[ "$modei" = "700" ] && ok "claude-local-inkling2: mode 700" || bad "claude-local-inkling2: mode $modei, expected 700"
+grep -q "$FAKE_TOKEN" "$wi" && bad "claude-local-inkling2: TOKEN IS EMBEDDED" || ok "claude-local-inkling2: no embedded secret"
+grep -Fq "x-uap-model-profile: inkling2" "$wi" && ok "claude-local-inkling2: pins the inkling2 profile (own cap + wire model)" || bad "claude-local-inkling2: wrong profile header"
+grep -Fq "ANTHROPIC_MODEL=\"\${ANTHROPIC_MODEL:-$PINI}\"" "$wi" && ok "claude-local-inkling2: ANTHROPIC_MODEL is the inkling2 wire id" || bad "claude-local-inkling2: ANTHROPIC_MODEL is not the wire id"
+grep -Fq "CLAUDE_CODE_MAX_CONTEXT_TOKENS=\"\${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-$ICTX}\"" "$wi" && ok "claude-local-inkling2: client-side cap matches the profile" || bad "claude-local-inkling2: cap does not match the inkling2 profile"
 
 # 6. idempotence — a second run must leave all three droid files BYTE-identical
 cp "$SANDBOX/.factory/config.json"   "$SANDBOX/.sb-1.json"
@@ -636,10 +763,11 @@ else
   rc3=$?
   bad "MODELS_ONLY: run failed (rc $rc3)"
 fi
-python3 - "$S3/.factory/settings.json" "$PSET3" "$ALIAS" "$CTX" "$BASE_MODEL" "$CHAT_BASE_MODEL" "$PIN27" "$PING" "$GCTX" "$GOUT" <<PY && ok "MODELS_ONLY: converged user + project settings" || bad "MODELS_ONLY: assertions failed"
+python3 - "$S3/.factory/settings.json" "$PSET3" "$ALIAS" "$CTX" "$BASE_MODEL" "$CHAT_BASE_MODEL" "$PIN27" "$PING" "$GCTX" "$GOUT" "$PINI" "$ICTX" "$IOUT" <<PY && ok "MODELS_ONLY: converged user + project settings" || bad "MODELS_ONLY: assertions failed"
 import json, sys
 alias, ctx, base_model, chat_base, pin27 = sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6], sys.argv[7]
 pin_g, ctx_g, out_g = sys.argv[8], int(sys.argv[9]), int(sys.argv[10])
+pin_i, ctx_i, out_i = sys.argv[11], int(sys.argv[12]), int(sys.argv[13])
 u = json.load(open(sys.argv[1]))["customModels"]
 assert any(m.get("model") == alias for m in u), "user settings not migrated"
 a = [m for m in u if m.get("model") == alias][0]
@@ -669,13 +797,22 @@ assert len(ug) == 1, f"user settings missing the gemma listing: {len(ug)}"
 assert ug[0]["noImageSupport"] is True, "gemma listing claims vision"
 assert ug[0]["maxContextLimit"] == ctx_g, "gemma listing not sized to the arm's window"
 assert "baseModelId" not in ug[0], "gemma listing gained a baseModelId"
+# ...and the fourth family: the inkling2 listing, the hook's exact mode
+ui = [m for m in u if m.get("model") == pin_i]
+assert len(ui) == 1, f"user settings missing the inkling2 listing: {len(ui)}"
+assert ui[0]["noImageSupport"] is False, "inkling2 listing lost vision (family is dynamic)"
+assert ui[0]["maxContextLimit"] == ctx_i, "inkling2 listing not sized to the family profile"
+assert ui[0]["maxOutputTokens"] == out_i, "inkling2 listing output cap wrong"
+assert "baseModelId" not in ui[0], "inkling2 listing gained a baseModelId"
 p = json.load(open(sys.argv[2]))["customModels"]
 assert any(m.get("model") == alias for m in p), "project settings did not gain the canonical entry"
 p27 = [m for m in p if m.get("model") == pin27]
-assert len(p) == 3 and len(p27) == 1, \
-    f"project settings expected canonical + 27B + gemma, got {len(p)} entries ({len(p27)} x 27B)"
+assert len(p) == 4 and len(p27) == 1, \
+    f"project settings expected canonical + 27B + gemma + inkling2, got {len(p)} entries ({len(p27)} x 27B)"
 pg = [m for m in p if m.get("model") == pin_g]
 assert len(pg) == 1 and pg[0]["noImageSupport"] is True, "project settings missing the gemma listing"
+pi = [m for m in p if m.get("model") == pin_i]
+assert len(pi) == 1 and pi[0]["noImageSupport"] is False, "project settings missing the inkling2 listing"
 PY
 [ ! -e "$S3/.config/uap/anthropic-proxy.env" ] && ok "MODELS_ONLY: no proxy env created" || bad "MODELS_ONLY: created the proxy env"
 [ ! -e "$S3/.codex/config.toml" ]              && ok "MODELS_ONLY: no codex config created" || bad "MODELS_ONLY: wrote codex config"

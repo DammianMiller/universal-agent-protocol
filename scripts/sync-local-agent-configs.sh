@@ -7,6 +7,15 @@
 #            live since 2026-11-18)
 #   Proxy  : uap-anthropic-proxy.service on :4000 (Anthropic Messages API)
 #   Profile: config/model-profiles/qwen38.json  (per-session window 114688)
+#   Family : the inkling2 family (Inkling 2 Mini — basalt 0.5.7 on the native
+#            NVFP4-MX8 pack + squid5090 on the original HF checkpoint, one wire
+#            id, family vision dynamic on the basalt arm / none on the squid
+#            arm) is listed in every agent surface that can reach it:
+#            opencode (own provider + own profile), droid pickers (family
+#            listing), claude-local-inkling2. NOT codex: codex speaks the
+#            Responses API only and neither arm serves /v1/responses (and the
+#            proxy has no /v1/responses adapter yet).
+#   Profile: config/model-profiles/inkling2.json (per-session window 262144)
 #
 # WHY A PER-SESSION CAP IS NEEDED
 # --------------------------------
@@ -117,6 +126,38 @@ read -r MODEL_ALIAS CTX_SESSION CTX_POOL RAILS <<< "$GEOMETRY"
 GEMMA_CTX=32768
 GEMMA_OUT=16384
 
+# The inkling2 family's geometry — read from ITS OWN profile, the same
+# one-contract rule as the qwen alias: config/model-profiles/inkling2.json
+# is the one place the family's caps live (262144 per-session, deliberately
+# under the smallest arm pool), and re-running this script converges every
+# harness on it. INK_OUT is the proxy tool-turn cap (MAX_OUTPUT), matching
+# the qwen listings' doctrine — the profile's max_tokens is the model's
+# completion budget, the CLIENT-facing cap is the clamp the proxy enforces.
+# Line-split parse, NOT word-split: the family's wire id carries a space
+# ("Inkling 2 Mini"), which a `read -r A B <<<` would tear apart.
+INK_PROFILE_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/model-profiles/inkling2.json"
+INK_GEOMETRY="$(python3 - "$INK_PROFILE_FILE" <<'PY'
+import json, sys
+try:
+    p = json.load(open(sys.argv[1]))
+    print(p["model"])
+    print(p["context_window"])
+except Exception as e:
+    sys.stderr.write("inkling2 profile read failed: %s\n" % e)
+    sys.exit(1)
+PY
+)" || die "cannot read the inkling2 geometry from $INK_PROFILE_FILE — did a profile change break its shape?"
+INK_MODEL="${INK_GEOMETRY%%$'\n'*}"
+INK_CTX="${INK_GEOMETRY##*$'\n'}"
+[ -n "$INK_MODEL" ] && [[ "$INK_CTX" =~ ^[0-9]+$ ]] \
+  || die "$INK_PROFILE_FILE returned an incomplete geometry row: $INK_GEOMETRY"
+INK_OUT="$MAX_OUTPUT"
+# The pin and the profile model must agree: the Droid listing pins the wire
+# id the profile routes to, and a mismatch would list a model the placement
+# gate cannot resolve to the family.
+[ "$INK_MODEL" = "$DROID_LOCAL_INKLING2_PIN" ] \
+  || die "inkling2 profile model ($INK_MODEL) and DROID_LOCAL_INKLING2_PIN ($DROID_LOCAL_INKLING2_PIN) disagree — one place must own the wire id"
+
 backup() { # <file>
   [ -f "$1" ] || { note "absent, will create: $1"; return 0; }
   if [ "$DRY_RUN" = "1" ]; then note "DRY: backup $1"; return 0; fi
@@ -165,15 +206,19 @@ sync_droid_models() { # <file> <create: 0|1>
               "$DROID_LOCAL_27B_PIN" "$DROID_LOCAL_27B_DISPLAY" \
               "$DROID_LOCAL_GEMMA_PIN" "$DROID_LOCAL_GEMMA_DISPLAY" \
               "$DROID_GEMMA_BASE_MODEL" "$GEMMA_CTX" "$GEMMA_OUT" \
+              "$DROID_LOCAL_INKLING2_PIN" "$DROID_LOCAL_INKLING2_DISPLAY" \
+              "$DROID_INKLING2_BASE_MODEL" "$INK_CTX" "$INK_OUT" \
     <<'PY' || { note "WARN: $f could not be synced"; return 0; }
 import json, os, re, shutil, sys, tempfile
 
 path, proxy, direct, alias, base_model, chat_base, ctx_s, ctx_p, out, create, \
-    pin27, name27, pin_g, name_g, gemma_base, ctx_g, out_g = sys.argv[1:18]
+    pin27, name27, pin_g, name_g, gemma_base, ctx_g, out_g, \
+    pin_i, name_i, ink_base, ctx_i, out_i = sys.argv[1:23]
 token = os.environ.get("UAP_SYNC_TOKEN", "not-needed")
 dry = os.environ.get("DRY_RUN", "0") == "1"
 ctx_s, ctx_p, out = int(ctx_s), int(ctx_p), int(out)
 ctx_g, out_g = int(ctx_g), int(out_g)
+ctx_i, out_i = int(ctx_i), int(out_i)
 
 # Retired local ids: every arm this box has served since 2026-09. A client
 # still pinned to one is the exact drift this sync exists to converge. They
@@ -205,6 +250,12 @@ ADV27 = [a for a in (fam27.get("advertises") or []) if isinstance(a, str)]
 # be an id that family advertises, else the listing is silently not added.
 famg = (_reg.get("models") or {}).get("gemma-4-31b") or {}
 ADVG = [a for a in (famg.get("advertises") or []) if isinstance(a, str)]
+# The FOURTH local family: the registry's inkling2 family (Inkling 2 Mini —
+# basalt 0.5.7 on the native NVFP4-MX8 pack and squid5090 on the original HF
+# checkpoint, two arms sharing the :8080 slot and the wire id). Same
+# fail-closed rule as the 27B/gemma pins.
+fami = (_reg.get("models") or {}).get("inkling2") or {}
+ADVI = [a for a in (fami.get("advertises") or []) if isinstance(a, str)]
 # The marker id the sync stamps on its 27B family listing — the stake that
 # distinguishes a DELIBERATE listing (never converged) from a stale pin
 # (always converged), the same job the canon regex does for the alias entry.
@@ -214,6 +265,13 @@ marker27 = re.compile(r"^custom:Qwen[\d.]+-27B-UAP-local-\d+$")
 # listing this sync wrote, while a plain-id gemma pin (no marker) is the
 # same drift class as any stale fleet pin and converges onto the alias.
 markerg = re.compile(r"^custom:gemma-4[\w.-]*-UAP-local-\d+$")
+# The inkling2 family's marker — same stake job. The ENTRY id is
+# hyphenated (custom:Inkling-2-Mini-UAP-local-N) even though the wire id
+# carries a space ("Inkling 2 Mini"): ids ride Droid's settings references
+# (sessionDefaultSettings, modelFavorites) as opaque strings, and the
+# space-free form keeps every one of those references shell- and
+# regex-friendly while the MODEL field stays the wire id both arms serve.
+markeri = re.compile(r"^custom:Inkling-2-Mini-UAP-local-\d+$")
 
 def spell(camel):
     if camel:
@@ -266,6 +324,22 @@ for key in keys:
         if not isinstance(m, dict):
             continue
         label = str(m.get("id") or m.get("model") or m.get(DK) or "<unnamed>")
+        # A self-managed entry (apiKeyHelper set) manages its OWN routing:
+        # the operator's fleet-arm-ensure class, where the helper switches
+        # the Inference Panel arm, ensures the proxy, and registers the
+        # client BEFORE the request, and prints the token the entry rides
+        # (its stdout contract REPLACES whatever apiKey the entry carries).
+        # The sync cannot know what a helper does, so converging the model
+        # under one would pair a qwen id with an inkling arm-ensure (or vice
+        # versa) — corrupted, silently. Such entries are deliberate by
+        # construction: never converged, never re-capped, never deduped
+        # away, key untouched (the helper owns it). FIRST in the loop, before
+        # the marker branches: a helper entry whose id happens to match a
+        # marker shape must not have its apiKey overwritten or its caps
+        # re-stamped by the maintain-never-migrate rules — the marker
+        # branches are this sync's own stakes, and this entry is not one.
+        if m.get("apiKeyHelper"):
+            continue
         # Deliberate 27B family listing: the marker id is this sync's own
         # stake, so it is exempt from convergence — repointing it would
         # erase the second family from the picker. Maintain, never migrate:
@@ -305,6 +379,23 @@ for key in keys:
             if camel and gemma_base and not m.get("baseModelId"):
                 m["baseModelId"] = gemma_base
                 changed.append(f"{label} [baseModelId={gemma_base}]")
+            continue
+        # Deliberate inkling2 family listing: same maintain-never-migrate
+        # rule. Caps ARE maintained here to the inkling2 profile geometry
+        # (the 27B rule, not the gemma one — the family's arms can swap
+        # under the listing and a stale ctx belief would strand it at an
+        # old posture). baseModelId only when the inkling2 base variable is
+        # non-empty — the Factory catalog carries no Inkling built-in.
+        if isinstance(mid, str) and markeri.match(mid):
+            if m.get(AK) != token:
+                setf(m, AK, token, label, "apiKey", changed)
+            if m.get(CK) != ctx_i:
+                setf(m, CK, ctx_i, label, "ctx", changed)
+            if m.get(OK) != out_i:
+                setf(m, OK, out_i, label, "out", changed)
+            if camel and ink_base and not m.get("baseModelId"):
+                m["baseModelId"] = ink_base
+                changed.append(f"{label} [baseModelId={ink_base}]")
             continue
         base = m.get(BK)
         base = base if isinstance(base, str) else ""
@@ -437,9 +528,19 @@ for key in keys:
                          if isinstance(models[i].get("id"), str) and markerg.match(models[i]["id"])),
                         None)
         if keep is None:
+            # An inkling2-marker member gets the same stake preference.
+            keep = next((i for i in idxs
+                         if isinstance(models[i].get("id"), str) and markeri.match(models[i]["id"])),
+                        None)
+        if keep is None:
             keep = idxs[-1]
         for i in idxs:
             if i != keep:
+                # A self-managed entry is never dropped as a duplicate: its
+                # helper pairs with ITS model/route, and the group's "keep"
+                # member would not carry that pairing.
+                if models[i].get("apiKeyHelper"):
+                    continue
                 drop.add(i)
                 changed.append(f"{_label(models[i])} [duplicate of {_label(models[keep])} dropped]")
     if drop:
@@ -525,6 +626,41 @@ for key in keys:
             entry_g["baseModelId"] = gemma_base
         models.append(entry_g)
         changed.append(f"{entry_g['id']} [gemma family entry added]")
+
+    # The inkling2 family listing rides alongside the other three: the
+    # registry's inkling2 family (Inkling 2 Mini — basalt on the native
+    # NVFP4-MX8 pack, squid5090 on the original HF checkpoint, one wire id,
+    # the placement gate serves whichever arm is resident). Same chat route
+    # and token as the other families, caps from the inkling2 PROFILE (the
+    # one place the family's geometry lives), noImageSupport False — the
+    # family's vision is dynamic on the basalt arm and the proxy's placement
+    # gate parks image traffic on the text-only arm and auto-switches, so
+    # the picker line advertising vision is honest (a transient park, then
+    # the retry forwards). baseModelId only when an Inkling Factory
+    # built-in exists (it does not). Fail-closed on the registry like the
+    # 27B/gemma pins. The entry ID is hyphenated even though the wire id
+    # carries a space — see the markeri comment above.
+    if (camel and create == "1" and pin_i in ADVI and not any(
+        isinstance(m, dict) and m.get("model") == pin_i for m in models
+    )):
+        nums_i = []
+        for m in models:
+            if isinstance(m, dict) and isinstance(m.get("id"), str):
+                mt = re.search(r"(\d+)$", m["id"])
+                if mt:
+                    nums_i.append(int(mt.group(1)))
+        ii = (max(nums_i) + 1) if nums_i else 0
+        entry_i = {
+            "model": pin_i, "id": f"custom:Inkling-2-Mini-UAP-local-{ii}", "index": ii,
+            "baseUrl": f"{proxy}/v1", "apiKey": token,
+            "displayName": name_i,
+            "noImageSupport": False, "provider": "generic-chat-completion-api",
+            "maxOutputTokens": out_i, "maxContextLimit": ctx_i,
+        }
+        if ink_base:
+            entry_i["baseModelId"] = ink_base
+        models.append(entry_i)
+        changed.append(f"{entry_i['id']} [inkling2 family entry added]")
 
 # Dead favorites: a modelFavorites pin on a UAP-local custom id that no
 # longer exists (qwen35-era ids whose entries the migration above converged
@@ -756,11 +892,14 @@ if [ "$DRY_RUN" != "1" ]; then
   # whereas /proc/<pid>/environ is owner-only. (It cannot go on stdin either —
   # `python3 -` reads its own program from there.)
   UAP_SYNC_TOKEN="$PROXY_TOKEN" python3 - "$OC_GLOBAL" "$PROXY_URL" "$DIRECT_URL" \
-      "$MODEL_ALIAS" "$PROFILE_NAME" "$PROFILE_HEADER" "$CTX_SESSION" "$CTX_POOL" "$MAX_OUTPUT" <<'PY'
+      "$MODEL_ALIAS" "$PROFILE_NAME" "$PROFILE_HEADER" "$CTX_SESSION" "$CTX_POOL" "$MAX_OUTPUT" \
+      "$DROID_LOCAL_INKLING2_PIN" "inkling2" "$INK_CTX" "$INK_OUT" <<'PY'
 import json, os, sys
 token = os.environ["UAP_SYNC_TOKEN"]
 path, proxy, direct, alias, profile, hdr, ctx, pool, out = sys.argv[1:10]
+pin_i, profile_i, ctx_i, out_i = sys.argv[10:14]
 ctx, pool, out = int(ctx), int(pool), int(out)
+ctx_i, out_i = int(ctx_i), int(out_i)
 
 d = json.load(open(path)) if os.path.exists(path) else {}
 d["$schema"] = "https://opencode.ai/config.json"
@@ -814,11 +953,46 @@ prov["llama.cpp-direct"] = {
     },
 }
 
+# The inkling2 family (Inkling 2 Mini — basalt NVFP4-MX8 + squid5090, one
+# wire id, the placement gate serves whichever arm is resident and
+# auto-switches for image traffic). A SEPARATE PROVIDER, not a fourth models
+# key under qwen-proxy: the profile header is what applies the per-session
+# cap, and it is provider-level here — a listing under qwen-proxy would
+# send the qwen38 profile, whose model field the proxy APPLIES AS THE WIRE
+# MODEL (the profile rewrite), silently rerouting every Inkling request to
+# the qwen alias. Same proxy, same token, its own profile.
+prov["inkling2-proxy"] = {
+    "npm": "@ai-sdk/anthropic",
+    "name": "inkling2 guardrail proxy (local)",
+    "options": {
+        "baseURL": f"{proxy}/v1",
+        "apiKey": token,
+        "chunkTimeout": 300000,
+        "headers": {"x-uap-proxy-token": token, hdr: profile_i},
+    },
+    "models": {
+        pin_i: {
+            "name": "Inkling 2 Mini (UAP guardrail proxy)",
+            # Thinking-first: reasoning streams via reasoning_content before
+            # content; native tool calls verified on both arms.
+            "reasoning": True,
+            "tool_call": True,
+            # Family vision is dynamic on the basalt arm; the placement
+            # gate parks image traffic on the text-only squid arm with a
+            # switch, so the attachment capability is honest.
+            "attachment": True,
+            "limit": {"context": ctx_i, "output": out_i},
+        },
+    },
+}
+
 LOCAL_MODEL = "qwen-proxy/Qwen3.8-Flash-Next"
 # Current local listings — deliberate pins that must survive now that the
 # local menu carries two families (the legacy "qwen-proxy/Qwen3.8-27B"
 # default-era pins are NOT in this set on purpose: see the models map above).
-VALID_LOCAL = {LOCAL_MODEL, "qwen-proxy/qwen3.8-27b"}
+# The inkling2 listing is its own provider's only model, so a pin on it is
+# always a deliberate choice.
+VALID_LOCAL = {LOCAL_MODEL, "qwen-proxy/qwen3.8-27b", f"inkling2-proxy/{pin_i}"}
 # Old provider key; anything still referencing it would dangle.
 stale_prefixes = ("llama.cpp/", "qwen-proxy/")
 removed = prov.pop("llama.cpp", None)
@@ -949,24 +1123,40 @@ open(path, "w").write(text)
 print("   codex: uap-local + profiles.%s -> %s (direct %s, responses)" % (profile, alias, direct))
 PY
     note "wrote [model_providers.uap-local] + [profiles.$PROFILE_NAME] (responses, direct)"
+    note "NOTE: the inkling2 family is NOT codex-reachable — codex speaks the"
+    note "      Responses API only; the inkling2 arms (basalt + squid5090)"
+    note "      serve OpenAI chat/completions and the proxy has no"
+    note "      /v1/responses adapter. Add the adapter to route codex too."
   fi
 else
   note "absent: $CODEX_CFG"
 fi
 
 # ===========================================================================
-say "5/6  claude-local wrapper"
-backup "$CLAUDE_LOCAL"
-if [ "$DRY_RUN" != "1" ]; then
-  mkdir -p "$(dirname "$CLAUDE_LOCAL")"
+say "5/6  claude-local wrappers"
+# Two wrappers: the qwen default (claude-local) and the inkling2 family
+# (claude-local-inkling2). Both ride the guardrail proxy with their OWN
+# model profile — the profile header is what caps the session, and the
+# profile's model field is what the proxy puts on the wire, so each family
+# needs its own profile pin. The inkling2 wrapper keeps the vision caveat
+# honest in-band: image requests park for a transient arm switch when the
+# text-only squid arm is resident, then the retry forwards.
+write_claude_local() { # <path> <model> <profile> <ctx> <out> <family-line>
+  local w="$1" model="$2" prof="$3" ctx="$4" out="$5" family="$6"
+  backup "$w"
+  if [ "$DRY_RUN" = "1" ]; then
+    note "DRY: would write $w"
+    return 0
+  fi
+  mkdir -p "$(dirname "$w")"
   # 0700 BEFORE the write, not chmod after: umask here is 0002, so `cat >`
   # followed by `chmod +x` yields 0775 — a group-writable executable on PATH,
   # in a group the ollama daemon account belongs to. install(1) creates the
   # file with the mode already set, leaving no window.
-  install -m 700 /dev/null "$CLAUDE_LOCAL"
-  cat > "$CLAUDE_LOCAL" <<EOF
+  install -m 700 /dev/null "$w"
+  cat > "$w" <<EOF
 #!/usr/bin/env bash
-# Claude Code against the LOCAL Qwen3.8 stack (generated $(date +%F)).
+# Claude Code against the LOCAL $family stack (generated $(date +%F)).
 # Plain \`claude\` still goes to the cloud; this wrapper is the local path.
 #
 # The token is READ AT RUNTIME from the opencode config rather than embedded,
@@ -986,26 +1176,27 @@ PY
 export ANTHROPIC_BASE_URL="$PROXY_URL"
 export ANTHROPIC_AUTH_TOKEN="\${ANTHROPIC_AUTH_TOKEN:-\$_tok}"
 export ANTHROPIC_API_KEY="\${ANTHROPIC_API_KEY:-\$_tok}"
-# Carries the model profile — this is what caps the session at $CTX_SESSION
-# instead of the full $CTX_POOL shared pool.
-export ANTHROPIC_CUSTOM_HEADERS="$PROFILE_HEADER: $PROFILE_NAME"
-export ANTHROPIC_MODEL="\${ANTHROPIC_MODEL:-$MODEL_ALIAS}"
+# Carries the model profile — this is what caps the session at $ctx
+# and pins the wire model the proxy routes to.
+export ANTHROPIC_CUSTOM_HEADERS="$PROFILE_HEADER: $prof"
+export ANTHROPIC_MODEL="\${ANTHROPIC_MODEL:-$model}"
 # Claude Code does not know local model ids; without this it assumes a 200k
 # window and its auto-compact fires far too late for the per-session cap.
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS="\${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-$CTX_SESSION}"
-export CLAUDE_CODE_MAX_OUTPUT_TOKENS="\${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-$MAX_OUTPUT}"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="\${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-$ctx}"
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS="\${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-$out}"
 unset _tok
 exec claude "\$@"
 EOF
-  chmod 700 "$CLAUDE_LOCAL"
-  note "wrote $CLAUDE_LOCAL (mode 700, no embedded secret)"
+  chmod 700 "$w"
+  note "wrote $w (mode 700, no embedded secret)"
   case ":$PATH:" in
-    *":$(dirname "$CLAUDE_LOCAL"):"*) : ;;
-    *) note "NOTE: $(dirname "$CLAUDE_LOCAL") is not on PATH" ;;
+    *":$(dirname "$w"):"*) : ;;
+    *) note "NOTE: $(dirname "$w") is not on PATH" ;;
   esac
-else
-  note "DRY: would write $CLAUDE_LOCAL"
-fi
+}
+
+write_claude_local "$CLAUDE_LOCAL" "$MODEL_ALIAS" "$PROFILE_NAME" "$CTX_SESSION" "$MAX_OUTPUT" "Qwen3.8"
+write_claude_local "$CLAUDE_LOCAL-inkling2" "$DROID_LOCAL_INKLING2_PIN" "inkling2" "$INK_CTX" "$INK_OUT" "Inkling 2 Mini"
 
 # ===========================================================================
 say "6/6  restart proxy + verify"

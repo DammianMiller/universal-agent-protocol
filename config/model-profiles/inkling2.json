@@ -1,61 +1,70 @@
 {
-  "_profile": "inkling2",
-  "_description": "Inkling 2 Mini — 5090 fleet arm on the basalt engine (NVFP4-q8, looped MoE), serving agentic clients through the anthropic-proxy. Profile created 2026-11-25 from LIVE MEASUREMENTS (probes via :4000 + the engine unit + the machine-local model registry), the same read-geometry-from-reality doctrine as the qwen38 rails: nothing here is transcribed from vendor docs.",
-  "_engine": "Basalt 0.5.5 behind systemd user unit uap-basalt-inkling2-server.service on :8080 (config /home/dammian/dev/basalt/basalt-inkling2.json, added 2026-11-22 per x.com/crazyMLguy s.2124167647696998669): Inkling-2-Mini-NVFP4-q8.basalt, Thinking Machines looped MoE (24 layers visited 48 times, 3.4B active), DSpark drafting, fp8 KV, 1048576 ctx elastic, vision DYNAMIC. Measured 2026-11-25 (registry overlay, engine pid 2666910 era): 28212 MiB GPU resident, 17480 MiB host RSS idle, the FULL 1,048,576-cell fp8 KV pool resident, 447-505 MiB device free at steady state. /props exposes n_ctx 1048576, total_slots 1, model_alias 'Inkling 2 Mini'; /v1/models lists exactly that one id. Ollama on :11434 holds the same weights as GGUF (llama family, 19.7 GB) but is NOT the serving path.",
-  "_vision_comment": "vision dynamic and CANNOT be flipped to cpu — the engine rejects it at launch ('this model's images are encoded in the engine: --vision dynamic, not cpu'; tried 2026-11-25, reverted within 2.5 min). The on-demand encoder (~792 MiB) competes for device memory with the resident pool (~450 MiB free at steady state — the OOM class), so this arm is NEVER a vision switch target (fail-closed). The 032 matrix validated full vision automation on this arm anyway; image requests that trip the encoder window park with a 409 rather than kill the arm.",
-  "model": "Inkling 2 Mini",
-  "_model_comment": "The alias the live backend advertises at /v1/models AND /props model_alias; the rails suite drift-checks this field against the serving process (test/model-profiles-inkling2-rails.test.ts). The registry's advertises list ALSO carries 'qwen35-a3b-iq4xs', 'Qwen3.8-Flash-Next' and 'qwen3.8-27b' — the cross-arm wire ids the operator accepts served BY this arm (the proxy rewrites them here; the fleet-arm ensure script's 2.6 fast path keeps this arm resident when a qwen38-family session asks — the 2026-11-25 thrash fix). Through the :4000 proxy every id maps; direct-path clients must send exactly this field's value.",
-  "max_tokens": 32768,
-  "_max_tokens_comment": "The engine's answer-room auto derives its thinking budget from the requested max_tokens and clamps output to its own cap — observed pairs (budget/cap): 24576/32768, 21000/28000, 6144/8192, 43008/57344. Requesting more than 32768 is accepted but wasted (the engine clamps); requesting 4096-starved values shrinks the thinking budget and degrades long-turn answers. 32768 is the observed natural cap; do not lower without re-measuring decode compliance.",
-  "temperature": 0.3,
-  "top_p": 0.9,
-  "top_k": 20,
-  "min_p": 0.05,
-  "repetition_penalty": 1.0,
-  "_sampling_comment": "Carried from the qwen38 tool-call-tuned values unchanged — they were tuned on qwen-family geometry and NEVER re-measured against this looped-MoE arm. Re-tune with `uap tune` before changing them; carried as-is so the arm is not silently running vendor chat defaults.",
-  "stop_sequences": [],
-  "_stop_sequences_comment": "DELIBERATELY EMPTY: every measured turn ended end=stop with no explicit stop markers — this engine owns its own EOS handling (llama-family GGUF lineage under a custom looped-MoE chat template with an effort map). The qwen38 profile's <|im_end|> marker is QWEN-template-specific and would never match here; carrying it would be transcribing, not measuring.",
-  "timeout_ms": 300000,
-  "context_window": 114688,
-  "_context_window_comment": "PER-SESSION CAP, not the pool. The arm's pool is the full 1,048,576 cells (1048576 ctx elastic, fp8) and a droid client entry sizes sessions to the whole 1M — but the proxy's PROXY_CONTEXT_WINDOW env (114688) holds the actual enforced cap fleet-wide, and this profile matches it so header-carrying clients (opencode, codex, claude-local via x-uap-model-profile) size their histories to the same honest number. The 934k of pool above the cap is the engine's own elastic working room (multi-visit looped-MoE scratch, conversation cache, expert bookkeeping) — a session at the cap must not crowd the engine out of its own pool. One rail (total_slots 1); admission is queue-depth, not pool arithmetic.",
-  "optimize_for_tool_calls": true,
-  "mode_switch_buffer_tokens": 500,
-  "enable_thinking": true,
-  "_thinking_comment": "Native thinking, but SERVER-SIDE: the answer-room auto machinery runs the thinking budget inside the engine and the wire carries ONLY the answer (no reasoning_content field — measured 2026-11-25: answers arrive content+tool_calls, finish=stop, thinking budget visible only in the engine log). Unlike the qwen38 arm where PROXY_THINKING_BUDGET_FRACTION had to stay 0 because the native budget truncated the answer (finish=length), this arm's answer-room COMPLETE NATURALLY — the truncation class does not exist here. The proxy's thinking-grammar/disabling knobs (PROXY_THINKING_GRAMMAR=off in the live env) stay off for this arm.",
-  "dynamic_temperature": {
-    "enabled": true,
-    "decay": 0.5,
-    "floor": 0.2,
-    "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
-  },
-  "tool_call_batching": {
-    "enabled": true,
-    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
-    "_comment": "MEASURED 2026-11-25 (probe via :4000): this arm emits ONE tool call per turn by default (finish=tool_calls, single list_dir for a two-tool task) — the suffix flips it to parallel emission (both list_dir+read_file in one turn). Without this suffix the arm is sequential and agent loops pay one round-trip per tool."
-  },
-  "concurrency": {
-    "max_parallel_requests": 1,
-    "_comment": "One rail (total_slots 1 from /props). Request concurrency stays with the rail: PROXY_CONCURRENCY_LIMIT=1, UAP_MODEL_SLOTS=1 (the move-together rule). Session admission is separate (PROXY_SESSION_ADMISSION_LIMIT=4 fleet-wide).",
-    "kv_capacity_shared": true
-  },
-  "server_optimization": {
-    "kv_dtype": "fp8",
-    "prefill_chunk": 2048,
-    "max_context": 1048576,
-    "kv_capacity": 1048576,
-    "parallel_rails": 1,
-    "_capacity_comment": "Whole pool, one rail (total_slots 1 from /props): the FULL 1,048,576-cell fp8 KV pool is RESIDENT at idle (measured 2026-11-25 — 28212 MiB GPU, 447-505 MiB device free at steady state). No VBR floor to pin; the per-session cap (context_window above) is the profile's only admission arithmetic."
-  },
-  "measured": {
-    "_arm_comment": "2026-11-25, measured LIVE on the arm via the proxy (:4000) and the engine journal — not carried from any predecessor arm. Tool-call geometry: tool_choice=required honored (finish=tool_calls); sequential emission by default; batching-suffix-inducible parallel emission (both tools in one turn). Thinking: server-side answer-room (no reasoning field on the wire; budgets 6144-43008 observed adapting to the request). Throughput under a live client session: 294-375 tok/s decode at ~25k-token prompts (7219-token generation at 299.4 t/s), TTFT 0.5 s, speculative acceptance 64-98% (DSpark drafting), cache hit 98-99% within a tracked session. Prefill bursts to 1090 t/s on cache-warm turns. Prefix reuse 24% overall / 76% miss (~6,076 tok re-read per turn — the fresh-or-compacted-conversation pattern; sustained misses would mean the conversation cache is not tracking).",
-    "decode_tokens_per_second": 299,
-    "decode_at_prompt_tokens": 25000,
-    "ttft_seconds": 0.5,
-    "speculative_acceptance": "0.64-0.98 (DSpark per-turn acc range from the engine log)",
-    "prefix_cache_hit_rate": 0.24
-  },
-  "routing": {
-    "endpoint": "http://127.0.0.1:4000/v1",
-    "_comment": "Route through the anthropic-proxy, NOT the basalt port directly — the proxy applies the tool/finalize guardrails and, via this profile, the per-session context window that clients size their history to. Clients select this profile with the header 'x-uap-model-profile: inkling2' (or a uap_model_profile body param); the profile map resolves the wire id 'Inkling 2 Mini' here for clients that cannot send the header."
-  }
+    "_profile": "inkling2",
+    "_description": "Inkling 2 Mini — ThinkingMachines' small reasoning model, the inkling2 fleet family (two engine arms sharing the :8080 slot and the wire id: basalt 0.5.7 on the native NVFP4-MX8 pack via uap-basalt-inkling2-server, and squid5090 on the original HF checkpoint via uap-squid-inkling2-server). Family vision is DYNAMIC on the basalt arm and NONE at config level on the squid arm (the engine has no image parser at all — an image-bearing request would return HTTP 200 with hallucinated text over the silent drop, live-probed 2026-11-25), so the placement gate parks image traffic with carries_image and auto-switches arms within the family. Routes through the anthropic-proxy for the tool/finalize guardrails. Codex cannot reach this family: codex speaks the Responses API only and neither arm serves /v1/responses. Profile first created 2026-11-25 from LIVE MEASUREMENTS (probes via :4000 + the engine unit journal + the machine-local registry overlay, worktree 034) and re-measured the same day against the 0.5.7/MX8 uplift + the squid arm (worktree 035) — nothing here is transcribed from vendor docs.",
+    "_engine": "Two arms, one wire id. BASALT ARM (uap-basalt-inkling2-server, engine 0.5.7 since the 2026-11-25 uplift from 0.5.5/q8): native pack Inkling-2-Mini-NVFP4-MX8.basalt (sha256 28ec7072…, KLD 0.00297/97.83% vs the retired q8 pack's 0.00305/97.76%), kv fp8, max-context 1048576, vision dynamic, DSpark speculative decoding on by default with the pack (window 8, up to 7 drafts/pass). /props exposes n_ctx 1048576, total_slots 1, model_alias 'Inkling 2 Mini'; /v1/models lists exactly that one id (the rails suite drift-checks this link, arm-gated). SQUID ARM (uap-squid-inkling2-server, squid5090 built at fda96e9d, Zig 0.17.1, pinned rev c9d02830 of thinkingmachines/Inkling-2-Mini): fp8 weights/q4 KV, ctx 524288, DSpark drafter mtp.safetensors with --mtp 7 --spec-threshold 0.80, single-user c=1, text-only. Measured 2026-11-25: MX8 arm — health ok ~2s, loaded ~4s, decode 555-640 tok/s (DSpark acc 97%, TTFT 0.1s), 21K prompt read 15,397 tok/s, 64x64 image answers with seeing-the-image reasoning, resident 29050 MiB GPU / 16403 MiB RSS; squid arm — cold load ~2.5s, decode 322-605 tok/s across code/counting/chat, TTFT ~30ms, ~24.2 GiB VRAM, thinking-first SSE (reasoning_content deltas before content), native tool calls, resident 24194 MiB GPU / 554 MiB RSS. Both arms advertise exactly 'Inkling 2 Mini' at /v1/models — the squid arm was deliberately served under --model-name 'Inkling 2 Mini' to pin the family wire id, and the basalt arm VALIDATES the model field.",
+    "model": "Inkling 2 Mini",
+    "_model_comment": "The family wire id both arms serve. basalt (llama-server class) validates the model field, so requests must carry exactly this id; squid does not validate but was pinned to the same id at serve time so a placement arm-switch is invisible to the client. The proxy's placement gate resolves the family by this id, and the profile rewrite puts this id on the wire for every profiled client. The rails suite drift-checks this field against the serving process (test/model-profiles-inkling2-rails.test.ts, arm-gated).",
+    "max_tokens": 32768,
+    "_max_tokens_comment": "The measured natural cap of the answer-room machinery, NOT the qwen38 half-window rule. The two engines spend the completion budget differently and BOTH measurements agree 32768 is the honest value: the BASALT arm thinks SERVER-SIDE (answer-room auto derives the thinking budget from the requested max_tokens and clamps output; observed pairs budget/cap 6144/8192, 21000/28000, 24576/32768, 43008/57344 — requesting more than 32768 is accepted but the engine clamps, requesting starved values shrinks the thinking budget and degrades long-turn answers), while the SQUID arm streams thinking FIRST on the wire (reasoning_content deltas spend the completion budget before any content — the smoke's 512-token cap consumed the whole budget in reasoning and returned an empty content with finish=length, the same starvation class at the extreme). 32768 leaves reasoning + answer room on both arms and matches the proxy's tool-turn clamp for agentic turns. Do not change without re-measuring content compliance on BOTH arms.",
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "_sampling_comment": "The engine's own serve defaults (the squid unit flags --temp 1.0 --top-p 0.95, carried by the basalt arm's config the same way) — the release's recommended sampling for this model, and the live flags both arms actually serve with: reading geometry from reality. This family has never been tool-call-tuned on this box (unlike qwen38's 0.3/0.9, which were measured against llama.cpp GSQ-RCO); re-tune with `uap tune` before deviating. No top_k/min_p/repetition_penalty pins: neither arm's live flags set them (034's round carried the qwen38 values as placeholders and this merge drops them), and the arms' speculative decoding (DSpark) has its own acceptance threshold (--spec-threshold 0.80 on squid) that interacts with tail truncation.",
+    "stop_sequences": [],
+    "_stop_sequences_comment": "DELIBERATELY EMPTY: every measured turn ended end=stop / finish=stop with no explicit markers on BOTH arms — these engines own their EOS handling (llama-family lineage under a custom looped-MoE chat template with an effort map; the squid engine streams its own thinking-then-EOS shape). The qwen38 profile's <|im_end|> marker is QWEN-template-specific and would never match here; carrying it would be transcribing, not measuring.",
+    "timeout_ms": 300000,
+    "context_window": 262144,
+    "_context_window_comment": "THIS IS A PER-SESSION CAP, AND IT IS OPT-IN BY PROFILE HEADER (same gap as qwen38: a client that sends no x-uap-model-profile header gets the whole pool — factory/droid custom models cannot send it, so their listings carry maxContextLimit client-side instead). 262144 deliberately sits below the SMALLEST arm pool: squid's --ctx 524288 (q4 KV) and basalt's 1048576 (fp8 KV) both leave >= 2x headroom, so a session at the cap cannot crowd the engine's own working room (prompt scratch, DSpark drafter state, prefix cache) under EITHER arm — a placement arm-switch mid-session must not invalidate the cap. It also does NOT chase the proxy's auto-detected PROXY_CONTEXT_WINDOW (the startup script probes whichever arm is resident — 1048576 with basalt up, 524288 with squid — so a profile pinned to that reading breaks on the first arm switch; the earlier 114688 reading was exactly that, a qwen-era detection). Admission defaults 4: four hot sessions at cap demand 1048576 cells — exact fit on the basalt arm, 2x overcommit on squid — contention degrades to queueing (idle sessions prune at the 90s TTL, waiters force-admit at 300s by evicting the LRU admission), the same operator-accepted arithmetic as qwen38.",
+    "optimize_for_tool_calls": true,
+    "mode_switch_buffer_tokens": 500,
+    "enable_thinking": true,
+    "_thinking_comment": "Native thinking on both arms, surfaced differently per engine — the proxy must not assume one shape. The BASALT arm thinks SERVER-SIDE: the answer-room auto machinery runs the thinking budget inside the engine and the wire carries ONLY the answer (no reasoning_content field; answers arrive content+tool_calls with finish=stop, the budget visible only in the engine log — measured 2026-11-25 via :4000). The truncation class that forced PROXY_THINKING_BUDGET_FRACTION=0 on the qwen38 arm does not exist there. The SQUID arm streams thinking FIRST: reasoning_content deltas precede content on every turn (thinking-first SSE, measured direct on :8080), and a starved max_tokens empties the content while reasoning spends the budget — see _max_tokens_comment. The proxy probes the backend once and adapts (PROXY_CHAT_TEMPLATE_KWARGS=auto); thinking-disable knobs stay off for this family.",
+    "dynamic_temperature": {
+        "enabled": true,
+        "decay": 0.5,
+        "floor": 0.2,
+        "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
+    },
+    "tool_call_batching": {
+        "enabled": true,
+        "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+        "_comment": "MEASURED 2026-11-25 (probe via :4000, basalt arm): this engine emits ONE tool call per turn by default (finish=tool_calls, single list_dir for a two-tool task) — the suffix flips it to parallel emission (both list_dir+read_file in one turn). Without this suffix the arm is sequential and agent loops pay one round-trip per tool. The squid arm answers native tool_calls (get_weather {city: Paris} finish=tool_calls in the smoke) with the same suffix applied."
+    },
+    "concurrency": {
+        "max_parallel_requests": 1,
+        "_comment": "One arm resident at a time (the arms conflict on :8080), and each arm serves single-user decode: squid is c=1 by engine design, basalt 0.5.6+ could run --parallel N but the shared-context split (N x ctx/N KV) trades the single-request ceiling and the uplift round measured parallelism OFF for now. PROXY_CONCURRENCY_LIMIT/UAP_MODEL_SLOTS follow at 1 with the arm. SESSION ADMISSION stays 4 (the durable operator default 2026-11-18).",
+        "kv_capacity_shared": true,
+        "_kv_shared_comment": "One arm, one pool: a session addresses the WHOLE pool rather than owning a slice."
+    },
+    "server_optimization": {
+        "kv_dtype": "fp8",
+        "_kv_dtype_comment": "The basalt arm's KV class (kv fp8 over the 1048576-cell pool). The squid arm serves q4 KV over its 524288 ctx — the registry's per-config measurements carry each arm's exact posture; this field names the family default arm.",
+        "prefill_chunk": 2048,
+        "max_context": 1048576,
+        "kv_capacity": 1048576,
+        "_capacity_comment": "The basalt arm's pool (1048576 fp8 KV); the squid arm's pool is 524288 q4. Per-session allowance is context_window above (262144, deliberately under both).",
+        "parallel_rails": 1,
+        "speculative_decoding": {
+            "enabled": true,
+            "type": "dspark",
+            "draft_model": "mtp.safetensors",
+            "draft_max": 7,
+            "draft_conf": 0.8,
+            "_comment": "DSpark MTP drafting with the vendor's own drafter head (mtp.safetensors, 636 MB, sha256 7c3b6513…). squid arm: --mtp 7 --spec-threshold 0.80 (up to 7 drafts/pass, threshold-verified live). basalt arm: DSpark on by default with the MX8 pack, window 8, up to 7 drafts/pass (0.5.6 release notes). Both arms draft in-engine — no external draft artifact to pin beyond the checkpoint file the registry records. Output is the model's own (verified drafting, both arms)."
+        },
+        "_comment": "The flags the serve units actually run with. squid: --mode fp8 --kv q4 --ctx 524288 --mtp 7 --spec-threshold 0.80 --temp 1.0 --top-p 0.95, LD_LIBRARY_PATH cuda-13.4 lib64, graphs on, prefix cache on. basalt: config basalt-inkling2-mx8.json (gpu 0, kv fp8, max-context 1048576, vision dynamic, port 8080), unit Env carries the cuda-libs redist path."
+    },
+    "measured": {
+        "_arm_comment": "2026-11-25, measured LIVE — the 034 round probed the q8-era arm via the proxy (:4000) and the engine journal; the 035 round re-measured after the 0.5.7/MX8 uplift (decode/TTFT/acceptance below are the MX8 numbers, supersedes the q8-era 294-375 tok/s at TTFT 0.5s) and smoked the squid arm direct (322-605 tok/s code/counting/chat, TTFT ~30ms, cold 18.9K prefill 16,855 tok/s HTTP, exact-echo + native tool call verified). Tool-call geometry (basalt, still the engine's behavior on MX8): tool_choice=required honored (finish=tool_calls); sequential emission by default; batching-suffix-inducible parallel emission (both tools in one turn). Thinking: server-side answer-room on basalt (no reasoning field on the wire; budgets 6144-43008 observed adapting to the request), thinking-first reasoning_content on squid. Footprints (cgroup-measured 2026-11-25, both arms live): basalt MX8 29050 MiB GPU / 16403 MiB RSS idle with the FULL 1,048,576-cell fp8 pool resident; squid fp8 24194 MiB GPU / 554 MiB RSS (zero-Python single binary, weights mmap'd). Cache: prefix reuse 24% overall / 76% miss (~6,076 tok re-read per turn, q8-era journal numbers — the same conversation-cache machinery serves MX8; re-read the journal before re-pinning).",
+        "decode_tokens_per_second": 555,
+        "_decode_comment": "MX8 arm measured range 555-640 tok/s at ~21k-token prompts (the uplift's routed-experts win; the q8 arm measured 294-375). The squid arm measured 322-605 tok/s — the family range spans both engines.",
+        "decode_at_prompt_tokens": 21000,
+        "ttft_seconds": 0.1,
+        "speculative_acceptance": "0.97 (MX8 21K probe; q8-era DSpark per-turn range 0.64-0.98 from the engine log)",
+        "prefix_cache_hit_rate": 0.24
+    },
+    "routing": {
+        "endpoint": "http://127.0.0.1:4000/v1",
+        "_comment": "Route through the anthropic-proxy, NOT the engine port directly — the proxy applies the tool/finalize guardrails and, via this profile, the per-session context window that clients size their history to. Clients select this profile with the header 'x-uap-model-profile: inkling2' (or a uap_model_profile body param); the profile map resolves the wire id 'Inkling 2 Mini' here for clients that cannot send the header."
+    },
+    "_vision_comment": "Family vision is dynamic (the basalt arm encodes with the engine's own encoder — 0 VRAM at rest, borrows expert-cache slots per image; the squid arm declares config-level vision none in the registry). Image-bearing requests through the proxy carry carries_image: the placement gate parks them on a text-only resident with reason vision_text_only_arm and auto-switches to the image-capable arm — the client's retry forwards with the image intact. Text requests are never parked for an image switch (the model:vision burst-key split). History: the q8-era arm parked image trips with a 409 because the on-demand encoder (~792 MiB) could not fit the ~450 MiB free at steady state — the MX8 uplift left ~3.5 GiB free at idle (measured 2026-11-25), retiring that OOM class; the basalt arm is the family's vision target now, and a live 64x64 probe answered with seeing-the-image reasoning."
 }

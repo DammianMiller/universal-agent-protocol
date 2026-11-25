@@ -56,6 +56,14 @@ const configIdentity = {
   engine: z.string().optional(),
   unit: UnitNameSchema.optional(),
   profile: z.string().optional(),
+  /** Where THIS arm serves the vision/image encoder from — the config-level
+   * override of the model-level `vision`. An engine arm of a vision-capable
+   * family can be text-only (squid5090 serving inkling2 has no image encoder
+   * at all): without this field the family's `vision` would misdescribe
+   * every arm of the family identically, and a 'none' family would lie
+   * about its vision-capable arms. Same enum, same semantics as the
+   * model-level field; see `effectiveVision`. */
+  vision: z.enum(['none', 'cpu', 'gpu', 'dynamic']).optional(),
   /** Capacity-policy service name this config is cross-checked against
    * (overrides the model-level `service`). The policy's `services` is a
    * LIST keyed by `name` — never assume a map. */
@@ -138,11 +146,23 @@ export const ModelEntrySchema = z.object({
    * Capability-aware option computation treats only 'cpu' and 'gpu' as
    * vision-capable SWITCH TARGETS (fail-closed: a 'dynamic' arm's
    * measurement does not include the encoder it would need, and an absent
-   * field is an unknown, never a capability). */
+   * field is an unknown, never a capability). A CONFIG-level `vision`
+   * (configIdentity) overrides this per engine arm — read through
+   * `effectiveVision`, never this field directly, when a config is at
+   * hand. */
   vision: z.enum(['none', 'cpu', 'gpu', 'dynamic']).optional(),
   configs: z.record(z.string(), ConfigEntrySchema),
 });
 export type ModelEntry = z.infer<typeof ModelEntrySchema>;
+
+/** The vision posture that applies to one CONFIG of a model: the
+ * config-level `vision` when the arm states one, else the model family's.
+ * Config level is where an arm that differs from its family lives (the
+ * text-only engine inside a vision-capable family). Absent at both levels
+ * is 'none' — an unknown is never a capability. */
+export function effectiveVision(model: ModelEntry, config?: ConfigEntry): 'none' | 'cpu' | 'gpu' | 'dynamic' {
+  return config?.vision ?? model.vision ?? 'none';
+}
 
 export const ModelRegistrySchema = z.object({
   version: z.literal(REGISTRY_VERSION),

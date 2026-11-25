@@ -53,6 +53,7 @@ interface DroidModel {
   provider?: string;
   baseModelId?: string;
   maxContextLimit?: number;
+  apiKeyHelper?: string;
 }
 interface DroidSettings {
   customModels?: DroidModel[];
@@ -115,6 +116,30 @@ const MARKERG = /^custom:gemma-4[\w.-]*-UAP-local-\d+$/;
 const FAMG = registry.models['gemma-4-31b'];
 const SYNC_SCRIPT = readFileSync(resolve(ROOT, 'scripts/sync-local-agent-configs.sh'), 'utf8');
 const GEMMA_CTX = Number(/GEMMA_CTX=(\d+)/.exec(SYNC_SCRIPT)?.[1] ?? 0);
+// The FOURTH local family the pickers list: the registry's inkling2 family
+// (basalt on the native NVFP4-MX8 pack, squid5090 on the original HF
+// checkpoint — one wire id, the placement gate serves whichever arm is
+// resident). Same doctrine as the 27B/gemma listings — pin from the same
+// shared contract, marker shape is the sync's markeri stake, geometry from
+// the family's OWN profile (the qwen session window does not size it). One
+// shape difference: the wire id carries a SPACE, so the capture runs to the
+// closing brace of the ${…:=…} expansion instead of stopping at whitespace.
+const PINI_MATCH = /DROID_LOCAL_INKLING2_PIN:=([^}"\n]+)/.exec(CONTRACTS);
+const PINI = PINI_MATCH?.[1] ?? '';
+const MARKERI = /^custom:Inkling-2-Mini-UAP-local-\d+$/;
+const FAMI = registry.models['inkling2'];
+const INK_PROFILE = readJson<Profile>(resolve(ROOT, 'config/model-profiles/inkling2.json'));
+/**
+ * apiKeyHelper entries are the operator's self-managed arm-switch machinery
+ * (the fleet-arm-ensure helpers with apiKeyHelperTtlMs): the sync's
+ * self-managed guard skips them — never converged, never re-capped, never
+ * deduped — so this suite's uniformity and alias invariants exempt them
+ * with the SAME rule. Without it, adding a registry family (which grows
+ * FLEET) would make the operator's deliberate per-arm helper pins read as
+ * "drift that did not converge".
+ */
+const selfManaged = (m: DroidModel): boolean =>
+  typeof m.apiKeyHelper === 'string' && m.apiKeyHelper !== '';
 
 describe('qwen38 model knowledge — registry follows the profile', () => {
   it('advertises the alias the profile pins, so placement can match the served id', () => {
@@ -279,6 +304,39 @@ describe('the gemma-4-31b family is a third picker listing, not drift', () => {
   });
 });
 
+describe('the inkling2 family is a fourth picker listing, not drift', () => {
+  it('is pinned by a contract id the registry family advertises', () => {
+    expect(PINI, 'DROID_LOCAL_INKLING2_PIN default is unparsable or absent').not.toBe('');
+    expect(FAMI, 'registry.models["inkling2"] is missing').toBeTruthy();
+    expect(
+      FAMI?.advertises,
+      'the inkling2 pin is not an id the inkling2 family advertises',
+    ).toContain(PINI);
+    // One wire id across both engine arms: the placement gate resolves
+    // either arm from this pin and parks image traffic off the text-only
+    // squid arm, so the pin never names a config.
+    expect(
+      INK_PROFILE.model,
+      'the inkling2 profile and the contract pin disagree — one place owns the wire id',
+    ).toBe(PINI);
+    expect(RETIRED, 'a listed family id must not sit in retired_local_aliases').not.toContain(
+      PINI,
+    );
+  });
+
+  it('is carried by the sync tooling with the self-managed guard (Droid marker + opencode provider)', () => {
+    expect(SYNC_SCRIPT).toContain('DROID_LOCAL_INKLING2_PIN');
+    // the marker exemption (hyphenated id — the wire id carries a space)
+    expect(SYNC_SCRIPT).toMatch(/markeri/);
+    expect(SYNC_SCRIPT).toContain('inkling2 family entry added');
+    // the self-managed guard: helper entries are never converged or re-capped
+    expect(SYNC_SCRIPT).toMatch(/if m\.get\("apiKeyHelper"\):\s*continue/);
+    // opencode gains its own inkling2-proxy provider (profile.model rewrites
+    // the wire model — a shared provider would reroute inkling2 to qwen)
+    expect(SYNC_SCRIPT).toContain('inkling2-proxy');
+  });
+});
+
 const PROJECT_SET = resolve(ROOT, '.factory/settings.json');
 const USER_SET = resolve(homedir(), '.factory/settings.json');
 
@@ -333,11 +391,15 @@ function expectRoutesConverged(entries: DroidModel[]): void {
  */
 function expectFleetPinsConverged(models: DroidModel[]): void {
   const localFleetPins = models.filter((m) => {
-    // The deliberate 27B and gemma family listings are PICKER LINES, not
-    // drift: their marker ids are the sync's stakes. Everything else the
-    // fleet advertises, pinned at this box's ports, must share the one
-    // served id.
-    if (typeof m.id === 'string' && (MARKER27.test(m.id) || MARKERG.test(m.id))) return false;
+    // The deliberate 27B, gemma, and inkling2 family listings are PICKER
+    // LINES, not drift: their marker ids are the sync's stakes. Everything
+    // else the fleet advertises, pinned at this box's ports, must share the
+    // one served id.
+    if (typeof m.id === 'string' && (MARKER27.test(m.id) || MARKERG.test(m.id) || MARKERI.test(m.id)))
+      return false;
+    // Self-managed helper entries are the operator's own per-arm pins —
+    // exempt by the same rule the sync's guard uses.
+    if (selfManaged(m)) return false;
     const base = String(m.baseUrl ?? '');
     const localPort = base.includes(':4000') || base.includes(':8080');
     return localPort && !!m.model && FLEET.has(m.model);
@@ -368,7 +430,9 @@ function liveAliasEntries(models: DroidModel[]): DroidModel[] {
   const pinned = models.filter((m) => m.model === profile.model);
   if (pinned.length > 0) return pinned;
   return models.filter((m) => {
-    if (typeof m.id === 'string' && (MARKER27.test(m.id) || MARKERG.test(m.id))) return false;
+    if (typeof m.id === 'string' && (MARKER27.test(m.id) || MARKERG.test(m.id) || MARKERI.test(m.id)))
+      return false;
+    if (selfManaged(m)) return false;
     const base = String(m.baseUrl ?? '');
     const localPort = base.includes(':4000') || base.includes(':8080');
     return localPort && !!m.model && FLEET.has(m.model) && !RETIRED.includes(m.model);
@@ -417,6 +481,43 @@ function expectGemmaListed(models: DroidModel[]): void {
   expect(m.maxContextLimit, 'gemma listing is not sized to the arm geometry').toBe(GEMMA_CTX);
 }
 
+/**
+ * The inkling2 family must be listed, but by EITHER of the two shapes the
+ * sync's add-if-missing rule produces: its own marker listing (fresh boxes:
+ * exactly one, on the proxy chat route, capped at the inkling2 PROFILE
+ * geometry — the qwen session window does not size it), or the operator's
+ * self-managed helper entries (this box: the arm-switch machinery already
+ * pins the family, and the sync's guard refuses to add a marker line on
+ * top of it). baseModelId carries no assertion: the sync stamps one only
+ * when a Factory Inkling built-in exists (it does not — an honest omission
+ * beats a wrong-family mapping).
+ */
+function expectInkling2Listed(models: DroidModel[]): void {
+  const atLocalPort = (m: DroidModel) => {
+    const base = String(m.baseUrl ?? '');
+    return (base.includes(':4000') || base.includes(':8080')) && m.model === PINI;
+  };
+  const marked = models.filter(
+    (m) => typeof m.id === 'string' && MARKERI.test(m.id) && m.model === PINI,
+  );
+  const helpers = models.filter((m) => atLocalPort(m) && selfManaged(m));
+  if (marked.length > 0) {
+    expect(marked, 'more than one inkling2 marker listing').toHaveLength(1);
+    const m = marked[0] as DroidModel;
+    expect(m.baseUrl, 'inkling2 listing is not on the proxy chat route').toBe(
+      'http://127.0.0.1:4000/v1',
+    );
+    expect(m.maxContextLimit, 'inkling2 listing is not sized to the profile geometry').toBe(
+      INK_PROFILE.context_window,
+    );
+  } else {
+    expect(
+      helpers.length,
+      'the inkling2 family is not listed (neither the sync marker nor a self-managed helper entry)',
+    ).toBeGreaterThan(0);
+  }
+}
+
 describe('droid settings call the alias the profile pins', () => {
   it.skipIf(!existsSync(PROJECT_SET))('project customModels carry the live alias on all routes', () => {
     const d = readJson<DroidSettings>(PROJECT_SET);
@@ -425,6 +526,7 @@ describe('droid settings call the alias the profile pins', () => {
     expectFleetPinsConverged(d.customModels ?? []);
     expect27BListed(d.customModels ?? []);
     expectGemmaListed(d.customModels ?? []);
+    expectInkling2Listed(d.customModels ?? []);
     for (const m of d.customModels ?? []) {
       expect(RETIRED, `retired id still pinned: ${String(m.model)}`).not.toContain(m.model);
     }
@@ -445,6 +547,7 @@ describe('droid settings call the alias the profile pins', () => {
     expectFleetPinsConverged(d.customModels ?? []);
     expect27BListed(d.customModels ?? []);
     expectGemmaListed(d.customModels ?? []);
+    expectInkling2Listed(d.customModels ?? []);
     for (const m of d.customModels ?? []) {
       expect(RETIRED, `retired id still pinned: ${String(m.model)}`).not.toContain(m.model);
     }

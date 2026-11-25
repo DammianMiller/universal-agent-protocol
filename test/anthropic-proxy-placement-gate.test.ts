@@ -253,7 +253,7 @@ print(json.dumps(out))
       .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
       + `
 asks = []
-async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
     asks.append([client_id, model_id])
     return {"decision": "park", "reason": "auto_loading", "placement_id": "plc-abc123"}
 async def main():
@@ -271,6 +271,124 @@ print(json.dumps(asyncio.run(main())))
     expect(out.pid1).toBe('plc-abc123');
     expect(out.pid2).toBe('plc-abc123');
     expect(out.reason2).toBe('auto_loading');
+  });
+
+  it('vision_auto_loading parks are VISION-model-keyed: rotated ids collapse, the model\'s text traffic never re-parks', () => {
+    // An image request that parks under an in-flight image AUTO-SWITCH
+    // writes the model-only key WITH the vision sentinel — the same
+    // rotated-id collapse as auto_loading, but scoped so the model's TEXT
+    // requests (which forward fine mid-switch) can never read the image
+    // entry and 409 behind a switch they do not need.
+    const out = runPython(GATE_PREAMBLE
+      .replace('__MODE__', 'ask')
+      .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
+      .replace('__IDS__', "['Inkling 2 Mini']")
+      + `
+asks = []
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
+    asks.append([client_id, model_id, carries_image])
+    return {"decision": "park", "reason": "vision_auto_loading", "placement_id": "plc-vis1"}
+async def main():
+    wire = {"model": "Inkling 2 Mini"}
+    r1 = await _placement_admit('Inkling 2 Mini', 'claude-code', 's1', None, wire, carries_image=True)
+    r2 = await _placement_admit('Inkling 2 Mini', 'rotated-id', 's2', None, wire, carries_image=True)
+    b1 = json.loads(r1.body)["error"]
+    b2 = json.loads(r2.body)["error"]
+    return {"asks": asks, "pid1": b1["placement_id"], "pid2": b2["placement_id"],
+            "reason1": b1["reason"], "reason2": b2["reason"],
+            "auto_keys": [list(k) for k in _placement_pending.keys()]}
+print(json.dumps(asyncio.run(main())))
+`);
+    // ONE ask for the two image requests — the rotated id re-parked from
+    // the model-only __auto__ VISION key with the same placement id.
+    expect(out.asks).toEqual([['claude-code', 'Inkling 2 Mini', true]]);
+    expect(out.pid1).toBe('plc-vis1');
+    expect(out.pid2).toBe('plc-vis1');
+    expect(out.reason1).toBe('vision_auto_loading');
+    expect(out.reason2).toBe('vision_auto_loading');
+    // The auto entry carries the vision SENTINEL field (3-tuple keys) —
+    // no ':vision'-suffixed model string can collide with it, and the
+    // plain (client, model) TEXT key reads a different entry.
+    expect(out.auto_keys).toContainEqual(['claude-code', 'Inkling 2 Mini', 'vision']);
+    expect(out.auto_keys).toContainEqual(['__auto__', 'Inkling 2 Mini', 'vision']);
+  });
+
+  it('image-bearing requests split the burst key and pass carries_image to the controller (text-only arm class)', () => {
+    // The squid5090 class: a text-only serving arm inside a vision family.
+    // The image park is keyed model:vision so (a) a burst of image retries
+    // collapses to one ask and (b) the model's TEXT traffic never re-parks
+    // behind the image switch it does not need — the controller also gets
+    // carries_image so it can scope the switch to image-capable configs.
+    const out = runPython(GATE_PREAMBLE
+      .replace('__MODE__', 'ask')
+      .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
+      .replace('__IDS__', "['Inkling 2 Mini']")
+      + sliceFunction(source, '_content_has_multimodal_block')
+      + sliceFunction(source, '_request_carries_image')
+      + `
+asks = []
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
+    asks.append([client_id, model_id, carries_image])
+    return {"decision": "park", "reason": "vision_text_only_arm", "placement_id": f"plc-{len(asks)}"}
+
+async def main():
+    wire = {"model": "Inkling 2 Mini"}
+    r1 = await _placement_admit('Inkling 2 Mini', 'claude-code', 's1', None, wire, carries_image=True)
+    r2 = await _placement_admit('Inkling 2 Mini', 'claude-code', 's2', None, wire, carries_image=True)
+    r3 = await _placement_admit('Inkling 2 Mini', 'claude-code', 's3', None, wire)
+    b1 = json.loads(r1.body)["error"]
+    b2 = json.loads(r2.body)["error"]
+    b3 = json.loads(r3.body)["error"]
+    return {
+        "asks": asks,
+        "pid1": b1["placement_id"], "pid2": b2["placement_id"], "pid3": b3["placement_id"],
+        "reason1": b1["reason"], "msg1": b1["message"], "resolve1": b1["resolve_with"],
+        "detect": {
+            "anthropic_block": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}]}]}),
+            "openai_block": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}}]}]}),
+            "nested_tool_result": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "tool_result", "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}]}]}]}),
+            "document_block": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "x"}}]}]}),
+            "nested_document": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "tool_result", "content": [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "x"}}]}]}]}),
+            "openai_audio": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "x", "format": "wav"}}]}]}),
+            "text_string": _request_carries_image({"messages": [{"role": "user", "content": "just text"}]}),
+            "text_blocks": _request_carries_image({"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}),
+        },
+    }
+print(json.dumps(asyncio.run(main())))
+`);
+    // ONE controller ask for the two image requests (the model:vision burst
+    // key collapses them, same placement id re-parked); the text request
+    // asked separately under the plain model key.
+    expect(out.asks).toEqual([
+      ['claude-code', 'Inkling 2 Mini', true],
+      ['claude-code', 'Inkling 2 Mini', false],
+    ]);
+    expect(out.pid1).toBe('plc-1');
+    expect(out.pid2).toBe('plc-1');
+    expect(out.pid3).toBe('plc-2');
+    expect(out.reason1).toBe('vision_text_only_arm');
+    // The park must say what actually broke: the ARM is text-only, not the
+    // request wrong or the memory short — and text requests still forward.
+    expect(String(out.msg1)).toContain('TEXT-ONLY');
+    expect(String(out.msg1)).toContain('Inkling 2 Mini');
+    expect(String(out.msg1)).toContain('text requests');
+    expect(String(out.resolve1)).toContain("family's image-capable arm");
+    expect(String(out.resolve1)).toContain('unaffected');
+    // Detection covers every non-text wire shape the text-only arms would
+    // silently drop: the Anthropic image block, the OpenAI image_url, the
+    // nested tool_result (image AND document), the Anthropic document
+    // (base64 PDF — the shape Claude Code sends for PDF attachments), and
+    // the OpenAI input_audio — and nothing text-shaped trips it.
+    expect(out.detect).toEqual({
+      anthropic_block: true,
+      openai_block: true,
+      nested_tool_result: true,
+      document_block: true,
+      nested_document: true,
+      openai_audio: true,
+      text_string: false,
+      text_blocks: false,
+    });
   });
 
   it('ask mode dedupes (client, model) retries onto one placement_id', () => {
@@ -315,7 +433,7 @@ print(json.dumps(out))
       .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
       .replace('__IDS__', 'None')
       + `
-async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
     return {"decision": "forward", "target_id": "gpu0:http://192.168.1.165:8080/v1"}
 
 # Awaited directly inside ONE coroutine, like the real handler: the gate is
@@ -336,7 +454,7 @@ print(json.dumps(asyncio.run(main())))
       .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
       .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
       + `
-async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
     return {"decision": "park", "placement_id": "plc-7f2a", "reason": "no_measured_config"}
 resp = asyncio.run(_placement_admit('Qwen3.8-27B', 'claude-code', 's1'))
 body = json.loads(resp.body)
@@ -359,7 +477,7 @@ print(json.dumps(out))
       .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
       .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
       + `
-async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
     return {"decision": "forward", "target_id": "gpu1:http://192.168.1.166:8080/v1"}
 async def main():
     resp = await _placement_admit('Qwen3.8-27B', 'claude-code', 's1')

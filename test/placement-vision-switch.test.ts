@@ -250,7 +250,10 @@ describe('computeOptions capability: vision', () => {
       capability: 'vision', excludeReuseOf: 'inkling2',
     });
     expect(result.matched).toBe(false);
-    expect(result.reason).toBe('not_in_registry');
+    // The model IS registered — only the capability class is missing, and
+    // reusing not_in_registry would misreport an OOM switch refusal as an
+    // unknown-model case.
+    expect(result.reason).toBe('no_vision_capable_config');
     expect(result.notes[0]).toContain('no vision-capable');
   });
 
