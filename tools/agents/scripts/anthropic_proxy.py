@@ -2438,20 +2438,35 @@ async def _probe_chat_template_kwargs() -> None:
 
 # Model ids the upstream actually answers to, or None when not yet known.
 _upstream_model_ids: list[str] | None = None
+# Negative cache (uplift: full automation): a failed /models fetch is
+# remembered for this window so a hung/unreachable upstream costs ONE 10s
+# timeout per window, not one per caller. Without it, a custom-local BYOK
+# request pays the handler's warmup fetch AND the placement resolver's
+# fetch — two serial 10s stalls per request precisely when the upstream is
+# memory-starved (the encoder-OOM condition this machinery targets). A
+# SUCCESS still caches for the process lifetime (invalidated wholesale by
+# invalidate_upstream_caches); only the FAILURE backoff is windowed, and
+# the window is short so a recovering upstream is picked up on the next
+# request, not the next process.
+_UPSTREAM_IDS_RETRY_SECS = 5.0
+_upstream_ids_failed_at: float = 0.0
 # Ids we have already reported as unservable, so the log says it once per id.
 _rewritten_model_ids: set[str] = set()
 
 
 async def _upstream_model_ids_cached() -> list[str] | None:
     """The upstream's advertised model ids, fetched at most once per process."""
-    global _upstream_model_ids
+    global _upstream_model_ids, _upstream_ids_failed_at
     if _upstream_model_ids is not None:
         return _upstream_model_ids
     if http_client is None:
         return None
+    if time.time() - _upstream_ids_failed_at < _UPSTREAM_IDS_RETRY_SECS:
+        return None  # recent failure — one timeout per window, not per caller
     try:
         r = await http_client.get(f"{LLAMA_CPP_BASE}/models", timeout=10.0)
         if r.status_code != 200:
+            _upstream_ids_failed_at = time.time()
             return None
         data = (r.json() or {}).get("data") or []
         # Aliases count as served ids. llama-server reports ONE primary `id`
@@ -2470,8 +2485,11 @@ async def _upstream_model_ids_cached() -> list[str] | None:
                     ids.append(str(alias))
         if ids:
             _upstream_model_ids = ids
-        return ids or None
+            return _upstream_model_ids
+        _upstream_ids_failed_at = time.time()
+        return None
     except Exception:  # noqa: BLE001 - discovery must never take the proxy down
+        _upstream_ids_failed_at = time.time()
         return None
 
 
@@ -2756,6 +2774,11 @@ async def _vision_oom_park_response(
     the arm gets one image request again; a still-broken encoder re-arms
     from that request's 400).
     """
+    # BYOK custom-local ids resolve to the served id (uplift: full
+    # automation) so the controller ask, the burst keys, and the
+    # client-facing 409 all name the arm that actually failed — a custom
+    # string parks as invalid_request/unroutable otherwise.
+    wire_model = await _placement_ask_model(wire_model)
     global _upstream_vision_broken_until
     if rearm:
         _upstream_vision_broken_until = time.time() + PROXY_VISION_OOM_DEGRADE_SECS
@@ -2875,6 +2898,32 @@ def _placement_park_response(wire_model: str, placement_id: str, reason: str) ->
     )
 
 
+async def _placement_ask_model(wire_model: str | None) -> str | None:
+    """The id a placement ASK carries (uplift: full automation).
+
+    A BYOK custom-local id (`custom:<display-name>-(UAP-local)-<n>`,
+    detected by _BYOK_LOCAL_RE) resolves to the upstream's served id
+    (ids[0] — the reconciler's own semantics, but ONLY for this id class):
+    the ask then names the arm the request will actually hit, so the
+    controller's park/forward decision is about THAT arm and the
+    burst-dedupe keys stay consistent across the request gate, the vision
+    park, and the relay hooks. Fails open on no upstream knowledge (asks
+    raw — the controller parks it, the operator decides).
+
+    Every OTHER id asks raw: an unknown id stays the operator's parked
+    decision, never a silent rewrite — the reconciler's blanket ids[0]
+    fallback was deliberately retired in gate mode for exactly that
+    reason (a stale cache would rewrite a just-evicted arm to the previous
+    backend's id).
+    """
+    if wire_model is None or not _BYOK_LOCAL_RE.match(wire_model):
+        return wire_model
+    ids = await _upstream_model_ids_cached()
+    if not ids:
+        return wire_model
+    return ids[0]
+
+
 async def _placement_admit(
     wire_model: str | None, client_id: str, session_id: str | None, cells: int | None = None
 ) -> Response | None:
@@ -2900,6 +2949,14 @@ async def _placement_admit(
     """
     if PROXY_PLACEMENT_MODE == "off" or not wire_model:
         return None
+
+    # BYOK custom-local ids name the backend, not a registry model: resolve
+    # to the served id ONCE HERE so the ask, the burst keys, and the park
+    # body all carry the arm the request will actually hit (uplift: full
+    # automation — without this, every BYOK request parks as
+    # invalid_request/unroutable because no registry declares the custom
+    # string).
+    wire_model = await _placement_ask_model(wire_model)
 
     # Burst dedupe: a (client, model) parked within the short window
     # re-parks with the SAME placement_id, so a burst of concurrent requests
@@ -3038,12 +3095,18 @@ def invalidate_upstream_caches() -> list[str]:
     global _upstream_model_ids, _ctk_supported, _ctk_probed, _ctk_probe_attempts
     global default_context_window, _context_window_measured, _last_ctx_recheck_ts
     global upstream_vision, _last_vision_recheck_ts
-    global _placement_pending, _slot_save_supported
+    global _placement_pending, _slot_save_supported, _upstream_ids_failed_at
     cleared: list[str] = []
     if _upstream_model_ids is not None:
         _upstream_model_ids = None
         _rewritten_model_ids.clear()
         cleared.append("upstream_model_ids")
+    # A swap IS new upstream knowledge: retire any failure-window backoff
+    # with the same stroke, or the resolver would ask raw (spurious operator
+    # park) for up to _UPSTREAM_IDS_RETRY_SECS after the refresh.
+    if _upstream_ids_failed_at != 0.0:
+        _upstream_ids_failed_at = 0.0
+        cleared.append("upstream_ids_backoff")
     if PROXY_CHAT_TEMPLATE_KWARGS == "auto" and _ctk_probed:
         # Only 'auto' mode holds a probe result; an operator pin (on/off) is
         # an assertion about THIS operator's backends and must survive a swap.
@@ -6822,6 +6885,13 @@ _current_request_client: contextvars.ContextVar[str | None] = contextvars.Contex
 # semaphore per request and quietly multiply the concurrency budget, so an
 # off-shape answer falls back to the default bucket instead.
 _PLACEMENT_TARGET_RE = re.compile(r"^[A-Za-z0-9_.\-]+:\S+$")
+# BYOK custom-local ids (uplift: full automation): the harness's
+# bring-your-own-key form names the LOCAL BACKEND itself —
+# `custom:<display-name>-(UAP-local)-<n>` — not a model any registry or
+# upstream enumerates. The controller's placement decision needs an id the
+# registry declares, and the registry declares the wire ids the backend
+# actually serves.
+_BYOK_LOCAL_RE = re.compile(r"^custom:.*-\(UAP-local\)-\d+$")
 # Cap on per-target semaphores: real deployments have a handful of devices.
 # Overflow falls back to the default bucket rather than growing unboundedly.
 _PLACEMENT_MAX_TARGETS = 8
@@ -17859,6 +17929,11 @@ async def messages(request: Request):
     # the window), so a text-only answer is still produced.
     if _vision_park_due() and _request_carries_image(body):
         wire_model_for_vision = model if isinstance(model, str) and model != "default" else None
+        # BYOK custom-local ids resolve to the served id (uplift: full
+        # automation) — the burst keys this gate READS must be the same
+        # resolved keys _vision_oom_park_response WRITES, or every retry
+        # mints a fresh controller ask.
+        wire_model_for_vision = await _placement_ask_model(wire_model_for_vision)
         # Burst dedupe: the entry _vision_oom_park_response writes, keyed
         # with a ':vision' suffix so the TEXT-request burst key in
         # _placement_admit can never serve it — the starved arm still

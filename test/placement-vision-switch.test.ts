@@ -485,6 +485,272 @@ describe('attention rail: a vision park is a visible, correctly-shaped ask', () 
   });
 });
 
+describe('wire ids resolve through the registry (full automation)', () => {
+  // Backends serve human-readable wire ids ("Inkling 2 Mini") that the raw
+  // charset gate refuses — the exact class that parked every inkling
+  // request as invalid_request when the gate turned on live. The registry's
+  // advertises table is the trust anchor: an off-charset id that EXACTLY
+  // matches an advertised entry resolves to the registry model key, and
+  // only the KEY flows into the ledger and attention text.
+  const wireRegistry: ModelRegistry = {
+    ...registry,
+    models: {
+      ...registry.models,
+      'inkling2': {
+        ...registry.models['inkling2']!,
+        advertises: ['Inkling 2 Mini', 'inkling2-mini-basalt-nvfp4'],
+      },
+      // A LATER registry entry also carries wire ids — the scan must walk
+      // the whole table, not stop at the first model (the degenerate case
+      // every earlier test hit: inkling2 happens to be first).
+      'basalt-fn': {
+        ...registry.models['basalt-fn']!,
+        advertises: ['Qwen3.8 Flash Next Basalt', 'qwen3.8-fn-basalt-nvfp4'],
+      },
+    },
+  };
+  const wireLoaded = { registry: wireRegistry, measuredFrom: new Map(), errors: [] };
+  const wireAsk = { model_id: 'Inkling 2 Mini', client: 'byok-droid' };
+
+  it('forwards a resident ask made by the space-containing wire id', () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(process.cwd(), wireAsk, { loaded: wireLoaded, ledgerPath });
+    // The decisive regression: this was invalid_request before the uplift.
+    expect(answer.decision).toBe('forward');
+  });
+
+  it('resolves through a LATER registry entry — the scan walks the whole table', () => {
+    // The first entry (inkling2) advertises neither of basalt-fn's wire
+    // ids; restricting the scan to it would park this as invalid_request.
+    const ledgerPath = freshLedger();
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'Qwen3.8 Flash Next Basalt', client: 'byok-droid' },
+      { loaded: wireLoaded, ledgerPath },
+    );
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('not_resident'); // resolved: basalt-fn, known but not resident
+    expect(loadLedger(ledgerPath).pending[0]?.requested_model).toBe('basalt-fn');
+  });
+
+  it('pins first-match-wins when two models advertise the same wire id', () => {
+    // Documented resolution for advertises collisions (registry hygiene is
+    // the fix, not the scanner): the first model in registry order wins.
+    const ambLoaded = {
+      registry: {
+        ...wireRegistry,
+        models: {
+          ...wireRegistry.models,
+          'basalt-fn': {
+            ...wireRegistry.models['basalt-fn']!,
+            advertises: [...wireRegistry.models['basalt-fn']!.advertises ?? [], 'Shared Wire Id'],
+          },
+          'inkling2': {
+            ...wireRegistry.models['inkling2']!,
+            advertises: ['Inkling 2 Mini', 'inkling2-mini-basalt-nvfp4', 'Shared Wire Id'],
+          },
+        },
+      } as ModelRegistry,
+      measuredFrom: new Map(),
+      errors: [],
+    };
+    const ledgerPath = freshLedger();
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'Shared Wire Id', client: 'byok-droid' },
+      { loaded: ambLoaded, ledgerPath },
+    );
+    expect(answer.reason).toBe('not_resident');
+    // inkling2 precedes basalt-fn in the fixture's key order.
+    expect(loadLedger(ledgerPath).pending[0]?.requested_model).toBe('inkling2');
+  });
+
+  it('an off-charset registry KEY parks invalid_request — the guard on resolved keys', () => {
+    // The resolution re-checks the RESOLVED key against the charset gate:
+    // a registry that names a model by an off-charset key (operator-side
+    // misconfiguration) must not launder that key into the queue text.
+    const offLoaded = {
+      registry: {
+        ...wireRegistry,
+        models: { 'Inkling 2': { ...registry.models['inkling2']!, advertises: ['inkling2-alias'] } },
+      } as ModelRegistry,
+      measuredFrom: new Map(),
+      errors: [],
+    };
+    const ledgerPath = freshLedger();
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'inkling2-alias', client: 'byok-droid' },
+      { loaded: offLoaded, ledgerPath },
+    );
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('invalid_request');
+    // No queue write: the hostile framing never becomes durable.
+    expect(loadLedger(ledgerPath).pending.length).toBe(0);
+  });
+
+  it('an off-charset registry key asked DIRECTLY parks invalid_request too', () => {
+    // The entry condition must not exempt a key just because the registry
+    // happens to contain it: an off-charset key flows raw into
+    // pending.requested_model and the attention title otherwise. It enters
+    // the scan like any other id and parks either way (resolved or raw).
+    const offLoaded = {
+      registry: {
+        ...wireRegistry,
+        models: { 'Inkling 2': { ...registry.models['inkling2']!, advertises: ['inkling2-alias'] } },
+      } as ModelRegistry,
+      measuredFrom: new Map(),
+      errors: [],
+    };
+    const ledgerPath = freshLedger();
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'Inkling 2', client: 'byok-droid' },
+      { loaded: offLoaded, ledgerPath },
+    );
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('invalid_request');
+    expect(loadLedger(ledgerPath).pending.length).toBe(0);
+  });
+
+  it('a non-resident wire-id park keys the pending entry by the REGISTRY id', () => {
+    const ledgerPath = freshLedger(); // inkling not resident
+    const answer = getPlacementAdmit(process.cwd(), wireAsk, { loaded: wireLoaded, ledgerPath });
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('not_resident'); // was invalid_request
+    const entry = loadLedger(ledgerPath).pending[0]!;
+    // The operator surface names registry keys — the entry must carry one.
+    expect(entry.requested_model).toBe('inkling2');
+    // And the wire-id ask dedupes against a registry-key ask (same entry).
+    const byKey = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'inkling2', client: 'byok-droid' },
+      { loaded: wireLoaded, ledgerPath },
+    );
+    expect(byKey.placement_id).toBe(answer.placement_id);
+  });
+
+  it('a vision ask via the wire id parks with the switch context keyed by the registry id', () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { ...wireAsk, reason: 'vision_encoder_oom' },
+      { loaded: wireLoaded, ledgerPath },
+    );
+    expect(answer.reason).toBe('vision_encoder_oom');
+    const vision = loadLedger(ledgerPath).pending.find((p) => p.capability === 'vision')!;
+    expect(vision.requested_model).toBe('inkling2');
+  });
+
+  it('an unregistered off-charset id still parks invalid_request — no ledger write', () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'Inkling <script> 2 Mini', client: 'byok-droid' },
+      { loaded: wireLoaded, ledgerPath },
+    );
+    // The injection property is unchanged: only registry-declared strings
+    // resolve, and a hostile id parks before any durable write.
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('invalid_request');
+    expect(loadLedger(ledgerPath).pending.length).toBe(0);
+  });
+
+  it('the attention ask carries the registry key, never the raw wire id', () => {
+    delete process.env.UAP_ATTENTION_OFF;
+    const ledgerPath = freshLedger(); // not resident → lingering park → ask
+    getPlacementAdmit(dir, wireAsk, { loaded: wireLoaded, ledgerPath });
+    const items = listAttention(dir);
+    expect(items.length).toBe(1);
+    // Charset-safe queue text: the wire id (with spaces) never reaches the
+    // session-start prompt through the queue's trusted framing.
+    expect(items[0]!.title).toBe('Placement parked: inkling2');
+    expect(items[0]!.detail).toContain("'inkling2'");
+  });
+
+  it('a charset-safe ADVERTISED id resolves too — the exclusion math keys on registry ids', () => {
+    // The class the API review flagged: "inkling2-mini-basalt-nvfp4" passes
+    // the charset gate, so it previously flowed RAW — excludeReuseOf
+    // compared it against candidate KEYS and no-oped, and a vision park on
+    // a vision-marked arm could auto-"switch" back to itself. Uniform
+    // resolution closes it: the alias resolves to the key.
+    const cpuEncoderArm: ModelRegistry = {
+      ...registry,
+      models: {
+        ...registry.models,
+        'inkling2': { ...registry.models['inkling2']!, vision: 'cpu' },
+      },
+    };
+    const cpuLoaded = { registry: cpuEncoderArm, measuredFrom: new Map(), errors: [] };
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'inkling2-mini-basalt-nvfp4', client: 'byok-droid', reason: 'vision_encoder_oom' },
+      { loaded: cpuLoaded, ledgerPath },
+    );
+    expect(answer.reason).toBe('vision_encoder_oom');
+    const vision = loadLedger(ledgerPath).pending.find((p) => p.capability === 'vision')!;
+    expect(vision.requested_model).toBe('inkling2'); // the KEY, not the alias
+    // The decisive regression: the starved arm is excluded from its own
+    // resolution list (the raw alias would no-op the exclusion and offer
+    // the arm's own reuse as the auto-switch).
+    const options = optionsForPending(cpuEncoderArm, loadLedger(ledgerPath), vision).options;
+    expect(options.every((o) => o.model !== 'inkling2' || o.kind !== 'reuse')).toBe(true);
+  });
+
+  it('a charset-safe advertised id forwards on the resident (plain ask)', () => {
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'inkling2-mini-basalt-nvfp4', client: 'byok-droid' },
+      { loaded: wireLoaded, ledgerPath },
+    );
+    expect(answer.decision).toBe('forward');
+  });
+
+  it('a charset-safe UNREGISTERED id keeps its unknown_model class', () => {
+    // Uniform resolution must not swallow the class distinction: an id that
+    // passes the charset gate but matches nothing the registry declares
+    // parks as unknown_model (a placement decision), not invalid_request.
+    const ledgerPath = freshLedger([inklingResident()]);
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'gpt-5-turbo', client: 'byok-droid' },
+      { loaded: wireLoaded, ledgerPath },
+    );
+    expect(answer.decision).toBe('park');
+    expect(answer.reason).toBe('unknown_model');
+  });
+
+  it('the AUTO path threads the resolved key — the switch enforces by registry id', async () => {
+    // The mutation the suite could not catch pre-review: threading
+    // request.model_id raw into scheduleAutoResolution/excludeReuseOf passes
+    // every other test, but the auto run's step-0 re-derive keys on the wire
+    // id and flags the switch as drift, and the no-oped exclusion offers the
+    // starved arm's own reuse as the "switch" — full automation breaks for
+    // wire-id asks only. Pinned here: the model named to the enforcement and
+    // the capability context are the registry KEY, and the option picked is
+    // the OTHER arm's displace, never the starved arm's own reuse.
+    const ledgerPath = freshLedger([inklingResident()]);
+    const policy: AutoPolicy = { enabled: true, allow_displace: ['basalt-fn'] };
+    const enforce = vi.fn().mockResolvedValue({ ok: true, steps: [] });
+    const answer = getPlacementAdmit(
+      process.cwd(),
+      { model_id: 'Inkling 2 Mini', client: 'byok-droid', reason: 'vision_encoder_oom' },
+      { loaded: wireLoaded, ledgerPath, auto: { policy, enforce } },
+    );
+    expect(answer.reason).toBe('vision_auto_loading');
+    await new Promise((r) => setTimeout(r, 20)); // scheduleAutoResolution yields a tick
+    expect(enforce).toHaveBeenCalledTimes(1);
+    expect(enforce).toHaveBeenCalledWith(
+      expect.anything(), // the registry
+      'inkling2', // the RESOLVED key — never the raw wire id
+      expect.objectContaining({ kind: 'displace', model: 'basalt-fn' }),
+      expect.objectContaining({ capability: 'vision', excludeReuseOf: 'inkling2' }),
+    );
+  });
+});
+
 describe('CLI: uap models pending/apply carry the vision switch context', () => {
   const visionAsk = { model_id: 'inkling2', client: 'byok-droid', reason: 'vision_encoder_oom' };
   const timeouts: EnforceTimeouts = { drainMs: 20, startMs: 20, freeMs: 20, pollMs: 1 };

@@ -84,16 +84,28 @@ _PLACEMENT_MAX_TARGETS = 8
 http_client = None
 LLAMA_CPP_BASE = 'http://harness.invalid/v1'
 _upstream_model_ids = __IDS__
+_upstream_ids_failed_at = 0.0
+_UPSTREAM_IDS_RETRY_SECS = 5.0
 _current_placement_target = contextvars.ContextVar('t', default=None)
 _placement_pending = {}
+_BYOK_LOCAL_RE = re.compile(r"^custom:.*-\\(UAP-local\\)-\\d+$")
 
 ${sliceFunction(source, '_placement_controller_admit')}
 ${sliceFunction(source, '_upstream_model_ids_cached')}
+${sliceFunction(source, '_placement_ask_model')}
 ${sliceFunction(source, '_placement_park_response')}
 ${sliceFunction(source, '_placement_admit')}
 `;
 
 describe('proxy placement gate', () => {
+  it('the preamble regexes are in sync with the source (stale copies fail loudly)', () => {
+    // The harness hand-copies the regex constants into its stub namespace —
+    // a source change without a preamble change would silently test the
+    // OLD pattern. This guard pins the copies to the source byte-for-byte.
+    expect(source).toContain('_BYOK_LOCAL_RE = re.compile(r"^custom:.*-\\(UAP-local\\)-\\d+$")');
+    expect(source).toContain('_PLACEMENT_TARGET_RE = re.compile(r"^[A-Za-z0-9_.\\-]+:\\S+$")');
+  });
+
   it('mode=off is byte-identical: the gate forwards before touching anything', () => {
     const out = runPython(GATE_PREAMBLE
       .replace('__MODE__', 'off')
@@ -415,6 +427,12 @@ print(json.dumps(asyncio.run(main())))
     // for the window's remainder).
     expect(resultAuto.cleared).toContain('vision_oom_window');
     expect(resultAuto.vision_oom_window).toBe(0);
+    // The /models failure-window backoff retires with the ids view — the
+    // swap itself is new upstream knowledge (a backoff left standing would
+    // serve stale-None ids and park custom-local asks raw for up to the
+    // retry window after the refresh).
+    expect(resultAuto.cleared).toContain('upstream_ids_backoff');
+    expect(resultAuto.ids_backoff_reset).toBe(true);
     expect(resultAuto.ctk_supported).toBeNull();
     expect(resultAuto.ctk_probed).toBe(false);
     expect(resultAuto.ctk_attempts).toBe(0);
@@ -447,6 +465,10 @@ _last_vision_recheck_ts = 5.0
 # gets its images back without waiting out the old arm's window.
 _upstream_vision_broken_until = 5.0
 _admitted_sessions = OrderedDict({'s1': 1.0, 's2': 2.0})
+# The /models failure-window backoff (uplift: full automation): seeded
+# nonzero — a swap retires it with the ids view, or the resolver asks raw
+# (spurious operator park) for up to the retry window after the refresh.
+_upstream_ids_failed_at = 123.0
 _now = time.time()
 _placement_pending = {
     ('claude-code', 'Qwen3.8-27B'): {
@@ -461,6 +483,7 @@ cleared = invalidate_upstream_caches()
 print(json.dumps({
     "cleared": cleared,
     "ids_none": _upstream_model_ids is None,
+    "ids_backoff_reset": _upstream_ids_failed_at == 0.0,
     "ctx": default_context_window,
     "ctx_measured": _context_window_measured,
     "vision": upstream_vision,

@@ -557,8 +557,32 @@ changes, all applied):
   sent to it raw), `no_controller` (read-only admission with no reachable
   controller, the resolution is "start the dashboard / set
   PROXY_PLACEMENT_CONTROLLER", not a placement decision), or
-  `invalid_request` (controller-side: missing model_id). New values may be
-  added additively.
+  `invalid_request` (controller-side: missing model_id, or an id that no
+  registry model declares). New values may be added additively.
+- **Model id resolution** (uplift: full automation): the admit accepts
+  three id classes. A registry key passes as-is. A **wire id** — what a
+  backend actually serves, whether human-readable (`Inkling 2 Mini`, with
+  spaces) or charset-safe (`inkling2-mini-basalt-nvfp4`) — resolves to the
+  registry model key through the same exact-match scan of the registry's
+  `advertises` entries; the resolution is charset-uniform, so the RESOLVED
+  key (never the raw wire id) flows into the resident check, the option
+  math (`excludeReuseOf` included), the pending entry, and the attention
+  text, and every downstream comparison is key-to-key. A charset-safe id
+  the registry does not declare asks raw and parks as `unknown_model` — a
+  placement decision, not a rejection. The registry is the trust anchor:
+  only strings the operator's own registry declared resolve, so a hostile
+  id still parks as `invalid_request` before any queue write. The 409's
+  `requested_model` names the client's asked id (the wire id), while the
+  pending entry names the resolved registry key; consumers join the two
+  on `placement_id`.
+  A **BYOK custom-local id** (`custom:<name>-(UAP-local)-<n>`, the
+  harness's name for the local backend itself) resolves proxy-side to the
+  upstream's served id before the ask — the ask, the burst-dedupe keys,
+  and the park body all name the arm the request will actually hit. Every
+  other id asks raw: an unknown model stays the operator's parked
+  decision, never a silent rewrite. (With no controller reachable and an
+  empty served-id cache, a custom-local id parks naming itself — the
+  resolution, not the placement, is what failed.)
 - `placement_id` is 24 bits within a 120s dedupe window: ~3e-6 collision at
   ~10 concurrent pendings. Widen only if pending volume exceeds ~100 per
   window. It is **optional by variant**: the controller-less vision park

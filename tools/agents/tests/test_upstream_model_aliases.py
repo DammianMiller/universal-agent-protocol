@@ -51,13 +51,18 @@ class _FakeClient:
 
 class UpstreamModelAliasTests(unittest.TestCase):
     def setUp(self):
-        # The result is cached in a module global for the process lifetime.
+        # The result is cached in a module global for the process lifetime;
+        # the failure-backoff clock is reset with it so one test's failed
+        # fetch does not suppress the next test's (tests run milliseconds
+        # apart, well inside the retry window).
         self._saved_client = proxy.http_client
         proxy._upstream_model_ids = None
+        proxy._upstream_ids_failed_at = 0.0
 
     def tearDown(self):
         proxy.http_client = self._saved_client
         proxy._upstream_model_ids = None
+        proxy._upstream_ids_failed_at = 0.0
 
     def _ids(self, payload, status_code=200):
         proxy.http_client = _FakeClient(payload, status_code)
@@ -111,6 +116,24 @@ class UpstreamModelAliasTests(unittest.TestCase):
     def test_a_non_200_yields_no_ids(self):
         self.assertIsNone(self._ids({"data": [{"id": "x"}]}, status_code=503))
 
+    def test_a_failed_fetch_backs_off_within_the_window(self):
+        # Uplift: full automation — a failed /models fetch is remembered for
+        # _UPSTREAM_IDS_RETRY_SECS, so a hung/unreachable upstream costs ONE
+        # timeout per window, not one per caller (the handler warmup and the
+        # placement resolver both ask). A success still caches for the
+        # process lifetime; only the failure backoff is windowed.
+        proxy.http_client = _FakeClient({"data": [{"id": "x"}]}, status_code=503)
+        self.assertIsNone(asyncio.run(proxy._upstream_model_ids_cached()))
+        self.assertGreater(proxy._upstream_ids_failed_at, 0.0)
+
+        class _Boom:
+            async def get(self, _url, timeout=None):  # noqa: ARG002
+                raise AssertionError("must not refetch inside the backoff window")
+
+        # Inside the window the clock answers — the endpoint is not asked.
+        proxy.http_client = _Boom()
+        self.assertIsNone(asyncio.run(proxy._upstream_model_ids_cached()))
+
 
 class ServedIds404RefreshTests(unittest.TestCase):
     """`_maybe_refresh_served_ids_on_404`: recover from a stale ids cache.
@@ -126,11 +149,13 @@ class ServedIds404RefreshTests(unittest.TestCase):
         self._saved_client = proxy.http_client
         self._saved_placement = proxy.PROXY_PLACEMENT_MODE
         proxy._upstream_model_ids = None
+        proxy._upstream_ids_failed_at = 0.0  # see UpstreamModelAliasTests.setUp
         proxy.PROXY_PLACEMENT_MODE = "off"  # reconcile must not be skipped
 
     def tearDown(self):
         proxy.http_client = self._saved_client
         proxy._upstream_model_ids = None
+        proxy._upstream_ids_failed_at = 0.0
         proxy.PROXY_PLACEMENT_MODE = self._saved_placement
 
     def _prime_stale_cache(self, stale_ids):

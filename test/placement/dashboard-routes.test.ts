@@ -211,7 +211,10 @@ describe('placement admit (proxy gate controller)', () => {
     expect(answer.placement_id).toMatch(/^plc-[0-9a-f]{6}$/);
     const pending = getPlacementPending(ledgerPath);
     expect(pending.length).toBe(1);
-    expect(pending[0].requested_model).toBe('qwen3.8-flash-next-iq3_s');
+    // The asked id is the registry's ADVERTISED alias; the pending entry
+    // keys by the RESOLVED registry key (uniform id resolution: every
+    // downstream comparison is key-to-key).
+    expect(pending[0].requested_model).toBe('qwen3.8-flash-next');
     expect(pending[0].client).toBe('claude-code');
     expect(pending[0].reason).toBe('not_resident');
     expect(pending[0].expires_at > new Date().toISOString()).toBe(true);
@@ -409,7 +412,8 @@ describe('placement admit (proxy gate controller)', () => {
     expect(answer.reason).toBe('auto_loading');
     expect(answer.placement_id).toMatch(/^plc-/);
     await new Promise((r) => setTimeout(r, 20)); // let the background run finish
-    expect(enforced).toEqual([{ model: 'qwen3.8-flash-next-iq3_s', kind: 'load_alongside' }]);
+    // The enforcement loads the RESOLVED key, not the asked alias.
+    expect(enforced).toEqual([{ model: 'qwen3.8-flash-next', kind: 'load_alongside' }]);
     // Success resolved the pending entry: the client's next retry forwards.
     expect(getPlacementPending(ledgerPath)).toEqual([]);
   });
@@ -447,7 +451,8 @@ describe('placement admit (proxy gate controller)', () => {
     expect(Object.keys(persisted.devices)).toContain('gpu0');
     expect(Object.keys(persisted.devices)).toContain('cpu0');
     await new Promise((r) => setTimeout(r, 20));
-    expect(enforced).toEqual(['qwen3.8-flash-next-iq3_s']);
+    // The auto-load names the RESOLVED registry key.
+    expect(enforced).toEqual(['qwen3.8-flash-next']);
   });
 
   it('cold-start probe throttle: a permanently failing probe spawns once per window, not once per admit', () => {
@@ -567,7 +572,9 @@ describe('placement admit (proxy gate controller)', () => {
     });
     expect(allowed.reason).toBe('auto_loading');
     await new Promise((r) => setTimeout(r, 20));
-    expect(enforced).toEqual([{ model: 'qwen3.8-flash-next-iq3_s', kind: 'displace' }]);
+    // The displace option loads the RESOLVED key — the same id the
+    // allowlist above names.
+    expect(enforced).toEqual([{ model: 'qwen3.8-flash-next', kind: 'displace' }]);
   });
 
   it('retries of an auto_loading entry do not schedule a second run (the reason is kept)', async () => {
