@@ -249,7 +249,7 @@ class TestVisionRelayWiring(unittest.TestCase):
         # The starved arm still serves text — a vision park keyed on the
         # plain (client, model) burst key would 409 the same client's TEXT
         # requests with "cannot encode images" for a request that forwards
-        # fine. The ':vision'-suffixed key serves image requests only.
+        # fine. The 'vision' sentinel-keyed entry serves image requests only.
         http = _FakeHttp(
             upstream_response=_FakeResponse(
                 {"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
@@ -670,11 +670,13 @@ class TestVisionOomParkResponse(_VisionWindowTestCase):
         self.assertIn("uap models auto --disable", err["resolve_with"])
         # The model-keyed burst entry (`__auto__`) covers a client that
         # rotates its id header mid-burst: one ask per model, not per id.
+        # The 'vision' sentinel third field keeps image-burst entries
+        # distinct from every (client, model) TEXT key by ARITY.
         entries = proxy._placement_pending
-        self.assertIn(("byok-droid", "inkling2-mini:vision"), entries)
-        self.assertIn(("__auto__", "inkling2-mini:vision"), entries)
+        self.assertIn(("byok-droid", "inkling2-mini", "vision"), entries)
+        self.assertIn(("__auto__", "inkling2-mini", "vision"), entries)
         self.assertEqual(
-            entries[("__auto__", "inkling2-mini:vision")]["reason"],
+            entries[("__auto__", "inkling2-mini", "vision")]["reason"],
             "vision_auto_loading",
         )
         proxy._placement_pending.clear()
