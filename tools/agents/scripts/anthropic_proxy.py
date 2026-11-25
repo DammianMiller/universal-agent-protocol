@@ -2925,7 +2925,11 @@ async def _placement_ask_model(wire_model: str | None) -> str | None:
 
 
 async def _placement_admit(
-    wire_model: str | None, client_id: str, session_id: str | None, cells: int | None = None
+    wire_model: str | None,
+    client_id: str,
+    session_id: str | None,
+    cells: int | None = None,
+    openai_body: dict | None = None,
 ) -> Response | None:
     """Placement admission gate (spec §4.3).
 
@@ -2942,6 +2946,14 @@ async def _placement_admit(
     passthrough has already returned above, so passthrough is exempt by
     construction.
 
+    ``openai_body`` is the WIRE body: a BYOK custom-local id that resolves
+    to the served id rides the wire with the id the backend answers to
+    (gate mode retired the reconciler's rewrite, and the basalt engine —
+    unlike llama.cpp — VALIDATES the model field, so the raw custom string
+    404s at the upstream). Only the custom-local class is rewritten, only
+    on a forward the controller just vouched for; every other id forwards
+    as the client asked it.
+
     ``cells`` is this request's context need (see
     _placement_request_cells): the controller's option math is per-request,
     and without it small-pool backends are fail-closed-refused even for
@@ -2956,7 +2968,23 @@ async def _placement_admit(
     # automation — without this, every BYOK request parks as
     # invalid_request/unroutable because no registry declares the custom
     # string).
+    raw_model = wire_model
     wire_model = await _placement_ask_model(wire_model)
+    # A resolved custom-local id must also RIDE THE WIRE as the served id:
+    # gate mode retired the reconciler's rewrite, and the basalt engine
+    # validates the model field (llama.cpp ignored it), so the raw custom
+    # string 404s at the upstream. Scoped to exactly the resolution class
+    # — every other id forwards as the client asked it; an unserved
+    # non-custom id stays the operator's parked decision, never a silent
+    # rewrite.
+    def _ride_wire_as_served() -> None:
+        if (
+            openai_body is not None
+            and wire_model != raw_model
+            and isinstance(openai_body.get("model"), str)
+            and openai_body["model"] == raw_model
+        ):
+            openai_body["model"] = wire_model
 
     # Burst dedupe: a (client, model) parked within the short window
     # re-parks with the SAME placement_id, so a burst of concurrent requests
@@ -3008,6 +3036,7 @@ async def _placement_admit(
                 and _PLACEMENT_TARGET_RE.match(target)
             ):
                 _current_placement_target.set(target)
+            _ride_wire_as_served()
             return None
         reason = "unroutable_target"
     elif answer is not None:
@@ -3030,6 +3059,7 @@ async def _placement_admit(
             # closed on "upstream unreachable" would park a healthy resident
             # during every backend blip — the same fail-open direction
             # _reconcile_wire_model already takes with this same cache.
+            _ride_wire_as_served()
             return None
         reason = "no_controller"
 
@@ -17916,6 +17946,11 @@ async def messages(request: Request):
         client_id,
         session_id,
         placement_cells,
+        # The WIRE body: a BYOK custom-local id that the gate resolves to
+        # the served id rides the wire with the id the backend answers to
+        # (the basalt engine validates the model field; gate mode retired
+        # the reconciler's rewrite).
+        openai_body,
     )
     if parked is not None:
         return parked
