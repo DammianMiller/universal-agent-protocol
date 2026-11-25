@@ -32,6 +32,12 @@ export const MODEL_PRESET_PROFILE: Record<string, string> = {
   'qwen35-a3b': 'qwen35',
   'qwen36-a3b': 'qwen36',
   'qwen38-27b': 'qwen38',
+  // The Inkling 2 Mini 5090 fleet arm — its droid custom-model entries send
+  // the wire id 'Inkling 2 Mini' (the alias the basalt engine advertises at
+  // /v1/models). Without this entry those sessions fell to the GENERIC
+  // profile (max_tokens 4096, context 32768, thinking off) — none of which
+  // match a 1M-ctx, native-thinking, server-side-answer-room arm.
+  'Inkling 2 Mini': 'inkling2',
   // Auto-detected: the family is not known until the endpoint answers, and the
   // caller resolves the profile from the RESOLVED id where it can. This static
   // entry is the answer for the case where nothing has been resolved yet.
@@ -71,6 +77,7 @@ export function profileForModelId(modelId: string | null | undefined): string {
   if (/haiku/.test(lower)) return 'claude-haiku-3.5';
   if (/gpt.*codex/.test(lower)) return 'gpt-5.3-codex';
   if (/gpt/.test(lower)) return 'gpt-5.4';
+  if (/inkling.*2|inkling-2/.test(lower)) return 'inkling2';
   if (/qwen.*(3[.\-_]?8|38)/.test(lower)) return 'qwen38';
   if (/qwen.*(3[.\-_]?6|36)/.test(lower)) return 'qwen36';
   if (/qwen/.test(lower)) return 'qwen35';

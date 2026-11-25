@@ -640,23 +640,35 @@ function convergenceCmd(dir: string, options: QualityOptions): void {
   }
   console.log(
     `\n    ${'tier'.padEnd(28)}${'runs'.padStart(5)}  ${'reached'.padStart(7)}  ${'cut%'.padStart(6)}  ` +
-      `${'escal%'.padStart(7)}  ${'rounds→tier'.padStart(11)}  ${'win%'.padStart(6)}  cand/run`
+      `${'escal%'.padStart(7)}  ${'rounds→tier'.padStart(11)}  ${'win%'.padStart(6)}  cand/run  ${'agree'.padStart(5)}  ${'FP%'.padStart(4)}`
   );
   for (const s of summaries) {
     const rtt = s.meanRoundsToTier === null ? '—' : s.meanRoundsToTier.toFixed(1);
     const cut = `${(s.cutRate * 100).toFixed(0)}%`;
     const escal = `${(s.escalationRate * 100).toFixed(0)}%`;
     const win = `${(s.winnerPassRate * 100).toFixed(0)}%`;
+    const agree = s.agreementRuns > 0 ? String(s.agreementRuns) : '—';
+    // The shadow false-positive rate is THE promotion input: the share of
+    // dual-arm turns where the tier flagged below-tier but the judge passed
+    // — exactly the good work a block-mode promotion would start refusing.
+    const fp =
+      s.shadowFalsePositiveRate === null
+        ? '—'
+        : `${(s.shadowFalsePositiveRate * 100).toFixed(0)}%${s.shadowFalsePositives > 0 ? chalk.yellow('⚠') : ''}`;
     const mark = s.cutRate >= 0.5 ? chalk.red : s.cutRate > 0 ? chalk.yellow : chalk.green;
     console.log(
       `    ${s.tier.padEnd(28)}${String(s.runs).padStart(5)}  ${String(s.tierReached).padStart(7)}  ` +
         `${mark(cut.padStart(6))}  ${escal.padStart(7)}  ${rtt.padStart(11)}  ${win.padStart(6)}  ` +
-        `${s.meanCandidates.toFixed(1)}`
+        `${s.meanCandidates.toFixed(1)}  ${agree.padStart(5)}  ${fp.padStart(4)}`
     );
   }
   console.log(
     chalk.dim(
-      '\n    Descriptive (no controlled arm). Promotion needs this budget plus the gate-shadow false-positive count.'
+      '\n    agree/FP% = runs carrying a judge verdict (wave 5 K dual-arm records) and the\n' +
+        '    shadow false-positive rate among them — below-tier tier flags on turns the\n' +
+        '    judge passed. Promotion to block needs the budget AND a low FP rate; an\n' +
+        '    em-dash means no dual-arm evidence yet (pre-K records have no judge arm).\n' +
+        '    Descriptive (no controlled arm).'
     )
   );
   console.log('');

@@ -1,0 +1,61 @@
+{
+  "_profile": "inkling2",
+  "_description": "Inkling 2 Mini — 5090 fleet arm on the basalt engine (NVFP4-q8, looped MoE), serving agentic clients through the anthropic-proxy. Profile created 2026-11-25 from LIVE MEASUREMENTS (probes via :4000 + the engine unit + the machine-local model registry), the same read-geometry-from-reality doctrine as the qwen38 rails: nothing here is transcribed from vendor docs.",
+  "_engine": "Basalt 0.5.5 behind systemd user unit uap-basalt-inkling2-server.service on :8080 (config /home/dammian/dev/basalt/basalt-inkling2.json, added 2026-11-22 per x.com/crazyMLguy s.2124167647696998669): Inkling-2-Mini-NVFP4-q8.basalt, Thinking Machines looped MoE (24 layers visited 48 times, 3.4B active), DSpark drafting, fp8 KV, 1048576 ctx elastic, vision DYNAMIC. Measured 2026-11-25 (registry overlay, engine pid 2666910 era): 28212 MiB GPU resident, 17480 MiB host RSS idle, the FULL 1,048,576-cell fp8 KV pool resident, 447-505 MiB device free at steady state. /props exposes n_ctx 1048576, total_slots 1, model_alias 'Inkling 2 Mini'; /v1/models lists exactly that one id. Ollama on :11434 holds the same weights as GGUF (llama family, 19.7 GB) but is NOT the serving path.",
+  "_vision_comment": "vision dynamic and CANNOT be flipped to cpu — the engine rejects it at launch ('this model's images are encoded in the engine: --vision dynamic, not cpu'; tried 2026-11-25, reverted within 2.5 min). The on-demand encoder (~792 MiB) competes for device memory with the resident pool (~450 MiB free at steady state — the OOM class), so this arm is NEVER a vision switch target (fail-closed). The 032 matrix validated full vision automation on this arm anyway; image requests that trip the encoder window park with a 409 rather than kill the arm.",
+  "model": "Inkling 2 Mini",
+  "_model_comment": "The alias the live backend advertises at /v1/models AND /props model_alias; the rails suite drift-checks this field against the serving process (test/model-profiles-inkling2-rails.test.ts). The registry's advertises list ALSO carries 'qwen35-a3b-iq4xs', 'Qwen3.8-Flash-Next' and 'qwen3.8-27b' — the cross-arm wire ids the operator accepts served BY this arm (the proxy rewrites them here; the fleet-arm ensure script's 2.6 fast path keeps this arm resident when a qwen38-family session asks — the 2026-11-25 thrash fix). Through the :4000 proxy every id maps; direct-path clients must send exactly this field's value.",
+  "max_tokens": 32768,
+  "_max_tokens_comment": "The engine's answer-room auto derives its thinking budget from the requested max_tokens and clamps output to its own cap — observed pairs (budget/cap): 24576/32768, 21000/28000, 6144/8192, 43008/57344. Requesting more than 32768 is accepted but wasted (the engine clamps); requesting 4096-starved values shrinks the thinking budget and degrades long-turn answers. 32768 is the observed natural cap; do not lower without re-measuring decode compliance.",
+  "temperature": 0.3,
+  "top_p": 0.9,
+  "top_k": 20,
+  "min_p": 0.05,
+  "repetition_penalty": 1.0,
+  "_sampling_comment": "Carried from the qwen38 tool-call-tuned values unchanged — they were tuned on qwen-family geometry and NEVER re-measured against this looped-MoE arm. Re-tune with `uap tune` before changing them; carried as-is so the arm is not silently running vendor chat defaults.",
+  "stop_sequences": [],
+  "_stop_sequences_comment": "DELIBERATELY EMPTY: every measured turn ended end=stop with no explicit stop markers — this engine owns its own EOS handling (llama-family GGUF lineage under a custom looped-MoE chat template with an effort map). The qwen38 profile's <|im_end|> marker is QWEN-template-specific and would never match here; carrying it would be transcribing, not measuring.",
+  "timeout_ms": 300000,
+  "context_window": 114688,
+  "_context_window_comment": "PER-SESSION CAP, not the pool. The arm's pool is the full 1,048,576 cells (1048576 ctx elastic, fp8) and a droid client entry sizes sessions to the whole 1M — but the proxy's PROXY_CONTEXT_WINDOW env (114688) holds the actual enforced cap fleet-wide, and this profile matches it so header-carrying clients (opencode, codex, claude-local via x-uap-model-profile) size their histories to the same honest number. The 934k of pool above the cap is the engine's own elastic working room (multi-visit looped-MoE scratch, conversation cache, expert bookkeeping) — a session at the cap must not crowd the engine out of its own pool. One rail (total_slots 1); admission is queue-depth, not pool arithmetic.",
+  "optimize_for_tool_calls": true,
+  "mode_switch_buffer_tokens": 500,
+  "enable_thinking": true,
+  "_thinking_comment": "Native thinking, but SERVER-SIDE: the answer-room auto machinery runs the thinking budget inside the engine and the wire carries ONLY the answer (no reasoning_content field — measured 2026-11-25: answers arrive content+tool_calls, finish=stop, thinking budget visible only in the engine log). Unlike the qwen38 arm where PROXY_THINKING_BUDGET_FRACTION had to stay 0 because the native budget truncated the answer (finish=length), this arm's answer-room COMPLETE NATURALLY — the truncation class does not exist here. The proxy's thinking-grammar/disabling knobs (PROXY_THINKING_GRAMMAR=off in the live env) stay off for this arm.",
+  "dynamic_temperature": {
+    "enabled": true,
+    "decay": 0.5,
+    "floor": 0.2,
+    "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
+  },
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "MEASURED 2026-11-25 (probe via :4000): this arm emits ONE tool call per turn by default (finish=tool_calls, single list_dir for a two-tool task) — the suffix flips it to parallel emission (both list_dir+read_file in one turn). Without this suffix the arm is sequential and agent loops pay one round-trip per tool."
+  },
+  "concurrency": {
+    "max_parallel_requests": 1,
+    "_comment": "One rail (total_slots 1 from /props). Request concurrency stays with the rail: PROXY_CONCURRENCY_LIMIT=1, UAP_MODEL_SLOTS=1 (the move-together rule). Session admission is separate (PROXY_SESSION_ADMISSION_LIMIT=4 fleet-wide).",
+    "kv_capacity_shared": true
+  },
+  "server_optimization": {
+    "kv_dtype": "fp8",
+    "prefill_chunk": 2048,
+    "max_context": 1048576,
+    "kv_capacity": 1048576,
+    "parallel_rails": 1,
+    "_capacity_comment": "Whole pool, one rail (total_slots 1 from /props): the FULL 1,048,576-cell fp8 KV pool is RESIDENT at idle (measured 2026-11-25 — 28212 MiB GPU, 447-505 MiB device free at steady state). No VBR floor to pin; the per-session cap (context_window above) is the profile's only admission arithmetic."
+  },
+  "measured": {
+    "_arm_comment": "2026-11-25, measured LIVE on the arm via the proxy (:4000) and the engine journal — not carried from any predecessor arm. Tool-call geometry: tool_choice=required honored (finish=tool_calls); sequential emission by default; batching-suffix-inducible parallel emission (both tools in one turn). Thinking: server-side answer-room (no reasoning field on the wire; budgets 6144-43008 observed adapting to the request). Throughput under a live client session: 294-375 tok/s decode at ~25k-token prompts (7219-token generation at 299.4 t/s), TTFT 0.5 s, speculative acceptance 64-98% (DSpark drafting), cache hit 98-99% within a tracked session. Prefill bursts to 1090 t/s on cache-warm turns. Prefix reuse 24% overall / 76% miss (~6,076 tok re-read per turn — the fresh-or-compacted-conversation pattern; sustained misses would mean the conversation cache is not tracking).",
+    "decode_tokens_per_second": 299,
+    "decode_at_prompt_tokens": 25000,
+    "ttft_seconds": 0.5,
+    "speculative_acceptance": "0.64-0.98 (DSpark per-turn acc range from the engine log)",
+    "prefix_cache_hit_rate": 0.24
+  },
+  "routing": {
+    "endpoint": "http://127.0.0.1:4000/v1",
+    "_comment": "Route through the anthropic-proxy, NOT the basalt port directly — the proxy applies the tool/finalize guardrails and, via this profile, the per-session context window that clients size their history to. Clients select this profile with the header 'x-uap-model-profile: inkling2' (or a uap_model_profile body param); the profile map resolves the wire id 'Inkling 2 Mini' here for clients that cannot send the header."
+  }
+}
