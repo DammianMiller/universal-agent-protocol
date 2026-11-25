@@ -371,33 +371,49 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
       mode: resolveTierGateMode(process.env),
       maxFidelity: resolveFidelity(root).max,
     });
-    // Wave 4 G — the convergence budget: a real deliver acceptance check that
-    // exercised a tier is a real measured event on a real artifact by a real
-    // model, and it is exactly the evidence the tier gate's shadow→block
-    // promotion decision is starved of ("ladder-only runs are not yet
-    // observed" — the gate's own promotion note; the convergence log held 0
-    // runs because only the harvested `uap quality ladder` CLI ever wrote
-    // it). Record one 1-round, 1-candidate run per (tier, capture) report —
-    // BOTH outcomes: the below-tier cuts are the budget's other half. Best
-    // effort by design: a read-only project root must not fail the delivery.
-    if (!tierGateResult.skipped) {
-      for (const report of tierGateResult.reports) {
+    // Wave 4 G / wave 5 K — the convergence budget + the shadow-agreement
+    // join. A real deliver acceptance check that exercised a tier is a real
+    // measured event on a real artifact by a real model, and it is exactly
+    // the evidence the tier gate's shadow→block promotion decision is
+    // starved of ("ladder-only runs are not yet observed" — the gate's own
+    // promotion note; the convergence log held 0 runs because only the
+    // harvested `uap quality ladder` CLI ever wrote it). One 1-round,
+    // 1-candidate run per (tier, capture) report — BOTH outcomes: the
+    // below-tier cuts are the budget's other half.
+    //
+    // K defers the write to VERDICT time so each record also carries
+    // judgePassed — the dual-arm join the promotion readout names as its
+    // missing half ("this budget plus the gate-shadow false-positive
+    // count"): a below-tier shadow flag on a turn the judge passed is
+    // exactly the false positive that promoting to block mode would start
+    // refusing. When the judge is never consulted (the block-mode refusal
+    // below), the records still land with judgePassed ABSENT — an honest
+    // null, never a zero that would read as agreement. Best effort by
+    // design: a read-only project root must not fail the delivery.
+    const pendingTierRuns = tierGateResult.reports.map((report) => ({
+      tier: report.tier,
+      outcome: (report.pass ? 'tier-reached' : 'cut-exhausted') as Parameters<typeof recordLadderRun>[1]['outcome'],
+      rounds: 1,
+      candidatesMeasured: 1,
+      winnerPassed: report.pass,
+      escalationFired: tierGateResult.escalated === true,
+      model: null, // the acceptance path does not know the executor id
+    }));
+    const flushTierRuns = (judgePassed?: boolean): void => {
+      if (tierGateResult.skipped) return;
+      for (const record of pendingTierRuns) {
         try {
           recordLadderRun(root, {
-            tier: report.tier,
-            outcome: report.pass ? 'tier-reached' : 'cut-exhausted',
-            rounds: 1,
-            candidatesMeasured: 1,
-            winnerPassed: report.pass,
-            escalationFired: tierGateResult.escalated === true,
-            model: null, // the acceptance path does not know the executor id
+            ...record,
+            ...(judgePassed !== undefined ? { judgePassed } : {}),
           });
         } catch {
           /* best-effort — the budget must never break the delivery */
         }
       }
-    }
+    };
     if (!tierGateResult.pass) {
+      flushTierRuns(); // judge never consulted — honest null, not a zero
       return { passed: false, feedback: tierGateResult.feedback ?? `TIER GATE — below tier (see ${formatTierGateLine(tierGateResult)})` };
     }
     // Silence the non-events: an operator who turned the gate off, and
@@ -468,14 +484,28 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     const runtimeNote = [baseNote, deps.primary ? '' : visualNote, uvNote?.note, capabilityAdvisory]
       .filter(Boolean)
       .join(' ');
-    const r = await judge({
-      spec: resolvedSpec,
-      projectRoot: root,
-      executor: deps.judgeExecutor,
-      ...(deps.criticForm ? { criticForm: true } : {}),
-      ...(runtimeNote ? { runtimeNote } : {}),
-    });
+    let r: AcceptanceResult;
+    try {
+      r = await judge({
+        spec: resolvedSpec,
+        projectRoot: root,
+        executor: deps.judgeExecutor,
+        ...(deps.criticForm ? { criticForm: true } : {}),
+        ...(runtimeNote ? { runtimeNote } : {}),
+      });
+    } catch (error) {
+      // The tier measurement still counts when the judge dies mid-turn —
+      // flush with the judge arm honestly ABSENT (no judgePassed key, not a
+      // false that would read as disagreement), then propagate the crash.
+      flushTierRuns();
+      throw error;
+    }
     const verdict = resolveAcceptanceVerdict(r, deps.primary);
+    // Wave 5 K — the judge WAS consulted: every pending tier record now
+    // carries its verdict. The JUDGE's call, not finalVerdict — the agreement
+    // signal is tier-vs-judge, so a churn-breaker override (gates accepting
+    // over the judge's rejection) must not masquerade as judge agreement.
+    flushTierRuns(verdict.passed);
     // Secondary mode only: bounded consecutive judge rejections of
     // objectively-green turns hand the verdict back to the gates.
     //

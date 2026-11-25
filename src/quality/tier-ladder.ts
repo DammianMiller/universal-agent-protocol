@@ -64,6 +64,16 @@ export interface LadderRunRecord {
   model?: string | null;
   /** N3: mean pairwise divergence of the final round's kept candidates; null when unmeasured. */
   meanDivergence?: number | null;
+  /**
+   * Wave 5 K — the judge's verdict on the same turn, when the judge was
+   * consulted. ABSENT (not false) when it never ran: the acceptance-path
+   * records carry the dual-arm join (tier verdict + judge verdict per turn)
+   * that the shadow→block promotion decision needs — a below-tier tier
+   * flag with judgePassed=true is the false positive that promoting to
+   * block mode would start refusing. An honest null, never a zero that
+   * would read as disagreement.
+   */
+  judgePassed?: boolean;
   endedAt: string;
 }
 
@@ -98,6 +108,17 @@ export interface LadderConvergenceSummary {
   winnerPassRate: number;
   /** Mean candidates measured per run — the best-of-N cost line. */
   meanCandidates: number;
+  /**
+   * Wave 5 K — the shadow-agreement stats, over runs that carry judgePassed
+   * (acceptance-path records only; ladder runs have no judge arm). 0/null
+   * until dual-arm records exist.
+   */
+  /** Runs with a judge verdict — the agreement denominator. */
+  agreementRuns: number;
+  /** Below-tier tier flags on turns the judge PASSED — the shadow false positives. */
+  shadowFalsePositives: number;
+  /** shadowFalsePositives / agreementRuns; null when agreementRuns is 0. */
+  shadowFalsePositiveRate: number | null;
 }
 
 /** Aggregate the convergence log per tier — the promotion-budget evidence. */
@@ -131,6 +152,13 @@ export function summarizeLadderRuns(
     const reached = runs.filter((r) => r.outcome === 'tier-reached');
     const winnerPasses = runs.filter((r) => r.winnerPassed === true).length;
     const measured = runs.filter((r) => r.winnerPassed !== null).length;
+    // Wave 5 K — the dual-arm agreement: only runs whose record carries a
+    // judge verdict count here (absent ≠ false — the judge never ran).
+    const withJudge = runs.filter(
+      (r): r is LadderRunRecord & { judgePassed: boolean } =>
+        typeof (r as LadderRunRecord).judgePassed === 'boolean',
+    );
+    const falsePositives = withJudge.filter((r) => !r.winnerPassed && r.judgePassed).length;
     summaries.push({
       tier,
       runs: runs.length,
@@ -143,6 +171,10 @@ export function summarizeLadderRuns(
           : null,
       winnerPassRate: measured > 0 ? winnerPasses / measured : 0,
       meanCandidates: runs.reduce((a, r) => a + r.candidatesMeasured, 0) / runs.length,
+      agreementRuns: withJudge.length,
+      shadowFalsePositives: falsePositives,
+      shadowFalsePositiveRate:
+        withJudge.length > 0 ? falsePositives / withJudge.length : null,
     });
   }
   summaries.sort((a, b) => b.runs - a.runs || a.tier.localeCompare(b.tier));
