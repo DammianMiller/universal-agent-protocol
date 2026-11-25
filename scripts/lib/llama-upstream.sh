@@ -52,51 +52,44 @@ llama_upstream_alive() {
     [ "$code" = "200" ]
 }
 
-# 0 if the base looks like a chat-capable llama.cpp server. Applied to
-# DISCOVERED candidates only — an operator pin is taken at its word.
+# 0 if the base can actually serve a chat completion. Applied to DISCOVERED
+# candidates only — an operator pin is taken at its word.
 llama_upstream_is_chat_server() {
-    local base="${1:-}" root props models chat
+    local base="${1:-}" root models chat
     root="$(llama_upstream_root "$base")"
 
-    # PATH 1 — llama.cpp. /props carries llama-server's generation settings. A
-    # bare HTTP server, an error page, or a still-loading server does not.
-    props="$(curl -s --max-time "${UAP_LLAMA_PROBE_TIMEOUT:-2}" -- "${root}/props" 2>/dev/null || true)"
-    case "$props" in
-        *'"default_generation_settings"'*)
-            # Reject an embedding-only server (this host runs one). When the build
-            # does not report capabilities at all, accept — older llama.cpp omits
-            # the field.
-            models="$(curl -s --max-time "${UAP_LLAMA_PROBE_TIMEOUT:-2}" -- "${root}/v1/models" 2>/dev/null || true)"
-            case "$models" in
-                *'"capabilities"'*)
-                    case "$models" in
-                        *'"completion"'*) return 0 ;;
-                        *) return 1 ;;
-                    esac
-                    ;;
-                *) return 0 ;;
-            esac
-            ;;
-    esac
-
-    # PATH 2 — any other OpenAI-compatible engine.
+    # The direct probe is the ONLY authority. Two shortcut layers ran here
+    # before and both proved untrustworthy in the field:
     #
-    # Requiring /props made this check llama.cpp-SPECIFIC, and it rejected the
-    # engine actually serving this host. Measured 2026-08-19: the box then ran
-    # ninfer-serve, which serves /health and /v1/models but NO /props, so the live
-    # server on the documented default port was refused, discovery yielded
-    # nothing, the dead pin stood, and every local completion returned 529.
+    # (1) TRUSTING DECLARED CAPABILITIES — /props with llama-server's
+    # default_generation_settings plus a /v1/models "capabilities" scan
+    # accepting "completion". Measured 2026-11-25: llama.cpp b12633 serving
+    # nomic-embed answers /props with full generation settings AND lists the
+    # embedding model with "capabilities":["completion"] — a build that
+    # misreports — while an actual chat request fails with
+    #   500 "the current context does not support logits computation. skipping"
+    # Discovery pinned chat traffic to the embed port and every model
+    # request through the proxy 529'd for 16 minutes.
     #
-    # (2026-09-21: that host is back on llama.cpp and /props answers again, so
-    # this particular engine no longer triggers it. The check stays capability-
-    # based rather than endpoint-based on purpose — the point is not which
-    # engine is running today, it is that requiring a vendor-specific endpoint
-    # makes discovery reject any other one.)
+    # (2) ACCEPTING CAPABILITY ABSENCE — "older llama.cpp omits the field,
+    # accept". Absence of evidence is not chat capability; the same embed
+    # outage also crossed this branch on builds that omit the field.
     #
-    # The trust model asks for "chat-capable, and not the embedding server". That
-    # is a CAPABILITY question, and the direct way to answer it is to ask for a
-    # chat completion: an embedding-only server has no such route, and a decoy
-    # returning 200 to everything still has to produce a choices array.
+    # A declaration can be wrong in either direction. A completed chat
+    # round-trip cannot.
+    #
+    # (2026-08-19 history, the other half of this check's shape: requiring
+    # /props made it llama.cpp-SPECIFIC and rejected the engine then serving
+    # this host — ninfer-serve served /health and /v1/models but NO /props,
+    # discovery yielded nothing, the dead pin stood, every local completion
+    # returned 529. The check stays capability-based rather than
+    # endpoint-based on purpose: the question is not which vendor's engine
+    # is running, it is whether chat works.)
+    #
+    # "Chat-capable, and not the embedding server" is a CAPABILITY question,
+    # and the direct way to answer it is to ask for a chat completion: an
+    # embedding-only server fails the request, and a decoy returning 200 to
+    # everything still has to produce a choices array.
     models="$(curl -s --max-time "${UAP_LLAMA_PROBE_TIMEOUT:-2}" -- "${root}/v1/models" 2>/dev/null || true)"
     # Extracting an id IS the models-list check: a server that does not advertise
     # one yields an empty model_id and is refused below. A separate `case` for
@@ -269,12 +262,14 @@ llama_upstream_watch() {
     done
 }
 
-# Direct invocation: `llama-upstream.sh resolve <base>` / `alive <base>`.
+# Direct invocation: `llama-upstream.sh resolve <base>` / `alive <base>` /
+# `is_chat_server <base>`.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     case "${1:-}" in
         resolve) llama_upstream_resolve "${2:-}"; echo ;;
         alive) llama_upstream_alive "${2:-}" ;;
+        is_chat_server) llama_upstream_is_chat_server "${2:-}" ;;
         authorities) llama_upstream_candidate_authorities ;;
-        *) echo "usage: ${0##*/} {resolve|alive|authorities} [base]" >&2; exit 2 ;;
+        *) echo "usage: ${0##*/} {resolve|alive|is_chat_server|authorities} [base]" >&2; exit 2 ;;
     esac
 fi
