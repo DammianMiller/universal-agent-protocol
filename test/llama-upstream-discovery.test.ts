@@ -7,6 +7,12 @@
  * authoritative while it works, and only a proven-dead pin may fall through to
  * discovery.
  *
+ * Regression origin (2026-11-25): with the engine arm down, discovery trusted
+ * the embedding server's DECLARED capabilities and pinned the proxy to it —
+ * every model request 529'd with "the current context does not support logits
+ * computation" until the arm was restarted and the proxy re-resolved. The
+ * chat round-trip is now the only acceptance for a discovered candidate.
+ *
  * `curl` and `ss` are stubbed on PATH so the real resolver code runs.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -33,6 +39,16 @@ interface Env {
   openaiPorts?: number[];
   /** Ports serving /v1/models but no chat route (an embedding-only server). */
   embedPorts?: number[];
+  /**
+   * Ports that DECLARE chat capability in /v1/models ("capabilities" with
+   * "completion") and answer /props with llama-server generation settings,
+   * yet FAIL the chat round-trip. Real shape, measured 2026-11-25: llama.cpp
+   * b12633 serving nomic-embed-text-v2-moe misreports the embedding model
+   * as completion-capable; the resolver trusted the declaration, pinned
+   * discovery to the embed port, and every model request through the proxy
+   * 529'd for 16 minutes.
+   */
+  lyingEmbedPorts?: number[];
   ss?: string;
   env?: Record<string, string>;
 }
@@ -48,10 +64,12 @@ function run(args: string[], opts: Env = {}): { stdout: string; status: number |
         ...(opts.nonChatPorts ?? []),
         ...(opts.openaiPorts ?? []),
         ...(opts.embedPorts ?? []),
+        ...(opts.lyingEmbedPorts ?? []),
       ].join(' '),
       CHAT_PORTS: (opts.healthyPorts ?? []).join(' '),
       OPENAI_PORTS: (opts.openaiPorts ?? []).join(' '),
       EMBED_PORTS: (opts.embedPorts ?? []).join(' '),
+      LYING_EMBED_PORTS: (opts.lyingEmbedPorts ?? []).join(' '),
       SS_FIXTURE: opts.ss ?? '',
       ...(opts.env ?? {}),
     },
@@ -65,7 +83,10 @@ beforeAll(() => {
   stubDir = mkdtempSync(join(tmpdir(), 'uap-llama-upstream-'));
 
   // /health -> 200 for HEALTHY_PORTS. /props and /v1/models return llama-server
-  // shaped bodies only for CHAT_PORTS, so a decoy answering 200 is rejected.
+  // shaped bodies only for CHAT_PORTS and LYING_EMBED_PORTS, so a decoy
+  // answering 200 is rejected. Chat capability is decided by the round-trip:
+  // CHAT_PORTS and OPENAI_PORTS complete it, LYING_EMBED_PORTS and EMBED_PORTS
+  // fail it.
   writeFileSync(
     join(stubDir, 'curl'),
     `#!/usr/bin/env bash
@@ -79,12 +100,14 @@ case "\$path" in
   */health)
     if in_list "\$port" "\${HEALTHY_PORTS:-}"; then printf '200'; else printf '000'; fi ;;
   */props)
-    if in_list "\$port" "\${CHAT_PORTS:-}"; then
+    if in_list "\$port" "\${CHAT_PORTS:-} \${LYING_EMBED_PORTS:-}"; then
       printf '{"default_generation_settings":{"n_ctx":199680},"modalities":{"vision":true}}'
     fi ;;
   */v1/models)
     if in_list "\$port" "\${CHAT_PORTS:-}"; then
       printf '{"data":[{"id":"unsloth/Qwen3.8-27B-GGUF","capabilities":["completion","multimodal"]}]}'
+    elif in_list "\$port" "\${LYING_EMBED_PORTS:-}"; then
+      printf '{"data":[{"id":"nomic-embed-text-v2-moe","capabilities":["completion"]}]}'
     elif in_list "\$port" "\${OPENAI_PORTS:-} \${EMBED_PORTS:-}"; then
       printf '{"data":[{"id":"served-model","object":"model"}]}'
     fi ;;
@@ -95,8 +118,10 @@ case "\$path" in
     # good server.
     body="\$(for a in "\$@"; do case "\$a" in '{'*) printf '%s' "\$a";; esac; done)"
     case "\$body" in *'"model"'*) ;; *) printf '{"error":{"message":"missing required field: model"}}'; exit 0;; esac
-    if in_list "\$port" "\${OPENAI_PORTS:-}"; then
+    if in_list "\$port" "\${OPENAI_PORTS:-} \${CHAT_PORTS:-}"; then
       printf '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+    elif in_list "\$port" "\${LYING_EMBED_PORTS:-}"; then
+      printf '{"error":{"code":500,"message":"the current context does not support logits computation. skipping","type":"server_error"}}'
     fi ;;
 esac
 exit 0
@@ -270,6 +295,40 @@ describe('llama_upstream_resolve', () => {
     expect(resolve('http://127.0.0.1:59879/v1', { embedPorts: [8081], ss: ssRow('127.0.0.1:8081') })).toBe(
       'http://127.0.0.1:59879/v1'
     );
+  });
+
+  it('rejects a server that DECLARES chat capability but fails the round-trip', () => {
+    // MEASURED 2026-11-25 — the embed-server outage. The engine arm was down, the
+    // proxy restarted, and discovery trusted llama.cpp b12633's DECLARED
+    // "capabilities":["completion"] for the embedding model (nomic-embed), whose
+    // actual chat route fails with
+    //   500 "the current context does not support logits computation. skipping"
+    // Discovery pinned the proxy to the embed port and every model request 529'd
+    // for 16 minutes. A declaration can be wrong; a completed chat round-trip
+    // cannot, so the round-trip is the only acceptance.
+    expect(
+      resolve('http://127.0.0.1:34407/v1', {
+        lyingEmbedPorts: [8081],
+        ss: ssRow('127.0.0.1:8081'),
+      }),
+    ).toBe('http://127.0.0.1:34407/v1');
+  });
+
+  it('is_chat_server: rejects the capability-lying embed port directly', () => {
+    const r = run(['is_chat_server', 'http://127.0.0.1:8081/v1'], { lyingEmbedPorts: [8081] });
+    expect(r.status).toBe(1);
+  });
+
+  it('is_chat_server: accepts a port that completes the chat round-trip', () => {
+    const r = run(['is_chat_server', 'http://127.0.0.1:8080/v1'], { healthyPorts: [8080] });
+    expect(r.status).toBe(0);
+  });
+
+  it('is_chat_server: accepts on the round-trip even when capabilities are absent', () => {
+    // The old PATH 1 shortcut accepted absence outright; the round-trip makes
+    // acceptance honest for a legacy build that omits the field but serves chat.
+    const r = run(['is_chat_server', 'http://127.0.0.1:8080/v1'], { openaiPorts: [8080] });
+    expect(r.status).toBe(0);
   });
 
   it('does not override a HEALTHY pin with the default port', () => {
