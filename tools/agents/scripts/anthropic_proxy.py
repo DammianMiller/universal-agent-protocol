@@ -2593,7 +2593,11 @@ def _placement_request_cells(body: dict) -> int:
 
 
 async def _placement_controller_admit(
-    model_id: str, client_id: str, session_id: str | None, cells: int | None = None
+    model_id: str,
+    client_id: str,
+    session_id: str | None,
+    cells: int | None = None,
+    reason: str | None = None,
 ) -> dict | None:
     """Ask the dashboard-hosted placement controller for an admit decision.
 
@@ -2602,6 +2606,12 @@ async def _placement_controller_admit(
     controller is configured or it did not answer in time. Short timeout on
     purpose: admission sits on the request path, so a slow or dead
     controller must degrade to read-only admission, never stall traffic.
+
+    ``reason`` is the park CLASS for response-side parks (the upstream
+    answered, so the proxy — not the controller — knows why): only
+    'vision_encoder_oom' is sent today, and the controller honor-closes the
+    allowlist on its side. Absent for admission parks (the controller
+    derives those reasons itself).
     """
     if not PROXY_PLACEMENT_CONTROLLER or http_client is None:
         return None
@@ -2609,6 +2619,8 @@ async def _placement_controller_admit(
     payload = {"model_id": model_id, "client": client_id, "session": session_id}
     if cells is not None:
         payload["cells"] = cells
+    if reason is not None:
+        payload["reason"] = reason
     try:
         r = await http_client.post(url, json=payload, timeout=2.0)
         if r.status_code == 200:
@@ -2625,6 +2637,19 @@ _PLACEMENT_PARK_MESSAGES = {
     # client's retry IS the right action, no operator step exists.
     "auto_loading": "model {wire_model} is being loaded automatically; retrying is correct and it will forward when the load completes",
     "auto_failed": "model {wire_model} failed to load automatically; resolve with `uap models pending` (placement {placement_id})",
+    # Dynamic vision switching (uplift): the arm is resident and serving
+    # text, but its image encoder cannot get device memory — the resolution
+    # is a SWITCH to a vision-capable arm, not a load of {wire_model}.
+    "vision_auto_loading": (
+        "the serving arm {wire_model} cannot encode images right now; a vision-capable "
+        "arm is being switched to automatically — retrying is correct and the request "
+        "forwards when the switch completes (placement {placement_id})"
+    ),
+    "vision_encoder_oom": (
+        "the serving arm {wire_model} cannot encode images right now (its image "
+        "encoder cannot get device memory); resolve with `uap models pending` "
+        "(placement {placement_id})"
+    ),
 }
 # resolve_with is display-only (no stability guarantee, spec §4.3), but it
 # must not offer an operator step that contradicts the message: for
@@ -2635,7 +2660,129 @@ _PLACEMENT_PARK_RESOLVE_WITH = {
         "wait for the automatic load (retrying forwards once it completes)"
         "  |  uap models auto --disable to stop auto-loading"
     ),
+    "vision_auto_loading": (
+        "wait for the automatic switch (retrying forwards once it completes)"
+        "  |  uap models auto --disable to stop auto-switching"
+    ),
+    "vision_encoder_oom": (
+        "uap models pending  |  free encoder VRAM / switch to a vision-cpu arm"
+    ),
 }
+
+
+def _is_vision_encoder_oom(status_code: int, error_message: str) -> bool:
+    """Vision-encoder OOM signature (uplift: dynamic vision switching).
+
+    The backend ADVERTISED vision (so the proxy forwarded image blocks),
+    but its image encoder cannot get DEVICE memory at encode time — the
+    "vision dynamic" launch class, where an elastic KV pool can eat the
+    encoder's headroom. Observed live: "the image could not be read:
+    inkling2: no device memory for the image encoder (792 MiB)" with 505
+    MiB free on the card.
+
+    Two-part match on PURPOSE — an image-CLASS failure AND a memory-CLASS
+    cause. Either alone means something else: a corrupt image is an
+    image-class 400 a model switch cannot fix, and a KV-pool OOM is a
+    memory-class 400 that hits text requests too and belongs to the
+    upstream-retry machinery, not the vision switch.
+    """
+    if status_code != 400:
+        return False
+    m = (error_message or "").lower()
+    image_class = (
+        "could not be read" in m or "image encoder" in m or "vision encoder" in m
+    )
+    memory_class = (
+        "no device memory" in m
+        or "out of memory" in m
+        or "out of vram" in m
+        or "cannot allocate" in m
+        or "insufficient memory" in m
+    )
+    return image_class and memory_class
+
+
+def _request_carries_image(body: dict) -> bool:
+    """True when any message in the Anthropic request carries an image block
+    (top-level or nested in a tool_result) — the park condition for the
+    vision degrade window."""
+    for msg in body.get("messages") or []:
+        if isinstance(msg, dict) and _content_has_multimodal_block(msg.get("content")):
+            return True
+    return False
+
+
+_VISION_OOM_PARK_MSG = (
+    "the serving arm {wire_model} cannot encode images right now — its image "
+    "encoder cannot get device memory (vision degraded for {degrade}s; text "
+    "requests still forward). Free encoder headroom or switch to a vision-cpu "
+    "arm, or enable the placement controller (PROXY_PLACEMENT_MODE + "
+    "PROXY_PLACEMENT_CONTROLLER) so image requests switch arms automatically."
+)
+
+
+async def _vision_oom_park_response(
+    wire_model: str | None,
+    client_id: str,
+    session_id: str | None,
+    cells: int | None = None,
+) -> Response:
+    """The vision-encoder-OOM park (uplift: dynamic vision switching).
+
+    Reached from the upstream error relays (the 400 already arrived) and the
+    pre-request gate (the degrade window is active). Marks the arm's vision
+    broken for the degrade window, then parks:
+    - with a live placement gate + controller: through the admit ask with
+      reason vision_encoder_oom — the controller mints the pending entry
+      and, auto policy on, switches to a vision-capable arm (load-alongside
+      first, allowlisted displacement of this arm second); the client's
+      retry forwards to the new arm with the image intact.
+    - without one: a self-describing 409. The raw 400 told the client
+      nothing actionable; this says what broke, how long the degrade
+      lasts, and the fixes.
+    """
+    global _upstream_vision_broken_until
+    _upstream_vision_broken_until = time.time() + PROXY_VISION_OOM_DEGRADE_SECS
+    logger.error(
+        "VISION ENCODER OOM: upstream cannot encode images (model=%s) — vision "
+        "degraded for %ss, image requests park until it clears",
+        wire_model,
+        int(PROXY_VISION_OOM_DEGRADE_SECS),
+    )
+    if PROXY_PLACEMENT_MODE != "off" and PROXY_PLACEMENT_CONTROLLER and wire_model:
+        answer = await _placement_controller_admit(
+            wire_model, client_id, session_id, cells, reason="vision_encoder_oom"
+        )
+        if isinstance(answer, dict) and answer.get("decision") == "park":
+            return _placement_park_response(
+                wire_model,
+                str(answer.get("placement_id") or ""),
+                str(answer.get("reason") or "vision_encoder_oom"),
+            )
+    body = {
+        "type": "error",
+        "error": {
+            "type": "model_placement_pending",
+            "message": _VISION_OOM_PARK_MSG.format(
+                wire_model=wire_model or "unknown",
+                degrade=int(PROXY_VISION_OOM_DEGRADE_SECS),
+            ),
+            "requested_model": wire_model,
+            "reason": "vision_encoder_oom",
+            "retry_after_ms": 2000,
+            "resolve_with": (
+                "free encoder VRAM / switch to a vision-cpu arm"
+                "  |  uap models pending"
+                "  |  enable PROXY_PLACEMENT_MODE + controller for auto-switching"
+            ),
+        },
+    }
+    return Response(
+        content=json.dumps(body),
+        status_code=409,
+        media_type="application/json",
+        headers={"Retry-After": "2"},
+    )
 
 
 def _placement_park_response(wire_model: str, placement_id: str, reason: str) -> Response:
@@ -4859,6 +5006,21 @@ PROXY_IMAGE_TOKEN_ESTIMATE = int(os.environ.get("PROXY_IMAGE_TOKEN_ESTIMATE", "8
 upstream_vision: bool = False
 _last_vision_recheck_ts: float = 0.0
 _VISION_RECHECK_INTERVAL: float = 60.0
+# Vision-encoder OOM degrade window (uplift: dynamic vision switching). When
+# the upstream 400s with the encoder-OOM signature on an image-bearing
+# request, the arm's vision is marked broken for this many seconds: with a
+# placement controller, image-bearing requests PARK (the controller can
+# switch to a vision-capable arm, and the client's retry forwards with the
+# image intact); without one, image blocks take the existing
+# strip-and-notice path — a text-only answer beats a dead request. After
+# the window the arm gets one image request again: if the operator freed
+# encoder headroom meanwhile, images resume; otherwise the 400 re-parks and
+# the window re-arms. 0 disables the window (every image request
+# round-trips to the failing encoder and parks on its 400).
+PROXY_VISION_OOM_DEGRADE_SECS = max(
+    0.0, float(os.environ.get("PROXY_VISION_OOM_DEGRADE_SECS", "600") or "600")
+)
+_upstream_vision_broken_until: float = 0.0
 
 
 def vision_enabled() -> bool:
@@ -4866,7 +5028,23 @@ def vision_enabled() -> bool:
         return True
     if PROXY_VISION == "off":
         return False
+    # An encoder-OOM window dominates the probe's advertisement: the arm
+    # ADVERTISES vision and demonstrably cannot serve it right now.
+    if time.time() < _upstream_vision_broken_until:
+        return False
     return upstream_vision
+
+
+def _vision_park_due() -> bool:
+    """True while the arm's vision is in an OOM degrade window AND a
+    placement controller is configured — the pre-request park condition
+    for image-bearing requests (park beats strip: the parked retry keeps
+    the image for the switched arm; the stripped one answers blind)."""
+    return (
+        PROXY_PLACEMENT_MODE != "off"
+        and bool(PROXY_PLACEMENT_CONTROLLER)
+        and time.time() < _upstream_vision_broken_until
+    )
 
 
 def _extract_vision_from_health(data: object) -> bool | None:
@@ -17608,6 +17786,21 @@ async def messages(request: Request):
     if parked is not None:
         return parked
 
+    # Vision-encoder OOM pre-request park (uplift: dynamic vision switching):
+    # the serving arm's encoder OOMed recently (the degrade window is live)
+    # and a placement controller can switch arms — park the image-bearing
+    # request instead of round-tripping it into a known-failing encode.
+    # Without a controller the window routes the request through the
+    # existing strip-and-notice conversion (vision_enabled() is False for
+    # the window), so a text-only answer is still produced.
+    if _vision_park_due() and _request_carries_image(body):
+        return await _vision_oom_park_response(
+            model if isinstance(model, str) and model != "default" else None,
+            client_id,
+            session_id,
+            _placement_request_cells(body),
+        )
+
     # Only the WIRE body is touched. The Anthropic response still echoes the
     # model the client asked for, which is what clients check.
     await _reconcile_wire_model(openai_body)
@@ -18229,6 +18422,23 @@ async def messages(request: Request):
                     media_type="application/json",
                 )
 
+            # Vision-encoder OOM (uplift: dynamic vision switching): the arm
+            # advertised vision, the proxy forwarded the image, and the
+            # encoder cannot get device memory at encode time. Park instead
+            # of relaying the raw 400 — the degrade window arms the
+            # strip-and-notice path for the burst, and the placement ask
+            # (gate on) switches to a vision-capable arm so the client's
+            # retry forwards with the image intact.
+            if _is_vision_encoder_oom(resp.status_code, error_message) and _request_carries_image(
+                body
+            ):
+                return await _vision_oom_park_response(
+                    openai_body.get("model") if isinstance(openai_body, dict) else None,
+                    client_id,
+                    session_id,
+                    _placement_request_cells(body),
+                )
+
             # Generic upstream error -- return as Anthropic error format
             error_type = (
                 "overloaded_error"
@@ -18379,6 +18589,17 @@ async def messages(request: Request):
                 "Upstream HTTP %d (non-stream): %s", resp.status_code, error_text
             )
             _note_ctk_rejection(error_text)
+            # Vision-encoder OOM (uplift: dynamic vision switching) — same
+            # classification as the stream relay, before the generic 529.
+            if _is_vision_encoder_oom(resp.status_code, error_text) and _request_carries_image(
+                body
+            ):
+                return await _vision_oom_park_response(
+                    openai_body.get("model") if isinstance(openai_body, dict) else None,
+                    client_id,
+                    session_id,
+                    _placement_request_cells(body),
+                )
             return Response(
                 content=json.dumps(
                     {

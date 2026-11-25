@@ -395,6 +395,10 @@ export function startDashboardServer(
           // The request's context need — spec §4.4 cost is per-request.
           // getPlacementAdmit sanitizes the shape, the route just forwards.
           cells: typeof parsed.cells === 'number' ? parsed.cells : undefined,
+          // Park class for response-side parks (the upstream answered, so
+          // the proxy knows why). Closed allowlist inside getPlacementAdmit:
+          // only 'vision_encoder_oom' is honored, anything else is ignored.
+          reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(answer));

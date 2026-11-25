@@ -60,6 +60,22 @@ export function matchingConfigs(registry: ModelRegistry, requested: string): Arr
   return out;
 }
 
+/** All configs of arms the registry marks vision-capable ('cpu' or 'gpu'):
+ * the switch targets for a vision-encoder-OOM park. 'dynamic' arms are
+ * deliberately NOT targets — their measurement excludes the on-demand
+ * encoder, so their cost is understated by exactly the thing that failed.
+ * Absent/'none' is unknown-or-incapable either way: fail closed. */
+export function visionCapableConfigs(registry: ModelRegistry): Array<{ model: string; config: string; entry: ModelRegistry['models'][string]['configs'][string] }> {
+  const out: Array<{ model: string; config: string; entry: ModelRegistry['models'][string]['configs'][string] }> = [];
+  for (const [mKey, model] of Object.entries(registry.models)) {
+    if (model.vision !== 'cpu' && model.vision !== 'gpu') continue;
+    for (const [cKey, entry] of Object.entries(model.configs)) {
+      out.push({ model: mKey, config: cKey, entry });
+    }
+  }
+  return out;
+}
+
 function stayingGpuMiB(ledger: PlacementLedger, device: string, victims: LedgerResident[]): number {
   const evicted = new Set(victims.map((v) => `${v.model}/${v.config}`));
   let sum = 0;
@@ -114,19 +130,65 @@ function freedHostMiB(victims: LedgerResident[]): number | null {
   return sum;
 }
 
+/** Options for a pending ledger entry: the capability context recorded at
+ * park time drives the candidate set, so `uap models pending`, `apply`,
+ * and auto-resolution all compute the SAME option list the entry was
+ * parked with (per-request cells, per-capability candidates). */
+export function optionsForPending(
+  registry: ModelRegistry,
+  ledger: PlacementLedger,
+  pending: { requested_model: string; cells?: number; capability?: 'vision' },
+): AdmissionResult {
+  if (pending.capability === 'vision') {
+    return computeOptions(registry, ledger, pending.requested_model, {
+      cells: pending.cells,
+      capability: 'vision',
+      excludeReuseOf: pending.requested_model,
+    });
+  }
+  return computeOptions(registry, ledger, pending.requested_model, { cells: pending.cells });
+}
+
+export interface ComputeOptionsOpts {
+  cells?: number;
+  taskKind?: string;
+  /** Compute SWITCH options across the registry's vision-capable arms
+   * instead of the requested model's configs: used for vision-encoder-OOM
+   * parks, where the requested arm is resident but cannot serve images
+   * (its encoder cannot get device memory). `requested` then only names
+   * the origin of the park, never the candidate set. */
+  capability?: 'vision';
+  /** Skip reuse options for this model — the arm that just failed the
+   * image request; reusing it would resolve nothing. */
+  excludeReuseOf?: string;
+}
+
 /** Compute ranked options for a requested model (spec §4.4). Ranking:
  * reuse > load_alongside (affinity match first) > smallest displace >
- * largest displace. Unknown anything = refused, with a note saying why. */
+ * largest displace. Unknown anything = refused, with a note saying why.
+ * With `capability: 'vision'` the candidates are the registry's
+ * vision-capable arms (switch targets), not the requested model's. */
 export function computeOptions(
   registry: ModelRegistry,
   ledger: PlacementLedger,
   requested: string,
-  opts?: { cells?: number; taskKind?: string },
+  opts?: ComputeOptionsOpts,
 ): AdmissionResult {
   const cells = opts?.cells ?? 32768;
-  const candidates = matchingConfigs(registry, requested);
+  const candidates =
+    opts?.capability === 'vision' ? visionCapableConfigs(registry) : matchingConfigs(registry, requested);
   if (candidates.length === 0) {
-    return { requested, matched: false, reason: 'not_in_registry', options: [], notes: [] };
+    return {
+      requested,
+      matched: false,
+      reason: 'not_in_registry',
+      options: [],
+      notes: [
+        opts?.capability === 'vision'
+          ? 'no vision-capable (cpu/gpu encoder) arms in the registry — mark switch targets with "vision": "cpu"|"gpu"'
+          : '',
+      ].filter((n) => n.length > 0),
+    };
   }
   const notes: string[] = [];
   const options: PlacementOption[] = [];
@@ -134,6 +196,7 @@ export function computeOptions(
   // 1. reuse — a resident already satisfies the request. Unmeasured configs
   // are servable when resident; that is the fail-closed rule's other half.
   for (const c of candidates) {
+    if (opts?.excludeReuseOf !== undefined && c.model === opts.excludeReuseOf) continue;
     const resident = ledger.residents.find((r) => r.model === c.model && r.config === c.config && r.state === 'hot');
     if (resident) {
       options.push({ kind: 'reuse', model: c.model, config: c.config, device: resident.device, cost_mib: null });
@@ -149,7 +212,11 @@ export function computeOptions(
       matched: true,
       reason: 'no_measured_config',
       options: [],
-      notes: ['every matching config is unmeasured — run `uap models measure` against a live instance; fail closed'],
+      notes: [
+        opts?.capability === 'vision'
+          ? 'every vision-capable arm is unmeasured — run `uap models measure` against a live instance; fail closed'
+          : 'every matching config is unmeasured — run `uap models measure` against a live instance; fail closed',
+      ],
     };
   }
 

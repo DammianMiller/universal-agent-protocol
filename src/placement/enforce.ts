@@ -23,7 +23,7 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { computeOptions, type PlacementOption } from './admission.js';
+import { computeOptions, optionsForPending, type PlacementOption } from './admission.js';
 import {
   loadLedger,
   residentTargetId,
@@ -187,6 +187,17 @@ export interface EnforceOpts {
    * finds nothing, and a cells-correct option is refused as "drift" — the
    * load never runs. */
   cells?: number;
+  /** Capability context of the park being enforced. A vision park's
+   * approved option loads a DIFFERENT arm than the requested model, so the
+   * step-0 re-derivation must compute candidates from the registry's
+   * vision-capable arms (admission.ts computeOptions) — the model-scoped
+   * default would never re-derive the approved switch and would refuse it
+   * as drift. */
+  capability?: 'vision';
+  /** The arm that failed the image request (the park's requested model):
+   * excluded from reuse in the re-derivation, exactly as it was when the
+   * option was computed. */
+  excludeReuseOf?: string;
 }
 
 function loadRegistry(projectDir: string, opts: EnforceOpts): ModelRegistry {
@@ -225,7 +236,14 @@ export async function enforceOption(
   // Per-request cost (spec §4.4): re-derive against the SAME context need
   // the option was computed for (opts.cells), or a small-pool config whose
   // option existed for a 2k-cell request "drifts" under the 32k default.
-  const rederived = computeOptions(registry, ledger, requestedModel, { cells: opts.cells }).options.find(
+  // Same for the capability context (opts.capability): a vision switch's
+  // option must re-derive from the vision-capable candidate set.
+  const rederived = computeOptions(registry, ledger, requestedModel, {
+    cells: opts.cells,
+    ...(opts.capability === 'vision'
+      ? { capability: 'vision' as const, excludeReuseOf: opts.excludeReuseOf ?? requestedModel }
+      : {}),
+  }).options.find(
     (o) => o.kind === approved.kind && o.model === approved.model && o.config === approved.config,
   );
   if (!rederived) {
@@ -562,10 +580,11 @@ export async function resolvePendingPlacement(
   // parked request needs (recorded by the proxy in the pending entry) — the
   // 32k default fail-closed-refuses a small-pool config whose cost is known
   // for THIS request, and then the operator's `apply N` could never reach
-  // the option `pending` just printed for the same entry.
-  const options = computeOptions(loaded, loadLedger(ledgerPath), pending.requested_model, {
-    cells: pending.cells,
-  }).options;
+  // the option `pending` just printed for the same entry. A vision entry
+  // recomputes its SWITCH options (vision-capable arms), not the failed
+  // model's — the capability recorded at park time decides the candidate
+  // set, one helper for admit, pending, apply, and auto alike.
+  const options = optionsForPending(loaded, loadLedger(ledgerPath), pending).options;
   const approved = options[optionIndex - 1];
   if (!approved) {
     return { ok: false, steps: [], error: `option ${optionIndex} does not exist (1-${options.length}); re-run \`uap models pending\`` };
@@ -587,6 +606,9 @@ export async function resolvePendingPlacement(
   const result = await enforceOption(loaded, pending.requested_model, approved, {
     ...opts,
     cells: pending.cells,
+    ...(pending.capability === 'vision'
+      ? { capability: 'vision' as const, excludeReuseOf: pending.requested_model }
+      : {}),
   });
   if (result.ok) {
     withLedger(ledgerPath, (l) => {
