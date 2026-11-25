@@ -16,7 +16,7 @@
  * an unknown device total, an unknown host free, or an unknown marginal-KV
  * rate each kill the option rather than pass it on a guess.
  */
-import { configCostMiB, isMeasuredConfig, type MeasuredConfigEntry, type ModelRegistry } from './registry.js';
+import { configCostMiB, effectiveVision, isMeasuredConfig, type MeasuredConfigEntry, type ModelRegistry } from './registry.js';
 import type { LedgerDeviceState, LedgerResident, PlacementLedger } from './ledger.js';
 
 export type OptionKind = 'reuse' | 'load_alongside' | 'displace';
@@ -64,13 +64,32 @@ export function matchingConfigs(registry: ModelRegistry, requested: string): Arr
  * the switch targets for a vision-encoder-OOM park. 'dynamic' arms are
  * deliberately NOT targets — their measurement excludes the on-demand
  * encoder, so their cost is understated by exactly the thing that failed.
- * Absent/'none' is unknown-or-incapable either way: fail closed. */
+ * Absent/'none' is unknown-or-incapable either way: fail closed. The
+ * config-level `vision` override is honored (effectiveVision): a text-only
+ * engine arm inside a vision-capable family never becomes a target. */
 export function visionCapableConfigs(registry: ModelRegistry): Array<{ model: string; config: string; entry: ModelRegistry['models'][string]['configs'][string] }> {
   const out: Array<{ model: string; config: string; entry: ModelRegistry['models'][string]['configs'][string] }> = [];
   for (const [mKey, model] of Object.entries(registry.models)) {
-    if (model.vision !== 'cpu' && model.vision !== 'gpu') continue;
     for (const [cKey, entry] of Object.entries(model.configs)) {
-      out.push({ model: mKey, config: cKey, entry });
+      if (effectiveVision(model, entry) === 'cpu' || effectiveVision(model, entry) === 'gpu') out.push({ model: mKey, config: cKey, entry });
+    }
+  }
+  return out;
+}
+
+/** All configs of arms that can serve an image request AT ALL ('cpu', 'gpu'
+ * or 'dynamic'): the candidate set for an image-bearing request. Unlike
+ * visionCapableConfigs this INCLUDES 'dynamic' arms — they can encode an
+ * image; the OOM that later parks one is a memory event, not a
+ * capability gap, and is resolved by the switch targets above. Used so an
+ * image request never auto-loads or reuses a text-only arm (a 'none' arm
+ * would silently drop the image blocks and answer from the text alone —
+ * the exact silent-degradation class this fleet refuses). */
+export function imageCapableConfigs(registry: ModelRegistry): Array<{ model: string; config: string; entry: ModelRegistry['models'][string]['configs'][string] }> {
+  const out: Array<{ model: string; config: string; entry: ModelRegistry['models'][string]['configs'][string] }> = [];
+  for (const [mKey, model] of Object.entries(registry.models)) {
+    for (const [cKey, entry] of Object.entries(model.configs)) {
+      if (effectiveVision(model, entry) !== 'none') out.push({ model: mKey, config: cKey, entry });
     }
   }
   return out;
@@ -137,9 +156,24 @@ function freedHostMiB(victims: LedgerResident[]): number | null {
 export function optionsForPending(
   registry: ModelRegistry,
   ledger: PlacementLedger,
-  pending: { requested_model: string; cells?: number; capability?: 'vision' },
+  pending: { requested_model: string; cells?: number; capability?: 'vision'; reason?: string },
 ): AdmissionResult {
   if (pending.capability === 'vision') {
+    // Two vision classes, two candidate sets. An encoder-OOM park switches
+    // ACROSS the registry to the cpu/gpu arms (the starved arm's own cost
+    // is understated by the encoder it failed to load). A text-only park
+    // switches WITHIN the requested family to its image-capable config:
+    // the family's vision arm advertises the SAME wire ids, so the
+    // client's retry re-resolves in place; a cross-family target would
+    // park not_resident on the next admit and ping-pong the fleet. The
+    // text-only arm is excluded by the 'image' filter itself, so no
+    // excludeReuseOf is needed (and the OOM class keeps its own).
+    if (pending.reason === 'vision_text_only_arm') {
+      return computeOptions(registry, ledger, pending.requested_model, {
+        cells: pending.cells,
+        capability: 'image',
+      });
+    }
     return computeOptions(registry, ledger, pending.requested_model, {
       cells: pending.cells,
       capability: 'vision',
@@ -156,8 +190,17 @@ export interface ComputeOptionsOpts {
    * instead of the requested model's configs: used for vision-encoder-OOM
    * parks, where the requested arm is resident but cannot serve images
    * (its encoder cannot get device memory). `requested` then only names
-   * the origin of the park, never the candidate set. */
-  capability?: 'vision';
+   * the origin of the park, never the candidate set.
+   *
+   * `'image'` narrows the requested model's OWN configs to the
+   * image-capable ones (effective vision 'cpu'/'gpu'/'dynamic'): used for
+   * image-bearing requests — a text-only arm resident (or not) must
+   * neither forward nor auto-load for them. Family-scoped on purpose: the
+   * family's own vision arm serves the SAME wire ids, so the client's
+   * retry re-resolves without a park; a cross-family switch target that
+   * does not advertise the asked id would ping-pong (switch away, park
+   * not_resident, switch back). */
+  capability?: 'vision' | 'image';
   /** Skip reuse options for this model — the arm that just failed the
    * image request; reusing it would resolve nothing. */
   excludeReuseOf?: string;
@@ -167,7 +210,9 @@ export interface ComputeOptionsOpts {
  * reuse > load_alongside (affinity match first) > smallest displace >
  * largest displace. Unknown anything = refused, with a note saying why.
  * With `capability: 'vision'` the candidates are the registry's
- * vision-capable arms (switch targets), not the requested model's. */
+ * vision-capable arms (switch targets), not the requested model's; with
+ * `capability: 'image'` they are the requested model's image-capable
+ * configs. */
 export function computeOptions(
   registry: ModelRegistry,
   ledger: PlacementLedger,
@@ -175,8 +220,14 @@ export function computeOptions(
   opts?: ComputeOptionsOpts,
 ): AdmissionResult {
   const cells = opts?.cells ?? 32768;
-  const candidates =
-    opts?.capability === 'vision' ? visionCapableConfigs(registry) : matchingConfigs(registry, requested);
+  let candidates: Array<{ model: string; config: string; entry: ModelRegistry['models'][string]['configs'][string] }>;
+  if (opts?.capability === 'vision') {
+    candidates = visionCapableConfigs(registry);
+  } else if (opts?.capability === 'image') {
+    candidates = matchingConfigs(registry, requested).filter((c) => effectiveVision(registry.models[c.model], c.entry) !== 'none');
+  } else {
+    candidates = matchingConfigs(registry, requested);
+  }
   if (candidates.length === 0) {
     return {
       requested,
@@ -186,7 +237,9 @@ export function computeOptions(
       notes: [
         opts?.capability === 'vision'
           ? 'no vision-capable (cpu/gpu encoder) arms in the registry — mark switch targets with "vision": "cpu"|"gpu"'
-          : '',
+          : opts?.capability === 'image'
+            ? `"${requested}" has no image-capable config (every arm is text-only, vision "none") — no arm of this family can encode the image`
+            : '',
       ].filter((n) => n.length > 0),
     };
   }

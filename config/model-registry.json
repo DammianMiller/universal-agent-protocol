@@ -1082,6 +1082,77 @@
           ]
         }
       }
+    },
+  "inkling2": {
+      "display": "Inkling 2 Mini",
+      "engine": "basalt",
+      "unit": "uap-basalt-inkling2-server",
+      "endpoint": "http://127.0.0.1:8080",
+      "task_affinity": [
+        "general"
+      ],
+      "affinity": {
+        "device": [
+          "gpu0"
+        ]
+      },
+      "advertises": [
+        "Inkling 2 Mini",
+        "qwen35-a3b-iq4xs",
+        "Qwen3.8-Flash-Next",
+        "qwen3.8-27b"
+      ],
+      "vision": "dynamic",
+      "configs": {
+        "nvfp4-mx8": {
+          "status": "unmeasured",
+          "engine": "basalt",
+          "unit": "uap-basalt-inkling2-server",
+          "note": "The inkling2 family's basalt ENGINE arm, uplifted 2026-11-25: Basalt 0.5.7 (the 2026-11-24 release; 0.5.6 added parallel-slot batched decode and the CPU compute of RAM experts, 0.5.7 the multi-GPU gpu/gpu-mode/gpu-share settings - one card here, gpu \"0\") at ~/dev/basalt/basalt-v0.5.7-linux-x64 (prebuilt archive + .venv + redist cudart/cuBLAS at cuda-libs, the 0.5.5 install pattern), serving the NATIVE NVFP4-MX8 pack Inkling-2-Mini-NVFP4-MX8.basalt (19.6 GB, sha256 28ec7072 verified at download; upstream's 0.5.6 default pack, needs 0.5.6+): the release's OWN routed experts bit for bit - L0-19 NVFP4 codes+scales, L20-23 MXFP8 codes+UE8M0 scales native on block-scaled tensor cores - Q8_0 projections, BF16 head/embedding + vision encoder + DSpark drafter. Quality by Basalt's own bench: KLD 0.00297 / 97.83% top-1 vs the retired q8 pack's 0.00305 / 97.76%, prompts read ~5% faster at level quality. Posture (config basalt-inkling2-mx8.json, unit uap-basalt-inkling2-server.service, inference-panel id basalt-inkling2): gpu 0, kv fp8 (halves the cache; fp16 the other valid value), max-context 1048576 (the model's FULL window), vision dynamic (the engine's own encoder; 0 VRAM at rest, borrows expert-cache slots per image), DSpark on by default (--spec 8: the last accepted token plus the block, up to 7 drafts a pass, verified - output is the model's own), port 8080. The caches stay ELASTIC (full-attention visits back their first 32768 positions and grow; least-routed experts spill to page-locked RAM and come back). The engine logs at ~/.cache/basalt/<id>/. Supersedes the nvfp4-q8 config (the 0.5.5-era pack, kept on disk; its measured overlay entry is pruned on this uplift). Revert: point the unit back at basalt-inkling2.json (the q8 pack). Run `uap models measure` against it before placement loads it (fail-closed).",
+          "files": [
+            {
+              "path": "/home/dammian/models/basalt/Inkling-2-Mini-NVFP4-MX8.basalt",
+              "repo": "jesdga/Inkling-2-Mini-Basalt",
+              "file": "Inkling-2-Mini-NVFP4-MX8.basalt",
+              "bytes": 19606374189,
+              "sha256": "28ec70723feaa037942a02f55b9d5e898276f3e62a3b1fa083745f932a041b99"
+            }
+          ]
+        },
+        "squid-fp8": {
+          "status": "unmeasured",
+          "engine": "squid5090",
+          "unit": "uap-squid-inkling2-server",
+          "vision": "none",
+          "note": "The squid5090 ENGINE arm - user-directed 2026-11-25 per x.com/fishjar/status/2125198935870607390: tensorfish/squid5090 (Apache-2.0, pinned fda96e9d) is a zero-Python single-binary TigerStyle Zig + Blackwell CUDA (sm_120a) inference engine built at ~/dev/squid5090 (zig 0.17.1 from the ziglang tarball, CUDA 13.4 from ~/cuda-13.4, `zig build -Dcuda-path=...`, binary 19 MB at zig-out/bin/squid5090) serving Thinking Machines Lab's ORIGINAL HF checkpoint safetensors (thinkingmachines/Inkling-2-Mini at c9d02830 - NOT the basalt-converted pack: a fresh 19.5 GB download + the release's own DSpark drafter mtp.safetensors + tiktoken tokenizer). Posture (unit uap-squid-inkling2-server.service, inference-panel id squid-inkling2): serve --mode fp8 --kv q4 --ctx 524288 --mtp 7 --spec-threshold 0.80 --temp 1.0 --top-p 0.95 --model-name \"Inkling 2 Mini\" - the accuracy-default fp8 mode keeps the release's OWN L0-19 NVFP4 + L20-23 MXFP8 experts and official BF16 routers/controllers (upstream bench: 0.0058-0.0094 KLD, 26x smaller PPL delta than 4-bit) with FP8 dense/lm_head and q4 KV for the 512K window; --model-name pins the SAME wire id as the basalt arm (the engine ignores requested ids but /v1/models then stays uniform across arms, so pinned clients survive switches). DSpark drafts adaptively {2,4,8} by Markov confidence and is verified (output is the model's own). Upstream cross-engine bench (same 5090 class): fp8/q4 beats basalt v0.5.7 MX8 on all 4 T=1.0 decode benches (313.5 chat / 272.1 prose / 356.8 code / 456.4 copy) and matches it on cold 18.9K prefill (16,855 tok/s HTTP); this box VERIFIED 2026-11-25: cold load 2.5s, exact-echo SMOKE-ECHO-7F3A finish=stop, native tool call get_weather {\"city\":\"Paris\"} finish=tool_calls, decode 322/605/347 tok/s (code/counting/chat, dl 1.95-4.43), ~24.2 GiB VRAM (17.0 weights + 6.0 runtime + graphs), single-user c=1, 32 MiB request buffer (HTTP 413 above), tools/tool_calls native, NO constrained grammar. TEXT-ONLY BY DESIGN (config vision \"none\"): NO image encoder - a forwarded image-bearing request would SILENTLY DROP the image blocks and answer hallucinated text over HTTP 200 (live-probed 2026-11-25: a 1x1-pixel image answered a confident \"Skull\" description); the placement gate carries_image flag parks image traffic to this family's image-capable arm instead of forwarding. Revert: switch any other arm (basalt-inkling2 is the family default). Run `uap models measure` against it before placement loads it (fail-closed).",
+          "files": [
+            {
+              "path": "/home/dammian/models/squid5090-inkling2/model-00001-of-00001.safetensors",
+              "repo": "thinkingmachines/Inkling-2-Mini",
+              "file": "model-00001-of-00001.safetensors",
+              "rev": "c9d028302cd0f035fdf8e7e91f089a4ce94d2195",
+              "bytes": 19526019168,
+              "sha256": "65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1"
+            },
+            {
+              "path": "/home/dammian/models/squid5090-inkling2/mtp.safetensors",
+              "repo": "thinkingmachines/Inkling-2-Mini",
+              "file": "mtp.safetensors",
+              "rev": "c9d028302cd0f035fdf8e7e91f089a4ce94d2195",
+              "bytes": 635801416,
+              "sha256": "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2"
+            },
+            {
+              "path": "/home/dammian/models/squid5090-inkling2/tokenizer.json",
+              "repo": "thinkingmachines/Inkling-2-Mini",
+              "file": "tokenizer.json",
+              "rev": "c9d028302cd0f035fdf8e7e91f089a4ce94d2195",
+              "bytes": 26178678,
+              "sha256": "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6"
+            }
+          ]
+        }
+      }
     }
-  }
+}
 }

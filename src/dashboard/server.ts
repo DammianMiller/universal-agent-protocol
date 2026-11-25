@@ -413,6 +413,10 @@ export function startDashboardServer(
           // the proxy knows why). Closed allowlist inside getPlacementAdmit:
           // only 'vision_encoder_oom' is honored, anything else is ignored.
           reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
+          // True when the request body carries an image block (the proxy's
+          // body walk). The admit never forwards an image-bearing request
+          // to a text-only arm — see getPlacementAdmit.
+          carries_image: parsed.carries_image === true,
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(answer));

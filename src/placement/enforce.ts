@@ -192,8 +192,11 @@ export interface EnforceOpts {
    * step-0 re-derivation must compute candidates from the registry's
    * vision-capable arms (admission.ts computeOptions) — the model-scoped
    * default would never re-derive the approved switch and would refuse it
-   * as drift. */
-  capability?: 'vision';
+   * as drift. An 'image' context (a text-only resident's park, an
+   * image-bearing load) re-derives from the requested model's
+   * image-capable configs instead — family-scoped, and no exclusion (the
+   * filter already drops the text-only arm). */
+  capability?: 'vision' | 'image';
   /** The arm that failed the image request (the park's requested model):
    * excluded from reuse in the re-derivation, exactly as it was when the
    * option was computed. */
@@ -237,12 +240,15 @@ export async function enforceOption(
   // the option was computed for (opts.cells), or a small-pool config whose
   // option existed for a 2k-cell request "drifts" under the 32k default.
   // Same for the capability context (opts.capability): a vision switch's
-  // option must re-derive from the vision-capable candidate set.
+  // option must re-derive from the vision-capable candidate set; an image
+  // switch's from the requested family's image-capable configs.
   const rederived = computeOptions(registry, ledger, requestedModel, {
     cells: opts.cells,
     ...(opts.capability === 'vision'
       ? { capability: 'vision' as const, excludeReuseOf: opts.excludeReuseOf ?? requestedModel }
-      : {}),
+      : opts.capability === 'image'
+        ? { capability: 'image' as const }
+        : {}),
   }).options.find(
     (o) => o.kind === approved.kind && o.model === approved.model && o.config === approved.config,
   );
@@ -607,7 +613,9 @@ export async function resolvePendingPlacement(
     ...opts,
     cells: pending.cells,
     ...(pending.capability === 'vision'
-      ? { capability: 'vision' as const, excludeReuseOf: pending.requested_model }
+      ? pending.reason === 'vision_text_only_arm'
+        ? { capability: 'image' as const }
+        : { capability: 'vision' as const, excludeReuseOf: pending.requested_model }
       : {}),
   });
   if (result.ok) {

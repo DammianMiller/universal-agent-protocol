@@ -24,6 +24,7 @@ import {
   type PlacementLedger,
 } from '../placement/ledger.js';
 import {
+  effectiveVision,
   isMeasuredConfig,
   isPlaceable,
   loadModelRegistry,
@@ -198,6 +199,18 @@ export interface PlacementAdmitRequest {
    * never persisted free-form; the ledger records the structured
    * `capability` field, not this string. */
   reason?: string;
+  /** True when the client's request carries an image block (the proxy
+   * walks the body once and knows). An image-bearing request never
+   * FORWARDS to a text-only arm (config-level vision 'none'): that
+   * forward would silently drop the image and answer from the text alone
+   * with HTTP 200 — the exact silent-degradation class this fleet
+   * refuses (live-probed on squid5090: a 1x1-pixel image answered a
+   * hallucinated description, no error). Instead the resident is skipped
+   * and the park resolves by switching to the requested model's
+   * IMAGE-CAPABLE configs ('cpu'/'gpu'/'dynamic' — 'dynamic' can encode;
+   * the encoder-OOM class is a memory event, not a capability gap), so
+   * the client's retry lands on an arm that can actually encode. */
+  carries_image?: boolean;
 }
 
 export interface PlacementAdmitAnswer {
@@ -379,13 +392,33 @@ export function getPlacementAdmit(
   // the requested model's own configs.
   const visionOom = request.reason === 'vision_encoder_oom';
 
-  // Forward on reuse: a live resident serves this id. Draining residents
-  // don't count — a swap is in flight.
-  const resident = visionOom
+  // A text-only resident (config-level vision 'none') is the OTHER class
+  // that must not forward: an image-bearing request would arrive, the
+  // engine would drop the image blocks on the floor, and the client would
+  // read a confident text-only answer as the model having SEEN the image
+  // (live-probed on squid5090: 1x1 pixel -> "Skull", HTTP 200). Unlike the
+  // OOM park this one is decided BEFORE the forward, from the registry's
+  // capability facts — carries_image is the proxy's body walk, the
+  // registry's vision field is the fleet's declared truth, and neither is
+  // a guess. The resident still serves TEXT for this id (no park for
+  // text requests), so only the image-bearing request class diverts.
+  const carriesImage = request.carries_image === true;
+  const servingResident = visionOom
     ? undefined
     : ledger.residents.find(
         (r) => r.state !== 'draining' && residentServes(r, requested, registry),
       );
+  const residentTextOnly =
+    carriesImage &&
+    servingResident !== undefined &&
+    effectiveVision(
+      registry.models[servingResident.model] ?? { display: '', configs: {} },
+      registry.models[servingResident.model]?.configs[servingResident.config],
+    ) === 'none';
+
+  // Forward on reuse: a live resident serves this id. Draining residents
+  // don't count — a swap is in flight.
+  const resident = residentTextOnly ? undefined : servingResident;
   if (resident) {
     // Idle-sweep clock (§4.4.2): a gated request just used this model.
     // Fail-soft by design — the touch only delays a future idle unload,
@@ -406,9 +439,14 @@ export function getPlacementAdmit(
   // Park. The reason comes from the registry, never a guess: unknown model,
   // known but unmeasured (fail closed), or known+measured but not loaded.
   // A vision park keeps its own reason — the requested model's registry
-  // state is irrelevant, the failure is about its encoder, not its load.
-  let reason: string = visionOom ? 'vision_encoder_oom' : 'not_resident';
-  if (!visionOom) {
+  // state is irrelevant, the failure is about its encoder (OOM) or its
+  // capability (text-only), not its load.
+  let reason: string = visionOom
+    ? 'vision_encoder_oom'
+    : residentTextOnly
+      ? 'vision_text_only_arm'
+      : 'not_resident';
+  if (!visionOom && !residentTextOnly) {
     // The resolution above guarantees `requested` is a registry key or an
     // unregistered charset-safe id — never a raw advertised alias — so
     // the direct lookup is the only one that can fire.
@@ -432,7 +470,11 @@ export function getPlacementAdmit(
   // vision-capable options (load_alongside first, displacement of the
   // starved arm only for allowlisted models — the same standing-consent
   // rule, now guarding a switch as well as a load). The starved arm is
-  // never a reuse candidate: reusing it resolves nothing.
+  // never a reuse candidate: reusing it resolves nothing. A text-only
+  // resident's park is the same shape with a different candidate set:
+  // the requested model's IMAGE-CAPABLE configs (the family's own
+  // vision arm — 'dynamic' encodes; only the OOM class distrusts it),
+  // so the retry switches within the family instead of across it.
   let visionOptionCount = 0;
   let autoPlan: ReturnType<typeof autoOptionFor> = null;
   if (visionOom) {
@@ -448,8 +490,23 @@ export function getPlacementAdmit(
     // switch, where a DIFFERENT vision-capable arm is loaded and the
     // starved one may be displaced. The 409 body says what is happening.
     if (autoPlan) reason = 'vision_auto_loading';
+  } else if (residentTextOnly) {
+    const options = computeOptions(registry, ledger, requested, {
+      cells,
+      capability: 'image',
+    }).options;
+    visionOptionCount = options.length;
+    autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), requested);
+    if (autoPlan) reason = 'vision_auto_loading';
   } else if (reason === 'not_resident') {
-    const options = computeOptions(registry, ledger, requested, { cells }).options;
+    // An image-bearing request that is not resident auto-loads only an
+    // image-capable config of the requested model — never the family's
+    // text-only arm (that load would forward the image into the same
+    // silent drop the resident check above exists to prevent).
+    const options = computeOptions(registry, ledger, requested, {
+      cells,
+      ...(carriesImage ? { capability: 'image' as const } : {}),
+    }).options;
     autoPlan = autoOptionFor(options, opts?.auto?.policy ?? loadAutoPolicy(), requested);
     if (autoPlan) reason = 'auto_loading';
   }
@@ -467,8 +524,11 @@ export function getPlacementAdmit(
   const clientKey = client ?? '';
   // A vision park and a not-resident park for the same (model, client) are
   // DIFFERENT decisions — one wants a switch, the other a load — so the
-  // dedupe key carries the capability class too.
-  const capabilityKey = visionOom ? 'vision' : '';
+  // dedupe key carries the capability class too. The text-only park is
+  // the same capability class ('vision'): an image retry must hit the
+  // image park, while a TEXT retry for the same model must forward —
+  // the resident still serves text.
+  const capabilityKey = visionOom || residentTextOnly ? 'vision' : '';
   const matchesPending = (p: LedgerPending): boolean =>
     p.requested_model === requested &&
     (p.client ?? '') === clientKey &&
@@ -496,7 +556,10 @@ export function getPlacementAdmit(
     expires_at: expiresAt,
     reason,
     cells,
-    ...(visionOom ? { capability: 'vision' as const } : {}),
+    // Both vision-class parks carry the structured capability — the CLI's
+    // pending list recomputes a vision entry's SWITCH options, and the
+    // proxy's image-burst dedupe keys on it.
+    ...(visionOom || residentTextOnly ? { capability: 'vision' as const } : {}),
   };
   let placementId = pending.id;
   let raceWinnerReason: string | undefined;
@@ -531,14 +594,20 @@ export function getPlacementAdmit(
     // sees the 409 in the client; the dashboard has no pending row for it
     // yet) and say so. No auto scheduling: the entry is not persisted, so
     // a resolved pending would have nothing to remove — and the reason
-    // must not promise a load that will never run. A vision park keeps its
-    // own class here too: 'not_resident' would say the arm is not loaded
-    // (it is — its encoder OOMed) and point the client at an apply step for
-    // an entry that was never persisted.
+    // must not promise a load that will never run. A vision park keeps
+    // its own class here too: 'not_resident' would say the arm is not
+    // loaded (it is) and point the client at an apply step for an entry
+    // that was never persisted.
     return {
       decision: 'park',
       placement_id: placementId,
-      reason: autoPlan ? (visionOom ? 'vision_encoder_oom' : 'not_resident') : reason,
+      reason: autoPlan
+        ? visionOom
+          ? 'vision_encoder_oom'
+          : residentTextOnly
+            ? 'vision_text_only_arm'
+            : 'not_resident'
+        : reason,
     };
   }
   if (autoPlan && placementId === pending.id) {
@@ -555,8 +624,17 @@ export function getPlacementAdmit(
       // A vision run re-derives against the vision-capable candidate set,
       // not the requested model's — its approved option loads a DIFFERENT
       // arm, and the model-scoped re-derivation would flag exactly that as
-      // "drift" and refuse its own switch.
-      ...(visionOom ? { capability: 'vision' as const, excludeReuseOf: requested } : {}),
+      // "drift" and refuse its own switch. A text-only park's switch
+      // re-derives against the requested model's IMAGE-CAPABLE configs
+      // (same drift protection, family-scoped: the switch target is the
+      // same model key under a different config); an image-bearing
+      // not-resident load re-derives the same way so the run cannot
+      // "drift" onto the text-only config it was never offered.
+      ...(visionOom
+        ? { capability: 'vision' as const, excludeReuseOf: requested }
+        : residentTextOnly || carriesImage
+          ? { capability: 'image' as const }
+          : {}),
     });
     return { decision: 'park', placement_id: placementId, reason };
   }
@@ -578,20 +656,25 @@ export function getPlacementAdmit(
   // actionable swap for a pending that is already dead — and a sweep
   // adopting "let it expire" before the expiry would be a false record.
   // `not_resident` is the only load-park reason with options to apply; a
-  // vision park is actionable when a vision-capable switch target exists.
-  // The no-option reasons (unknown_model, no_measured_config, a vision park
-  // with no capable arm) ask the operator to LOOK, not to decide — the
-  // detail says so plainly.
-  const actionable = reason === 'not_resident' || (visionOom && visionOptionCount > 0);
+  // vision park (either class) is actionable when a capable switch target
+  // exists. The no-option reasons (unknown_model, no_measured_config, a
+  // vision park with no capable arm) ask the operator to LOOK, not to
+  // decide — the detail says so plainly.
+  const visionPark = visionOom || residentTextOnly;
+  const actionable = reason === 'not_resident' || (visionPark && visionOptionCount > 0);
   enqueueAttention(projectDir, {
     kind: 'review-request',
     title: visionOom
       ? `Vision parked: ${requested} (image encoder OOM)`
-      : `Placement parked: ${requested}`,
+      : residentTextOnly
+        ? `Vision parked: ${requested} (text-only serving arm)`
+        : `Placement parked: ${requested}`,
     detail: actionable
       ? visionOom
         ? `The resident arm '${requested}' cannot encode images right now (its image encoder cannot get device memory). ${visionOptionCount} vision-capable switch option(s) registered. Approve a switch with: uap models apply ${pending.id} <n> — or do nothing.`
-        : `A gated request wants '${requested}' (reason: ${reason}, placement ${pending.id}). Approve a swap with: uap models apply ${pending.id} <n> — or do nothing.`
+        : residentTextOnly
+          ? `An image-bearing request wants '${requested}' but the serving arm is TEXT-ONLY (vision 'none'): forwarding would silently drop the image. ${visionOptionCount} image-capable switch option(s) registered. Approve a switch with: uap models apply ${pending.id} <n> — or do nothing.`
+          : `A gated request wants '${requested}' (reason: ${reason}, placement ${pending.id}). Approve a swap with: uap models apply ${pending.id} <n> — or do nothing.`
       : `A gated request wants '${requested}' (reason: ${reason}, placement ${pending.id}). No registered option serves it — nothing to approve; it expires on its own.`,
     source: `placement:${pending.id}`,
     expiresAt: pending.expires_at,

@@ -2616,6 +2616,7 @@ async def _placement_controller_admit(
     session_id: str | None,
     cells: int | None = None,
     reason: str | None = None,
+    carries_image: bool = False,
 ) -> dict | None:
     """Ask the dashboard-hosted placement controller for an admit decision.
 
@@ -2630,6 +2631,14 @@ async def _placement_controller_admit(
     'vision_encoder_oom' is sent today, and the controller honor-closes the
     allowlist on its side. Absent for admission parks (the controller
     derives those reasons itself).
+
+    ``carries_image`` is True when the request body carries an image block
+    (the proxy's own body walk, computed once in messages()). The
+    controller then never forwards to a text-only arm ('none' vision):
+    that forward would silently drop the image and answer from the text
+    alone with HTTP 200 (live-probed on squid5090: a 1x1-pixel image
+    answered a hallucinated description). Instead the admit parks and
+    auto-switches to the family's image-capable config.
     """
     if not PROXY_PLACEMENT_CONTROLLER or http_client is None:
         return None
@@ -2639,6 +2648,8 @@ async def _placement_controller_admit(
         payload["cells"] = cells
     if reason is not None:
         payload["reason"] = reason
+    if carries_image:
+        payload["carries_image"] = True
     try:
         r = await http_client.post(url, json=payload, timeout=2.0)
         if r.status_code == 200:
@@ -2668,6 +2679,15 @@ _PLACEMENT_PARK_MESSAGES = {
         "encoder cannot get device memory); resolve with `uap models pending` "
         "(placement {placement_id})"
     ),
+    # Text-only serving arm (squid5090 class): no image encoder exists AT
+    # ALL, so an image-bearing request must switch to the family's
+    # image-capable arm — the park mirrors the OOM class, but the failure
+    # is a capability fact from the registry, not a memory event.
+    "vision_text_only_arm": (
+        "the serving arm {wire_model} is TEXT-ONLY (no image encoder); an image-capable "
+        "arm must serve this image. resolve with `uap models pending` "
+        "(placement {placement_id}) — text requests to {wire_model} still forward"
+    ),
 }
 # resolve_with is display-only (no stability guarantee, spec §4.3), but it
 # must not offer an operator step that contradicts the message: for
@@ -2684,6 +2704,10 @@ _PLACEMENT_PARK_RESOLVE_WITH = {
     ),
     "vision_encoder_oom": (
         "uap models pending  |  free encoder VRAM / switch to a vision-cpu arm"
+    ),
+    "vision_text_only_arm": (
+        "uap models pending  |  switch to the family's image-capable arm"
+        "  |  text requests are unaffected"
     ),
 }
 
@@ -2930,6 +2954,7 @@ async def _placement_admit(
     session_id: str | None,
     cells: int | None = None,
     openai_body: dict | None = None,
+    carries_image: bool = False,
 ) -> Response | None:
     """Placement admission gate (spec §4.3).
 
@@ -2990,9 +3015,16 @@ async def _placement_admit(
     # re-parks with the SAME placement_id, so a burst of concurrent requests
     # produces one ask, not one per request. Window is deliberately short
     # (see _PLACEMENT_BURST_DEDUPE_SECS) so a resolved placement forwards on
-    # the very next request.
+    # the very next request. An image-bearing request keys with a ':vision'
+    # suffix (the same split the OOM pre-park uses): the resident text-only
+    # arm still serves this model's TEXT requests, and a vision park on a
+    # text request would be a needless 409 for a request that forwards
+    # fine. The suffix also routes the auto-switch entry around the
+    # model-only '__auto__' key so text traffic is never parked behind an
+    # image switch it does not need.
     now = time.time()
-    key = (client_id, wire_model)
+    burst_model = f"{wire_model}:vision" if carries_image else wire_model
+    key = (client_id, burst_model)
     entry = _placement_pending.get(key)
     if entry is not None and entry["expires_at"] > now:
         return _placement_park_response(
@@ -3004,13 +3036,15 @@ async def _placement_admit(
     # background load runs. Same short window — the point is collapsing a
     # burst, not caching the park past the load (the controller dedupes
     # runs per model and refuses duplicates).
-    auto_entry = _placement_pending.get(("__auto__", wire_model))
+    auto_entry = _placement_pending.get(("__auto__", burst_model))
     if auto_entry is not None and auto_entry["expires_at"] > now:
         return _placement_park_response(
             wire_model, auto_entry["placement_id"], auto_entry.get("reason") or "not_resident"
         )
 
-    answer = await _placement_controller_admit(wire_model, client_id, session_id, cells)
+    answer = await _placement_controller_admit(
+        wire_model, client_id, session_id, cells, carries_image=carries_image
+    )
     reason: str | None = None
     placement_id: str | None = None
     if answer is not None and answer.get("decision") == "forward":
@@ -3071,11 +3105,14 @@ async def _placement_admit(
         "created_at": now,
         "expires_at": now + _PLACEMENT_BURST_DEDUPE_SECS,
     }
-    if reason == "auto_loading":
+    if reason in ("auto_loading", "vision_auto_loading"):
         # Same entry under the model-only key (see the burst dedupe above):
         # rotating the client-id header must not mint a fresh ask per
-        # request while the controller's background load runs.
-        _placement_pending[("__auto__", wire_model)] = {
+        # request while the controller's background load runs. The burst
+        # model carries the ':vision' suffix for image parks, so the auto
+        # switch dedupes image RETRIES without parking this model's text
+        # traffic behind it (and the OOM pre-park reads the same key).
+        _placement_pending[("__auto__", burst_model)] = {
             "placement_id": placement_id,
             "reason": reason,
             "created_at": now,
@@ -17936,6 +17973,12 @@ async def messages(request: Request):
     # placement admit and the vision pre-request park): estimate_total_tokens
     # walks the whole body, so compute it ONCE rather than once per gate.
     placement_cells = _placement_request_cells(body)
+    # Computed ONCE for both gates below (the body walk is the same walk
+    # the OOM pre-park does): True when any message carries an image
+    # block. The admit needs it so a text-only serving arm never
+    # receives — and silently drops — an image (the registry's
+    # capability facts decide, not a probe).
+    request_carries_image = _request_carries_image(body)
     parked = await _placement_admit(
         # The model the CLIENT asked for (the handler's resolved `model`
         # above), NOT openai_body's — build_openai_request injects the
@@ -17951,6 +17994,7 @@ async def messages(request: Request):
         # (the basalt engine validates the model field; gate mode retired
         # the reconciler's rewrite).
         openai_body,
+        carries_image=request_carries_image,
     )
     if parked is not None:
         return parked
@@ -17962,7 +18006,7 @@ async def messages(request: Request):
     # Without a controller the window routes the request through the
     # existing strip-and-notice conversion (vision_enabled() is False for
     # the window), so a text-only answer is still produced.
-    if _vision_park_due() and _request_carries_image(body):
+    if _vision_park_due() and request_carries_image:
         wire_model_for_vision = model if isinstance(model, str) and model != "default" else None
         # BYOK custom-local ids resolve to the served id (uplift: full
         # automation) — the burst keys this gate READS must be the same

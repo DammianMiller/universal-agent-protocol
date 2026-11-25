@@ -253,7 +253,7 @@ print(json.dumps(out))
       .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
       + `
 asks = []
-async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
     asks.append([client_id, model_id])
     return {"decision": "park", "reason": "auto_loading", "placement_id": "plc-abc123"}
 async def main():
@@ -315,7 +315,7 @@ print(json.dumps(out))
       .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
       .replace('__IDS__', 'None')
       + `
-async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
     return {"decision": "forward", "target_id": "gpu0:http://192.168.1.165:8080/v1"}
 
 # Awaited directly inside ONE coroutine, like the real handler: the gate is
@@ -336,7 +336,7 @@ print(json.dumps(asyncio.run(main())))
       .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
       .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
       + `
-async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
     return {"decision": "park", "placement_id": "plc-7f2a", "reason": "no_measured_config"}
 resp = asyncio.run(_placement_admit('Qwen3.8-27B', 'claude-code', 's1'))
 body = json.loads(resp.body)
@@ -359,7 +359,7 @@ print(json.dumps(out))
       .replace('__CONTROLLER__', 'http://127.0.0.1:3847')
       .replace('__IDS__', "['qwen3.8-flash-next-iq3_s']")
       + `
-async def _placement_controller_admit(model_id, client_id, session_id, cells=None):
+async def _placement_controller_admit(model_id, client_id, session_id, cells=None, reason=None, carries_image=False):
     return {"decision": "forward", "target_id": "gpu1:http://192.168.1.166:8080/v1"}
 async def main():
     resp = await _placement_admit('Qwen3.8-27B', 'claude-code', 's1')
