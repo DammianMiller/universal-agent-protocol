@@ -244,6 +244,23 @@ describe('reactor persistence injection (D)', () => {
     expect(out!).toMatch(/NOT complete|hands-free|REMAINING/i);
   });
 
+  it('carries question discipline: the replacement behavior for asking, not just the prohibition', () => {
+    // Observed 2026-11-26 (aerialocean, 9h hands-free build): the bare
+    // "do not stop to ask" prohibition still ended turns with
+    // "If you want, I can X, or Y first?" — a prohibition with no
+    // replacement behavior loses to compaction-decayed turn-boundary
+    // habit. The directive must tell the model what to DO instead.
+    initLedger(dir, 'mission', items);
+    const out = maybePersistenceInjection(dir)!;
+    expect(out).toContain('QUESTION DISCIPLINE');
+    expect(out).toContain('best-guess decision');
+    expect(out).toContain('act on it immediately');
+    expect(out).toContain('assumption');
+    // And it scopes the genuinely-human decisions so the clause cannot
+    // be read as "never surface anything":
+    expect(out).toContain("genuinely the human's to make");
+  });
+
   it('injects nothing when there is no ledger or the build is complete', () => {
     expect(maybePersistenceInjection(dir)).toBeNull();
     initLedger(dir, 'mission', [{ id: 'e1', title: 'A' }]);
