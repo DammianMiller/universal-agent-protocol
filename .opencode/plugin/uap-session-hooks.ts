@@ -1,5 +1,7 @@
 import type { Plugin } from "@opencode/plugin"
 import { exec } from "node:child_process"
+import { fileURLToPath } from "node:url"
+import { dirname, join } from "node:path"
 
 // Inline Bun.$-compatible shell helper (self-contained: this file is
 // generated into target projects that have no uap-plugin-kit). Interpolated
@@ -11,7 +13,11 @@ class ShellRun implements PromiseLike<ShellResult> {
   private readonly promise: Promise<ShellResult>
   constructor(command: string) {
     this.promise = new Promise<ShellResult>((resolve, reject) => {
-      exec(command, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      // cwd: PLUGIN_ROOT — every hook script and relative path the plugin
+      // shells out to (the policy gate, the escalation tracker, git diff,
+      // uap verify, .uap state) resolves against the project the plugin
+      // was generated into, independent of the opencode server's cwd.
+      exec(command, { cwd: PLUGIN_ROOT, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
         const rawCode = (err as { code?: unknown } | null)?.code
         const exitCode = typeof rawCode === "number" ? rawCode : err ? 127 : 0
         const res: ShellResult = { stdout: Buffer.from(stdout ?? ""), stderr: Buffer.from(stderr ?? ""), exitCode }
@@ -36,6 +42,23 @@ const $ = (strings: TemplateStringsArray, ...values: unknown[]): ShellRun => {
   return new ShellRun(command)
 }
 
+// Anchor every hook invocation to THIS file's project, not the process
+// cwd. The opencode server (`opencode serve --service`) is long-lived and
+// may run with ANY cwd — observed live 2026-11-27: the serve process ran
+// with cwd=$HOME while the session worked in <project>/, so every
+// relative hook path resolved against $HOME and silently no-op'd (the
+// policy gate exited 127 "file not found": zero recorded policy
+// executions, no completion/idle/periodic verify, no escalation
+// evidence, no session memory injection). This file lives at
+// <project>/.opencode/plugin/uap-session-hooks.ts, so two hops up from
+// its own URL IS the project root — derive it, never guess.
+const PLUGIN_ROOT = (() => {
+  try {
+    return join(dirname(fileURLToPath(import.meta.url)), "..", "..")
+  } catch { /* defensive: no import.meta.url — legacy process-cwd behavior */ }
+  return process.cwd()
+})()
+
 // Extract the session id from a V2 opencode event payload (data.sessionID).
 const eventSessionID = (event: unknown): string => {
   const data = (event as { data?: unknown }).data
@@ -57,7 +80,7 @@ const plugin: Plugin.Plugin = {
         if (!res || (res.exitCode !== 0 && res.exitCode !== 1)) return
         const verdict = res.exitCode === 1 ? "fail" : "pass"
         const detail = (res.stdout.toString() + res.stderr.toString()).trim().slice(-1200)
-        await $`python3 .opencode/hooks/escalation_tracker.py ${verdict} --source ${source} --detail ${detail}`.quiet().nothrow()
+        await $`python3 ${PLUGIN_ROOT}/.opencode/hooks/escalation_tracker.py ${verdict} --source ${source} --detail ${detail}`.quiet().nothrow()
       } catch { /* evidence is best-effort */ }
     }
     // Portable timeout resolver (shared by the idle verify gate and the
@@ -255,7 +278,7 @@ const plugin: Plugin.Plugin = {
     await ctx.tool.hook("execute.before", async (event) => {
       try {
         const payload = JSON.stringify({ tool_name: event.tool, tool_input: event.input || {} })
-        const res = await $`echo ${payload} | bash .opencode/hooks/uap-policy-gate.sh`.quiet().nothrow()
+        const res = await $`echo ${payload} | bash ${PLUGIN_ROOT}/.opencode/hooks/uap-policy-gate.sh`.quiet().nothrow()
         if (res.exitCode === 2) {
           const reason = (res.stderr.toString() || res.stdout.toString()).trim()
           throw new Error("[UAP policy blocked] " + reason)
@@ -354,7 +377,7 @@ const plugin: Plugin.Plugin = {
         const result = (event as { result?: { content?: unknown } }).result
         const content = result && result.content
         const text = String(typeof content === "string" ? content : "").slice(-4000)
-        await $`python3 .opencode/hooks/escalation_tracker.py classify-bash --command ${cmd.slice(0, 500)} --output ${text}`.quiet().nothrow()
+        await $`python3 ${PLUGIN_ROOT}/.opencode/hooks/escalation_tracker.py classify-bash --command ${cmd.slice(0, 500)} --output ${text}`.quiet().nothrow()
       } catch { /* evidence is best-effort */ }
     })
 
