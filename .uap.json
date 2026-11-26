@@ -81,7 +81,8 @@
   },
   "deliver": {
     "orchestrate": "on",
-    "epics": "on"
+    "epics": "on",
+    "escalateModel": "qwen38-27b"
   },
   "fidelity": {
     "mode": "max"
