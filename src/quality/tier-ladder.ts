@@ -93,7 +93,32 @@ export function recordLadderRun(
   mkdirSync(dirname(file), { recursive: true });
   const line = JSON.stringify({ ...record, endedAt: new Date().toISOString() });
   appendFileSync(file, `${line}\n`);
+  mirrorLadderRun(line, projectRoot);
   return file;
+}
+
+/**
+ * Home-level mirror for ladder runs (wave 6, item 1). The project-local log
+ * dies with throwaway roots — a paired-bench cell records its runs into
+ * `<cell>/.uap/quality/convergence.jsonl` and the runner deletes the cell
+ * moments later, so the 90-mission power run contributed NOTHING to the
+ * promotion-budget evidence (measured 2026-11-26: repo log empty after a
+ * 5h21m run). When `UAP_QUALITY_LOG_MIRROR` is set (the deliver bench
+ * adapter sets it to ~/.uap/telemetry/bench), the same line — stamped with
+ * the projectRoot it came from — is appended to
+ * `<mirror>/convergence-mirror.jsonl`. Best-effort, like every telemetry
+ * write: the mirror never breaks the run it observes.
+ */
+function mirrorLadderRun(line: string, projectRoot: string): void {
+  const dir = process.env.UAP_QUALITY_LOG_MIRROR;
+  if (!dir) return;
+  try {
+    mkdirSync(dir, { recursive: true });
+    const stamped = { ...JSON.parse(line), projectRoot };
+    appendFileSync(join(dir, 'convergence-mirror.jsonl'), `${JSON.stringify(stamped)}\n`);
+  } catch {
+    /* best-effort */
+  }
 }
 
 export interface LadderConvergenceSummary {
@@ -125,7 +150,17 @@ export interface LadderConvergenceSummary {
 export function summarizeLadderRuns(
   projectRoot: string
 ): { summaries: LadderConvergenceSummary[]; totalRuns: number; logPath: string } {
-  const logPath = join(dirname(tiersPath(projectRoot)), 'convergence.jsonl');
+  return summarizeLadderLog(join(dirname(tiersPath(projectRoot)), 'convergence.jsonl'));
+}
+
+/**
+ * Aggregate ANY convergence-format log by path — shared by the project-local
+ * summary and the bench-mirror summary (wave 6, item 1), so the two read the
+ * same evidence with the same math.
+ */
+export function summarizeLadderLog(
+  logPath: string
+): { summaries: LadderConvergenceSummary[]; totalRuns: number; logPath: string } {
   const summaries: LadderConvergenceSummary[] = [];
   if (!existsSync(logPath)) return { summaries, totalRuns: 0, logPath };
   const byTier = new Map<string, LadderRunRecord[]>();
@@ -179,6 +214,20 @@ export function summarizeLadderRuns(
   }
   summaries.sort((a, b) => b.runs - a.runs || a.tier.localeCompare(b.tier));
   return { summaries, totalRuns, logPath };
+}
+
+/**
+ * The bench-mirror summary — ladder runs recorded inside paired-bench cells
+ * and mirrored home-level (UAP_QUALITY_LOG_MIRROR writes them there; the
+ * deliver bench adapter points that env at the bench telemetry dir). With
+ * this, a 90-mission power run feeds the promotion-budget evidence instead
+ * of dying with its throwaway cells. Same math as the project-local summary
+ * — both go through summarizeLadderLog.
+ */
+export function summarizeBenchMirror(
+  mirrorDir: string
+): { summaries: LadderConvergenceSummary[]; totalRuns: number; logPath: string } {
+  return summarizeLadderLog(join(mirrorDir, 'convergence-mirror.jsonl'));
 }
 
 /** One candidate artifact for a round. The id is stable (ranking tiebreak + trace). */

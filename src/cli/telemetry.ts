@@ -10,6 +10,8 @@
  *   uap telemetry report              # era table + per-tool rates + classes
  *   uap telemetry report --days 30    # wider era window
  *   uap telemetry report --json       # machine-readable (CI, dashboards)
+ *   uap telemetry ingest-droid F...   # parse droid client sessions into the
+ *                                     # corpus (the fleet-visibility bridge)
  *
  * The corpus is rolling-capped and machine-scoped — the headline and per-tool
  * tables describe what the corpus holds now. The ERA table is durable: days
@@ -25,6 +27,7 @@ import {
   toolFailureRates,
   toolCorpusRoot,
 } from '../telemetry/tool-calls.js';
+import { ingestDroidSession } from '../telemetry/droid-sessions.js';
 
 export interface TelemetryOptions {
   days?: string;
@@ -33,10 +36,14 @@ export interface TelemetryOptions {
 
 export async function telemetryCommand(
   action: string = 'report',
-  options: TelemetryOptions = {}
+  options: TelemetryOptions = {},
+  paths: string[] = []
 ): Promise<void> {
+  if (action === 'ingest-droid') {
+    return ingestDroidCmd(paths, options);
+  }
   if (action && action !== 'report') {
-    console.error(chalk.red(`unknown subcommand '${action}' — supported: report`));
+    console.error(chalk.red(`unknown subcommand '${action}' — supported: report, ingest-droid`));
     process.exitCode = 1;
     return;
   }
@@ -125,6 +132,69 @@ export async function telemetryCommand(
     console.log(chalk.bold('\nTop failure classes:'));
     for (const f of summary.topFailures.slice(0, 10)) {
       console.log(`  ${String(f.count).padStart(5)}x ${f.tool}/${String(f.outcome)} [${f.component}]`);
+    }
+  }
+  console.log('');
+}
+
+/**
+ * `uap telemetry ingest-droid <session.jsonl...>` (wave 6, item 2) — parse
+ * Droid client session transcripts into corpus rows, through the same
+ * classification path as live traffic. The client fleet is the class the
+ * corpus was blind to (a 9.5-hour round-5 session: 155 tool calls, zero
+ * rows); this is the bridge. Idempotent per session (rows are replaced by
+ * run_id), so re-ingesting after a transcript grows is safe.
+ */
+async function ingestDroidCmd(paths: string[], options: TelemetryOptions): Promise<void> {
+  if (paths.length === 0) {
+    console.error(
+      chalk.red('ingest-droid needs at least one session .jsonl path (globs expand in your shell)'),
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const results = [];
+  for (const p of paths) {
+    try {
+      results.push(ingestDroidSession(p));
+    } catch (e) {
+      console.error(chalk.red(`ingest failed: ${p}: ${e instanceof Error ? e.message : String(e)}`));
+      process.exitCode = 1;
+    }
+  }
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        {
+          sessions: results.map((r) => ({
+            session: r.sessionFile,
+            runId: r.sessionId,
+            cwd: r.cwd ?? null,
+            toolCalls: r.toolCalls.length,
+            unpaired: r.unpaired,
+            replacedRows: r.replacedRows,
+            outcomes: r.outcomes,
+          })),
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  for (const r of results) {
+    const classes = Object.entries(r.outcomes)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `${n}x ${k}`)
+      .join(', ');
+    console.log(
+      `  ${r.sessionId}  ${String(r.toolCalls.length).padStart(4)} calls  ` +
+        (r.replacedRows > 0 ? chalk.dim(`(replaced ${r.replacedRows} prior rows) `) : '') +
+        (r.cwd ? chalk.dim(`${r.cwd}  `) : '') +
+        (classes || chalk.dim('no paired tool calls')),
+    );
+    if (r.unpaired > 0) {
+      console.log(chalk.dim(`    ${r.unpaired} call(s) cut off without a result — not ingested`));
     }
   }
   console.log('');

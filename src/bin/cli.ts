@@ -663,13 +663,14 @@ program
 // corpus is rolling-capped, so a report is a snapshot, not a ledger.
 program
   .command('telemetry')
-  .description('Tool-call corpus report: era table, per-tool failure rates, failure classes')
-  .argument('[subcommand]', 'report (default)', 'report')
+  .description('Tool-call corpus: era/failure-class report + droid session ingest')
+  .argument('[subcommand]', 'report (default) | ingest-droid', 'report')
+  .argument('[paths...]', 'session .jsonl paths (ingest-droid)', [])
   .option('--days <n>', 'era-table window in days', '14')
   .option('--json', 'Emit machine-readable JSON')
-  .action(async (subcommand, options) => {
+  .action(async (subcommand, paths, options) => {
     const cmd = await lazy.telemetry();
-    await cmd(subcommand, options);
+    await cmd(subcommand, options, paths ?? []);
   });
 
 // Model placement registry (spec: docs/specs/operator-model-placement.md) —

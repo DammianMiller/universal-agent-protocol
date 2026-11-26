@@ -67,6 +67,16 @@ export function toolCorpusRoot(): string {
   return process.env.UAP_TOOL_CORPUS_DIR || join(homedir(), '.uap', 'telemetry');
 }
 
+/**
+ * The home-level bench telemetry dir (wave 6, item 1): paired-bench cells
+ * mirror their convergence records here (the deliver adapter sets
+ * UAP_QUALITY_LOG_MIRROR to this) because the cells' own .uap trees are
+ * deleted with the workdir moments after the mission ends.
+ */
+export function benchTelemetryDir(): string {
+  return join(toolCorpusRoot(), 'bench');
+}
+
 function dbPathFor(root: string): string {
   return join(root, 'tool-calls.db');
 }
@@ -244,13 +254,22 @@ export function recordToolCall(rec: ToolCallRecord, root = toolCorpusRoot()): To
       : null;
     const runKind =
       rec.runKind ?? (process.env.UAP_RUN_KIND === 'benchmark' ? 'benchmark' : 'live');
+    // Wave 6, item 1 — bench attribution. The 2026-11-25 power run's 478
+    // corpus rows landed with run_id/task_id NULL and run_kind 'live': the
+    // deliver adapter never told the cell subprocess where its rows belonged,
+    // so bench traffic was indistinguishable from interactive sessions in
+    // every downstream query. The adapter now sets UAP_BENCH_RUN_ID /
+    // UAP_BENCH_TASK; an explicit record wins over the env (a live mission
+    // under real orchestration keeps its own ids even inside a bench env).
+    const runId = rec.runId ?? process.env.UAP_BENCH_RUN_ID ?? null;
+    const taskId = rec.taskId ?? process.env.UAP_BENCH_TASK ?? null;
     db.prepare(
       `INSERT INTO tool_calls
          (run_id, task_id, component, tool, outcome, failed, turn, path, latency_ms, bytes, detail, run_kind)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
-      rec.runId ?? null,
-      rec.taskId ?? null,
+      runId,
+      taskId,
       component,
       rec.tool,
       outcome,
@@ -274,6 +293,23 @@ export function recordToolCall(rec: ToolCallRecord, root = toolCorpusRoot()): To
     /* best-effort */
   }
   return outcome;
+}
+
+/**
+ * Remove every corpus row for one run_id (wave 6, item 2 — the droid session
+ * bridge). Ingest idempotency: re-ingesting a session replaces its rows
+ * instead of duplicating them. Returns rows removed; best-effort like every
+ * corpus write.
+ */
+export function clearToolCallRun(runId: string, root = toolCorpusRoot()): number {
+  if (!runId) return 0;
+  const db = openStore(root);
+  if (!db) return 0;
+  try {
+    return db.prepare('DELETE FROM tool_calls WHERE run_id = ?').run(runId).changes;
+  } catch {
+    return 0;
+  }
 }
 
 export interface ToolFailureRow {
