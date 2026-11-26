@@ -46,18 +46,19 @@ describe('preflightProject — refuse to start where deliver cannot work', () =>
     writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
     const r = preflightProject(dir);
     expect(r.ok).toBe(true);
-    // orchestrate, epics, fidelity.mode, and the three delivery keys.
-    expect(r.healed).toHaveLength(6);
+    // orchestrate, epics, escalateModel, fidelity.mode, and the three delivery keys.
+    expect(r.healed).toHaveLength(7);
     const cfg = readCfg(dir);
     expect(cfg.deliver.orchestrate).toBe('on');
     expect(cfg.deliver.epics).toBe('on');
+    expect(cfg.deliver.escalateModel).toBe('qwen38-27b');
     expect(cfg.fidelity.mode).toBe('max');
     expect(cfg.delivery.enforcement).toBe('block');
   });
 
   it('never overrides an EXPLICIT off — that is an operator decision', () => {
     gitInit(dir);
-    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ deliver: { orchestrate: 'off', epics: false } }));
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ deliver: { orchestrate: 'off', epics: false, escalateModel: 'opus-4.8' } }));
     const r = preflightProject(dir);
     // The explicit deliver.* keys survive untouched; only the ABSENT sections
     // (fidelity, delivery) are filled in.
@@ -70,7 +71,7 @@ describe('preflightProject — refuse to start where deliver cannot work', () =>
   it('is idempotent — a healed project heals nothing on the next run', () => {
     gitInit(dir);
     writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
-    expect(preflightProject(dir).healed).toHaveLength(6);
+    expect(preflightProject(dir).healed).toHaveLength(7);
     expect(preflightProject(dir).healed).toHaveLength(0);
   });
 
@@ -141,7 +142,7 @@ describe('every enforcement surface is ON by default', () => {
     writeFileSync(join(dir, '.uap.json'), JSON.stringify({
       fidelity: { mode: 'standard' },
       delivery: { enforcement: 'advisory', localMode: 'off', runtimeVerify: false },
-      deliver: { orchestrate: 'off', epics: false },
+      deliver: { orchestrate: 'off', epics: false, escalateModel: 'opus-4.8' },
     }));
     const r = preflightProject(dir);
     expect(r.healed).toHaveLength(0);
@@ -150,6 +151,16 @@ describe('every enforcement surface is ON by default', () => {
     expect(c.delivery.enforcement).toBe('advisory');
     expect(c.delivery.runtimeVerify).toBe(false);
     expect(c.deliver.orchestrate).toBe('off');
+    expect(c.deliver.escalateModel).toBe('opus-4.8');
+  });
+
+  it('seeds deliver.escalateModel — the escalate posture needs a rescue target', () => {
+    // Without it (and no --escalate-model / UAP_ESCALATE_MODEL), repair
+    // escalation self-restores to the SAME executor and a stuck
+    // local-model loop never reaches a stronger model.
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
+    preflightProject(dir);
+    expect(cfg().deliver.escalateModel).toBe('qwen38-27b');
   });
 
   it('fills only the ABSENT keys, leaving explicit siblings alone', () => {

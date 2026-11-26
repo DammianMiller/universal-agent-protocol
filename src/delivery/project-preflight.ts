@@ -89,6 +89,13 @@ export function preflightProject(dir: string): PreflightResult {
       // Decompose + epic-loop every mission, not only when a flag is remembered.
       seed('deliver', 'orchestrate', 'on', 'orchestrate always');
       seed('deliver', 'epics', 'on', 'epic loop always');
+      // The escalate delivery mode needs a rescue target. With no
+      // escalateModel (and no --escalate-model / UAP_ESCALATE_MODEL at call
+      // time), repair-escalation self-restores to the SAME executor, so a
+      // stuck local-model loop never reaches a stronger model — observed
+      // live: scaffolded projects inherited nothing here and the escalate
+      // posture was unreachable. Fleet default; an explicit value always wins.
+      seed('deliver', 'escalateModel', 'qwen38-27b', 'escalation rescue target');
       // fidelity:max is what makes the visual, vision and acceptance gates
       // BLOCKING. Without it they are advisory — the deliverable can look
       // verified while nothing actually gates it.
