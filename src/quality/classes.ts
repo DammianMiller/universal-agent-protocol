@@ -366,10 +366,19 @@ export function readArtifactText(path: string): string | null {
 }
 
 /** The extractor version that defines a class's measurements. */
-export function extractorVersionFor(_cls: string): number {
-  // v1 for every shipped class: the visual pipeline is unchanged since 0.1,
-  // and api-behavior/bench-score/doc-style/ideation-outcome start at v1. A
-  // class whose measurement definition changes bumps ONLY its version —
+export function extractorVersionFor(cls: string): number {
+  // A class whose measurement definition changes bumps ONLY its version —
   // stored tiers of other classes must not go stale by association.
+  //
+  // ideation-outcome v2 (2026-11-26, wave 6 item 5): compositionDepth became
+  // format-aware — bold-label part-lines ("**Stance:** …", the shape
+  // free-form ideation actually emits) count as sub-structure alongside
+  // markdown headings and list items. Pre-v2 ideation vectors understate
+  // compositionDepth (the 2026-11-25 A.2 probes: free-form 0 vs contract
+  // 14.29 purely on format) and are not comparable; re-anchor ideation
+  // tiers measured before v2. Every other class is unchanged at v1: the
+  // visual pipeline is unchanged since 0.1, and
+  // api-behavior/bench-score/doc-style start at v1.
+  if (cls === 'ideation-outcome') return 2;
   return 1;
 }

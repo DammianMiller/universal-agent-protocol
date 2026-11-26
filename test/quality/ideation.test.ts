@@ -96,6 +96,77 @@ function writeDoc(name: string, text: string): string {
   return p;
 }
 
+/** A free-form candidate composed entirely of bold-label part-lines — the
+ *  shape inkling's free-form ideation actually emits (measured 2026-11-25,
+ *  A.2 probes: compositionDepth 0 against the contract's 14.29 purely on
+ *  format). Extractor v2 counts the labeled parts. */
+const BOLD_LABEL_DOC = `# Preamble
+
+## Candidate 1: harness-first parity
+
+**Stance:** We choose the scaffold over the weights, because the gap lives in the loop.
+
+**Mechanism:** The model is demoted to a fast executor; the harness owns planning and acceptance.
+
+**Failure mode:** Loop entropy — mitigated by hard turn caps and a forced escalation path.
+
+## Candidate 2: execution-verified best-of-n
+
+**Stance:** We choose best-of-n with a hard test-oracle over single-shot cleverness.
+
+**Mechanism:** Sample n candidates per fix, rank by execution against the real tree.
+
+**Measured:** pass@1 of best-of-n vs. single-shot, verified by maintainer acceptance.
+`;
+
+/** One flat paragraph per candidate — no parts in ANY marker family. */
+const FLAT_DOC = `# Preamble
+
+## Candidate 1: flat one
+
+We choose nothing in particular and this paragraph simply runs on without any composed parts at all.
+
+## Candidate 2: flat two
+
+This paragraph also runs flat with no labels or lists or sub-headings anywhere.
+`;
+
+describe('format-aware compositionDepth (wave 6, item 5 — extractor v2)', () => {
+  it('counts bold-label part-lines as composition, not just markdown markers', () => {
+    const v = extractIdeationVector(writeDoc('bold-label.md', BOLD_LABEL_DOC));
+    // Three labeled parts per candidate — the free-form shape that scored
+    // ZERO pre-v2 now carries its real composition evidence.
+    expect(v?.scalars.compositionDepth).toBe(3);
+    expect(v?.scalars.candidateCount).toBe(2);
+  });
+
+  it('still scores flat prose as flat — the format nudge is not a gift', () => {
+    const v = extractIdeationVector(writeDoc('flat.md', FLAT_DOC));
+    expect(v?.scalars.compositionDepth).toBe(0);
+  });
+
+  it('does not count a bold-emphasis sentence as a part-label', () => {
+    // A whole bold SENTENCE opening a paragraph is emphasis, not a label —
+    // the short-span bound keeps emphasis paragraphs from buying depth.
+    const doc = `# Preamble
+
+## Candidate 1: emphasis opener
+
+**This entire deliberately long opening sentence is emphasis rather than a short part label** and so must not count as a sub-structure line even though it starts bold.
+
+We choose the bounded interpretation.
+`;
+    const v = extractIdeationVector(writeDoc('emphasis.md', doc));
+    expect(v?.scalars.compositionDepth).toBe(0);
+  });
+
+  it('keeps markdown composition scoring unchanged (v1 regression)', () => {
+    const v = extractIdeationVector(writeDoc('good.md', GOOD_DOC));
+    // GOOD_DOC's six list items over three candidates — the v1 behavior.
+    expect(v?.scalars.compositionDepth).toBe(2);
+  });
+});
+
 describe('extractIdeationVector (plan F axes)', () => {
   it('measures stance, composition, diversity and distance on a healthy set', () => {
     const v = extractIdeationVector(writeDoc('good.md', GOOD_DOC));
