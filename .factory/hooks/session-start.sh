@@ -2,6 +2,15 @@
 # UAP Session Start Hook (universal - all coding harnesses)
 # Outputs a concise session banner and loads recent context.
 # Fails safely - never blocks the agent.
+#
+# The never-block contract is ENFORCED, not just documented: the whole body
+# runs in a subshell under set -euo pipefail, and any abort — transient
+# sqlite contention past busy_timeout, a slow docker/qdrant, a uap CLI
+# hiccup — collapses into the `|| :` closer below. The harness sees exit 0
+# and, at worst, a truncated banner. Before this wrapper, one transient
+# sub-failure surfaced as "SessionStart hook error: Hook exited with code 1"
+# in the client session (observed 2026-11-26 on the voxel-pagoda client).
+(
 set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
@@ -344,3 +353,6 @@ fi
 if [ -n "$output" ]; then
   echo "$output"
 fi
+
+) || :
+exit 0

@@ -3,7 +3,9 @@
 # Fires when a schema/contract file is edited, reminding the agent to run
 # `uap schema-diff` and re-verify API/consumer contracts before finalizing
 # (the CLAUDE.md "Schema Diff Gate", auto-triggered).
-# Advisory only — never blocks (always exits 0).
+# Advisory only — never blocks (always exits 0). Enforced: the body runs
+# in a subshell whose abort collapses into `|| :` below — always exit 0.
+(
 set -euo pipefail
 
 INPUT=$(cat)
@@ -23,4 +25,5 @@ case "$FILE" in
     ;;
 esac
 
+) || :
 exit 0

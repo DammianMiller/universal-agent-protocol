@@ -3,7 +3,9 @@
 # Event: PostToolUse (matcher: Edit|Write)
 # Reminds about pre-edit build gate after .ts file modifications.
 # Enforces: pre-edit-build-gate policy.
-# Always exits 0 (never blocks).
+# Always exits 0 (never blocks). Enforced: the body runs in a subshell
+# whose abort collapses into `|| :` below — always exit 0.
+(
 set -euo pipefail
 
 # --- Loop Protection: suppress output if firing too fast ---
@@ -50,4 +52,5 @@ if type lp_record_invocation &>/dev/null; then
   lp_record_invocation "post-tool-edit-write"
 fi
 
+) || :
 exit 0

@@ -4,7 +4,9 @@
 # 2. Writes a timestamp marker to the daily log before context compaction
 # 3. Shows compact session dashboard before compaction
 # 4. Marks any agents registered by this session as completed
-# Fails safely - never blocks the agent.
+# Fails safely - never blocks the agent. Enforced: the body runs in a
+# subshell whose abort collapses into `|| :` below — always exit 0.
+(
 set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
@@ -72,3 +74,6 @@ if [ -f "$COORD_DB" ]; then
       WHERE status='active' AND last_heartbeat >= datetime('now','-5 minutes');
   " 2>/dev/null || true
 fi
+
+) || :
+exit 0

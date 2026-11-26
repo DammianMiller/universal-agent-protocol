@@ -3,6 +3,12 @@
 # Event: SessionEnd
 # Stores final session summary and cleans up coordination state.
 # Always exits 0 (never blocks).
+#
+# Enforced, not just documented: the body runs in a subshell whose abort
+# (any unguarded failure under set -e — transient contention, a missing
+# binary) collapses into `|| :` below. Observed 2026-11-26 16:47 on the
+# voxel-pagoda client: "SessionEnd hook error: Hook exited with code 1".
+(
 set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
@@ -82,4 +88,5 @@ if command -v uap >/dev/null 2>&1; then
   ( cd "$PROJECT_DIR" 2>/dev/null && timeout 20 uap proxy release --if-enabled --quiet --client "$_uap_pc" --client-pid "$PPID" ) >/dev/null 2>&1 || true
 fi
 
+) || :
 exit 0
