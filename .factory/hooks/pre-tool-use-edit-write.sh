@@ -4,11 +4,24 @@
 # Exit 2 = BLOCK the edit/write. Exit 0 = allow.
 # Enforces: worktree-file-guard, worktree-enforcement policies.
 #
+# Fail-open on the hook's own malfunction: an incidental abort (an unguarded
+# command failing under set -e) must never masquerade as a block decision.
+# The ERR trap converts every such abort into exit 0 BEFORE set -e can make
+# it the hook's status; the explicit block below remains the only exit-2
+# path and propagates untouched (`exit N` does not fire ERR).
+#
 # Scope: ONLY enforces inside the project repo (resolved via `git rev-parse
 # --show-toplevel` from PWD). Files outside the repo (e.g. ~/.claude/projects/
 # memory area, /tmp scratch, system files) are always allowed — the worktree
 # policy governs repo-tracked work only. See: _hook-fix-2026-04-29.
+(
 set -euo pipefail
+set -E
+# Fail-open ONLY while errexit is armed: inside a deliberate `set +e`
+# window a failure is being handled by script logic, not aborting. The
+# explicit worktree-policy block below (`exit 2`) never fires ERR and
+# propagates.
+trap '[[ $- == *e* ]] && exit 0' ERR
 
 # --- Loop Protection: track frequency of blocking events ---
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -146,3 +159,9 @@ if type lp_record_invocation &>/dev/null; then
 fi
 echo '{"decision":"block","reason":"WORKTREE POLICY VIOLATION: File path is outside .worktrees/. All edits must target files inside a worktree. Run: uap worktree create <slug> then edit files in .worktrees/NNN-<slug>/. See policies/worktree-file-guard.md"}' >&2
 exit 2
+)
+
+# Propagate the subshell's decision: 0 (allow, or fail-open abort) or 2
+# (explicit worktree-policy block). Any other status is impossible by
+# construction.
+exit $?

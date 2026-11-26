@@ -4,7 +4,21 @@
 # Checks completion gates and cleans up session state.
 # Exit 2 = BLOCK stop (force agent to continue). Exit 0 = allow stop.
 # Enforces: completion-gate, mandatory-testing-deployment policies.
+#
+# Fail-open on the hook's own malfunction: an incidental abort (an unguarded
+# command failing under set -e — transient contention, a missing binary)
+# must never block the agent. The ERR trap converts every such abort into
+# exit 0 BEFORE set -e can make it the hook's status; the explicit gate
+# blocks below remain the only exit-2 paths and propagate untouched
+# (`exit N` does not fire ERR).
+(
 set -euo pipefail
+set -E
+# Fail-open ONLY while errexit is armed: inside the script's deliberate
+# `set +e` windows (the verify gate inspects RCs by hand) a failure is
+# being handled, not aborting — the trap must not touch it. `exit N` never
+# fires ERR, so the explicit exit-2 gate blocks propagate untouched.
+trap '[[ $- == *e* ]] && exit 0' ERR
 
 # --- Re-entrancy guard (canonical Claude Code Stop-hook contract) ---
 # Claude Code sets `stop_hook_active: true` on the Stop payload when the session
@@ -352,3 +366,8 @@ fi
 # Allow stop (exit 0) — completion-gate checklist uses warnings, not hard blocks;
 # the runtime execution gate above is the sole hard block.
 exit 0
+)
+
+# Propagate the subshell's decision: 0 (allow, or fail-open abort) or 2
+# (explicit gate block). Any other status is impossible by construction.
+exit $?

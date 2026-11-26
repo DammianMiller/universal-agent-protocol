@@ -3,7 +3,20 @@
 # Event: PreToolUse (matcher: Bash)
 # Exit 2 = BLOCK the command. Exit 0 = allow.
 # Enforces: iac-pipeline-enforcement, worktree-enforcement, git safety policies.
+#
+# Fail-open on the hook's own malfunction: an incidental abort (an unguarded
+# command failing under set -e — e.g. the retry loop's bare `sleep` under
+# fork pressure) must never masquerade as a block decision. The ERR trap
+# converts every such abort into exit 0 BEFORE set -e can make it the
+# hook's status; the explicit rule blocks below remain the only exit-2
+# paths and propagate untouched (`exit N` does not fire ERR).
+(
 set -euo pipefail
+set -E
+# Fail-open ONLY while errexit is armed: inside a deliberate `set +e`
+# window a failure is being handled by script logic, not aborting. The
+# explicit rule blocks below (`exit 2`) never fire ERR and propagate.
+trap '[[ $- == *e* ]] && exit 0' ERR
 
 # --- Loop Protection: track frequency of blocking events ---
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -216,3 +229,8 @@ fi
 
 # Command allowed
 exit 0
+)
+
+# Propagate the subshell's decision: 0 (allow, or fail-open abort) or 2
+# (explicit rule block). Any other status is impossible by construction.
+exit $?

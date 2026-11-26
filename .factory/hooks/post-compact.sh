@@ -2,7 +2,9 @@
 # UAP Post-Compact Compliance Re-injection — INFORMATIONAL hook
 # Event: PostCompact
 # Re-injects policy awareness after context compaction.
-# Always exits 0 (never blocks).
+# Always exits 0 (never blocks). Enforced: the body runs in a subshell
+# whose abort collapses into `|| :` below — always exit 0.
+(
 set -euo pipefail
 
 # --- Loop Protection: suppress if compaction is happening in rapid succession ---
@@ -123,3 +125,6 @@ if type lp_record_invocation &>/dev/null; then
 fi
 
 echo "$output"
+
+) || :
+exit 0
