@@ -37,7 +37,12 @@ const ARM_ALIAS = 'Inkling 2 Mini';
 
 /** Probe the live backend's geometry: /slots + /props carry pool, rail count
  *  and the model alias on this basalt engine. Null when unreachable or the
- *  shape is not what the arm exposes — the live chain then skips. */
+ *  shape is not what the arm exposes — the live chain then skips.
+ *  POOL IS THE WHOLE WINDOW: the engine splits a fixed max-context across
+ *  its rails, so /props n_ctx is the PER-RAIL slice whenever total_slots
+ *  exceeds 1 — multiply back to the whole pool the profile records (the
+ *  level-2 posture, pinned 2026-11-26, made this load-bearing: at 1 rail
+ *  n_ctx IS the pool and the product is identity). */
 async function liveGeometry(): Promise<{ pool: number | null; rails: number | null; alias: string } | null> {
   try {
     const propsRes = await fetch(`${BACKEND_URL}/props`, { signal: AbortSignal.timeout(2000) });
@@ -48,8 +53,9 @@ async function liveGeometry(): Promise<{ pool: number | null; rails: number | nu
       default_generation_settings?: { n_ctx?: number };
     };
     if (typeof props.model_alias !== 'string' || !props.model_alias) return null;
-    const pool = props.default_generation_settings?.n_ctx ?? null;
+    const nCtx = props.default_generation_settings?.n_ctx ?? null;
     const rails = typeof props.total_slots === 'number' ? props.total_slots : null;
+    const pool = nCtx !== null && rails !== null ? nCtx * rails : nCtx;
     return { pool, rails, alias: props.model_alias };
   } catch {
     return null;

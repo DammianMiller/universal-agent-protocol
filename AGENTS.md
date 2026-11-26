@@ -70,6 +70,23 @@ Query task-relevant patterns before starting work:
 - `uap agent status` - Show agent coordination status
 - `uap dashboard` - Show UAP session dashboard
 
+## Fleet Parallel Capacity (autosize subagent fan-out)
+
+Against UAP-local fleet models, parallel subagent/LLM streams are capped by
+the fleet, not by the client. Before launching a parallel fan-out (multiple
+subagents or concurrent LLM turns), run:
+
+```
+fleet-capacity
+```
+
+and size the fan-out to its `MAX_FANOUT` line. It reports the resident arm's
+engine level (concurrent decode slots), the proxy's concurrent-stream
+budget, and the per-slot context window. Above `MAX_FANOUT` streams only
+queue — measured on the 5090 fleet: np=4 against a level-1 posture held a
+flat ~303 tok/s aggregate, identical to a single stream, while every
+per-stream wall grew. At `MAX_FANOUT=1` run serially.
+
 ## Quality Gate
 
 When `.uap/quality-metrics.json` exists, the quality-metrics gate polices
