@@ -1,0 +1,75 @@
+{
+    "_profile": "hy4flash",
+    "_description": "Tencent Hy4-Flash — the 220B-total/12B-active multimodal MoE, the hy4flash fleet family (the quality/vision tier added 2026-11-26 per x.com/needmorevram s.2125840590923514178; a Strata native SQ arm is being added beside it from x.com/TencentHunyuan s.2125510109417857368). The basalt arm (uap-hy4flash-server, Basalt 0.5.7, jesdga Hy4-flash-NVFP4.basalt 158.7 GB) is the family's first arm, verified live 2026-11-26 at install. NOT the agent-loop tier: decode is roughly a quarter of the inkling2 arms' — point deep-context, vision-bearing or quality-critical sessions at it deliberately. Profile created 2026-11-26 from the install's LIVE MEASUREMENTS (direct engine probes on :8080 + a proxied marker through :4000) — the prefill, decode, np=2 and wire-id numbers below are the arm's own, not vendor transcription.",
+    "_engine": "BASALT ARM (uap-hy4flash-server, installed 2026-11-26): Basalt 0.5.7 (hy4flash support since 0.5.0), the published NVFP4 pack (routed experts NVFP4 77.8 GiB, projections Q8_0, Engram E4M3 read by row from the file through the page cache, head BF16, vision projector + DFly2 drafter side files), kv fp8, max-context 524288 split by --parallel 2 into two 262144 rails (UAP_PARALLEL_HY4FLASH=2 + PIN), vision dynamic, port 8080, pack on the 4TB at /run/media/dammian/9100PRO-4TB-1/models/basalt/ (~/models/basalt had no room). Memory map: dense 6.76 GiB + fp8 KV (8.6 KB/position) + drafter 0.87 GiB + hot expert copies (the shipped hy4flash-42x512.prof places them; ~129/512 slots per layer at short context) on the 32 GB card — VRAM settles 31.9/32.6 GiB; the remaining ~70 GiB of routed experts pinned in RAM computed on the CPU (9950X3D, full AVX-512), ~118 GiB RAM in use with the fleet resident. MEASURED 2026-11-26: loaded ~20 s (mmap staging), exact-echo SMOKE-ECHO-7F3A finish=stop, native tool call get_weather {\"city\":\"Paris\"} finish=tool_calls, decode conv 48.4 / prose 50.0 tok/s single-stream (temp 0.7, short prompts — about half upstream's 5090+5060Ti-peer table, the single card's RAM tier absorbs the peer's block of layers), np=2 concurrent both served ~30 tok/s each / 59.9 aggregate (a serving posture, NOT a multiplier), ~16K prompt round 2.7 s, 64K streaming TTFT 8.0 s => >=7,958 tok/s prefill (2.3x upstream's two-card 3,454 — the prefill posture is this arm's strength), proxied exact HY4-PROXY-OK end_turn through :4000 after the manual placement refresh.",
+    "model": "Hy4-flash NVFP4",
+    "_model_comment": "The arm's wire id, and it CARRIES the quant tag — unlike the inkling family's bare 'Inkling 2 Mini'. basalt validates the model field, so requests must carry exactly this id; the proxy's /v1/models lists exactly it. The rails suite drift-checks this link against the live arm (test/model-profiles-hy4flash-rails.test.ts, arm-gated). The Droid customModels entry and the opencode qwen-fleet provider entry both register this id (added 2026-11-26, apiKeyHelper fleet-arm-ensure-hy4flash.sh).",
+    "max_tokens": 65536,
+    "_max_tokens_comment": "The ADVERTISED output cap (the backends.json client_caps the Droid entry mirrors), NOT a measured engine clamp. The inkling2 arm measured its answer-room clamp at 32768 on the same engine family; hy4's own clamp is UNMEASURED on this arm — the install smoke only ran 512-token caps. The echo probe's 51 completion tokens against a 13-token answer is evidence the engine runs server-side thinking against the completion budget (answer-room class), so a starved cap degrades long turns by the same family mechanism. Re-measure the clamp ladder before raising OR trusting values above ~32k.",
+    "temperature": 0.9,
+    "top_p": 1.0,
+    "_sampling_comment": "The pack's own serve defaults (basalt's hy4-flash model doc: 'the pack's defaults are temperature 0.9, top_p 1.0 and no top_k'), which match the native HF card's recommended settings. NOT verified by live flag-read on this arm — the install probes overrode temperature (0.0 for echo/tool, 0.7 for decode classes); the values are transcribed from the engine doc + vendor card, flagged here for that reason. No top_k/min_p pins (the doc states none). This model has never been tool-call-tuned on this box; re-tune with `uap tune` before deviating.",
+    "stop_sequences": [],
+    "_stop_sequences_comment": "DELIBERATELY EMPTY: every measured turn ended finish=stop with no explicit markers (echo, tool call, decode probes). The engine owns its EOS handling under the pack's Jinja template. Carrying the qwen38 <|im_end|> marker would be transcription, not measurement.",
+    "timeout_ms": 300000,
+    "context_window": 131072,
+    "_context_window_comment": "THIS IS A PER-SESSION CAP, AND IT IS OPT-IN BY PROFILE HEADER (same doctrine as inkling2: a client that sends no x-uap-model-profile header gets the whole rail; factory/droid custom models cannot send it, so their listings carry maxContextLimit client-side at the rail's 262144 instead). The cap sits at kv_capacity/parallel_rails exactly (the rails suite enforces the invariant): the arm's --parallel 2 splits its 524288 shared window into two 262144 rails, and the profile's conservative per-session cap follows the same halving arithmetic as the inkling2 evening posture. A deep session at this cap plus headroom fits the rail; admission arithmetic is the same operator-accepted overcommit class as inkling2/qwen38.",
+    "optimize_for_tool_calls": true,
+    "mode_switch_buffer_tokens": 500,
+    "enable_thinking": true,
+    "_thinking_comment": "Native thinking (reasoning_effort none/low/medium/high/max renders the pack's effort map). WIRE SHAPE: the basalt arm thinks SERVER-SIDE by the family precedent (the inkling arm's answer-room auto, no reasoning field on the wire) and the echo probe agrees (51 completion tokens for a 13-token answer, content-only response) — but the hy4 reasoning_content wire shape was NOT separately probed at install (the squid/llama.cpp-class arms stream reasoning_content FIRST; basalt's hy4 doc carries thinking through the template). Flagged: verify the reasoning field's presence/absence on the next resident window before relying on thinking-budget arithmetic. thinking-disable knobs stay off for this family.",
+    "dynamic_temperature": {
+        "enabled": true,
+        "decay": 0.5,
+        "floor": 0.2,
+        "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
+    },
+    "tool_call_batching": {
+        "enabled": true,
+        "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+        "_comment": "The batching suffix carried from the engine-family default: it was MEASURED on the inkling basalt arm (sequential emission without the suffix, parallel with it, 2026-11-25). The hy4 install smoke verified a native single tool call (get_weather, finish=tool_calls) but did NOT probe multi-tool emission — this arm's default sequential/parallel behavior is UNMEASURED. The suffix is enabled on the same family evidence; re-measure before removing."
+    },
+    "concurrency": {
+        "max_parallel_requests": 2,
+        "_comment": "The arm's --parallel 2 (UAP_PARALLEL_HY4FLASH=2 + PIN, the fleet's level-2 doctrine). MEASURED 2026-11-26: two concurrent slots both served (~30 tok/s each, 59.9 aggregate vs 48-50 single-stream) — on this 220B MoE the second rail is a CONCURRENCY posture, not the near-linear multiplier the small models give; more than 2 clients queue. PROXY_CONCURRENCY_LIMIT/UAP_MODEL_SLOTS follow this field. Upstream's own doc states multi-slot speed for hy4 is unmeasured on their side; this field is our measurement.",
+        "kv_capacity_shared": true,
+        "_kv_shared_comment": "One arm, one pool: basalt's --parallel splits the SHARED max-context window (N x ctx/N), so a session addresses its rail, not a private slice."
+    },
+    "server_optimization": {
+        "kv_dtype": "fp8",
+        "_kv_dtype_comment": "The arm's KV class (kv fp8, vLLM's 656-byte FP8 row per the model doc — 8.6 KB/position with the pooled indexer keys: ~2.1 GiB at the 262144 rail ceiling). The upstream 1M-token needle test used fp8; int8 is NOT tested for hy4 (unlike inkling2's #552 int8 uplift).",
+        "prefill_chunk": 16384,
+        "max_context": 262144,
+        "kv_capacity": 262144,
+        "_capacity_comment": "The LIVE /props arithmetic read at install (2026-11-26): the config's max-context 524288 under --parallel 2 exposes n_ctx 262144 and total_slots 2 — the profile carries the advertised per-rail window as kv_capacity (the same semantics the inkling2 evening profile uses), with the 524288 shared pool noted here. The caches are ELASTIC (back the first 32768 positions per session at start, grow into the expert tier as prompts need room; a refused prompt leaves the session intact). After a very long prompt the card holds fewer expert slots (upstream: 75 of 129 per layer after a 1M prompt) and decode computes more experts on the CPU — long-context decode degrades gracefully.",
+        "parallel_rails": 2,
+        "speculative_decoding": {
+            "enabled": true,
+            "type": "dfly2",
+            "draft_model": "in-pack DFly2 side file (BF16 in the pack, projections Q8_0/Q4_0, 2-bit head copy)",
+            "draft_max": 5,
+            "_comment": "The pack's DFly2 block drafter: five dense MLA layers reading target layers 25/29/33/37/41 (attending each layer's indexer selections, no drafter KV of its own), drafting up to 5 tokens a window, --spec 6 default (the last accepted token plus the whole block). Draft acceptance is UNMEASURED on this arm (the install decode numbers were with the pack default drafter on; the AngelSlim llama.cpp-class DFly measured acceptance 0.611 / mean accepted 3.44 on a different engine+quant — NOT comparable, cited only to bound expectations). Output is plain decoding's: the target checks every draft."
+        },
+        "_comment": "The flags the arm actually runs with: config basalt-hy4flash.json (gpu 0, kv fp8, max-context 524288, vision dynamic, port 8080), unit Env carries the cuda-libs redist path, wrapped by basalt-autotune-serve.sh with UAP_PARALLEL_HY4FLASH=2 + PIN."
+    },
+    "measured": {
+        "_arm_comment": "2026-11-26, measured LIVE at install (direct :8080 probes + one proxied :4000 marker): exact-echo + native tool call + decode classes + np=2 + prompt reads. The upstream reference table on this GPU class (5090 400W + a 5060 Ti peer at 180W, experts otherwise in RAM): conversation 92.2 / struct 171.5 / prose 83.8 tok/s, prompt read 3,454 tok/s — our single-card numbers run about half their decode (the RAM tier absorbs the peer's block of layers) at more than double their prefill.",
+        "decode_tokens_per_second": 50,
+        "_decode_comment": "conv 48.4 / prose 50.0 tok/s single-stream (temp 0.7, 256-token classes, short prompts, thinking on). The struct probe stopped at 90 tokens (finish=stop, the JSON completed) — not a 256-token class comparable. np=2: ~30 tok/s each, 59.9 aggregate.",
+        "decode_at_prompt_tokens": 30,
+        "ttft_seconds": 0.1,
+        "speculative_acceptance": "unmeasured (the drafter was on at pack default; see the speculative_decoding comment)",
+        "prefix_cache_hit_rate": null,
+        "sustained_load": {
+            "_comment": "The long-prompt posture measured at install: ~16K-token prompt full round 2.7 s; a 64K-token streaming prompt reached its FIRST TOKEN at 8.0 s => >=7,958 tok/s prefill — 2.3x upstream's two-card figure and the arm's strength (agent responsiveness is prefill-bound). Single-stream decode under load was not yet measured beyond the short-prompt classes; the elastic-KV long-context degradation note in _capacity_comment bounds expectations. np=2 concurrency: both slots served, 59.9 tok/s aggregate.",
+            "prefill_tokens_per_second_range": [5900, 7958],
+            "ttft_seconds_at_64k": 8.0,
+            "decode_tokens_per_second_aggregate_np2": 59.9
+        }
+    },
+    "routing": {
+        "endpoint": "http://127.0.0.1:4000/v1",
+        "_comment": "Route through the anthropic-proxy, NOT the engine port directly — the proxy applies the tool/finalize guardrails and, via this profile, the per-session context window that clients size their history to. Clients select this profile with the header 'x-uap-model-profile: hy4flash' (or a uap_model_profile body param); the profile map resolves the wire id 'Hy4-flash NVFP4' here for clients that cannot send the header."
+    },
+    "_vision_comment": "The arm's config carries vision dynamic (the engine's own encoder staged once in pinned RAM, ~928 MiB; a request's pictures borrow the main card's room from the expert tier while encoded). NOT LIVE-PROBED on this arm yet: the install smoke verified echo/tool/text only — the image path was never exercised (unlike inkling2's, which carries a live 64x64 probe). The model accepts 4..4096 merged image tokens, three-axis rotary positions, Engram rows of picture positions masked. Re-verify a live image request before routing vision-bearing sessions here; the placement gate's carries_image machinery must not assume this arm serves images until that probe lands."
+}
