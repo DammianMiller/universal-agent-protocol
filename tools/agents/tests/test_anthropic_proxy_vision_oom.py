@@ -906,8 +906,16 @@ class TestByokAskResolution(unittest.TestCase):
     def test_placement_admit_asks_by_the_resolved_id_and_keys_the_burst_by_it(self):
         fake = _FakeClient(
             [
+                # unroutable_target, not not_resident: this fixture's fake
+                # upstream SERVES the resolved id, and since the 2026-11-27
+                # fleet fix a not_resident park against a serving upstream is
+                # the live-upstream override's FORWARD case (the controller
+                # ledger can lag an out-of-band arm switch). This test pins
+                # the ask/burst-key mechanics through a controller park, so
+                # it uses a park reason the override deliberately never
+                # touches.
                 _FakeResponse(
-                    {"decision": "park", "placement_id": "plc-byok1", "reason": "not_resident"},
+                    {"decision": "park", "placement_id": "plc-byok1", "reason": "unroutable_target"},
                     200,
                 )
             ]

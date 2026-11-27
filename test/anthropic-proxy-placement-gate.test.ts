@@ -79,6 +79,7 @@ PROXY_PLACEMENT_CONTROLLER = '__CONTROLLER__'
 PROXY_PLACEMENT_HOLD_SECS = 0.0
 _PLACEMENT_BURST_DEDUPE_SECS = 5.0
 _PLACEMENT_TARGET_RE = re.compile(r"^[A-Za-z0-9_.\\-]+:\\S+$")
+_PLACEMENT_STALE_RESIDENCY_PARKS = frozenset({"not_resident", "auto_failed", "auto_loading"})
 _PLACEMENT_MAX_TARGETS = 8
 
 http_client = None
@@ -104,6 +105,11 @@ describe('proxy placement gate', () => {
     // OLD pattern. This guard pins the copies to the source byte-for-byte.
     expect(source).toContain('_BYOK_LOCAL_RE = re.compile(r"^custom:.*-\\(UAP-local\\)-\\d+$")');
     expect(source).toContain('_PLACEMENT_TARGET_RE = re.compile(r"^[A-Za-z0-9_.\\-]+:\\S+$")');
+    // The live-upstream override set (2026-11-27 fleet fix): a preamble copy
+    // missing one of these reasons would park a serving model out of spite.
+    expect(source).toContain(
+      '_PLACEMENT_STALE_RESIDENCY_PARKS = frozenset({"not_resident", "auto_failed", "auto_loading"})',
+    );
   });
 
   it('a resolved custom-local id rides the wire as the served id (forward rewrite)', () => {

@@ -3105,6 +3105,41 @@ async def _placement_admit(
         pid = answer.get("placement_id")
         if isinstance(pid, str) and pid:
             placement_id = pid
+        # Live-upstream override on stale residency parks (2026-11-27 fleet
+        # incident, the Droid qwen3.8-FN basalt-fn client): an out-of-band
+        # arm switch (the Droid apiKeyHelper's panel.py --switch) updates
+        # systemd and THIS proxy — the helper POSTs /internal/placement/
+        # refresh after every swap — but NOT the placement controller's
+        # ledger. Its residents list kept naming the displaced arm, so
+        # fresh admits answered not_resident and unexpired pending rows
+        # re-parked auto_failed for their whole TTL while the requested
+        # model was provably loaded and healthy on :8080 (observed twice on
+        # 2026-11-27, 15:44-15:54: minutes of 409s against a serving arm,
+        # every one resolvable only by operator dismissal or expiry). This
+        # is the mirror of the forward-path routing guard above (spec §4.3
+        # trust-but-verify): the controller owns the REGISTRY view, but
+        # THIS proxy posts to ONE discovered upstream and measures it
+        # directly — when that measurement says the requested id IS served,
+        # a residency-flavored park describes a fleet that no longer
+        # exists. Scope is deliberately narrow: text requests only (vision
+        # parks are encoder/capability decisions the upstream cannot speak
+        # to) and only the three residency reasons (unroutable_target,
+        # unknown_model, no_measured_config, vision_* stay the operator's
+        # call). An unreachable upstream (cache miss -> None) never
+        # overrides — the fail-open direction matches the no-controller
+        # branch below, and _upstream_ids backoff keeps a down backend from
+        # minting a probe per request.
+        if not carries_image and reason in _PLACEMENT_STALE_RESIDENCY_PARKS:
+            live_ids = await _upstream_model_ids_cached()
+            if live_ids is not None and wire_model in live_ids:
+                logger.info(
+                    "PLACEMENT: controller parked %r (%s, %s) but the live upstream serves it — overriding with forward",
+                    wire_model,
+                    placement_id or "-",
+                    reason,
+                )
+                _ride_wire_as_served()
+                return None
     else:
         # Read-only admission (no controller, or it did not answer):
         # "already loaded" is answerable from the upstream's advertised ids
@@ -6978,6 +7013,15 @@ _current_request_client: contextvars.ContextVar[str | None] = contextvars.Contex
 # semaphore per request and quietly multiply the concurrency budget, so an
 # off-shape answer falls back to the default bucket instead.
 _PLACEMENT_TARGET_RE = re.compile(r"^[A-Za-z0-9_.\-]+:\S+$")
+# The residency-flavored park reasons the live-upstream override may reject
+# (see _placement_admit): all three describe the REQUESTED MODEL'S LOAD
+# STATE, which this proxy measures directly. Capability parks
+# (vision_encoder_oom, vision_text_only_arm), routing parks
+# (unroutable_target) and registry parks (unknown_model, no_measured_config)
+# are deliberately absent — the upstream cannot speak for those.
+# Single line ON PURPOSE: the vitest placement-gate harness pins this
+# byte-for-byte against its stub preamble (see GATE_PREAMBLE's sync test).
+_PLACEMENT_STALE_RESIDENCY_PARKS = frozenset({"not_resident", "auto_failed", "auto_loading"})
 # BYOK custom-local ids (uplift: full automation): the harness's
 # bring-your-own-key form names the LOCAL BACKEND itself —
 # `custom:<display-name>-(UAP-local)-<n>` — not a model any registry or
