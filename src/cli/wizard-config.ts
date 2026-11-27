@@ -11,7 +11,7 @@
 import { writeFileSync, mkdirSync, chmodSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { RoutingPresets, passthroughModelsForPreset, tiersToRoutingMatrix } from '../models/index.js';
-import { upsertProxyEnvVars } from './systemd-services.js';
+import { upsertProxyEnvVars, readProxyEnvVar } from './systemd-services.js';
 import { configuredSlots } from '../utils/model-slots.js';
 
 export interface MemoryFeatures {
@@ -565,6 +565,20 @@ export function writeProxyEnv(cwd: string, selections: WizardSelections): string
       if (m) placementMode = m[1];
     } catch {
       /* absent or unreadable: emit the shipped default */
+    }
+    // The operator's placement mode is a MACHINE-level setting — it lives in
+    // the global systemd EnvironmentFile (~/.config/uap/anthropic-proxy.env),
+    // not per project. A fresh scaffold's project-local fallback records no
+    // non-off mode, and letting that shipped default flow into the upsert
+    // below DOWNGRADES the operator's live ask (observed 2026-11-27 11:46: a
+    // re-scaffold's wizard rewrote the global env to off while the proxy was
+    // running ask; the next proxy restart would have disarmed the placement
+    // gate). Precedence: an explicit project-local ask/auto wins — the closest
+    // scope the operator touched; otherwise the global env's ask/auto wins
+    // over the shipped off default.
+    if (placementMode === 'off') {
+      const globalMode = readProxyEnvVar('PROXY_PLACEMENT_MODE');
+      if (globalMode === 'ask' || globalMode === 'auto') placementMode = globalMode;
     }
     const dashboardPort = process.env.UAP_DASHBOARD_PORT ?? '3847';
     lines.push(`PROXY_PLACEMENT_MODE=${placementMode}`);
