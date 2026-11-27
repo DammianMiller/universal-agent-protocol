@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -7,6 +7,19 @@ import {
   defaultSelections,
   writeProxyEnv,
 } from '../../src/cli/wizard-config.js';
+
+// Redirect os.homedir() for the placement-preservation tests below: the global
+// proxy env path (~/.config/uap/anthropic-proxy.env) resolves through it, and
+// the tests must point it at an isolated tmpdir. Falls through to the real
+// homedir whenever the holder is unset, so the rest of this file is unaffected.
+const homedirHolder = vi.hoisted(() => ({ home: undefined as string | undefined }));
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return {
+    ...actual,
+    homedir: () => homedirHolder.home ?? actual.homedir(),
+  };
+});
 
 describe('defaultSelections', () => {
   it('returns conservative defaults and honors overrides', () => {
@@ -263,5 +276,60 @@ describe('writeProxyEnv', () => {
     expect(env).toContain('PROXY_CONFIDENCE_ESCALATE=off');
     expect(env).not.toContain('PROXY_ESCALATE_API_KEY');
     expect(env).toContain('UAP_DELIVER_LOCAL_MODE=escalate');
+  });
+});
+
+describe('writeProxyEnv placement-mode preservation', () => {
+  // homedir() is redirected via a vi.mock of 'os' (holder below), NOT via
+  // process.env.HOME: the threads pool shares process.env across concurrent
+  // test files, and a HOME mutation there races sibling workers (observed:
+  // this suite passed alone, failed in the full run).
+  let dir: string;
+  let fakeHome: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-wizplace-'));
+    fakeHome = mkdtempSync(join(tmpdir(), 'uap-wizhome-'));
+    homedirHolder.home = fakeHome;
+  });
+  afterEach(() => {
+    homedirHolder.home = undefined;
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  });
+
+  // The global systemd EnvironmentFile is the machine-level operator setting;
+  // readProxyEnvVar resolves it via os.homedir(), which honors $HOME on POSIX.
+  const writeGlobalEnv = (mode: string): void => {
+    const globalDir = join(fakeHome, '.config', 'uap');
+    mkdirSync(globalDir, { recursive: true });
+    writeFileSync(
+      join(globalDir, 'anthropic-proxy.env'),
+      `PROXY_PORT=4000\nPROXY_PLACEMENT_MODE=${mode}\n`,
+    );
+  };
+
+  it('a fresh scaffold inherits the operator global ask (no local mode recorded)', () => {
+    // Regression: the 2026-11-27 11:46 wipe — a re-scaffold wizard rewrote the
+    // global env to the shipped `off` while the proxy was running `ask`.
+    writeGlobalEnv('ask');
+    const env = readFileSync(writeProxyEnv(dir, defaultSelections()) as string, 'utf-8');
+    expect(env).toContain('PROXY_PLACEMENT_MODE=ask');
+  });
+
+  it('the global env file is not downgraded to off by a fresh scaffold', () => {
+    writeGlobalEnv('ask');
+    writeProxyEnv(dir, defaultSelections());
+    const globalEnv = readFileSync(join(fakeHome, '.config', 'uap', 'anthropic-proxy.env'), 'utf-8');
+    expect(globalEnv).toContain('PROXY_PLACEMENT_MODE=ask');
+    expect(globalEnv).not.toContain('PROXY_PLACEMENT_MODE=off');
+  });
+
+  it('an explicit project-local mode still wins over the global default', () => {
+    writeGlobalEnv('off');
+    mkdirSync(join(dir, '.uap'), { recursive: true });
+    writeFileSync(join(dir, '.uap', 'proxy.env'), 'PROXY_PLACEMENT_MODE=auto\n');
+    const env = readFileSync(writeProxyEnv(dir, defaultSelections()) as string, 'utf-8');
+    expect(env).toContain('PROXY_PLACEMENT_MODE=auto');
   });
 });
