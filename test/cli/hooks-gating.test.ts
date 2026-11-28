@@ -154,6 +154,39 @@ describe('factory hook binding survives a FACTORY_PROJECT_DIR-less context', () 
     expect(r.status).toBe(0);
     expect(String(r.stderr)).not.toContain('not found');
   });
+
+  /**
+   * Measured 2026-11-28 19:43:34 (voxel-pagoda-basalt-inkling-1, session
+   * 42fc66db, AFTER the binding-fallback fix): the fleet round-boundary
+   * re-scaffold wiped .factory/hooks/ in the same second the killed
+   * session's SessionEnd hook fired — the binding resolved, but the script
+   * was gone, so the command exited non-zero and the dying session logged
+   * "SessionEnd hook error: Hook exited with code 1". The hook is fail-soft
+   * by contract; the COMMAND must be too: absent script ⇒ exit 0.
+   */
+  it('keeps SessionEnd exit 0 even when the script is missing (round-boundary re-scaffold race)', async () => {
+    await hooksCommand('install', { target: 'factory', projectDir: proj });
+    rmSync(join(proj, '.factory', 'hooks', 'session-end.sh'));
+    const settings = JSON.parse(
+      readFileSync(join(proj, '.factory', 'settings.local.json'), 'utf-8'),
+    ) as { hooks: { SessionEnd: Array<{ hooks: Array<{ command: string }> }> } };
+    const cmd = settings.hooks.SessionEnd[0].hooks[0].command;
+    expect(cmd).toContain('|| true');
+    const r = spawnSync('sh', ['-c', cmd], {
+      cwd: tmpdir(),
+      env: { PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: process.env.HOME },
+    });
+    expect(r.status).toBe(0);
+  });
+
+  it('softens the Claude SessionEnd command the same way', async () => {
+    await hooksCommand('install', { target: 'claude', projectDir: proj });
+    const settings = JSON.parse(
+      readFileSync(join(proj, '.claude', 'settings.local.json'), 'utf-8'),
+    ) as { hooks: { SessionEnd: Array<{ hooks: Array<{ command: string }> }> } };
+    const cmd = settings.hooks.SessionEnd[0].hooks[0].command;
+    expect(cmd).toBe('bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh" || true');
+  });
 });
 
 describe('AGENTS.md render-verification seam', () => {

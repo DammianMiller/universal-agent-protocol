@@ -298,7 +298,10 @@ async function installClaudeHooks(cwd: string): Promise<void> {
     SessionEnd: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh"' }],
+        // `|| true` — the command carries session-end.sh's fail-soft contract
+        // ("always exits 0"): a mid-re-scaffold teardown must not error the
+        // dying session (same measured race as the factory binding).
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh" || true' }],
       },
     ],
   };
@@ -425,7 +428,15 @@ async function installFactoryHooks(cwd: string): Promise<void> {
     SessionEnd: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: hookCmd('session-end.sh') }],
+        // `|| true`: session-end.sh is fail-soft BY CONTRACT ("Always exits 0
+        // (never blocks)"), but the command must carry that contract too. The
+        // fleet round-boundary re-scaffold wipes .factory/hooks/ in the same
+        // second the killed session's SessionEnd hook fires (measured
+        // 2026-11-28 19:43:34, voxel-pagoda-basalt-inkling-1, session 42fc66db:
+        // new binding resolved but the script was mid-re-scaffold → non-zero →
+        // "SessionEnd hook error" on a session already being torn down). An
+        // absent script means there is nothing left to clean up — exit 0.
+        hooks: [{ type: 'command', command: `${hookCmd('session-end.sh')} || true` }],
       },
     ],
   };
@@ -587,7 +598,10 @@ async function installVscodeHooks(cwd: string): Promise<void> {
     SessionEnd: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh"' }],
+        // `|| true` — the command carries session-end.sh's fail-soft contract
+        // ("always exits 0"): a mid-re-scaffold teardown must not error the
+        // dying session (same measured race as the factory binding).
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh" || true' }],
       },
     ],
   };
