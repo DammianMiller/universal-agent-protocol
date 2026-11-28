@@ -50,6 +50,38 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
 COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"
 
+# ─── Hands-free completion gate (HARD block) ─────────────────────
+# `uap handsfree stop-check` is the ledger-backed Stop enforcement lever
+# (handsfree.ts "Option A"): block while the completion ledger has remaining
+# items, so a hands-free build cannot end its session mid-build. It was fully
+# implemented and unit-tested — but never wired into any hook, so nothing ever
+# pulled the lever (measured 2026-11-28 on the voxel-pagoda-basalt-inkling-1
+# fleet arm: rounds stopped after one build pass — or mid-pass — with the
+# artifact's quality gates never converged, because the only stop-side hard
+# gate was runtime execution). The stop-check decision is already bounded
+# (stop_hook_active respected — also by this hook's own guard above; block
+# caps + stagnation give-up + pre-ledger nudge cap inside), so this wiring
+# cannot wedge a session. RC 2 = block (message on stderr); EVERY other RC —
+# including 1 from an older CLI without the subcommand — fails OPEN.
+if command -v uap >/dev/null 2>&1; then
+  set +e
+  HF_OUT="$( cd "$PROJECT_DIR" 2>/dev/null && printf '%s' "$STOP_HOOK_PAYLOAD" | timeout 10 uap handsfree stop-check 2>&1 )"
+  HF_RC=$?
+  set -e
+  if [ -n "$HF_OUT" ] && [ "$HF_RC" != "2" ]; then
+    # Allow-path messages (e.g. the bounded give-up notice) — informational.
+    printf '%s\n' "$HF_OUT"
+  fi
+  if [ "$HF_RC" = "2" ]; then
+    echo ""
+    echo "## BUILD-COMPLETION GATE — the hands-free build is not done"
+    echo "$HF_OUT"
+    echo ""
+    echo "Finish the remaining ledger items before stopping. (Bounded: block caps + stagnation give-up; the hook relents rather than wedges.)"
+    exit 2
+  fi
+fi
+
 # ─── Detect if code was changed (main repo + linked worktrees) ───
 CODE_CHANGED="false"
 TS_CHANGED="false"
