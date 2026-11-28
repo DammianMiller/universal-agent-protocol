@@ -333,12 +333,27 @@ async function installFactoryHooks(cwd: string): Promise<void> {
     }
   }
 
+  // Hook commands must not depend on FACTORY_PROJECT_DIR alone: Droid runs
+  // SessionEnd in a context where that variable is not set. Measured
+  // 2026-11-28 (droid-log-single.log.2026-11-28): every one of the day's 11
+  // SessionEnd executions resolved the bare "$FACTORY_PROJECT_DIR"/... to
+  // /.factory/hooks/session-end.sh — file not found — and every arm session
+  // ended with "SessionEnd hook error: Hook exited with code 1" (15/15 arm
+  // transcripts back to 2026-11-25), so coordination deregistration and the
+  // session-end memory marker never ran. SessionStart/Stop/PreCompact, which
+  // do receive the variable, never failed. The Claude installer above already
+  // uses the ${VAR:-default} shape; Factory never got it. The fallback is the
+  // ABSOLUTE install-time project dir (better than Claude's `.` fallback —
+  // the SessionEnd context's cwd is not the project dir either).
+  const hookCmd = (script: string) =>
+    `bash "\${FACTORY_PROJECT_DIR:-${cwd}}/.factory/hooks/${script}"`;
+
   const hooksConfig = {
     SessionStart: [
       {
         matcher: '',
         hooks: [
-          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/session-start.sh' },
+          { type: 'command', command: hookCmd('session-start.sh') },
         ],
       },
     ],
@@ -346,7 +361,7 @@ async function installFactoryHooks(cwd: string): Promise<void> {
       {
         matcher: '',
         hooks: [
-          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-reactor-prompt.sh' },
+          { type: 'command', command: hookCmd('uap-reactor-prompt.sh') },
         ],
       },
     ],
@@ -354,21 +369,21 @@ async function installFactoryHooks(cwd: string): Promise<void> {
       {
         matcher: 'Edit|Write|MultiEdit',
         hooks: [
-          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-tool-use-edit-write.sh' },
-          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-policy-gate.sh' },
+          { type: 'command', command: hookCmd('pre-tool-use-edit-write.sh') },
+          { type: 'command', command: hookCmd('uap-policy-gate.sh') },
         ],
       },
       {
         matcher: 'Bash',
         hooks: [
-          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-tool-use-bash.sh' },
-          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-policy-gate.sh' },
+          { type: 'command', command: hookCmd('pre-tool-use-bash.sh') },
+          { type: 'command', command: hookCmd('uap-policy-gate.sh') },
         ],
       },
       {
         matcher: 'Task|Agent|ToolSearch|ExitPlanMode',
         hooks: [
-          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-policy-gate.sh' },
+          { type: 'command', command: hookCmd('uap-policy-gate.sh') },
         ],
       },
     ],
@@ -376,41 +391,41 @@ async function installFactoryHooks(cwd: string): Promise<void> {
       {
         matcher: 'Edit|Write',
         hooks: [
-          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-tool-use-edit-write.sh' },
-          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-schema-post.sh' },
+          { type: 'command', command: hookCmd('post-tool-use-edit-write.sh') },
+          { type: 'command', command: hookCmd('uap-schema-post.sh') },
         ],
       },
       {
         matcher: 'Read|Grep|Glob',
-        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-tool-use-read.sh' }],
+        hooks: [{ type: 'command', command: hookCmd('post-tool-use-read.sh') }],
       },
       {
         matcher: 'TodoWrite',
-        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-todo-ledger.sh' }],
+        hooks: [{ type: 'command', command: hookCmd('uap-todo-ledger.sh') }],
       },
     ],
     PreCompact: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-compact.sh' }],
+        hooks: [{ type: 'command', command: hookCmd('pre-compact.sh') }],
       },
     ],
     PostCompact: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-compact.sh' }],
+        hooks: [{ type: 'command', command: hookCmd('post-compact.sh') }],
       },
     ],
     Stop: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/stop.sh' }],
+        hooks: [{ type: 'command', command: hookCmd('stop.sh') }],
       },
     ],
     SessionEnd: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/session-end.sh' }],
+        hooks: [{ type: 'command', command: hookCmd('session-end.sh') }],
       },
     ],
   };

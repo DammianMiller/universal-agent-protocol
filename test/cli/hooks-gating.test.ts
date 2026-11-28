@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, copyFileSync } from 'fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, copyFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { hooksCommand, auditPlatform } from '../../src/cli/hooks.js';
@@ -99,5 +99,59 @@ describe('policy-gate parity', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('factory hook binding survives a FACTORY_PROJECT_DIR-less context', () => {
+  let proj: string;
+  beforeEach(() => {
+    proj = mkdtempSync(join(tmpdir(), 'uap-fbind-'));
+  });
+  afterEach(() => {
+    rmSync(proj, { recursive: true, force: true });
+  });
+
+  /**
+   * Droid runs SessionEnd in a context where FACTORY_PROJECT_DIR is not set
+   * (measured 2026-11-28, droid-log-single.log.2026-11-28: 11/11 SessionEnd
+   * executions that day resolved the bare "$FACTORY_PROJECT_DIR"/... binding
+   * to /.factory/hooks/session-end.sh — file not found — and every
+   * UAP-scaffolded project's sessions ended with "SessionEnd hook error";
+   * SessionStart/Stop/PreCompact, which do receive the variable, never
+   * failed). The binding must carry its own fallback.
+   */
+  it('emits every factory hook command with the install-time project dir as fallback', async () => {
+    await hooksCommand('install', { target: 'factory', projectDir: proj });
+    const settings = JSON.parse(
+      readFileSync(join(proj, '.factory', 'settings.local.json'), 'utf-8'),
+    ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    const cmds = Object.values(settings.hooks).flatMap((entries) =>
+      entries.flatMap((e) => e.hooks.map((h) => h.command))
+    );
+    // 15 bindings: SessionStart, UserPromptSubmit, PreToolUse×5, PostToolUse×4,
+    // PreCompact, PostCompact, Stop, SessionEnd — every one must carry the
+    // fallback, not just the event that failed in production.
+    expect(cmds.length).toBeGreaterThanOrEqual(15);
+    for (const c of cmds) {
+      expect(c.startsWith('bash "${FACTORY_PROJECT_DIR:-')).toBe(true);
+      expect(c).toContain(`:-${proj}}/.factory/hooks/`);
+    }
+  });
+
+  it('runs the SessionEnd command with the variable unset, from a foreign cwd', async () => {
+    await hooksCommand('install', { target: 'factory', projectDir: proj });
+    const settings = JSON.parse(
+      readFileSync(join(proj, '.factory', 'settings.local.json'), 'utf-8'),
+    ) as { hooks: { SessionEnd: Array<{ hooks: Array<{ command: string }> }> } };
+    const cmd = settings.hooks.SessionEnd[0].hooks[0].command;
+    // No FACTORY_PROJECT_DIR in env, and cwd is NOT the project: the exact
+    // shape of the measured SessionEnd context. session-end.sh is fail-soft
+    // (always exit 0); this asserts the binding RESOLVES to the real script.
+    const r = spawnSync('sh', ['-c', cmd], {
+      cwd: tmpdir(),
+      env: { PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: process.env.HOME },
+    });
+    expect(r.status).toBe(0);
+    expect(String(r.stderr)).not.toContain('not found');
   });
 });
