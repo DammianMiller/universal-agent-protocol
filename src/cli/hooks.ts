@@ -1163,6 +1163,28 @@ async function installCodexHooks(cwd: string): Promise<void> {
     '',
     'Never edit files in the project root directory.',
     '',
+    // Measured 2026-11-28 (voxel-pagoda-basalt-inkling-1, session 42fc66db):
+    // the client improvised `google-chrome --headless --screenshot
+    // --virtual-time-budget=N` to prove its three.js render — 7 consecutive
+    // failed captures (5 killed-with-no-file, 1 blank frame under
+    // --enable-unsafe-swiftshader, 1 fluke success) at 90s each, because that
+    // flag path hangs while a RAF loop is live. `uap verify` is the seam that
+    // works (playwright Chromium, WebGL2/SwiftShader, RAF-safe sampling).
+    '## Artifact Verification (rendered deliverables)',
+    '',
+    'When the deliverable is a web page, 3D scene, or any rendered artifact,',
+    'prove it renders with UAP\'s gate, not raw browser flags:',
+    '',
+    '- `uap verify` (run in the directory holding the artifact, e.g. the',
+    '  worktree) - renders entry pages headlessly via the bundled Chromium',
+    '  (WebGL2 through SwiftShader: no GPU, no flags), flags blank/static/',
+    '  error frames, and prints where screenshots are saved',
+    '',
+    'Never verify a render with `google-chrome --headless --screenshot',
+    '--virtual-time-budget=N`: it hangs while requestAnimationFrame is live',
+    '(three.js, React, any animation loop), so the timeout kill leaves no',
+    'file — which reads as "renderer broken" when the renderer is fine.',
+    '',
     '## Pattern Library',
     '',
     'Query task-relevant patterns before starting work:',
