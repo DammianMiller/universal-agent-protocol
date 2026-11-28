@@ -131,6 +131,7 @@ the decision record.
 | [Droid client performance options](plans/droid-client-performance-options.md) | Monitoring findings + ranked option menu for the local Qwen3.8 droid fleet (2026-11-14; nothing starts without an explicit go) |
 | [Quality-tier uplift plan](plans/quality-tier-uplift-2026-11-16.md) | Reference-anchored outcome tiers for every deliverable class (visual, API, docs, bench): anchors digitize the bar, a deterministic tier gate polices it, the gap report drives the loop; the voxel pagoda vs Fable 5.2 High is the reference implementation |
 | [Frontier-parity uplift plan](plans/frontier-parity-uplift-2026-11-23.md) | Monitoring round 5 (2026-11-23): substrate restorations (Qdrant WALs, nomic embedding server, vision judge wiring) + the ranked menu to frontier parity on visual AND non-visual outcomes, including the innovation/aspiration/ideation outcome class |
+| [Commercialization plan](plans/commercialization-plan.md) | Open-core strategy from the UAP + platform-blog analysis: what stays MIT in UAP Core, what the enterprise control plane adds (central logs, audit evidence, team sharing, budgets, routing, cost optimization), packaging/pricing, GTM, risks, phased roadmap, and the owner decisions with recorded defaults |
 
 ## Specs & performance
 
