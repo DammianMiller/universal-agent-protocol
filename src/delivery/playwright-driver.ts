@@ -89,8 +89,21 @@ export async function loadPlaywrightDriver(): Promise<BrowserDriver | null> {
       return browser;
     },
     async goto(url: string) {
-      await page?.goto(url, { waitUntil: 'load' });
-      return url;
+      // Return the HTTP status, not the URL. runWeb regex-matches this value
+      // against ^2\d\d$ to decide "entry did not load", and WebBrowser's goto
+      // answers the same question ('0' when the engine hands back no Response)
+      // — returning the URL made every rung this driver served fail as
+      // `entry did not load (HTTP <url>)`. Measured on voxel-pagoda-basalt-
+      // inkling-1 (2026-11-28): the WebGL upgrade to this driver fired
+      // correctly, the page rendered headlessly, and the rung still failed on
+      // a contract violation no page could see.
+      const resp = (await page?.goto(url, { waitUntil: 'load' })) as
+        | { status?: unknown }
+        | null
+        | undefined;
+      const status =
+        resp && typeof resp.status === 'function' ? (resp.status as () => number)() : undefined;
+      return String(status ?? '0');
     },
     async waitForLoadState(state: 'load' | 'domcontentloaded' | 'networkidle' = 'load') {
       await page?.waitForLoadState(state);
