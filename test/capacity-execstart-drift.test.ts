@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { computeHealth, parsePolicy, type ServicePolicy } from '../src/capacity/policy.js';
 
 /**
@@ -56,6 +57,30 @@ describe('capacity policy — ExecStart drift', () => {
     );
     expect(r.reasons.join(' ')).toMatch(/-c 229376/);
     expect(r.reasons.join(' ')).toMatch(/-np 2/);
+  });
+
+  it('expands `~` in a pin before matching — a shared policy ships no username', () => {
+    // A policy committed to a shared repo pins `~`-relative paths; the unit's
+    // ExecStart renders the absolute form. The match must succeed on every
+    // machine, not just the one that wrote the policy.
+    const home = homedir();
+    const r = computeHealth(
+      { ...base, budget: { execStartMustContain: ['--model ~/models/m.gguf'] } },
+      { ...SERVING, execStart: `{ path=/x ; argv[]=/x --model ${join(home, 'models/m.gguf')} -np 2 }` },
+      AVAIL,
+    );
+    expect(r.health).toBe('GREEN');
+    expect(r.reasons.join(' ')).not.toMatch(/drifted|unverified/);
+  });
+
+  it('still flags drift when the `~`-expanded pin is absent from ExecStart', () => {
+    const r = computeHealth(
+      { ...base, budget: { execStartMustContain: ['--model ~/models/m.gguf'] } },
+      { ...SERVING, execStart: '{ path=/x ; argv[]=/x -m other.gguf -np 2 }' },
+      AVAIL,
+    );
+    expect(r.health).toBe('RED');
+    expect(r.reasons.join(' ')).toMatch(/--model ~\/models\/m\.gguf/);
   });
 
   it('flags unverifiable rather than passing silently', () => {
@@ -137,7 +162,7 @@ describe('the shipped policy declares the Edge0 145B flags it talks about in pro
     // are separated by the repeating --strata-arg word.
     expect(edge0!.budget?.execStartMustContain).toEqual(
       expect.arrayContaining([
-        '--model /home/cogtek/models/Edge0-145B-q3k',
+        '--model ~/models/Edge0-145B-q3k',
         '--port 8080',
         '--alias edge0_145b',
         '--vram-reserve-mib',

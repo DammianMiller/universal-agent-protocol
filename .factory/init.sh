@@ -2,8 +2,8 @@
 # Mission init script - idempotent environment setup
 set -e
 
-UAP_DIR="/home/cogtek/dev/miller-tech/universal-agent-protocol"
-LLAMA_DIR="/home/cogtek/llama.cpp"
+UAP_DIR="$HOME/dev/miller-tech/universal-agent-protocol"
+LLAMA_DIR="$HOME/llama.cpp"
 
 # Install UAP dependencies if needed
 if [ ! -d "$UAP_DIR/node_modules" ]; then
@@ -20,7 +20,7 @@ done
 
 # Verify model files exist
 for model in "Qwen3.5-35B-A3B-UD-IQ4_XS.gguf" "Qwen3.5-0.8B-Q8_0.gguf"; do
-  if [ ! -f "/home/cogtek/Downloads/$model" ]; then
+  if [ ! -f "$HOME/Downloads/$model" ]; then
     echo "WARNING: Model $model not found in ~/Downloads"
   fi
 done

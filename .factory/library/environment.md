@@ -6,9 +6,9 @@
 - GPU: NVIDIA RTX 3090 24GB
 
 ## Key Paths
-- UAP project: /home/cogtek/dev/miller-tech/universal-agent-protocol
-- llama.cpp: /home/cogtek/llama.cpp
-- Models: /home/cogtek/Downloads/*.gguf
+- UAP project: ~/dev/miller-tech/universal-agent-protocol
+- llama.cpp: ~/llama.cpp
+- Models: ~/Downloads/*.gguf
 
 ## Running Services
 - llama-server on port 8080 (raw upstream OpenAI-compatible endpoint)

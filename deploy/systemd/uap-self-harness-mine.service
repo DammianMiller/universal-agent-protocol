@@ -6,6 +6,7 @@ Documentation=https://github.com/DammianMiller/universal-agent-protocol docs/des
 Type=oneshot
 # Mine the last day of proxy-journal + HALO traces and ENQUEUE proposals.
 # This NEVER applies anything — promotion stays gated (uap self-harness pending).
-ExecStart=/bin/node /home/cogtek/dev/miller-tech/universal-agent-protocol/dist/bin/cli.js self-harness mine-prod --unit uap-anthropic-proxy.service --since "25 hours ago"
+# adjust /opt/universal-agent-protocol to your UAP checkout path
+ExecStart=/bin/node /opt/universal-agent-protocol/dist/bin/cli.js self-harness mine-prod --unit uap-anthropic-proxy.service --since "25 hours ago"
 # Ablation-prune stale / no-longer-paying transfer + pending entries.
-ExecStartPost=/bin/node /home/cogtek/dev/miller-tech/universal-agent-protocol/dist/bin/cli.js self-harness prune
+ExecStartPost=/bin/node /opt/universal-agent-protocol/dist/bin/cli.js self-harness prune

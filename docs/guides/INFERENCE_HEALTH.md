@@ -22,7 +22,7 @@ Today both exist on the box: the proxy's engine arm is a **llama.cpp
 server** (Qwen3.8-Flash-Next UD-IQ4_XS, the speedy v31 arm on port 8080),
 and the **strata serve layer** (one rail, a 196608-cell int8 pool, MTP
 speculative decoding, no systemd unit) carries the Swift 1.5 IQ3_S trial
-under `/home/cogtek/dev/strata`. The command fetches `/metrics` once and
+under `~/dev/strata`. The command fetches `/metrics` once and
 classifies the backend: a
 JSON document with an `engine` block is strata; Prometheus text with
 `llamacpp:` counters is a llama.cpp server. `--backend llamacpp|strata`
@@ -34,7 +34,7 @@ The strata path reads two sources:
   reserve-aware free VRAM; `live` gives the in-flight request; `requests` is
   a bounded ring of completed requests (observed: 12) with real timestamps.
 - **the serve log** (`--strata-log` or `$UAP_STRATA_LOG`, e.g.
-  `/home/cogtek/dev/strata/strata-iq3_xxs.log`), one `strata serve: prompt
+  `~/dev/strata/strata-iq3_xxs.log`), one `strata serve: prompt
   …` line per completed request, for the process's whole life. These lines
   carry **no timestamps**, so samples use a monotonic line-index clock: good
   enough for the early/recent trend split (the log is one process's life),

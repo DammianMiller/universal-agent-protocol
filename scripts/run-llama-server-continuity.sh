@@ -4,8 +4,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-LLAMA_BIN="${LLAMA_BIN:-/home/cogtek/llama.cpp/.worktrees/mtp-port/build/bin/llama-server}"
-LLAMA_MODEL="${LLAMA_MODEL:-/home/cogtek/Downloads/Qwen3.6-35B-A3B-UD-IQ4_XS-MTP.gguf}"
+# Profiles carry `~`-relative paths (a committed template must not ship a
+# username, and systemd's EnvironmentFile does not expand `~`) — normalize
+# every path-bearing variable onto $HOME before anything reads it.
+for _uap_v in LLAMA_BIN LLAMA_MODEL LLAMA_DRAFT_MODEL LLAMA_MMPROJ \
+              LLAMA_SLOT_SAVE_PATH LLAMA_LOG_FILE LLAMA_CHAT_TEMPLATE_FILE; do
+  _uap_p="${!_uap_v:-}"
+  if [[ "$_uap_p" == '~' ]]; then
+    printf -v "$_uap_v" '%s' "${HOME:-}"
+  elif [[ "$_uap_p" == '~/'* ]]; then
+    printf -v "$_uap_v" '%s' "${HOME:-}${_uap_p#\~}"
+  fi
+done
+unset -v _uap_v _uap_p
+
+LLAMA_BIN="${LLAMA_BIN:-$HOME/llama.cpp/.worktrees/mtp-port/build/bin/llama-server}"
+LLAMA_MODEL="${LLAMA_MODEL:-$HOME/Downloads/Qwen3.6-35B-A3B-UD-IQ4_XS-MTP.gguf}"
 
 if [[ ! -x "$LLAMA_BIN" ]]; then
   echo "ERROR: LLAMA_BIN is not executable: $LLAMA_BIN" >&2

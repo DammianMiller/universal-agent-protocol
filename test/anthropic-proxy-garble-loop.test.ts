@@ -58,9 +58,9 @@ function runScenario(scenario: string) {
 // The live 2026-10-30 fault shape: every garbled Execute heredoc logged
 // text_len=0 — the assistant message carries ONLY tool_calls, no text.
 const garbledHeredocA =
-  '{"command":"cd /home/cogtek/dev/cogtek/pipelines/visual/koral-ros-postgres && python3 <<\'PYEOF\'\\nimport io\\np=\'src/koral_node.cpp\'\\nraw=open(p,\'rb\').read().decode(\'utf-8\')\\nNL=\'\\r\\n\'\\ndef blk(lines) 00000000398398859738 398859738398859738';
+  '{"command":"cd /home/operator/dev/pipelines/visual/koral-ros-postgres && python3 <<\'PYEOF\'\\nimport io\\np=\'src/koral_node.cpp\'\\nraw=open(p,\'rb\').read().decode(\'utf-8\')\\nNL=\'\\r\\n\'\\ndef blk(lines) 00000000398398859738 398859738398859738';
 const garbledHeredocB =
-  '{"command":"cd /home/cogtek/dev/cogtek/pipelines/visual/koral-ros-postgres && python3 <<\'PYEOF\'\\nimport io\\np=\'src/koral_node.cpp\'\\nraw=open(p,\'rb\').read().decode(\'utf-8\')\\nNL=\'\\r\\n\'\\ndef blk(l) 11111111211221122112 221122112211221122';
+  '{"command":"cd /home/operator/dev/pipelines/visual/koral-ros-postgres && python3 <<\'PYEOF\'\\nimport io\\np=\'src/koral_node.cpp\'\\nraw=open(p,\'rb\').read().decode(\'utf-8\')\\nNL=\'\\r\\n\'\\ndef blk(l) 11111111211221122112 221122112211221122';
 
 describe('_fault_fingerprint (tool-call attractor fingerprinting)', () => {
   it.skipIf(!havePython)(

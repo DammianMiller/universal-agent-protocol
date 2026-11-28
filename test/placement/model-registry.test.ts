@@ -680,7 +680,7 @@ describe('repo registry: edge0-145b latent-MoE arm wiring', () => {
       const REV = 'd7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74';
       expect(cfg.files?.every((f) => f.repo === 'Edge0/Edge0-145B-q3k' && f.rev === REV)).toBe(true);
       expect(
-        cfg.files?.every((f) => f.path.startsWith('/home/cogtek/models/Edge0-145B-q3k/')),
+        cfg.files?.every((f) => f.path.startsWith('~/models/Edge0-145B-q3k/')),
       ).toBe(true);
       const byName = new Map(cfg.files?.map((f) => [f.file, f]));
       // The three giants: LFS oids are sha256 of content, verified by
@@ -734,7 +734,7 @@ describe('repo registry: edge0-145b latent-MoE arm wiring', () => {
     // the repeating --strata-arg, so they are pinned separately).
     expect(svc?.budget?.execStartMustContain).toEqual(
       expect.arrayContaining([
-        '--model /home/cogtek/models/Edge0-145B-q3k',
+        '--model ~/models/Edge0-145B-q3k',
         '--port 8080',
         '--alias edge0_145b',
         '--vram-reserve-mib',
@@ -787,7 +787,7 @@ describe('repo registry: strata-unsloth-ud-q3_k_xl arm wiring (retired 2026-11-1
       ).toBe(true);
       expect(
         cfg.files?.every((f) =>
-          f.path.startsWith('/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/'),
+          f.path.startsWith('~/models/strata-data/models/unsloth-UD-Q3_K_XL/'),
         ),
       ).toBe(true);
       expect(cfg.files?.map((f) => f.file)).toEqual([
@@ -878,7 +878,7 @@ describe('repo registry: speedy-unsloth-ud-iq4_xs-v31 arm wiring (retired 2026-1
       expect(cfg.files?.every((f) => f.repo === 'unsloth/Qwen3.8-Flash-Next-GGUF')).toBe(true);
       expect(
         cfg.files?.every((f) =>
-          f.path.startsWith('/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/'),
+          f.path.startsWith('~/models/strata-data/models/unsloth-UD-IQ4_XS-v31/'),
         ),
       ).toBe(true);
     } finally {
@@ -939,7 +939,7 @@ describe('repo registry: strata-iq3_s (ISTA base IQ3_S, switchable strata-base-i
       ).toBe(true);
       expect(
         cfg.files?.every((f) =>
-          f.path.startsWith('/home/cogtek/models/strata-data/models/IQ3_S/'),
+          f.path.startsWith('~/models/strata-data/models/IQ3_S/'),
         ),
       ).toBe(true);
       // Shard 1: the experts shard, downloaded fresh and sha256-verified
@@ -999,7 +999,7 @@ describe('repo registry: speedy-iq3_s (fork preset on disk for the ISTA set) arm
       ).toBe(true);
       expect(
         cfg.files?.every((f) =>
-          f.path.startsWith('/home/cogtek/models/strata-data/models/IQ3_S/'),
+          f.path.startsWith('~/models/strata-data/models/IQ3_S/'),
         ),
       ).toBe(true);
     } finally {
@@ -1040,7 +1040,7 @@ describe('repo registry: gemma-4-31b arm wiring', () => {
       ).toBe(true);
       expect(cfg.files?.every((f) => f.repo === 'unsloth/gemma-4-31B-it-qat-GGUF')).toBe(true);
       expect(
-        cfg.files?.every((f) => f.path.startsWith('/home/cogtek/models/gemma-4-31B-it-qat/')),
+        cfg.files?.every((f) => f.path.startsWith('~/models/gemma-4-31B-it-qat/')),
       ).toBe(true);
       const [main, draft] = cfg.files ?? [];
       expect(main.bytes).toBe(17287670048); // QAT UD-Q4_K_XL 17.3 GB

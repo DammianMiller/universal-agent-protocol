@@ -8,6 +8,17 @@
  * judgment is deterministic code; fail-open posture is per-probe (a missing
  * systemctl/nvidia-smi yields UNKNOWN, never a fabricated GREEN).
  */
+import { homedir } from 'os';
+
+/**
+ * Expand `~`/`~/…` WORDS inside a pin string (`--model ~/models/m.gguf`)
+ * onto the operator's home — a policy committed to a shared repo ships no
+ * username, and the unit ExecStart renders the absolute form.
+ */
+function expandHomeRefs(s: string): string {
+  return s.replace(/(^|\s)~(\/\S*)?/g, (_m: string, lead: string, rest: string | undefined) =>
+    `${lead}${homedir()}${rest ?? ''}`);
+}
 
 export interface ServicePolicy {
   /** Display name. */
@@ -295,7 +306,7 @@ export function computeHealth(
     if (!probed.execStart) {
       reasons.push('execStartMustContain declared but ExecStart could not be probed — configuration unverified');
     } else {
-      const missing = mustContain.filter((flag) => !probed.execStart!.includes(flag));
+      const missing = mustContain.filter((flag) => !probed.execStart!.includes(expandHomeRefs(flag)));
       if (missing.length > 0) {
         reasons.push(
           `ExecStart is missing declared flag(s) ${missing.map((f) => `"${f}"`).join(', ')} — ` +

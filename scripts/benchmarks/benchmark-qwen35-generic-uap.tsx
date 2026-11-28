@@ -203,7 +203,7 @@ async function main() {
   // Compare with previous results
   const prevResults = JSON.parse(
     readFileSync(
-      '/home/cogtek/dev/miller-tech/universal-agent-protocol/benchmark-results/qwen35_direct_uap/qwen35_direct_uap_2026-03-11T01-54-38.json',
+      join(process.cwd(), 'benchmark-results', 'qwen35_direct_uap', 'qwen35_direct_uap_2026-03-11T01-54-38.json'),
       'utf8'
     )
   );

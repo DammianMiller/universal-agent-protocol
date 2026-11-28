@@ -171,7 +171,7 @@ context size. The entry below is **measured on this machine**, not estimated:
       "display": "Qwen3.8 Flash Next",
       "engine": "strata",
       "unit": "uap-strata-server",
-      "launch": "/home/cogtek/dev/strata/run-iq3_xxs.sh",
+      "launch": "~/dev/strata/run-iq3_xxs.sh",
       "endpoint": "http://127.0.0.1:8080",
       "rails": 1,
       "rails_source": "metrics:expert_slots",

@@ -24,11 +24,15 @@ import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import { createReadStream, existsSync, mkdirSync, renameSync, statSync } from 'fs';
 import { homedir } from 'os';
-import { basename, dirname, isAbsolute, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, resolve } from 'path';
 
 /** One declared model file: where it must live, and how to recognize it. */
 export interface ModelFileManifest {
-  /** Absolute destination path on this machine. */
+  /**
+   * Destination path on this machine. Absolute, or `~`-relative to the
+   * operator's home (expanded at use) — the `~` form is what a registry
+   * committed to a shared repo uses, so no machine's username ships in it.
+   */
   path: string;
   /** Hugging Face repo id (e.g. "jakeatx/Qwen3.8-27B-ATX-IQ4_XS-M-GGUF"). */
   repo?: string;
@@ -60,6 +64,17 @@ export const defaultRunCurl: RunCurl = (args) =>
       resolvePromise({ code: err && typeof err.code === 'number' ? err.code : 0, stderr: String(stderr ?? '') });
     });
   });
+
+/**
+ * Expand a leading `~` to the operator's home. Everything else passes
+ * through untouched, so absolute paths (the pre-`~` registry form and every
+ * CLI-supplied path) behave exactly as before.
+ */
+export function expandHomePath(path: string): string {
+  if (path === '~') return homedir();
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2));
+  return path;
+}
 
 /** Filename inside the repo for a manifest entry. */
 export function manifestRepoFile(entry: ModelFileManifest): string {
@@ -97,13 +112,14 @@ export async function fileState(
   entry: ModelFileManifest,
   opts: { verifySha?: boolean } = {},
 ): Promise<FileState> {
-  if (!existsSync(entry.path)) return { status: 'missing', path: entry.path };
-  const bytes = statSync(entry.path).size;
+  const path = expandHomePath(entry.path);
+  if (!existsSync(path)) return { status: 'missing', path: entry.path };
+  const bytes = statSync(path).size;
   if (entry.bytes !== undefined && bytes !== entry.bytes) {
     return { status: 'size-mismatch', path: entry.path, bytes, expectedBytes: entry.bytes };
   }
   if (opts.verifySha === true && entry.sha256) {
-    const got = await sha256File(entry.path);
+    const got = await sha256File(path);
     if (got !== entry.sha256) {
       return { status: 'sha-mismatch', path: entry.path, bytes, expectedSha256: entry.sha256 };
     }
@@ -145,19 +161,20 @@ export async function downloadModelFile(
   opts: { runCurl?: RunCurl } = {},
 ): Promise<{ ok: true; bytes: number } | { ok: false; error: string }> {
   if (!isRepairable(entry)) return { ok: false, error: `no repo recorded for ${entry.path}` };
-  if (!downloadTargetSafe(entry.path)) {
+  const dest = expandHomePath(entry.path);
+  if (!downloadTargetSafe(dest)) {
     return { ok: false, error: `refusing to download outside $HOME: ${entry.path}` };
   }
-  if (existsSync(entry.path)) {
-    const bytes = statSync(entry.path).size;
+  if (existsSync(dest)) {
+    const bytes = statSync(dest).size;
     if (entry.bytes === undefined || bytes === entry.bytes) {
       return { ok: true, bytes };
     }
   }
   const runCurl = opts.runCurl ?? defaultRunCurl;
-  const part = `${entry.path}.part`;
+  const part = `${dest}.part`;
   const url = hfResolveUrl(entry);
-  mkdirSync(dirname(entry.path), { recursive: true });
+  mkdirSync(dirname(dest), { recursive: true });
   const authArgs = process.env.HF_TOKEN
     ? ['-H', `Authorization: Bearer ${process.env.HF_TOKEN}`]
     : [];
@@ -182,8 +199,8 @@ export async function downloadModelFile(
       return { ok: false, error: `sha256 mismatch after download (${url}); .part kept for resume` };
     }
   }
-  renameSync(part, entry.path);
-  return { ok: true, bytes: statSync(entry.path).size };
+  renameSync(part, dest);
+  return { ok: true, bytes: statSync(dest).size };
 }
 
 /** What `ensure` did, in one printable summary. */

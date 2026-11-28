@@ -58,7 +58,7 @@
       "engine": "strata",
       "unit": "uap-strata-server",
       "service": "strata-server",
-      "launch": "/home/cogtek/dev/strata/run-abliterated-iq3_s.sh",
+      "launch": "~/dev/strata/run-abliterated-iq3_s.sh",
       "endpoint": "http://127.0.0.1:8080",
       "task_affinity": [
         "code",
@@ -74,10 +74,10 @@
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-base-iq3s-server",
-          "note": "The switchable ISTA-DASLab base GSQ-RCO IQ3_S arm (panel arm strata-base-iq3s, unit uap-strata-base-iq3s-server.service, switch ~/.config/uap/model-switch.sh strata-base-iq3s) - the :8080 default 2026-11-17 morning -> evening, until the operator's same-day follow-up reinstated the DavidAU abliterated IQ3_S tier as the default; weights + pack + config STAY ON DISK (models/IQ3_S, packs/iq3_s, strata-iq3_s.json - nothing removed), so this manifest re-verifies on demand and the arm restores in one switch. The pristine base-model quant: ISTA-DASLab GSQ-RCO IQ3_S of Qwen3.8-Flash-Next, 2 shards, both sha256-verified by setup.py against the Hub LFS oids at the pinned rev (shard 2 is the 28.8 GB tier-shared PLE n-gram table, byte-identical across the GSQ-RCO tiers, hardlinked at install from the since-removed abliterated-IQ3_S copy - zero re-download). Config strata-iq3_s.json carries the fleet IQ3_S posture raised to the 196608 pool by the #918 round (setup.py --setup --family qwen --model IQ3_S --yes --no-start --data-dir /home/cogtek/models/strata-data --context 196608 --vision cpu --kv int8 --vram-reserve-mib 3072 --drafter mtp; pack strata-data/packs/iq3_s: 1079 tensors, 302 native, arena 1.43 GiB; mtp/rt draft head + data/expert-profile.bin reused) with the two hand corrections to setup's choices per this box's OOM doctrine (the 11-11 evening log in uap-strata-server.service): --resident-budget-gib 40 RESTORED (setup wanted all experts in RAM - never full-pin on this co-tenant box) and --ple-io ram REMOVED (the 29 GB table stays SSD-backed, page-cache reclaimable). Spec 12 / spec-min-p 0.70 / mtp_max 8 per live /metrics 2026-11-17. Advertises qwen3.8-flash-next-gsq-rco-iq3_s at /v1/models when serving - deliberately NOT the historical qwen3.8-flash-next-iq3_s, which stays in retired_local_aliases; the arm's own alias is NOT in the retired list (switchable, not retired). Run `uap models measure` against it before placement loads it (fail-closed).",
+          "note": "The switchable ISTA-DASLab base GSQ-RCO IQ3_S arm (panel arm strata-base-iq3s, unit uap-strata-base-iq3s-server.service, switch ~/.config/uap/model-switch.sh strata-base-iq3s) - the :8080 default 2026-11-17 morning -> evening, until the operator's same-day follow-up reinstated the DavidAU abliterated IQ3_S tier as the default; weights + pack + config STAY ON DISK (models/IQ3_S, packs/iq3_s, strata-iq3_s.json - nothing removed), so this manifest re-verifies on demand and the arm restores in one switch. The pristine base-model quant: ISTA-DASLab GSQ-RCO IQ3_S of Qwen3.8-Flash-Next, 2 shards, both sha256-verified by setup.py against the Hub LFS oids at the pinned rev (shard 2 is the 28.8 GB tier-shared PLE n-gram table, byte-identical across the GSQ-RCO tiers, hardlinked at install from the since-removed abliterated-IQ3_S copy - zero re-download). Config strata-iq3_s.json carries the fleet IQ3_S posture raised to the 196608 pool by the #918 round (setup.py --setup --family qwen --model IQ3_S --yes --no-start --data-dir ~/models/strata-data --context 196608 --vision cpu --kv int8 --vram-reserve-mib 3072 --drafter mtp; pack strata-data/packs/iq3_s: 1079 tensors, 302 native, arena 1.43 GiB; mtp/rt draft head + data/expert-profile.bin reused) with the two hand corrections to setup's choices per this box's OOM doctrine (the 11-11 evening log in uap-strata-server.service): --resident-budget-gib 40 RESTORED (setup wanted all experts in RAM - never full-pin on this co-tenant box) and --ple-io ram REMOVED (the 29 GB table stays SSD-backed, page-cache reclaimable). Spec 12 / spec-min-p 0.70 / mtp_max 8 per live /metrics 2026-11-17. Advertises qwen3.8-flash-next-gsq-rco-iq3_s at /v1/models when serving - deliberately NOT the historical qwen3.8-flash-next-iq3_s, which stays in retired_local_aliases; the arm's own alias is NOT in the retired list (switchable, not retired). Run `uap models measure` against it before placement loads it (fail-closed).",
           "files": [
             {
-              "path": "/home/cogtek/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+              "path": "~/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
               "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
               "rev": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
@@ -85,7 +85,7 @@
               "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+              "path": "~/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
               "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
               "rev": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
@@ -101,7 +101,7 @@
           "note": "LIVE :8080 ARM since 2026-11-18 (its own unit uap-speedy-base-iq3s-server.service, inference-panel id speedy-base; engine 0.1.53, 131072 pool, spec 8/MTP 8/min-p 0.70, int8 KV): the IQ3_S-only panel round switched the serving default to this ISTA base preset. History: the uap-speedy-server unit (that unit is now the parked A/B arm) switched to the DavidAU abliterated set 2026-11-17 evening (speedy-abliterated-iq3_s.json, the speedy-abliterated-iq3_s entry). The flash-next ENGINE A/B arm - switched 2026-11-17 in the same operator round that made the strata IQ3_S arm the default (the unsloth v31 set it served since 2026-11-15 was removed the same day): DevDock-AI/Speedy 0.4.7 (master 36e827fe, a measured/tuned fork of Strata v0.2.7.1 for Flash-Next on RTX 30-class cards; built at ~/dev/speedy/build/strata, CUDA 13.4 from ~/cuda-13.4 + host gcc-13, CMAKE_CUDA_ARCHITECTURES=86 native sm_86 SASS) serving the SAME ISTA-DASLab GSQ-RCO IQ3_S 2-shard set as the strata-iq3_s arm - pack packs/iq3_s, mtp/rt and the GGUF shards below are all REUSED (zero new weight disk), so the ENGINE is the only variable between the arms. Config speedy-iq3_s.json = the fork's v31 production preset flag-for-flag with the IQ3_S deltas (spec 8 / spec-min-p 0.70 drafting parity, env STRATA_PF_FUSED=1, drafting mtp pinned, int8 KV resident 32768, --resident-budget-gib 40 - never full-pin, the 10-28 OOM doctrine). Advertises qwen3.8-flash-next-speedy-gsq-rco-iq3_s at /v1/models when serving. Unit uap-speedy-server.service (inference-panel id speedy; OOMPolicy=continue strata-arm doctrine). The fork's upstream measured gains are NOT inherited - unmeasured on this 3090 until `uap models measure` records it (fail-closed).",
           "files": [
             {
-              "path": "/home/cogtek/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+              "path": "~/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
               "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
               "rev": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
@@ -109,7 +109,7 @@
               "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+              "path": "~/models/strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
               "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
               "rev": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
@@ -122,7 +122,7 @@
           "status": "unmeasured",
           "engine": "strata",
           "unit": "uap-strata-swift-server",
-          "note": "Swift 1.5 (UkisAI reasoning-efficient Flash-Next post-train) GSQ-RCO IQ3_S on the strata engine; A/B trial vs strata-iq3_s since 2026-10-17 with identical tuning (spec 8/0.70, vram-reserve 3072, int8 KV resident 32768, 131k). Weights: ukisai Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, sha256-verified, PLE table in shard 1 (setup-detected); pack strata-data/packs/swift-iq3_s; config strata-swift-iq3_s.json behind uap-strata-server.service (revert: point the unit --config back at strata-iq3_s.json, daemon-reload, restart). Run `uap models measure` to record this machine's footprint before it can load (fail-closed). Trial evidence: /home/cogtek/dev/strata/bench/results/2026-10-17-swift-iq3s-trial/. WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default): the local shards + pack are deleted; this pinned manifest is the re-fetch path (`uap models ensure` restores them before a switch to this arm)."
+          "note": "Swift 1.5 (UkisAI reasoning-efficient Flash-Next post-train) GSQ-RCO IQ3_S on the strata engine; A/B trial vs strata-iq3_s since 2026-10-17 with identical tuning (spec 8/0.70, vram-reserve 3072, int8 KV resident 32768, 131k). Weights: ukisai Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, sha256-verified, PLE table in shard 1 (setup-detected); pack strata-data/packs/swift-iq3_s; config strata-swift-iq3_s.json behind uap-strata-server.service (revert: point the unit --config back at strata-iq3_s.json, daemon-reload, restart). Run `uap models measure` to record this machine's footprint before it can load (fail-closed). Trial evidence: ~/dev/strata/bench/results/2026-10-17-swift-iq3s-trial/. WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default): the local shards + pack are deleted; this pinned manifest is the re-fetch path (`uap models ensure` restores them before a switch to this arm)."
         },
         "strata-abliterated-iq2_xs": {
           "status": "unmeasured",
@@ -131,14 +131,14 @@
           "note": "The :8080 default arm 2026-10-28 -> 2026-11-11, then AGAIN since 2026-11-13 (the operator switched the fleet back from the v31 default; DavidAU abliterated Flash-Next at IQ2_XS, full expert pinning without the IQ3_S RAM-OOM risk; config strata-abliterated-iq2_xs.json, unit uap-strata-abliterated-server.service, spec 12 / spec-min-p 0.7 / mtp_max 8 MTP per live /metrics 2026-11-13; switch away: ~/.config/uap/model-switch.sh strata|strata-swift). Raw GGUF shards declared here: the pack (strata-data/packs/abliterated-iq2_xs) is derived from them by tools/iq_pack.py and rebuilds from these files; shard 2 is byte-identical across the repo's tiers (verified 2026-10-28). WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default): the local shards + pack are deleted; this pinned manifest is the re-fetch path (`uap models ensure` restores them before a switch to this arm).",
           "files": [
             {
-              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
+              "path": "~/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
               "repo": "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
               "bytes": 39665015072,
               "sha256": "4acc3ebb5050d20117bdc77fc39200e709dfe2b2367f3522c95b9112a30aff81"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00002-of-00002.gguf",
+              "path": "~/models/strata-data/models/abliterated-IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00002-of-00002.gguf",
               "repo": "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00002-of-00002.gguf",
               "bytes": 28800138432,
@@ -153,7 +153,7 @@
           "note": "The :8080 default arm since 2026-11-17 evening (operator follow-up to the morning ISTA switch, same day): the DavidAU abliterated Turbo-Brilliance-50x GSQ-RCO IQ3_S tier of Qwen3.8-Flash-Next - REINSTATED, the exact set the fleet ran 2026-10-23 -> 2026-10-28 (removed with the other flash-next quants that morning; the reinstatement deleted nothing). Re-fetch: shard 1 (55,063,664,928 B) sha256-verified against the Hub LFS oid at the pinned rev 623b419b; shard 2 is the 28.8 GB tier-shared PLE n-gram table, byte-identical across the GSQ-RCO tiers, hardlinked from the live ISTA base copy (zero re-download, one inode); mmproj reused (sha-identical across the release). Pack strata-data/packs/abliterated-iq3_s rebuilt via tools/iq_pack.py from the shards (1079 tensors, 302 native, arena 1.43 GiB, tokenizer pre qwen35 vocab 248320); mtp/rt draft head + data/expert-profile.bin reused. Config strata-abliterated-iq3_s.json realigned to the fleet posture: --ple-gguf shard 2 explicit, mmproj vision on CPU, drafting mtp pinned, int8 KV resident 32768, --resident-budget-gib 40 (never full-pin - the 10-28 OOM doctrine), max-context 196608 (the #918 pool raise). Live /metrics 2026-11-17: engine 0.1.60.1, spec 12 / spec-min-p 0.70 / mtp_max 8, tool-call smoke clean. Advertises abliterated-iq3_s at /v1/models. Unit uap-strata-server.service (OOMPolicy=continue doctrine). Switch: ~/.config/uap/model-switch.sh strata (revert: strata-base-iq3s - the ISTA base stays installed switchable). Run `uap models measure` against it before placement loads it (fail-closed).",
           "files": [
             {
-              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
+              "path": "~/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
               "repo": "DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF",
               "rev": "623b419bd443e6e76ec51ca4b95d951da93c6969",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
@@ -161,7 +161,7 @@
               "sha256": "78706315c2fe912777c006b4ae18be1024c9f4353bd25d33b8a306c9c55f9e34"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf",
+              "path": "~/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf",
               "repo": "DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF",
               "rev": "623b419bd443e6e76ec51ca4b95d951da93c6969",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf",
@@ -177,7 +177,7 @@
           "note": "The unsloth IQ3_S-CLASS arm \u2014 user-directed 2026-11-14: unsloth/Qwen3.8-Flash-Next-GGUF ships NO IQ3_S tier; its 3-bit ladder is UD-IQ3_XXS (3.0 bpw, 83.6 GB) and UD-Q3_K_XL (3.5 bpw, 89.5 GB), and UD-Q3_K_XL is the same bpw class as the fleet's IQ3_S arms \u2014 the tier staged here. Set: the 4-shard UD-Q3_K_XL release at rev 39e6e4a8 (Better UD 3.1 quants); shards 1-3 downloaded (10.9 MB + 49.7 GB + 10.9 GB, sha256 = the HF LFS oids); shard 4 is NOT the set's native 28.8 GB IQ4_NL engram but the Q8_0 engram (engram/Qwen3.8-Flash-Next-engram-Q8_0.gguf_file, 54.4 GB, upstream oid e3d76a27...) restamped split.no=3/count=4 via unsloth's set_split.py and HARDLINKED from the v31 set's shard 4 \u2014 zero extra disk, the measured-best table (+19-22% long-prompt decode vs IQ4_NL, the 11-13 swap round); the sha256 below is the LOCAL post-restamp hash (what the .done marker verifies), same as the v31 set's shard-4 marker. Config strata-unsloth-ud-q3_k_xl.json \u2014 the v31 posture flag-for-flag (spec 4 window auto-negotiates 12/4, spec-min-p 0.5, --mtp mtp/rt, int8 KV resident 32768, 131k ctx, --vision shared mmproj, vram-reserve 3072) with --resident-budget-gib 40 (the Q3_K_XL expert set is smaller than v31's \u2014 more headroom; never full-pin, see the 10-28 OOM doctrine in uap-strata-abliterated-server.service). Pack packs/unsloth-ud-q3_k_xl (tools/iq_pack.py, from the set). Unit uap-strata-unsloth-q3_k_xl-server.service (OOMPolicy=continue doctrine), advertises qwen3.8-flash-next-unsloth-ud-q3_k_xl at /v1/models. Switch: model-switch.sh strata-unsloth-q3_k_xl (revert: strata or any arm). Run `uap models measure` against it before placement loads it (fail-closed). WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default): the local shards + pack are deleted; this pinned manifest is the re-fetch path (`uap models ensure` restores them before a switch to this arm).",
           "files": [
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00004.gguf",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
               "rev": "39e6e4a86cc6517a6f39ef37adce5e9f3a81280c",
               "file": "UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00004.gguf",
@@ -185,7 +185,7 @@
               "sha256": "7666000ba91eb5527f8e12e0414de36766dc82a082876337f7827c2caa859143"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00004.gguf",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
               "rev": "39e6e4a86cc6517a6f39ef37adce5e9f3a81280c",
               "file": "UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00004.gguf",
@@ -193,7 +193,7 @@
               "sha256": "e954cb3044ae087a003ce8cc1631c9d40fe15ae64a8befcf4aa06457848c647c"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00004.gguf",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
               "rev": "39e6e4a86cc6517a6f39ef37adce5e9f3a81280c",
               "file": "UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00004.gguf",
@@ -201,7 +201,7 @@
               "sha256": "fcce26b1e5e6e54559a7e7c2f8d6e37067ec695ff1f14bce662810bde78abe1f"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00004-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00004-of-00004.gguf",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
               "rev": "39e6e4a86cc6517a6f39ef37adce5e9f3a81280c",
               "file": "engram/Qwen3.8-Flash-Next-engram-Q8_0.gguf_file",
@@ -217,7 +217,7 @@
           "note": "The :8080 default arm 2026-11-11 -> 2026-11-13 (the PRISTINE base-model quant: Unsloth Dynamic v3.1 UD-IQ4_XS Qwen3.8-Flash-Next, 4 shards; config strata-unsloth-ud-iq4_xs-v31.json, spec 12 / spec-min-p 0.5 / mtp_max 4 MTP, 40 GiB resident expert budget + SSD streaming, int8 KV resident 32768, mmproj vision, 131k pool); the fleet switched back to strata-abliterated-iq2_xs on 2026-11-13, kept switchable via ~/.config/uap/model-switch.sh strata. Raw GGUF shards declared here: the pack (strata-data/packs/unsloth-ud-iq4_xs-v31) is derived from them by tools/iq_pack.py (see its conversions.json) and rebuilds from these files. Provenance is pinned (repo + repo-subfolder `file` + `rev`, from feature/376): bytes + sha256 below are the download-time .done markers, verified against shard 1 on 2026-11-12, so `uap models ensure` can re-fetch and verify from this pin. WEIGHTS REMOVED 2026-11-17 (operator request, the same round that made the ISTA-DASLab base IQ3_S arm the default - the set this config served as the default 2026-11-11 -> 2026-11-17): the local shards + pack are deleted; this pinned manifest is the re-fetch path.",
           "files": [
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
               "bytes": 10946618,
               "sha256": "93ff23a08e5cd7501f24fa16f5b415d5807d0175e04edd3ed6a7a41b601a4eef",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
@@ -225,7 +225,7 @@
               "rev": "d96201194f103c906994f283f504209dc8d2a10c"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf",
               "bytes": 49604491008,
               "sha256": "13d5dc8b93d039e4cfade5a9af7037f10c97f7ec4e53f75bd2e9ae34aae54aeb",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
@@ -233,7 +233,7 @@
               "rev": "d96201194f103c906994f283f504209dc8d2a10c"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00004.gguf",
               "bytes": 15256783680,
               "sha256": "f6b9b5934908a2043732269dd740155d0f921d0763a1dcdd3452246311651f87",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
@@ -241,7 +241,7 @@
               "rev": "d96201194f103c906994f283f504209dc8d2a10c"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf",
               "bytes": 28800138432,
               "sha256": "5de8b5dbf89409acc39468decafd4a4a95b13c29d88a14b0356107897829ec36",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
@@ -257,7 +257,7 @@
           "note": "The flash-next ENGINE A/B arm \u2014 user-directed 2026-11-15: DevDock-AI/Speedy 0.4.7 (master 36e827fe), a measured/tuned fork of Strata v0.2.7.1 (Niko1221/Strata, MIT; the fork's own additions under the Speedy Personal & Non-Commercial License v1.0) built for Qwen3.8-Flash-Next on RTX 30-class cards, serving the SAME Unsloth Dynamic v3.1 UD-IQ4_XS 4-shard set as the strata-unsloth-ud-iq4_xs-v31 default \u2014 pack packs/unsloth-ud-iq4_xs-v31, MTP draft head mtp/rt and the GGUF shards below are all REUSED from strata-data (zero new weight disk), so the ENGINE is the only variable between the two arms. Built at ~/dev/speedy/build/strata (CUDA 13.4 from ~/cuda-13.4 + host gcc-13, CMAKE_CUDA_ARCHITECTURES=86 native sm_86 SASS, STRATA_MMQ_KQUANTS + STRATA_MMQ_TQ_OVERLAY + STRATA_NATIVE_EXPERTS + STRATA_Q6K_EXPERTS per the fork's docs/BUILD-LINUX.md); serve layer and config schema = the strata family (serve/server.py --engine strata, so /health, /v1/models, tool calls and the GGUF-embedded chat template behave like every strata arm, plus the fork's STRATA_TOOLCALL_REPAIR=1 malformed tool-call repair from 0.4.5). Config speedy-unsloth-ud-iq4_xs-v31.json = the fork's 1x UD-IQ4_XS production preset (conversation-cache 8192 MiB, adapt-async 1 / adapt-swaps 80, pool-affinity measure, draft_vocab en, reasoning medium / 16k budget, the fork's tuned env block) with the fleet posture deltas: 131k ctx (the fork's 229K-native and 1M tiers are later tuning rounds), int8 KV resident 32768, vram-reserve 3072 (desktop co-tenancy), --resident-budget-gib 40 (never full-pin \u2014 the 10-28 OOM doctrine). Advertises qwen3.8-flash-next-speedy-ud-iq4_xs-v31 at /v1/models. Unit uap-speedy-server.service (inference-panel id speedy; OOMPolicy=continue strata-arm doctrine). Switch: ~/.config/uap/model-switch.sh speedy (revert: strata or any arm). The fork's upstream measured gains (2x RTX 3080-class vs Strata 0.1.45 on their reference rig \u2014 the upstream engine-release numbering, a different line than this fleet's 0.1.59.1 \u2014 IQ4_XS: prefill +156%, decode +55%) are NOT inherited \u2014 unmeasured on this 3090 until `uap models measure` records it (fail-closed). WEIGHTS REMOVED 2026-11-17 (operator request, the same round that switched both arms to the ISTA-DASLab base IQ3_S set): the local shards + pack are deleted; this pinned manifest is the re-fetch path.",
           "files": [
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
               "bytes": 10946618,
               "sha256": "93ff23a08e5cd7501f24fa16f5b415d5807d0175e04edd3ed6a7a41b601a4eef",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
@@ -265,7 +265,7 @@
               "rev": "d96201194f103c906994f283f504209dc8d2a10c"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00004.gguf",
               "bytes": 49604491008,
               "sha256": "13d5dc8b93d039e4cfade5a9af7037f10c97f7ec4e53f75bd2e9ae34aae54aeb",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
@@ -273,7 +273,7 @@
               "rev": "d96201194f103c906994f283f504209dc8d2a10c"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00004.gguf",
               "bytes": 15256783680,
               "sha256": "f6b9b5934908a2043732269dd740155d0f921d0763a1dcdd3452246311651f87",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
@@ -281,7 +281,7 @@
               "rev": "d96201194f103c906994f283f504209dc8d2a10c"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf",
+              "path": "~/models/strata-data/models/unsloth-UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf",
               "bytes": 28800138432,
               "sha256": "5de8b5dbf89409acc39468decafd4a4a95b13c29d88a14b0356107897829ec36",
               "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
@@ -297,7 +297,7 @@
           "note": "The flash-next ENGINE A/B arm on the DavidAU abliterated IQ3_S set - switched 2026-11-17 evening in the same operator round that reinstated the abliterated strata default: DevDock-AI/Speedy 0.4.7 (master 36e827fe, a measured/tuned fork of Strata v0.2.7.1 for Flash-Next on RTX 30-class cards; built at ~/dev/speedy/build/strata, CUDA 13.4 from ~/cuda-13.4 + host gcc-13, CMAKE_CUDA_ARCHITECTURES=86 native sm_86 SASS) serving the SAME 2-shard DavidAU set as the strata-abliterated-iq3_s default - pack packs/abliterated-iq3_s, mtp/rt and the GGUF shards below are all REUSED (zero new weight disk), so the ENGINE is the only variable between the arms (the 2026-11-15 invariant, carried to the reinstated set). Config speedy-abliterated-iq3_s.json = the fork's IQ3_S preset flag-for-flag repointed (pack/native/--ple-gguf/tokenizer deltas, spec 8 / spec-min-p 0.70 drafting parity - the fork reports spec window 8, mtp_max 8 per live /metrics 2026-11-17, env STRATA_PF_FUSED=1, drafting mtp pinned, int8 KV resident 32768, vram-reserve 3072, --resident-budget-gib 40, max-context 196608 per the #918 posture). Advertises qwen3.8-flash-next-speedy-abliterated-iq3_s at /v1/models. Unit uap-speedy-server.service (inference-panel id speedy; OOMPolicy=continue strata-arm doctrine). Switch: ~/.config/uap/model-switch.sh speedy (revert: strata or any arm). The fork's upstream measured gains are NOT inherited - unmeasured on this 3090 until `uap models measure` records it (fail-closed).",
           "files": [
             {
-              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
+              "path": "~/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
               "repo": "DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF",
               "rev": "623b419bd443e6e76ec51ca4b95d951da93c6969",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
@@ -305,7 +305,7 @@
               "sha256": "78706315c2fe912777c006b4ae18be1024c9f4353bd25d33b8a306c9c55f9e34"
             },
             {
-              "path": "/home/cogtek/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf",
+              "path": "~/models/strata-data/models/abliterated-IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf",
               "repo": "DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF",
               "rev": "623b419bd443e6e76ec51ca4b95d951da93c6969",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf",
@@ -354,7 +354,7 @@
           "kv_kind": "int8_per_token_head",
           "measured_at": "2026-11-19T21:56:00.000Z",
           "measured_on": "gpu0",
-          "note": "LIVE :8080 ARM since 2026-11-19 18:37 (its own unit uap-hyperqwen-server.service, inference-panel id hyperqwen; syv-ai/HyperQwen patched vLLM 0.33.0 — unit description: SPEC=mtp CTX=long PTH_FA=1 int8-KV pth-flash-attn, 118k ctx, MTP k=3). Weights: Qwen3.8-27B-W4A16-AutoRound-fast at /home/cogtek/dev/HyperQwen/models/Qwen3.8-27B-W4A16-AutoRound-fast (W4A16 AutoRound; --language-model-only, NO vision on this arm). Serves OpenAI-shaped /v1 only — no llama.cpp-shaped /props or /slots, /metrics is Prometheus text (`uap models measure` fails closed on it until the probe learns Prometheus; these numbers are hand-measured same-day, the exl3 precedent). THE ALIAS IS ENFORCED: vLLM answers 404 for any model id except qwen3.8-27b on the direct route (fleet log 2026-11-19 18:39:37), unlike the strata/speedy arms which ignore requested ids; through the :4000 proxy every id maps. --max-model-len 118784 caps a single request (the proxy's margin math keeps totals at or under 111412); kv-cache-memory 4819457484 bytes fixed int8_per_token_head; prefix caching on; Qwen-Sharp chat template; tools via qwen3_coder parser + auto tool choice; MTP k=3 probabilistic drafting. Measured 2026-11-19: 82.7 tok/s fresh decode (400 tok / 4.835 s), 69.4 tok/s at 101728-token prompt depth (1000 tok / 14.40 s), MTP per-position acceptance 0.869/0.686/0.577 (avg draft acceptance 50.8-71.7%, mean acceptance length 2.52-3.13), prefix cache hit 54%. GPU: nvidia-smi compute apps EngineCore 20202 MiB of the 24576 MiB card; host cgroup 5.3G current, 19.1G peak. The 2026-11-18 llama external-draft arm (18-19.4 tok/s) is history — this arm is ~4x that on decode."
+          "note": "LIVE :8080 ARM since 2026-11-19 18:37 (its own unit uap-hyperqwen-server.service, inference-panel id hyperqwen; syv-ai/HyperQwen patched vLLM 0.33.0 — unit description: SPEC=mtp CTX=long PTH_FA=1 int8-KV pth-flash-attn, 118k ctx, MTP k=3). Weights: Qwen3.8-27B-W4A16-AutoRound-fast at ~/dev/HyperQwen/models/Qwen3.8-27B-W4A16-AutoRound-fast (W4A16 AutoRound; --language-model-only, NO vision on this arm). Serves OpenAI-shaped /v1 only — no llama.cpp-shaped /props or /slots, /metrics is Prometheus text (`uap models measure` fails closed on it until the probe learns Prometheus; these numbers are hand-measured same-day, the exl3 precedent). THE ALIAS IS ENFORCED: vLLM answers 404 for any model id except qwen3.8-27b on the direct route (fleet log 2026-11-19 18:39:37), unlike the strata/speedy arms which ignore requested ids; through the :4000 proxy every id maps. --max-model-len 118784 caps a single request (the proxy's margin math keeps totals at or under 111412); kv-cache-memory 4819457484 bytes fixed int8_per_token_head; prefix caching on; Qwen-Sharp chat template; tools via qwen3_coder parser + auto tool choice; MTP k=3 probabilistic drafting. Measured 2026-11-19: 82.7 tok/s fresh decode (400 tok / 4.835 s), 69.4 tok/s at 101728-token prompt depth (1000 tok / 14.40 s), MTP per-position acceptance 0.869/0.686/0.577 (avg draft acceptance 50.8-71.7%, mean acceptance length 2.52-3.13), prefix cache hit 54%. GPU: nvidia-smi compute apps EngineCore 20202 MiB of the 24576 MiB card; host cgroup 5.3G current, 19.1G peak. The 2026-11-18 llama external-draft arm (18-19.4 tok/s) is history — this arm is ~4x that on decode."
         },
         "llama-mtp": {
           "status": "unmeasured",
@@ -363,7 +363,7 @@
           "profile": "config/llama-profiles/qwen38-27b-mtp.env",
           "files": [
             {
-              "path": "/home/cogtek/Downloads/Qwen3.8-27B-UD-IQ4_XS.gguf",
+              "path": "~/Downloads/Qwen3.8-27B-UD-IQ4_XS.gguf",
               "repo": "unsloth/Qwen3.8-27B-GGUF",
               "file": "Qwen3.8-27B-UD-IQ4_XS.gguf",
               "bytes": 14252845984
@@ -387,11 +387,11 @@
           "unit": "uap-signal-server",
           "files": [
             {
-              "path": "/home/cogtek/models/signal-27b/AP-IQ4_XS/Signal-3.8-27B-AP-IQ4_XS.gguf",
+              "path": "~/models/signal-27b/AP-IQ4_XS/Signal-3.8-27B-AP-IQ4_XS.gguf",
               "bytes": 14252844608
             },
             {
-              "path": "/home/cogtek/models/signal-27b/mmproj-BF16.gguf",
+              "path": "~/models/signal-27b/mmproj-BF16.gguf",
               "bytes": 931146432
             }
           ]
@@ -403,15 +403,15 @@
           "service": "gsq-rco-server",
           "files": [
             {
-              "path": "/home/cogtek/models/qwen3.8-27b-gsq-rco/Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+              "path": "~/models/qwen3.8-27b-gsq-rco/Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
               "bytes": 11771546784
             },
             {
-              "path": "/home/cogtek/models/qwen3.8-27b-gsq-rco/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
+              "path": "~/models/qwen3.8-27b-gsq-rco/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
               "bytes": 12120016960
             },
             {
-              "path": "/home/cogtek/models/qwen3.8-27b-gsq-rco/mmproj-Qwen3.8-27B-BF16.gguf",
+              "path": "~/models/qwen3.8-27b-gsq-rco/mmproj-Qwen3.8-27B-BF16.gguf",
               "bytes": 931146528
             }
           ]
@@ -424,7 +424,7 @@
           "note": "ATX-IQ4_XS-M (4.56 bpw, llamAmpere-tuned recipe: bulk IQ4_XS, Q5_0/Q6_K attention K/V, Q8_0 GDN vectors) on llamAmpere v0.3, the engine+quant pair measured on this GPU class (3090/3090 Ti): 99.4 tok/s clean decode, 93.2 at 100K depth, exact p/q draft verification (output distribution = target's exactly). The 2-rail arm since 2026-10-30, measured live: -c 86016 total / -np 2 = 43008 per rail, q8_0 K + turbo3 V KV (the fused SM86 MMA path), MTP-3 spec decode (70.4% acceptance measured), engine 18,400 MiB with 3,072-3,156 MiB free beside the live desktop \u2014 ~52 tok/s solo decode engine-side at full 318W draw (2 rails buy concurrency, not aggregate). Unit ExecStartPre runs `uap models ensure-by-path` so a deleted GGUF re-downloads before the start fails.",
           "files": [
             {
-              "path": "/home/cogtek/models/atx-iq4xs-m/Qwen3.8-27B-ATX-4-XS.gguf",
+              "path": "~/models/atx-iq4xs-m/Qwen3.8-27B-ATX-4-XS.gguf",
               "repo": "jakeatx/Qwen3.8-27B-ATX-IQ4_XS-M-GGUF",
               "file": "Qwen3.8-27B-ATX-4-XS.gguf",
               "bytes": 15588551712,
@@ -438,7 +438,7 @@
           "unit": "uap-swift-server",
           "files": [
             {
-              "path": "/home/cogtek/models/swift-27b/Swift-Qwen3.8-27B-IQ4_XS.gguf",
+              "path": "~/models/swift-27b/Swift-Qwen3.8-27B-IQ4_XS.gguf",
               "repo": "ukisai/Swift-Qwen3.8-27B-GGUF",
               "file": "Swift-Qwen3.8-27B-IQ4_XS.gguf",
               "bytes": 15688288352,
@@ -453,7 +453,7 @@
           "note": "OpenJet megakernel arm (:8080 default 2026-10-28 daytime, stood down evening for the strata switch-back). The Q4_K_M file under models/qwen3.8-27b-q4km went missing from disk after the arm was stood down \u2014 restored-on-demand via this manifest. unsloth deleted the file from main on 2026-08-19, so the source is the OpenJet catalog's pinned revision (open-jet src/config.py QWEN38_27B_URL).",
           "files": [
             {
-              "path": "/home/cogtek/models/qwen3.8-27b-q4km/Qwen3.8-27B-Q4_K_M.gguf",
+              "path": "~/models/qwen3.8-27b-q4km/Qwen3.8-27B-Q4_K_M.gguf",
               "repo": "unsloth/Qwen3.8-27B-GGUF",
               "file": "Qwen3.8-27B-Q4_K_M.gguf",
               "rev": "566347e99d832d31f6245a577198d10d5bdd389e",
@@ -469,7 +469,7 @@
       "engine": "edge0-strata",
       "unit": "uap-edge0-145b-server.service",
       "service": "edge0-145b-server",
-      "launch": "/home/cogtek/dev/Edge0/edge0-infer/build/cpu/bin/edge0-infer serve --model /home/cogtek/models/Edge0-145B-q3k --port 8080 --alias edge0_145b --strata-arg --vram-reserve-mib --strata-arg 1200",
+      "launch": "~/dev/Edge0/edge0-infer/build/cpu/bin/edge0-infer serve --model ~/models/Edge0-145B-q3k --port 8080 --alias edge0_145b --strata-arg --vram-reserve-mib --strata-arg 1200",
       "endpoint": "http://127.0.0.1:8080",
       "task_affinity": [
         "code",
@@ -488,7 +488,7 @@
           "note": "Edge0 145B (latent-MoE derived from Qwen3.8-Flash-Next; Q3_K gate/up + IQ4_NL down, 48 layers x 512 experts) on the edge0-strata engine \u2014 the Edge0 stack's fork of Strata with latent-MoE kernels. Serves :8080 via edge0-infer serve (OpenAI + Anthropic endpoints), which delegates to edge0-strata build/strata + .venv python; the launch template (edge0-strata/edge0/models/edge0-145b.json) sets expert cache auto, prefill auto, spec 4 / min-p 0.5, MTP, int8 KV and 131k context, and the unit adds only --vram-reserve-mib 1200 for desktop co-tenancy on the 24 GiB 3090. Weights: HF Edge0/Edge0-145B-q3k at the pinned rev (d7de835cfce7): ~103 GiB folder \u2014 40.1 GiB experts SSD-streamed with hot experts in VRAM, 51.2 GiB PLE table read direct from disk (ple-io=direct), du=q8 default (q4 file pinned too), MTP draft in mtp/. The manifest pins every serving file (both du variants, all 48 scales, tokenizer, MTP) so `uap models ensure` can restore any of them; LFS digests are the repo's own LFS oids (verified by huggingface_hub at download time), non-LFS digests computed locally 2026-11-13. inference-panel id edge0-145b (unit uap-edge0-145b-server.service); revert: panel switch or ~/.config/uap/model-switch.sh strata-abliterated. Upstream measured agent decode 121 tok/s (RTX 5090D) / 91.7 tok/s (4090) at Q3_K \u2014 expect 4090-class or lower on the 3090; quality above Qwen3.8-Flash-Next on DeepSWE/Terminal-Bench upstream. Run `uap models measure` to record this machine's footprint before it can load (fail-closed).",
           "files": [
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/model.json",
+              "path": "~/models/Edge0-145B-q3k/model.json",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "model.json",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -496,7 +496,7 @@
               "sha256": "95b8280bf5151e11cf7b0622688172c9572dd8fd13558bb64d7e8edfc8c32ed4"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/index.txt",
+              "path": "~/models/Edge0-145B-q3k/index.txt",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "index.txt",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -504,7 +504,7 @@
               "sha256": "980366930f95ae1b8138652256c3b9be8925b02395d4f093b72410797675a349"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/native_experts.txt",
+              "path": "~/models/Edge0-145B-q3k/native_experts.txt",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "native_experts.txt",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -512,7 +512,7 @@
               "sha256": "0de7b81744e89f722374842a73b8b26a8a6145c645493471a9c10a4f5f566e70"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/experts.bin",
+              "path": "~/models/Edge0-145B-q3k/experts.bin",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "experts.bin",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -520,7 +520,7 @@
               "sha256": "947d15f3d69ecdb45d602a62bc84803451da779a22294e1db5b3568290b42879"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/labels.bin",
+              "path": "~/models/Edge0-145B-q3k/labels.bin",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "labels.bin",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -528,7 +528,7 @@
               "sha256": "ce9b4a20b92c5c866e65d84a3884c104986522471cf11cc5f797a153affbcc06"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/dense.bin",
+              "path": "~/models/Edge0-145B-q3k/dense.bin",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "dense.bin",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -536,7 +536,7 @@
               "sha256": "f9bcc7f36eac4e59a7b1cb1962e038ba12dc831a41fb193761f1d1e72657fb62"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/profile.bin",
+              "path": "~/models/Edge0-145B-q3k/profile.bin",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "profile.bin",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -544,7 +544,7 @@
               "sha256": "543f8a364c8dbfef909ecd1a1d7adbc177d3db18ceecdca1fc568f3eaeb8c655"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/latent_dense_q8.bin",
+              "path": "~/models/Edge0-145B-q3k/latent_dense_q8.bin",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "latent_dense_q8.bin",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -552,7 +552,7 @@
               "sha256": "fbb25caaa0dcf45ef62f1a4945dcf98a53a166934a3b461b166fbafa831d87ca"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/latent_dense_q4.bin",
+              "path": "~/models/Edge0-145B-q3k/latent_dense_q4.bin",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "latent_dense_q4.bin",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -560,7 +560,7 @@
               "sha256": "e31e11f36c7e5a23c82550b524fd44fb28cfa821ef59fd688b8d2339137ab287"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/model-skeleton.gguf",
+              "path": "~/models/Edge0-145B-q3k/model-skeleton.gguf",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "model-skeleton.gguf",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -568,7 +568,7 @@
               "sha256": "ab49fbe7590cdcda45d7a2bcae4be0bd42c6a70b951d594a00eb158d7df0b72f"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/ple-fp8.gguf",
+              "path": "~/models/Edge0-145B-q3k/ple-fp8.gguf",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "ple-fp8.gguf",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -576,7 +576,7 @@
               "sha256": "c7615c59b060277ddf6f84729fa8f7469cfc82c7fb983d6e7eab5a2f7446f170"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/mtp/dense.bin",
+              "path": "~/models/Edge0-145B-q3k/mtp/dense.bin",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "mtp/dense.bin",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -584,7 +584,7 @@
               "sha256": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/mtp/dense.txt",
+              "path": "~/models/Edge0-145B-q3k/mtp/dense.txt",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "mtp/dense.txt",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -592,7 +592,7 @@
               "sha256": "991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/mtp/experts.bin",
+              "path": "~/models/Edge0-145B-q3k/mtp/experts.bin",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "mtp/experts.bin",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -600,7 +600,7 @@
               "sha256": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/mtp/draft_vocab.bin",
+              "path": "~/models/Edge0-145B-q3k/mtp/draft_vocab.bin",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "mtp/draft_vocab.bin",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -608,7 +608,7 @@
               "sha256": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l0.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l0.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l0.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -616,7 +616,7 @@
               "sha256": "ccfb45da4cb91bf0cc19d867472ddfb5c2175640046f6bfc754aa4e344855972"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l1.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l1.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l1.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -624,7 +624,7 @@
               "sha256": "73a4a4964c59fe2ae6eebd994f099fde0389ddf7c49fe5994ea372d7f826a5c6"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l2.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l2.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l2.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -632,7 +632,7 @@
               "sha256": "1e2ad898903d58779bddef0708f6b9b605376f451da7d4a3e092c75921abee0e"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l3.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l3.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l3.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -640,7 +640,7 @@
               "sha256": "5b4b1994bcb00a0e78150152ed4d3eba1c90203f3772fc9d3b01bb133661949a"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l4.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l4.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l4.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -648,7 +648,7 @@
               "sha256": "223b5a8a9fef3fb289915b985f0492db776be6ee4bc794af6bd6b40bc73f5951"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l5.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l5.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l5.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -656,7 +656,7 @@
               "sha256": "2b54008e9681de98a3590ab2d87eccda2f0ce4cfb6a99c91ddea2bfaf7ee9103"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l6.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l6.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l6.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -664,7 +664,7 @@
               "sha256": "7c0475b18ff380f4fc900ef308226b0a98ef855e793add4c1d149a3620a18f30"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l7.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l7.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l7.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -672,7 +672,7 @@
               "sha256": "ffb91ee9d1abf5ce63a07c1cc6f8182849700c9701705c3a386398fde797771b"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l8.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l8.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l8.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -680,7 +680,7 @@
               "sha256": "2ef5f3fdea5a3bc49e8b7cd93a41a793460da3685ed9d0ea10e9aae053c85477"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l9.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l9.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l9.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -688,7 +688,7 @@
               "sha256": "788cb1c638605ac71728913ce4fcb14c008dbbf46982c4c9c9d1f7af90e03ba5"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l10.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l10.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l10.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -696,7 +696,7 @@
               "sha256": "30d4046e0efc59b0ff81d74d1da05f41661d12f3cdc3cade317d646b15aef135"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l11.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l11.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l11.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -704,7 +704,7 @@
               "sha256": "d41bc1a5fc130916cea24416da58d6c3edac68c6a27f24719c885083aef13d8f"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l12.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l12.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l12.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -712,7 +712,7 @@
               "sha256": "877b3eaac39446fe23023a06a643a0783f6604e4a722dcd5ed40e6976cb68408"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l13.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l13.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l13.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -720,7 +720,7 @@
               "sha256": "b62631e02ddf5ae3be123d4385ae1d147a13253e250a4d645a4e5f77673aeaa7"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l14.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l14.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l14.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -728,7 +728,7 @@
               "sha256": "547f5bd37f52a0e913532c90fb7ad11658ac4fabc6b2a28be159c4e07b1e286b"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l15.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l15.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l15.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -736,7 +736,7 @@
               "sha256": "374222a8750c7aa5e72f5a2b05229521931be61f99778b841d571ca1b19ae4d4"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l16.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l16.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l16.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -744,7 +744,7 @@
               "sha256": "de4aaf5ddc41a6b961db1e786929aad539da114495867cc3ee2283f77cb10a0a"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l17.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l17.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l17.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -752,7 +752,7 @@
               "sha256": "c29c3976ce49f137147213a84dece24c4221dae5326f1a0cf45717b03624368b"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l18.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l18.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l18.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -760,7 +760,7 @@
               "sha256": "aaf7450624f01bb074bae633f17432841a3794c8efaa76202f3d259046d2f679"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l19.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l19.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l19.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -768,7 +768,7 @@
               "sha256": "81625f559d0218685104a168d32ac8cabfb271531a8e8e9c8282df25f2754884"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l20.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l20.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l20.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -776,7 +776,7 @@
               "sha256": "0effc90ca93708fc835a5fee3a51a9e4e8e28139e7d289e618bb160fbacc6de4"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l21.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l21.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l21.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -784,7 +784,7 @@
               "sha256": "4643ac0076f9df916418a8ea58ff70dfb5cd3ce8f8220686698dd1011ed70c48"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l22.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l22.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l22.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -792,7 +792,7 @@
               "sha256": "8c15e401e96b52144fab43ca05e312d9cd12a6ced369aff85b55bb4e8233e45d"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l23.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l23.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l23.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -800,7 +800,7 @@
               "sha256": "c737877b64bb32eb444eb497db2b1661c5f92bd35716a2b5ed57fa27c9c5bedc"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l24.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l24.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l24.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -808,7 +808,7 @@
               "sha256": "e708f5923e499b338c1e95b633eef61e75034ec68d8ea1a9579c159cdc372b5b"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l25.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l25.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l25.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -816,7 +816,7 @@
               "sha256": "f0ac87f861b8c85065e09fdef886f957f73e6ef7d42ef86d6bc6e4abe2daafd3"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l26.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l26.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l26.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -824,7 +824,7 @@
               "sha256": "14adbeb9d6dcb10dafe0912d897eb02e2aa6abdb9e0a56f377945697bee02630"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l27.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l27.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l27.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -832,7 +832,7 @@
               "sha256": "1003f7dbacce30b7d2e1d758cfb7057a742bdf648472fcbd63333234f076e515"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l28.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l28.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l28.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -840,7 +840,7 @@
               "sha256": "e912c6d85335fc9ec83635064e523b0efe19fd5ef4de4f299bddfd1203c33693"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l29.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l29.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l29.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -848,7 +848,7 @@
               "sha256": "8c186910f9afcecd23abdbaf2eee52f48360b114f4e47543a41922414db1fd5b"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l30.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l30.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l30.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -856,7 +856,7 @@
               "sha256": "b5cd2e55d0baeed12a8479feb5df830817821a1d00ff24050c451ecdf4913404"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l31.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l31.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l31.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -864,7 +864,7 @@
               "sha256": "b65fc3a4d56ca8ec2bd59b41ca63e0946ce30f27e4380477a79e7bcb868bef34"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l32.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l32.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l32.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -872,7 +872,7 @@
               "sha256": "4590579308a3973129592ced56ff24ed38f3bfe3ef4a8412c9dc2dbd40d170a7"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l33.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l33.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l33.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -880,7 +880,7 @@
               "sha256": "b8e28a6a3a4e68b935d8779bc43f0cca8a7c87e43cfe0cdcb9ce757631c5bd79"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l34.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l34.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l34.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -888,7 +888,7 @@
               "sha256": "bad3b4908fecfd92429cdc1b16c0b00314a8f843f9510b8a87afdd297a348c65"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l35.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l35.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l35.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -896,7 +896,7 @@
               "sha256": "2bc0b3d52dbc8ff6079cf978307698aede8a7ebb0084ba746f6164ce020c4fb1"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l36.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l36.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l36.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -904,7 +904,7 @@
               "sha256": "d6627bdbf25218a3dd429fa752a1ef882fd610eb23b66871b42b078713059356"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l37.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l37.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l37.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -912,7 +912,7 @@
               "sha256": "8afc17ed3b68756be8e5590ecbebb3e36179fabafb71901faf63e67ffe02f244"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l38.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l38.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l38.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -920,7 +920,7 @@
               "sha256": "445fbb2f2365079f06569460e6a905dad3e7f475d23af5ac2b967ab548e27c27"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l39.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l39.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l39.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -928,7 +928,7 @@
               "sha256": "020697f9289610c49dea1b47b72dd7f0f3746352c52b02f7d9d05db9011ddb07"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l40.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l40.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l40.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -936,7 +936,7 @@
               "sha256": "64b0d2d16992197dc7e2f0986f3d71ab0b744b4df0bdbab15bf08450c0919b00"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l41.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l41.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l41.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -944,7 +944,7 @@
               "sha256": "a75175bdc03d571f557d59aede6de9a0e734c61b03cfacc4ceb74c19b3787b7d"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l42.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l42.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l42.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -952,7 +952,7 @@
               "sha256": "e6596c611be63531fbf46fc73c1d1fcf86d38b09cfb27f97ee63571eea4be9cd"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l43.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l43.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l43.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -960,7 +960,7 @@
               "sha256": "e6e2227612938fac5320a81970215dac65bbee6e555573a5a3da7632adfe6087"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l44.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l44.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l44.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -968,7 +968,7 @@
               "sha256": "4187577ae6c484c700dfbf003a698aef48ce27fff9035ba40781abec05b58bf7"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l45.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l45.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l45.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -976,7 +976,7 @@
               "sha256": "270938e5d001b88e23a01d7c0f967ca165f1ac35adeff23f6401365d4d381430"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l46.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l46.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l46.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -984,7 +984,7 @@
               "sha256": "e3c18301cbfdf48eaa11cbb657f0696d3582aad5f68e2c9c27bafa3481b5a4e2"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/scales/l47.f32",
+              "path": "~/models/Edge0-145B-q3k/scales/l47.f32",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "scales/l47.f32",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -992,7 +992,7 @@
               "sha256": "552e22ee2bf8dbce16b68ac95a1146a141443a42e3326f7115d47dbe0ec9b845"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/chat_template.jinja",
+              "path": "~/models/Edge0-145B-q3k/tokenizer/chat_template.jinja",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "tokenizer/chat_template.jinja",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -1000,7 +1000,7 @@
               "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/merges.txt",
+              "path": "~/models/Edge0-145B-q3k/tokenizer/merges.txt",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "tokenizer/merges.txt",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -1008,7 +1008,7 @@
               "sha256": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/token_type.json",
+              "path": "~/models/Edge0-145B-q3k/tokenizer/token_type.json",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "tokenizer/token_type.json",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -1016,7 +1016,7 @@
               "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/tokenizer.json",
+              "path": "~/models/Edge0-145B-q3k/tokenizer/tokenizer.json",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "tokenizer/tokenizer.json",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -1024,7 +1024,7 @@
               "sha256": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf"
             },
             {
-              "path": "/home/cogtek/models/Edge0-145B-q3k/tokenizer/vocab.json",
+              "path": "~/models/Edge0-145B-q3k/tokenizer/vocab.json",
               "repo": "Edge0/Edge0-145B-q3k",
               "file": "tokenizer/vocab.json",
               "rev": "d7de835cfce7d9bb22a3d5ebb7d1e8565d4ecf74",
@@ -1042,7 +1042,7 @@
       "display": "Gemma 4 31B",
       "engine": "llama.cpp",
       "unit": "uap-gemma-server.service",
-      "launch": "/home/cogtek/llama.cpp/build/bin/llama-server --model /home/cogtek/models/gemma-4-31B-it-qat/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf --model-draft /home/cogtek/models/gemma-4-31B-it-qat/mtp-gemma-4-31B-it.gguf --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-n-min 1 --spec-draft-p-min 0.75 --host 127.0.0.1 --port 8080 --threads 32 --ctx-size 49152 --cache-type-k q8_0 --cache-type-v q8_0 --gpu-layers 99 --gpu-layers-draft 99 --flash-attn on --batch-size 512 --ubatch-size 256 --parallel 1 --no-context-shift --n-predict 81920 --temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0 --repeat-penalty 1.0 --jinja --metrics --cache-ram 32768 --prio 2 --alias gemma-4-31b-qat-ud-q4_k-xl-mtp --slot-save-path /home/cogtek/.cache/uap/llama-slots --log-file /home/cogtek/llama.cpp/gemma-4-31b-qat.log",
+      "launch": "~/llama.cpp/build/bin/llama-server --model ~/models/gemma-4-31B-it-qat/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf --model-draft ~/models/gemma-4-31B-it-qat/mtp-gemma-4-31B-it.gguf --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-n-min 1 --spec-draft-p-min 0.75 --host 127.0.0.1 --port 8080 --threads 32 --ctx-size 49152 --cache-type-k q8_0 --cache-type-v q8_0 --gpu-layers 99 --gpu-layers-draft 99 --flash-attn on --batch-size 512 --ubatch-size 256 --parallel 1 --no-context-shift --n-predict 81920 --temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0 --repeat-penalty 1.0 --jinja --metrics --cache-ram 32768 --prio 2 --alias gemma-4-31b-qat-ud-q4_k-xl-mtp --slot-save-path ~/.cache/uap/llama-slots --log-file ~/llama.cpp/gemma-4-31b-qat.log",
       "endpoint": "http://127.0.0.1:8080",
       "task_affinity": [
         "code",
@@ -1061,10 +1061,10 @@
           "status": "unmeasured",
           "engine": "llama.cpp",
           "unit": "uap-gemma-server.service",
-          "note": "Optimal-speed Gemma 4 arm \u2014 user-directed 2026-11-15: Google's flagship DENSE 30.7B IT (60 layers, hybrid attention: 1024-token sliding window + global layers with unified KV, 256K native ctx capped at 48k by the 24 GB VRAM budget \u2014 smoke-evidenced 2026-11-15: the 131k q8_0 KV (5.3 GiB) cudaMalloc-OOMs atop the weights+draft+buffers, 64k+ubatch512 stayed ~700 MiB short against the 4.1 GiB desktop baseline (the hyperqwen gpu-util lesson), and the probed fit is 49152 ctx + ubatch 256 with the MTP head aboard; the box's gemma4 profile doctrine says step ctx down before touching KV quant (q4_0 degrades Gemma, measured) or dropping the MTP head; 48k sits above the yasakani arm's 32k floor, configurable thinking, native function calling, Apache-2.0; MMLU Pro 85.2 / AIME 89.2 / LiveCodeBench 80.0) on llama.cpp master 5a4afd8 (fresh build at /home/cogtek/llama.cpp, CUDA 13.4 from ~/cuda-13.4 + gcc-13, native sm_86 \u2014 the FIRST llama.cpp-arm in the fleet; the Strata family has NO gemma-4 arch support, upstream 0.2.13 included, so this arm builds llama-server directly with no wrapper, the llama.cpp-arm doctrine). QUANT: unsloth/gemma-4-31B-it-qat-GGUF at the pinned rev (43cc1ae) \u2014 Google QAT (quantization-aware-trained) UD-Q4_K_XL 17.3 GB: the memory bandwidth of any 4-bit with higher fidelity, which also lifts MTP acceptance (unsloth measured QAT+MTP 1.5-2.2x on dense Gemma 4; the box's own gemma4-26b profile A/B confirms >2x on dense vs a no-op on the MoE A4B). DRAFTER: mtp-gemma-4-31B-it.gguf 280 MB (the QAT-derived MTP head, Google's separately-trained assistant line) via --model-draft + --spec-type draft-mtp --spec-draft-n-max 4 / n-min 1 / p-min 0.75 \u2014 tune n-max 1-6 by the measured /metrics acceptance after the smoke. KV q8_0 (Gemma is KV-cheap: sliding window on most layers), one slot, 48k ctx, ubatch 256 (probe-fit). Sampling: temp 1.0 / top-p 0.95 / top-k 64 / min-p 0.0, no repeat penalty (Gemma dislikes penalties; loop-steering is proxy-side). --jinja REQUIRED: server-side rendering of the GGUF-embedded <|turn>/<|tool_call> DSL into OpenAI-shaped tool_calls \u2014 without it tool calling silently breaks (the gemma4 profile doctrine, caught pre-smoke). --metrics on (acceptance tuning); --cache-ram 32768 host prompt cache (undersized = 87% of prefill time re-doing evicted work, measured on this box); --prio 2 (decode priority under desktop co-tenancy); --slot-save-path ~/.cache/uap/llama-slots (cross-session slot save/restore, UAP PR #179; the proxy degrades to full reprocessing without it). TEXT-ONLY by design (no mmproj; mmproj-F16 1.2 GB in the same repo is addable later). Advertises gemma-4-31b-qat-ud-q4_k-xl-mtp at /v1/models (the --alias; single alias so the std::set ASCII-first id quirk does not apply). inference-panel id gemma (unit uap-gemma-server.service, branch feature/010-gemma-backend). Switch: ~/.config/uap/model-switch.sh gemma (revert: any arm). Unmeasured on this 3090 until `uap models measure` records it (fail-closed).",
+          "note": "Optimal-speed Gemma 4 arm \u2014 user-directed 2026-11-15: Google's flagship DENSE 30.7B IT (60 layers, hybrid attention: 1024-token sliding window + global layers with unified KV, 256K native ctx capped at 48k by the 24 GB VRAM budget \u2014 smoke-evidenced 2026-11-15: the 131k q8_0 KV (5.3 GiB) cudaMalloc-OOMs atop the weights+draft+buffers, 64k+ubatch512 stayed ~700 MiB short against the 4.1 GiB desktop baseline (the hyperqwen gpu-util lesson), and the probed fit is 49152 ctx + ubatch 256 with the MTP head aboard; the box's gemma4 profile doctrine says step ctx down before touching KV quant (q4_0 degrades Gemma, measured) or dropping the MTP head; 48k sits above the yasakani arm's 32k floor, configurable thinking, native function calling, Apache-2.0; MMLU Pro 85.2 / AIME 89.2 / LiveCodeBench 80.0) on llama.cpp master 5a4afd8 (fresh build at ~/llama.cpp, CUDA 13.4 from ~/cuda-13.4 + gcc-13, native sm_86 \u2014 the FIRST llama.cpp-arm in the fleet; the Strata family has NO gemma-4 arch support, upstream 0.2.13 included, so this arm builds llama-server directly with no wrapper, the llama.cpp-arm doctrine). QUANT: unsloth/gemma-4-31B-it-qat-GGUF at the pinned rev (43cc1ae) \u2014 Google QAT (quantization-aware-trained) UD-Q4_K_XL 17.3 GB: the memory bandwidth of any 4-bit with higher fidelity, which also lifts MTP acceptance (unsloth measured QAT+MTP 1.5-2.2x on dense Gemma 4; the box's own gemma4-26b profile A/B confirms >2x on dense vs a no-op on the MoE A4B). DRAFTER: mtp-gemma-4-31B-it.gguf 280 MB (the QAT-derived MTP head, Google's separately-trained assistant line) via --model-draft + --spec-type draft-mtp --spec-draft-n-max 4 / n-min 1 / p-min 0.75 \u2014 tune n-max 1-6 by the measured /metrics acceptance after the smoke. KV q8_0 (Gemma is KV-cheap: sliding window on most layers), one slot, 48k ctx, ubatch 256 (probe-fit). Sampling: temp 1.0 / top-p 0.95 / top-k 64 / min-p 0.0, no repeat penalty (Gemma dislikes penalties; loop-steering is proxy-side). --jinja REQUIRED: server-side rendering of the GGUF-embedded <|turn>/<|tool_call> DSL into OpenAI-shaped tool_calls \u2014 without it tool calling silently breaks (the gemma4 profile doctrine, caught pre-smoke). --metrics on (acceptance tuning); --cache-ram 32768 host prompt cache (undersized = 87% of prefill time re-doing evicted work, measured on this box); --prio 2 (decode priority under desktop co-tenancy); --slot-save-path ~/.cache/uap/llama-slots (cross-session slot save/restore, UAP PR #179; the proxy degrades to full reprocessing without it). TEXT-ONLY by design (no mmproj; mmproj-F16 1.2 GB in the same repo is addable later). Advertises gemma-4-31b-qat-ud-q4_k-xl-mtp at /v1/models (the --alias; single alias so the std::set ASCII-first id quirk does not apply). inference-panel id gemma (unit uap-gemma-server.service, branch feature/010-gemma-backend). Switch: ~/.config/uap/model-switch.sh gemma (revert: any arm). Unmeasured on this 3090 until `uap models measure` records it (fail-closed).",
           "files": [
             {
-              "path": "/home/cogtek/models/gemma-4-31B-it-qat/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf",
+              "path": "~/models/gemma-4-31B-it-qat/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf",
               "bytes": 17287670048,
               "sha256": "00b5a7c497f0c8934033088c10a7fa9a4c015e46ee6d89e9c6890650ba5d0e71",
               "repo": "unsloth/gemma-4-31B-it-qat-GGUF",
@@ -1072,7 +1072,7 @@
               "rev": "43cc1aeb31adf47ec06a854507ce552cd9862e6f"
             },
             {
-              "path": "/home/cogtek/models/gemma-4-31B-it-qat/mtp-gemma-4-31B-it.gguf",
+              "path": "~/models/gemma-4-31B-it-qat/mtp-gemma-4-31B-it.gguf",
               "bytes": 279955968,
               "sha256": "3a5e99fd8d0b23afb1fccd1ee0c9ebd1f571d00399c2dae2292d217feeec0f6b",
               "repo": "unsloth/gemma-4-31B-it-qat-GGUF",
@@ -1111,7 +1111,7 @@
           "note": "The inkling2 family's basalt ENGINE arm, uplifted 2026-11-25: Basalt 0.5.7 (the 2026-11-24 release; 0.5.6 added parallel-slot batched decode and the CPU compute of RAM experts, 0.5.7 the multi-GPU gpu/gpu-mode/gpu-share settings - one card here, gpu \"0\") at ~/dev/basalt/basalt-v0.5.7-linux-x64 (prebuilt archive + .venv + redist cudart/cuBLAS at cuda-libs, the 0.5.5 install pattern), serving the NATIVE NVFP4-MX8 pack Inkling-2-Mini-NVFP4-MX8.basalt (19.6 GB, sha256 28ec7072 verified at download; upstream's 0.5.6 default pack, needs 0.5.6+): the release's OWN routed experts bit for bit - L0-19 NVFP4 codes+scales, L20-23 MXFP8 codes+UE8M0 scales native on block-scaled tensor cores - Q8_0 projections, BF16 head/embedding + vision encoder + DSpark drafter. Quality by Basalt's own bench: KLD 0.00297 / 97.83% top-1 vs the retired q8 pack's 0.00305 / 97.76%, prompts read ~5% faster at level quality. Posture (config basalt-inkling2-mx8.json, unit uap-basalt-inkling2-server.service, inference-panel id basalt-inkling2): gpu 0, kv fp8 (halves the cache; fp16 the other valid value), max-context 1048576 (the model's FULL window), vision dynamic (the engine's own encoder; 0 VRAM at rest, borrows expert-cache slots per image), DSpark on by default (--spec 8: the last accepted token plus the block, up to 7 drafts a pass, verified - output is the model's own), port 8080. The caches stay ELASTIC (full-attention visits back their first 32768 positions and grow; least-routed experts spill to page-locked RAM and come back). The engine logs at ~/.cache/basalt/<id>/. Supersedes the nvfp4-q8 config (the 0.5.5-era pack, kept on disk; its measured overlay entry is pruned on this uplift). Revert: point the unit back at basalt-inkling2.json (the q8 pack). Run `uap models measure` against it before placement loads it (fail-closed).",
           "files": [
             {
-              "path": "/home/dammian/models/basalt/Inkling-2-Mini-NVFP4-MX8.basalt",
+              "path": "~/models/basalt/Inkling-2-Mini-NVFP4-MX8.basalt",
               "repo": "jesdga/Inkling-2-Mini-Basalt",
               "file": "Inkling-2-Mini-NVFP4-MX8.basalt",
               "bytes": 19606374189,
@@ -1127,7 +1127,7 @@
           "note": "The squid5090 ENGINE arm - user-directed 2026-11-25 per x.com/fishjar/status/2125198935870607390: tensorfish/squid5090 (Apache-2.0, pinned fda96e9d) is a zero-Python single-binary TigerStyle Zig + Blackwell CUDA (sm_120a) inference engine built at ~/dev/squid5090 (zig 0.17.1 from the ziglang tarball, CUDA 13.4 from ~/cuda-13.4, `zig build -Dcuda-path=...`, binary 19 MB at zig-out/bin/squid5090) serving Thinking Machines Lab's ORIGINAL HF checkpoint safetensors (thinkingmachines/Inkling-2-Mini at c9d02830 - NOT the basalt-converted pack: a fresh 19.5 GB download + the release's own DSpark drafter mtp.safetensors + tiktoken tokenizer). Posture (unit uap-squid-inkling2-server.service, inference-panel id squid-inkling2): serve --mode fp8 --kv q4 --ctx 524288 --mtp 7 --spec-threshold 0.80 --temp 1.0 --top-p 0.95 --model-name \"Inkling 2 Mini\" - the accuracy-default fp8 mode keeps the release's OWN L0-19 NVFP4 + L20-23 MXFP8 experts and official BF16 routers/controllers (upstream bench: 0.0058-0.0094 KLD, 26x smaller PPL delta than 4-bit) with FP8 dense/lm_head and q4 KV for the 512K window; --model-name pins the SAME wire id as the basalt arm (the engine ignores requested ids but /v1/models then stays uniform across arms, so pinned clients survive switches). DSpark drafts adaptively {2,4,8} by Markov confidence and is verified (output is the model's own). Upstream cross-engine bench (same 5090 class): fp8/q4 beats basalt v0.5.7 MX8 on all 4 T=1.0 decode benches (313.5 chat / 272.1 prose / 356.8 code / 456.4 copy) and matches it on cold 18.9K prefill (16,855 tok/s HTTP); this box VERIFIED 2026-11-25: cold load 2.5s, exact-echo SMOKE-ECHO-7F3A finish=stop, native tool call get_weather {\"city\":\"Paris\"} finish=tool_calls, decode 322/605/347 tok/s (code/counting/chat, dl 1.95-4.43), ~24.2 GiB VRAM (17.0 weights + 6.0 runtime + graphs), single-user c=1, 32 MiB request buffer (HTTP 413 above), tools/tool_calls native, NO constrained grammar. TEXT-ONLY BY DESIGN (config vision \"none\"): NO image encoder - a forwarded image-bearing request would SILENTLY DROP the image blocks and answer hallucinated text over HTTP 200 (live-probed 2026-11-25: a 1x1-pixel image answered a confident \"Skull\" description); the placement gate carries_image flag parks image traffic to this family's image-capable arm instead of forwarding. Revert: switch any other arm (basalt-inkling2 is the family default). Run `uap models measure` against it before placement loads it (fail-closed).",
           "files": [
             {
-              "path": "/home/dammian/models/squid5090-inkling2/model-00001-of-00001.safetensors",
+              "path": "~/models/squid5090-inkling2/model-00001-of-00001.safetensors",
               "repo": "thinkingmachines/Inkling-2-Mini",
               "file": "model-00001-of-00001.safetensors",
               "rev": "c9d028302cd0f035fdf8e7e91f089a4ce94d2195",
@@ -1135,7 +1135,7 @@
               "sha256": "65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1"
             },
             {
-              "path": "/home/dammian/models/squid5090-inkling2/mtp.safetensors",
+              "path": "~/models/squid5090-inkling2/mtp.safetensors",
               "repo": "thinkingmachines/Inkling-2-Mini",
               "file": "mtp.safetensors",
               "rev": "c9d028302cd0f035fdf8e7e91f089a4ce94d2195",
@@ -1143,7 +1143,7 @@
               "sha256": "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2"
             },
             {
-              "path": "/home/dammian/models/squid5090-inkling2/tokenizer.json",
+              "path": "~/models/squid5090-inkling2/tokenizer.json",
               "repo": "thinkingmachines/Inkling-2-Mini",
               "file": "tokenizer.json",
               "rev": "c9d028302cd0f035fdf8e7e91f089a4ce94d2195",

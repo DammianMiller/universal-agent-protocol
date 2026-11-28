@@ -66,7 +66,7 @@ systemctl --user status uap-anthropic-proxy.service
 ```json
 {
   "salientSummary": "Fixed systemd services: updated ExecStart and WorkingDirectory in both unit files from deleted worktree 057 to stable repo-root paths. Updated env files to remove worktree references. Killed stale proxy PID 3642337. Both services now start, run, and survive restart. End-to-end proxy query succeeds.",
-  "whatWasImplemented": "Updated uap-llama-server.service ExecStart to use repo-root continuity script path. Updated uap-anthropic-proxy.service WorkingDirectory to /home/cogtek/dev/miller-tech/universal-agent-protocol. Updated llama-server.env LLAMA_CHAT_TEMPLATE_FILE to stable path. Killed stale proxy PID 3642337.",
+  "whatWasImplemented": "Updated uap-llama-server.service ExecStart to use repo-root continuity script path. Updated uap-anthropic-proxy.service WorkingDirectory to ~/dev/miller-tech/universal-agent-protocol. Updated llama-server.env LLAMA_CHAT_TEMPLATE_FILE to stable path. Killed stale proxy PID 3642337.",
   "whatWasLeftUndone": "",
   "verification": {
     "commandsRun": [

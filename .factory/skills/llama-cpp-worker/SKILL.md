@@ -28,7 +28,7 @@ None (all validation is via curl and log inspection).
 
 ### 2. Read Current Code State
 - Read the FULL files being modified (not just diffs) to understand context
-- The main files are in `/home/cogtek/llama.cpp/.worktrees/003-faststate-029/`:
+- The main files are in `~/llama.cpp/.worktrees/003-faststate-029/`:
   - `src/llama-memory-hybrid.cpp` (checkpoint save/restore)
   - `src/llama-memory-hybrid.h` (data structures)
   - `common/speculative.cpp` (compat check, draft management)
@@ -44,7 +44,7 @@ None (all validation is via curl and log inspection).
 
 ### 4. Build
 ```bash
-cd /home/cogtek/llama.cpp/.worktrees/003-faststate-029
+cd ~/llama.cpp/.worktrees/003-faststate-029
 cmake --build build-cuda --config Release -j 32
 ```
 - If build fails, fix errors and rebuild
@@ -62,15 +62,15 @@ kill $(ps aux | grep 'llama-server.*8080' | grep -v grep | awk '{print $2}') 2>/
 sleep 3
 
 # Start with spec enabled
-nohup /home/cogtek/llama.cpp/.worktrees/003-faststate-029/build-cuda/bin/llama-server \
-  --model /home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf \
+nohup ~/llama.cpp/.worktrees/003-faststate-029/build-cuda/bin/llama-server \
+  --model ~/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf \
   --host 0.0.0.0 --port 8080 --threads 32 --ctx-size 65536 \
   --cache-type-k q4_0 --cache-type-v q4_0 --gpu-layers 99 \
   --flash-attn on --batch-size 512 --ubatch-size 512 --parallel 1 \
   --n-predict 32768 --repeat-penalty 1.0 --defrag-thold 0.1 \
   --spec-type ngram-cache --draft-max 12 --draft-min 2 --draft-p-min 0.80 \
-  --jinja --chat-template-file /home/cogtek/dev/miller-tech/universal-agent-protocol/tools/agents/config/qwen-sharp.jinja \
-  --log-file /home/cogtek/llama.cpp/llama-server.log --metrics \
+  --jinja --chat-template-file ~/dev/miller-tech/universal-agent-protocol/tools/agents/config/qwen-sharp.jinja \
+  --log-file ~/llama.cpp/llama-server.log --metrics \
   > /tmp/llama-test-startup.log 2>&1 &
 
 # Wait for model load
@@ -102,7 +102,7 @@ Once all 4 tests pass:
 
 ### 9. Commit
 ```bash
-cd /home/cogtek/llama.cpp/.worktrees/003-faststate-029
+cd ~/llama.cpp/.worktrees/003-faststate-029
 git add -A
 git commit -m "fix: correct 4 bugs in hybrid speculative checkpoint system"
 ```

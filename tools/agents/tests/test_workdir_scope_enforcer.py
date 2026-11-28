@@ -65,7 +65,7 @@ class TestWorkdirScopeEnforcer(unittest.TestCase):
         self._allow(out, c, "in-root write")
 
     def test_write_outside_root_blocked(self):
-        out, c = run("Write", {"file_path": "/home/cogtek/dev/octopusspace-shooter/x.js"}, self.root)
+        out, c = run("Write", {"file_path": "/home/operator/dev/octopusspace-shooter/x.js"}, self.root)
         self._block(out, c, "out-of-root write")
 
     def test_relative_path_allowed(self):
@@ -97,7 +97,7 @@ class TestWorkdirScopeEnforcer(unittest.TestCase):
     # --- bash ---
 
     def test_bash_mkdir_outside_blocked(self):
-        out, c = run("Bash", {"command": "mkdir -p /home/cogtek/dev/octopusspace-shooter/js"}, self.root)
+        out, c = run("Bash", {"command": "mkdir -p /home/operator/dev/octopusspace-shooter/js"}, self.root)
         self._block(out, c, "mkdir outside")
 
     def test_bash_mkdir_inside_allowed(self):
