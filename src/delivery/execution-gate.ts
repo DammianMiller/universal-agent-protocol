@@ -1085,6 +1085,22 @@ export function capabilityWindowMs(): number {
   return Number.isFinite(env) && env > 0 ? Math.min(env, 60_000) : DEFAULT_CAPABILITY_WINDOW_MS;
 }
 
+/**
+ * Ask the gate's own static server what IT thinks of the entry URL. A driver's
+ * goto status is a proxy for "the entry was served"; when a driver cannot
+ * produce one (URL string, '0', undefined), the server the gate itself started
+ * is the ground truth. Returns null when even it cannot be asked — then the
+ * driver's own verdict stands.
+ */
+export async function httpStatusCode(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    return String(res.status);
+  } catch {
+    return null;
+  }
+}
+
 async function runWeb(
   entryDir: string,
   opts: ExecutionGateOptions,
@@ -1172,13 +1188,29 @@ async function runWeb(
       }
       // Wall-clock guard so a hung goto/load never wedges a direct caller (the
       // spawned-runner path also has the rung-level spawn timeout as a backstop).
-      const status = await withTimeout(browser.goto(server.url), timeoutMs, 'goto');
+      let status = await withTimeout(browser.goto(server.url), timeoutMs, 'goto');
       await Promise.race([browser.waitForLoadState('load'), delay(timeoutMs)]).catch(() => undefined);
       await delay(settleMs);
       const errors = browser.getErrors();
       const durationMs = Date.now() - start;
       // Accept any 2xx (and 304 cached) — exact '200' false-fails on benign codes.
-      const loaded = /^2\d\d$/.test(status) || status === '304';
+      let loaded = /^2\d\d$/.test(status) || status === '304';
+      if (!loaded && !/^[1-5]\d\d$/.test(status)) {
+        // A driver that reports a REAL HTTP class code spoke about its own
+        // navigation and is believed (the '404' pin in execution-gate.test.ts
+        // guards exactly that). Anything else — a URL, '0', '' — cannot be a
+        // status: the driver is mute, not the page broken. Measured
+        // 2026-11-28 (voxel-pagoda-basalt-inkling-1): a driver whose goto
+        // resolved with the URL made a fully rendered page fail this rung as
+        // `entry did not load (HTTP <url>)`. The gate OWNS this static server,
+        // so for a mute driver it asks the server itself: a real non-2xx stays
+        // a failure, silence no longer is one.
+        const code = await httpStatusCode(server.url);
+        if (code) {
+          loaded = /^2\d\d$/.test(code) || code === '304';
+          status = code;
+        }
+      }
       if (!loaded) {
         return {
           passed: false,
