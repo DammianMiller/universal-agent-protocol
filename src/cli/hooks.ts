@@ -1,6 +1,6 @@
 import chalk from 'chalk';
-import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, chmodSync } from 'fs';
-import { join, dirname } from 'path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, renameSync, unlinkSync } from 'fs';
+import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import yaml from 'js-yaml';
@@ -80,6 +80,31 @@ function getTemplateHooksDir(): string {
   return join(__dirname, '../../templates/hooks');
 }
 
+/**
+ * Atomic hook-script replace (tmp write + rename in the destination dir).
+ * copyFileSync truncates the destination first, so a hook firing mid-
+ * re-scaffold read a PARTIAL script → bash parse error → "SessionEnd hook
+ * error" on a session already being torn down (measured 2026-11-28
+ * 19:43:34, voxel-pagoda-basalt-inkling-1, session 42fc66db). rename(2)
+ * is atomic within a filesystem: a concurrent reader gets either the old
+ * or the new complete script — never a truncated or missing file.
+ */
+function atomicCopySync(src: string, dest: string): void {
+  const tmp = join(dirname(dest), `.${basename(dest)}.tmp-${process.pid}-${Date.now()}`);
+  try {
+    writeFileSync(tmp, readFileSync(src));
+    chmodSync(tmp, 0o755);
+    renameSync(tmp, dest);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw err;
+  }
+}
+
 function ensureTemplateHooksExist(): boolean {
   const templateHooksDir = getTemplateHooksDir();
   if (!existsSync(templateHooksDir)) {
@@ -135,8 +160,7 @@ function copyHookScripts(targetHooksDir: string): void {
     const src = join(templateHooksDir, file);
     const dest = join(targetHooksDir, file);
     if (existsSync(src)) {
-      copyFileSync(src, dest);
-      chmodSync(dest, 0o755);
+      atomicCopySync(src, dest);
       console.log(chalk.green(`  + ${file}`));
     } else {
       console.log(chalk.yellow(`  - ${file} (template not found)`));
@@ -298,10 +322,12 @@ async function installClaudeHooks(cwd: string): Promise<void> {
     SessionEnd: [
       {
         matcher: '',
-        // `|| true` — the command carries session-end.sh's fail-soft contract
-        // ("always exits 0"): a mid-re-scaffold teardown must not error the
-        // dying session (same measured race as the factory binding).
-        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh" || true' }],
+        // PLAIN single command — no `|| true`: session-end.sh is fail-soft
+        // BY CONTRACT ("always exits 0", enforced inside the script), installs
+        // replace scripts atomically, and harness hook executors reject
+        // compound shell forms (measured 2026-11-28 on Droid: the `|| true`
+        // form ran 23ms, rc 1, zero output — never executed).
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh"' }],
       },
     ],
   };
@@ -428,15 +454,16 @@ async function installFactoryHooks(cwd: string): Promise<void> {
     SessionEnd: [
       {
         matcher: '',
-        // `|| true`: session-end.sh is fail-soft BY CONTRACT ("Always exits 0
-        // (never blocks)"), but the command must carry that contract too. The
-        // fleet round-boundary re-scaffold wipes .factory/hooks/ in the same
-        // second the killed session's SessionEnd hook fires (measured
-        // 2026-11-28 19:43:34, voxel-pagoda-basalt-inkling-1, session 42fc66db:
-        // new binding resolved but the script was mid-re-scaffold → non-zero →
-        // "SessionEnd hook error" on a session already being torn down). An
-        // absent script means there is nothing left to clean up — exit 0.
-        hooks: [{ type: 'command', command: `${hookCmd('session-end.sh')} || true` }],
+        // PLAIN single command — no `|| true`. Measured 2026-11-28
+        // 21:35:28 (voxel-pagoda-basalt-inkling-1, session 6f8a6098): Droid's
+        // hook executor REJECTED the compound form — 23ms, rc 1, empty
+        // stdout/stderr, the script never ran (`bash X || true` cannot exit
+        // 1 through any shell). The fail-soft contract ("always exits 0")
+        // lives INSIDE session-end.sh where it always did; the mid-re-scaffold
+        // partial-script race is closed at the INSTALLER (atomic
+        // tmp+rename replace, so a firing hook reads either the old or the
+        // new complete script — never a truncated or missing one).
+        hooks: [{ type: 'command', command: hookCmd('session-end.sh') }],
       },
     ],
   };
@@ -598,10 +625,12 @@ async function installVscodeHooks(cwd: string): Promise<void> {
     SessionEnd: [
       {
         matcher: '',
-        // `|| true` — the command carries session-end.sh's fail-soft contract
-        // ("always exits 0"): a mid-re-scaffold teardown must not error the
-        // dying session (same measured race as the factory binding).
-        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh" || true' }],
+        // PLAIN single command — no `|| true`: session-end.sh is fail-soft
+        // BY CONTRACT ("always exits 0", enforced inside the script), installs
+        // replace scripts atomically, and harness hook executors reject
+        // compound shell forms (measured 2026-11-28 on Droid: the `|| true`
+        // form ran 23ms, rc 1, zero output — never executed).
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh"' }],
       },
     ],
   };
@@ -1514,8 +1543,7 @@ async function installForgeCodeHooks(cwd: string): Promise<void> {
 
   // Copy the pre-generated ZSH plugin template to project .forge directory
   if (existsSync(pluginTemplate)) {
-    copyFileSync(pluginTemplate, pluginOutputPath);
-    chmodSync(pluginOutputPath, 0o755);
+    atomicCopySync(pluginTemplate, pluginOutputPath);
     console.log(chalk.green('  + .forge/forgecode.plugin.sh'));
   } else {
     // Fallback: generate inline if template not found (shouldn't happen)
@@ -1591,8 +1619,7 @@ async function installOmpHooks(cwd: string): Promise<void> {
     const src = join(getTemplateHooksDir(), file);
     const dest = join(hooksPre, file);
     if (existsSync(src)) {
-      copyFileSync(src, dest);
-      chmodSync(dest, 0o755);
+      atomicCopySync(src, dest);
       console.log(chalk.green(`  + .uap/omp/hooks/pre/${file}`));
     } else {
       console.log(chalk.yellow(`  - .uap/omp/hooks/pre/${file} (template not found)`));
@@ -1610,8 +1637,7 @@ async function installOmpHooks(cwd: string): Promise<void> {
     const src = join(getTemplateHooksDir(), file);
     const dest = join(hooksPost, file);
     if (existsSync(src)) {
-      copyFileSync(src, dest);
-      chmodSync(dest, 0o755);
+      atomicCopySync(src, dest);
       console.log(chalk.green(`  + .uap/omp/hooks/post/${file}`));
     } else {
       console.log(chalk.yellow(`  - .uap/omp/hooks/post/${file} (template not found)`));
@@ -1701,8 +1727,7 @@ async function installHermesHooks(_cwd: string): Promise<void> {
   const hermesGateSrc = join(getTemplateHooksDir(), 'uap-policy-gate-hermes.sh');
   const hermesGateDest = join(agentHooksDir, 'uap-policy-gate-hermes.sh');
   if (existsSync(hermesGateSrc)) {
-    copyFileSync(hermesGateSrc, hermesGateDest);
-    chmodSync(hermesGateDest, 0o755);
+    atomicCopySync(hermesGateSrc, hermesGateDest);
     console.log(chalk.green('  + agent-hooks/uap-policy-gate-hermes.sh'));
   } else {
     console.log(chalk.yellow('  - uap-policy-gate-hermes.sh (template not found)'));

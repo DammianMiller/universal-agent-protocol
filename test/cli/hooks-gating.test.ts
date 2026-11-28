@@ -7,8 +7,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, copyFileSync } from 'fs';
+import { spawnSync, spawn } from 'child_process';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, copyFileSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { hooksCommand, auditPlatform } from '../../src/cli/hooks.js';
@@ -156,36 +156,101 @@ describe('factory hook binding survives a FACTORY_PROJECT_DIR-less context', () 
   });
 
   /**
-   * Measured 2026-11-28 19:43:34 (voxel-pagoda-basalt-inkling-1, session
-   * 42fc66db, AFTER the binding-fallback fix): the fleet round-boundary
-   * re-scaffold wiped .factory/hooks/ in the same second the killed
-   * session's SessionEnd hook fired — the binding resolved, but the script
-   * was gone, so the command exited non-zero and the dying session logged
-   * "SessionEnd hook error: Hook exited with code 1". The hook is fail-soft
-   * by contract; the COMMAND must be too: absent script ⇒ exit 0.
+   * Measured 2026-11-28 21:35:28 (voxel-pagoda-basalt-inkling-1, session
+   * 6f8a6098, the FIRST SessionEnd fired after PR #987 shipped the softened
+   * `bash X || true` command): Droid's hook executor REJECTED the compound
+   * command outright — 23ms duration, rc 1, empty stdout AND stderr, the
+   * script never executed (`bash X || true` cannot exit 1 through any
+   * shell, so the executor itself refused the form). The fail-soft contract
+   * ("always exits 0") lives INSIDE session-end.sh; the command must be a
+   * bare `bash "<script>"` — simple commands only.
    */
-  it('keeps SessionEnd exit 0 even when the script is missing (round-boundary re-scaffold race)', async () => {
+  it('emits a plain single-command SessionEnd binding (harness executors reject compound commands)', async () => {
     await hooksCommand('install', { target: 'factory', projectDir: proj });
-    rmSync(join(proj, '.factory', 'hooks', 'session-end.sh'));
     const settings = JSON.parse(
       readFileSync(join(proj, '.factory', 'settings.local.json'), 'utf-8'),
     ) as { hooks: { SessionEnd: Array<{ hooks: Array<{ command: string }> }> } };
     const cmd = settings.hooks.SessionEnd[0].hooks[0].command;
-    expect(cmd).toContain('|| true');
-    const r = spawnSync('sh', ['-c', cmd], {
-      cwd: tmpdir(),
-      env: { PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: process.env.HOME },
-    });
-    expect(r.status).toBe(0);
+    expect(cmd).toMatch(/^bash "\$\{FACTORY_PROJECT_DIR:-[^}]+\}\/\.factory\/hooks\/session-end\.sh"$/);
+    for (const op of ['||', '&&', ';']) {
+      expect(cmd).not.toContain(op);
+    }
   });
 
-  it('softens the Claude SessionEnd command the same way', async () => {
+  it('keeps the Claude SessionEnd command plain the same way', async () => {
     await hooksCommand('install', { target: 'claude', projectDir: proj });
     const settings = JSON.parse(
       readFileSync(join(proj, '.claude', 'settings.local.json'), 'utf-8'),
     ) as { hooks: { SessionEnd: Array<{ hooks: Array<{ command: string }> }> } };
     const cmd = settings.hooks.SessionEnd[0].hooks[0].command;
-    expect(cmd).toBe('bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh" || true');
+    expect(cmd).toBe('bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh"');
+  });
+
+  /**
+   * The fleet-wide executor contract: every registered hook command is a
+   * bare `bash "<path>"`. Droid's hook executor rejects anything compound
+   * (measured above), and Claude Code tolerates but does not require
+   * operators — simple form everywhere keeps one command shape across all
+   * harnesses.
+   */
+  it('emits simple bash commands for every registered hook (no shell operators)', async () => {
+    await hooksCommand('install', { target: 'factory', projectDir: proj });
+    const settings = JSON.parse(
+      readFileSync(join(proj, '.factory', 'settings.local.json'), 'utf-8'),
+    ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    const commands: string[] = [];
+    for (const entries of Object.values(settings.hooks)) {
+      for (const entry of entries) {
+        for (const h of entry.hooks) commands.push(h.command);
+      }
+    }
+    expect(commands.length).toBeGreaterThanOrEqual(8);
+    for (const cmd of commands) {
+      expect(cmd).toMatch(/^bash "[^"]+"$/);
+      for (const op of ['||', '&&', ';']) {
+        expect(cmd).not.toContain(op);
+      }
+    }
+  });
+
+  /**
+   * The original 19:43:34 race (session 42fc66db): the re-scaffold's
+   * copyFileSync truncated a hook script while the dying session's
+   * SessionEnd fired → bash read a partial script → nonzero →
+   * "SessionEnd hook error". Installers now replace scripts via tmp+rename
+   * (atomic): a concurrent reader sees the old or the new complete file,
+   * never a truncated one. This test hammers a hook file with reads while
+   * a re-install rewrites every hook and asserts every read is complete.
+   */
+  it('replaces hook scripts atomically (a firing hook never reads a partial script)', async () => {
+    await hooksCommand('install', { target: 'factory', projectDir: proj });
+    const hooksDir = join(proj, '.factory', 'hooks');
+    const stopPath = join(hooksDir, 'stop.sh');
+    const full = readFileSync(stopPath); // Buffer: byte length, same as wc -c
+    expect(full.slice(0, 2).toString()).toBe('#!');
+
+    const reader = spawn('bash', [
+      '-c',
+      `for i in $(seq 1 200); do s=$(wc -c < "${stopPath}" 2>/dev/null || echo 0); echo "$s"; done`,
+    ]);
+    let out = '';
+    reader.stdout.on('data', (d: Buffer) => {
+      out += d.toString();
+    });
+    const done = new Promise<void>((resolve) => {
+      reader.on('close', () => resolve());
+    });
+    await hooksCommand('install', { target: 'factory', projectDir: proj });
+    await done;
+
+    const sizes = out.trim().split('\n').map((n) => parseInt(n, 10));
+    expect(sizes.length).toBeGreaterThanOrEqual(100); // the reader actually ran
+    for (const s of sizes) {
+      expect(s).toBe(full.length); // never a truncated read
+    }
+    // No tmp residue left behind by the atomic replace.
+    const residue = readdirSync(hooksDir).filter((f) => f.includes('.tmp-'));
+    expect(residue).toHaveLength(0);
   });
 });
 
