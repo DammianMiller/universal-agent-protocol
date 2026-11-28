@@ -46,8 +46,12 @@ class StopHookWorktreeTest(unittest.TestCase):
             "  echo 'usage: uap verify --runtime-only --user-paths-auto --acceptance-auto --dir <dir>'\n"
             "  exit 0\n"
             "fi\n"
-            f"printf '%s\\n' \"$*\" >> \"{self.log_file}\"\n"
+            # Log ONLY verify invocations. The stop hook also calls the
+            # handsfree stop-check gate (ledger enforcement); logging that
+            # call too made the readonly-scaffolding assertion conflate it
+            # with a verify run.
             "if [ \"$1\" = \"verify\" ]; then\n"
+            f"  printf '%s\\n' \"$*\" >> \"{self.log_file}\"\n"
             f"  echo 'FAKE_VERIFY_EXIT={verify_exit}'\n"
             f"  exit {verify_exit}\n"
             "fi\n"

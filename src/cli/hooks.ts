@@ -1210,6 +1210,12 @@ async function installCodexHooks(cwd: string): Promise<void> {
     '- `uap task create "<description>"` - Create a new task',
     '- `uap task list` - List current tasks',
     '- `uap task ready` - Check task readiness',
+    // The completion-ledger seam: TodoWrite is what auto-seeds the ledger the
+    // Stop gate enforces (stop.sh's hands-free completion gate). Clients that
+    // plan natively never call TodoWrite, so no ledger ever seeds and nothing
+    // stops them ending the session mid-build (measured 2026-11-28 on the
+    // voxel-pagoda arms). Telling every scaffolded client is the fix.
+    '- **Plan multi-step builds with the TodoWrite tool** - your todo list auto-creates the completion ledger, and the Stop gate keeps the session going (hands-free) until every step is done',
     '',
     '## Agent Coordination',
     '',
