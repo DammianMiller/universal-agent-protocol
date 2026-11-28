@@ -150,3 +150,106 @@ describe('hook fail-safe contracts (fleet)', () => {
     }
   });
 });
+
+/**
+ * The hands-free completion gate wiring (stop.sh ↔ `uap handsfree stop-check`).
+ *
+ * `decideStopCheck` (src/cli/handsfree.ts) is the ledger-backed Stop
+ * enforcement lever: block while the completion ledger has remaining items
+ * so a hands-free build cannot end its session mid-build. It was fully
+ * implemented and unit-tested (test/delivery/handsfree.test.ts) but never
+ * invoked from ANY shipped hook — nothing ever pulled the lever (measured
+ * 2026-11-28 on the voxel-pagoda-basalt-inkling-1 fleet arm: rounds stopped
+ * after one build pass — or mid-pass — with the artifact's quality gates
+ * unconverged, because the only stop-side hard gate was runtime execution;
+ * zero ledgers ever seeded across the 14 UAP fleet arms). These tests pin
+ * the wiring contract of the gate block now in stop.sh:
+ * - stop-check RC 2 → hard block (exit 2, model-facing message);
+ * - every other RC — including 1 from an older CLI without the subcommand —
+ *   fails OPEN (allow-path messages print, never wedge);
+ * - the installed/scaffolded copy stays byte-identical to the template.
+ */
+describe('hands-free completion gate wiring (stop.sh)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    dirs.length = 0;
+  });
+
+  const install = async () => {
+    const testDir = mkdtempSync(join(tmpdir(), `uap-stop-gate-${Date.now()}`));
+    dirs.push(testDir);
+    const { hooksCommand } = await import('../src/cli/hooks.js');
+    await hooksCommand('install', { projectDir: testDir, target: 'factory' });
+    return testDir;
+  };
+
+  const shimmedRun = (script: string, payload: string, dir: string, uapShim: string) => {
+    const shimDir = mkdtempSync(join(tmpdir(), `uap-stop-gate-shim-${Date.now()}`));
+    dirs.push(shimDir);
+    const p = join(shimDir, 'uap');
+    writeFileSync(p, uapShim);
+    chmodSync(p, 0o755);
+    return spawnSync('bash', [script], {
+      input: payload,
+      env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, FACTORY_PROJECT_DIR: dir },
+      encoding: 'utf-8',
+      timeout: 60_000,
+    });
+  };
+
+  const BLOCK_SHIM = [
+    '#!/bin/sh',
+    'if [ "$1" = "handsfree" ] && [ "$2" = "stop-check" ]; then',
+    '  cat >/dev/null',
+    '  echo "NOT DONE - 3 item(s) remain in the completion ledger" >&2',
+    '  exit 2',
+    'fi',
+    'exit 0',
+    '',
+  ].join('\n');
+
+  it('blocks the stop when the completion ledger is unfinished (stop-check RC 2)', async () => {
+    const dir = await install();
+    const r = shimmedRun(
+      join(dir, '.factory', 'hooks', 'stop.sh'),
+      '{"tool_name":"Stop","stop_hook_active":false}',
+      dir,
+      BLOCK_SHIM,
+    );
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain('BUILD-COMPLETION GATE');
+    expect(r.stdout).toContain('3 item(s) remain');
+  });
+
+  it('fails OPEN when the CLI predates the subcommand (stop-check RC 1)', async () => {
+    const dir = await install();
+    const r = shimmedRun(
+      join(dir, '.factory', 'hooks', 'stop.sh'),
+      '{"tool_name":"Stop","stop_hook_active":false}',
+      dir,
+      ['#!/bin/sh', 'if [ "$1" = "handsfree" ]; then exit 1; fi', 'exit 0', ''].join('\n'),
+    );
+    // Clean temp project (no code changes): the rest of stop.sh must allow.
+    expect(r.status).toBe(0);
+  });
+
+  it('keeps the scaffolded stop.sh byte-identical to the shipped template', async () => {
+    const dir = await install();
+    const scaffolded = readFileSync(join(dir, '.factory', 'hooks', 'stop.sh'), 'utf-8');
+    const template = readFileSync(join(process.cwd(), 'templates', 'hooks', 'stop.sh'), 'utf-8');
+    expect(scaffolded).toBe(template);
+  });
+
+  it('keeps the repo live stop.sh in lockstep with the template', () => {
+    const live = readFileSync(join(process.cwd(), '.factory', 'hooks', 'stop.sh'), 'utf-8');
+    const template = readFileSync(join(process.cwd(), 'templates', 'hooks', 'stop.sh'), 'utf-8');
+    expect(live).toBe(template);
+  });
+});

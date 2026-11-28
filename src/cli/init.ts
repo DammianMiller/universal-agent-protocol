@@ -627,6 +627,9 @@ async function setupPlatform(
         '- `uap task create "<description>"` - Create a new task',
         '- `uap task list` - List current tasks',
         '- `uap task ready` - Check task readiness',
+        // Mirrors the hooks.ts AGENTS.md template — the TodoWrite-to-ledger
+        // seam the Stop gate enforces. Keep the two copies in sync.
+        '- **Plan multi-step builds with the TodoWrite tool** - your todo list auto-creates the completion ledger, and the Stop gate keeps the session going (hands-free) until every step is done',
         '',
         '## Agent Coordination',
         '',
