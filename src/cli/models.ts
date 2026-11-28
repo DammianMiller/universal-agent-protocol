@@ -79,6 +79,7 @@ import { loadPolicy } from '../capacity/probe.js';
 import { looksLikeStrataMetrics, parseStrataEngine } from '../inference/strata.js';
 import {
   ensureFiles,
+  expandHomePath,
   type ModelFileManifest,
 } from '../inference/model-files.js';
 
@@ -720,11 +721,15 @@ function manifestEntriesForPath(
   registry: ModelRegistry,
   path: string,
 ): Array<{ label: string; entries: ModelFileManifest[] }> {
-  const wanted = resolve(path);
+  // Both sides are home-expanded before comparison: the registry may carry
+  // `~`-relative paths (shared repos must not ship a username) while a
+  // unit's ExecStartPre passes the absolute form — every combination must
+  // match.
+  const wanted = resolve(expandHomePath(path));
   const hits: Array<{ label: string; entries: ModelFileManifest[] }> = [];
   for (const [modelKey, model] of Object.entries(registry.models)) {
     for (const [configKey, cfg] of Object.entries(model.configs)) {
-      const entries = (cfg.files ?? []).filter((f) => resolve(f.path) === wanted);
+      const entries = (cfg.files ?? []).filter((f) => resolve(expandHomePath(f.path)) === wanted);
       if (entries.length > 0) hits.push({ label: `${modelKey}/${configKey}`, entries });
     }
   }
@@ -737,7 +742,7 @@ const MiB = (n: number): string => `${Math.round(n / (1024 * 1024)).toLocaleStri
 // (a developer inside the repo), else to the RUNNING cli's own repo root: a
 // unit ExecStartPre runs with WorkingDirectory set to the engine's checkout,
 // and a present 15 GiB GGUF must not read as "not declared" just because the
-// cwd happened to be /home/cogtek/dev/flash-next-bench/llamAmpere.
+// cwd happened to be /home/operator/dev/flash-next-bench/llamAmpere.
 // The module sits at <repo>/src/cli/models.ts (tsx) or <repo>/dist/cli/models.js
 // (built) — in BOTH layouts the repo root is two directories up. The
 // existsSync walk covers non-standard installs; a missing registry at every

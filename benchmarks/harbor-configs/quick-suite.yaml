@@ -1,7 +1,7 @@
 name: uap-quick-test-suite
 
 datasets:
-  - path: /home/cogtek/dev/miller-tech/universal-agent-protocol/benchmarks/harbor-tasks/harbor-tasks
+  - path: $HOME/dev/miller-tech/universal-agent-protocol/benchmarks/harbor-tasks/harbor-tasks
 
 agents:
   - name: uap-v3.0+

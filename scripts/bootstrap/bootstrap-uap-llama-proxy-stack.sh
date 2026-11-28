@@ -8,8 +8,8 @@ UAP_CONFIG_DIR="${HOME}/.config/uap"
 mkdir -p "$USER_SYSTEMD_DIR" "$UAP_CONFIG_DIR"
 
 cat >"${UAP_CONFIG_DIR}/llama-server.env" <<EOF
-LLAMA_BIN=${LLAMA_BIN:-/home/cogtek/llama.cpp/.worktrees/001-llama-spec-rollback-fix/build-cuda/bin/llama-server}
-LLAMA_MODEL=${LLAMA_MODEL:-/home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf}
+LLAMA_BIN=${LLAMA_BIN:-$HOME/llama.cpp/.worktrees/001-llama-spec-rollback-fix/build-cuda/bin/llama-server}
+LLAMA_MODEL=${LLAMA_MODEL:-$HOME/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf}
 # Advertised model id. Omitted here, the server advertises the GGUF PATH and
 # every client config misses (see config/llama-profiles/*.env).
 LLAMA_ALIAS=${LLAMA_ALIAS:-Qwen3.8-27B}
@@ -25,7 +25,7 @@ LLAMA_SPEC_TYPE=${LLAMA_SPEC_TYPE:-ngram-cache}
 LLAMA_DRAFT_MAX=${LLAMA_DRAFT_MAX:-16}
 LLAMA_DRAFT_MIN=${LLAMA_DRAFT_MIN:-3}
 LLAMA_DRAFT_P_MIN=${LLAMA_DRAFT_P_MIN:-0.75}
-LLAMA_LOG_FILE=${LLAMA_LOG_FILE:-/home/cogtek/llama.cpp/llama-server.log}
+LLAMA_LOG_FILE=${LLAMA_LOG_FILE:-$HOME/llama.cpp/llama-server.log}
 LLAMA_CHAT_TEMPLATE_FILE=${LLAMA_CHAT_TEMPLATE_FILE:-${ROOT_DIR}/tools/agents/config/qwen-sharp.jinja}
 LLAMA_EXTRA_ARGS=${LLAMA_EXTRA_ARGS:-}
 EOF

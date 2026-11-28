@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for proxy-side path containment — recovering the workdir and snapping a
 small quant's GARBLED absolute paths back onto it (the failure where it mangles
-the prefix: /home/cogtek -> /home/cogtec, octopus_invaders -> octus_invaders).
+the prefix: /home/cogtec -> /home/cogtk, octopus_invaders -> octus_invaders).
 Safe under the OS sandbox, which contains any mis-snap to the workdir.
 """
 

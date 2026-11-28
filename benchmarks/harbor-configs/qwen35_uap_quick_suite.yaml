@@ -45,11 +45,11 @@ output_dir: benchmark-results/qwen35_harbor_uap_quick_suite
 
 environment_variables:
   USE_UAP: 'true'
-  PROJECT_ROOT: '/home/cogtek/dev/miller-tech/universal-agent-protocol'
+  PROJECT_ROOT: '$HOME/dev/miller-tech/universal-agent-protocol'
   UAP_MEMORY_ENABLED: 'true'
   UAP_PATTERNS_RAG_ENABLED: 'true'
   QDRANT_ENDPOINT: 'localhost:6333'
-  UAP_LOCAL_PROJECT: '/home/cogtek/dev/miller-tech/universal-agent-protocol'
+  UAP_LOCAL_PROJECT: '$HOME/dev/miller-tech/universal-agent-protocol'
   UAP_LOCAL_PATH: '/uap-local'
   OPENCODE_DISABLE_AUTOUPDATE: '1'
 

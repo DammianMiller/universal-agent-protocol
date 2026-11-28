@@ -12,10 +12,24 @@
 # match (DFlash has no /slots endpoint, so the proxy can't autodetect).
 set -euo pipefail
 
-DFLASH_ROOT="${DFLASH_ROOT:-/home/cogtek/lucebox/lucebox-hub/dflash}"
+# Profiles carry `~`-relative paths (a committed template must not ship a
+# username, and systemd's EnvironmentFile does not expand `~`) — normalize
+# every path-bearing variable onto $HOME before anything reads it.
+for _uap_v in DFLASH_ROOT DFLASH_VENV DFLASH_BIN DFLASH_TARGET DFLASH_DRAFT \
+              DFLASH_TOKENIZER DFLASH_LOG_FILE; do
+  _uap_p="${!_uap_v:-}"
+  if [[ "$_uap_p" == '~' ]]; then
+    printf -v "$_uap_v" '%s' "${HOME:-}"
+  elif [[ "$_uap_p" == '~/'* ]]; then
+    printf -v "$_uap_v" '%s' "${HOME:-}${_uap_p#\~}"
+  fi
+done
+unset -v _uap_v _uap_p
+
+DFLASH_ROOT="${DFLASH_ROOT:-$HOME/lucebox/lucebox-hub/dflash}"
 DFLASH_VENV="${DFLASH_VENV:-${DFLASH_ROOT}/.venv}"
 DFLASH_BIN="${DFLASH_BIN:-${DFLASH_ROOT}/build/test_dflash}"
-DFLASH_TARGET="${DFLASH_TARGET:-/home/cogtek/Downloads/Qwen3.6-27B-Q3_K_M.gguf}"
+DFLASH_TARGET="${DFLASH_TARGET:-$HOME/Downloads/Qwen3.6-27B-Q3_K_M.gguf}"
 DFLASH_DRAFT="${DFLASH_DRAFT:-${DFLASH_ROOT}/models/draft}"
 DFLASH_HOST="${DFLASH_HOST:-0.0.0.0}"
 DFLASH_PORT="${DFLASH_PORT:-8080}"
@@ -24,7 +38,7 @@ DFLASH_MAX_CTX="${DFLASH_MAX_CTX:-16384}"
 DFLASH_FA_WINDOW="${DFLASH_FA_WINDOW:-2048}"
 DFLASH_TOKENIZER="${DFLASH_TOKENIZER:-}"
 DFLASH_KV_TQ3="${DFLASH_KV_TQ3:-1}"
-DFLASH_LOG_FILE="${DFLASH_LOG_FILE:-/home/cogtek/lucebox/lucebox-hub/dflash-server.log}"
+DFLASH_LOG_FILE="${DFLASH_LOG_FILE:-$HOME/lucebox/lucebox-hub/dflash-server.log}"
 DFLASH_EXTRA_ARGS="${DFLASH_EXTRA_ARGS:-}"
 
 if [[ ! -x "$DFLASH_BIN" ]]; then

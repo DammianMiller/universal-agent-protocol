@@ -93,7 +93,7 @@ describe('models ensure (CLI)', () => {
   it('ensure-by-path exits 1 with guidance when no manifest declares the path', async () => {
     const { repoPath, localPath } = writeFixture();
     const code = await modelsCommand('ensure-by-path', {
-      path: '/home/cogtek/not-declared.gguf',
+      path: '~/not-declared.gguf',
       repoPath,
       localPath,
       dryRun: true,

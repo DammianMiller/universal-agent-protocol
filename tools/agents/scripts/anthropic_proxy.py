@@ -1338,7 +1338,7 @@ PROXY_TOOLCALL_PATH_NORMALIZE = os.environ.get(
 ).lower() in ("on", "1", "true", "yes")
 # Path CONTAINMENT (separate from same-dir normalization): snap a garbled
 # out-of-workdir path (the small quant mangling the absolute PREFIX, e.g.
-# /home/cogtek -> /home/cogtec, octopus_invaders -> octus_invaders) back ONTO the
+# /home/operator -> /home/operato, octopus_invaders -> octus_invaders) back ONTO the
 # session workdir. Safe because the OS sandbox contains any mis-snap to the
 # workdir — without the sandbox this would risk cross-project relocation, so it
 # defaults ON only alongside sandboxed sessions. Set off to disable.
@@ -7107,7 +7107,7 @@ PROXY_SLOT_SAVE_RESTORE = os.environ.get(
 # MUST match the llama-server --slot-save-path value: the server resolves
 # the filename the proxy sends relative to its own --slot-save-path.
 PROXY_SLOT_SAVE_DIR = os.environ.get(
-    "PROXY_SLOT_SAVE_DIR", "/home/cogtek/.cache/uap/llama-slots"
+    "PROXY_SLOT_SAVE_DIR", os.path.expanduser("~/.cache/uap/llama-slots")
 )
 # Max saved slot files kept on disk; least-recently-used files are evicted
 # beyond this. Each file can be ~1 GiB for a 100k-token session.

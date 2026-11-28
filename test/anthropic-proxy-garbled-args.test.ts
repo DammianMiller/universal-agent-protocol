@@ -53,7 +53,7 @@ describe('_is_garbled_tool_arguments (garbled-args classifier)', () => {
       // session-contamination resets and a forced finalize mid-task.
       const scenario = `
 args = json.dumps({
-    "filePath": "/home/cogtek/dev/cogtek/cognition-engine/src/rust-pg-ext/src/signal_processing/mod.rs",
+    "filePath": "/home/operator/dev/engine/src/rust-pg-ext/src/signal_processing/mod.rs",
     "oldString": "magnitudes[k] = (re * re + im * im).sqrt() / n as f64;\\n            }\\n        }\\n    }\\n}\\n",
     "newString": "let mags = black_box(compute(input));\\n    mags\\n}\\n",
 })

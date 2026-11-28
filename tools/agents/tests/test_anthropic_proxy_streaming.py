@@ -525,7 +525,7 @@ class TestMalformedToolGuardrail(unittest.TestCase):
                     "finish_reason": "stop",
                     "message": {
                         "content": (
-                            "Bash(find /home/cogtek/dev/miller-tech/universal-agent-protocol -maxdepth 1 "
+                            "Bash(find /home/operator/dev/miller-tech/universal-agent-protocol -maxdepth 1 "
                             '\\( -type f -name "*.md" -o -type f -name "*.json" \\)\n'
                             "</function>"
                         ),

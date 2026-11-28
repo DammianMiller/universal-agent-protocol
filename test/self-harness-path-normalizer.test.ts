@@ -64,8 +64,8 @@ describe('path-normalizer — does NOT invent targets (safety)', () => {
   it('does NOT relocate across structurally-different directories (the live octopus bug)', () => {
     // Model wants octopus_invaders/js/config.js (typo in user); the only known
     // config.js is in a DIFFERENT dir. Must not snap across the dir tree.
-    const known = ['/home/cogtek/dev/octopus-invader/space-shooter/js/config.js'];
-    const r = normalizeToolPath('/home/cogek/dev/octopus_invaders/js/config.js', known);
+    const known = ['/home/operator/dev/octopus-invader/space-shooter/js/config.js'];
+    const r = normalizeToolPath('/home/opertor/dev/octopus_invaders/js/config.js', known);
     expect(r.changed).toBe(false);
     // But it DOES still strip a wrong abs prefix to a bare known file (same intent).
     expect(normalizeToolPath('/wrong/abs/config.js', ['config.js']).path).toBe('config.js');

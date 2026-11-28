@@ -5,7 +5,7 @@
 # with speculative decoding).
 #
 # Prereqs (manual one-time, see README of lucebox-hub/dflash):
-#   - Repo cloned at $DFLASH_ROOT (default /home/cogtek/lucebox/lucebox-hub/dflash)
+#   - Repo cloned at $DFLASH_ROOT (default $HOME/lucebox/lucebox-hub/dflash)
 #   - test_dflash built: cmake --build build --target test_dflash
 #   - venv at $DFLASH_VENV with: fastapi uvicorn transformers jinja2 gguf torch
 #   - Target GGUF + draft safetensors downloaded
@@ -22,11 +22,11 @@ UAP_CONFIG_DIR="${HOME}/.config/uap"
 mkdir -p "$USER_SYSTEMD_DIR" "$UAP_CONFIG_DIR"
 
 cat >"${UAP_CONFIG_DIR}/dflash-server.env" <<EOF
-DFLASH_ROOT=${DFLASH_ROOT:-/home/cogtek/lucebox/lucebox-hub/dflash}
-DFLASH_VENV=${DFLASH_VENV:-/home/cogtek/lucebox/lucebox-hub/dflash/.venv}
-DFLASH_BIN=${DFLASH_BIN:-/home/cogtek/lucebox/lucebox-hub/dflash/build/test_dflash}
-DFLASH_TARGET=${DFLASH_TARGET:-/home/cogtek/Downloads/Qwen3.6-27B-Q3_K_M.gguf}
-DFLASH_DRAFT=${DFLASH_DRAFT:-/home/cogtek/lucebox/lucebox-hub/dflash/models/draft}
+DFLASH_ROOT=${DFLASH_ROOT:-$HOME/lucebox/lucebox-hub/dflash}
+DFLASH_VENV=${DFLASH_VENV:-$HOME/lucebox/lucebox-hub/dflash/.venv}
+DFLASH_BIN=${DFLASH_BIN:-$HOME/lucebox/lucebox-hub/dflash/build/test_dflash}
+DFLASH_TARGET=${DFLASH_TARGET:-$HOME/Downloads/Qwen3.6-27B-Q3_K_M.gguf}
+DFLASH_DRAFT=${DFLASH_DRAFT:-$HOME/lucebox/lucebox-hub/dflash/models/draft}
 
 DFLASH_HOST=${DFLASH_HOST:-0.0.0.0}
 DFLASH_PORT=${DFLASH_PORT:-8080}

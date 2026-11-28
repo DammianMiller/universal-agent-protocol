@@ -115,7 +115,7 @@ Both choices adopted per operator go ("do 1,2"); Phase 1 runs on them:
 
 - **Model file: pristine ISTA-DASLab GSQ-RCO IQ3_S** (the tqLLM-benchmarked
   file; ISTA-measured −0.57pp LCB v6 vs BF16). Served via
-  `uap-tqllm-server.service` from `/home/cogtek/models/tqllm/flashnext`
+  `uap-tqllm-server.service` from `~/models/tqllm/flashnext`
   (shards hardlinked from `strata-data/models/IQ3_S`, zero extra disk).
 - **Engine: tqLLM 1.2.3** (Docker `ghcr.io/turbo-tan/tqllm:1.2.3`, engine
   commit 9005f4e), container 8086 → host **:8080**, so the UAP proxy
@@ -182,7 +182,7 @@ exactly).
 ## Resume recipe
 
 ```sh
-cd /home/cogtek/dev/miller-tech/universal-agent-protocol
+cd ~/dev/miller-tech/universal-agent-protocol
 # branch feature/368-lcb-droid-smoke, worktree .worktrees/368-lcb-droid-smoke
 ART=.worktrees/368-lcb-droid-smoke/benchmark-results/lcb-droid-smoke-20261025-175708
 source $ART/venv-lcb/bin/activate   # scoring venv
@@ -211,7 +211,7 @@ layer_slots/expert-cache layout matches the pristine shard split
 (52+27 GB), not the abliterated one (55.1+28.8 GB). `--prompt-cache` is
 not enabled in the tqllm unit. Unit inventory now:
 `uap-tqllm-server` (pristine, idle), `uap-tqllm-abliterated-server`
-(new, idle; bundle `/home/cogtek/models/tqllm/flashnext-abliterated`,
+(new, idle; bundle `~/models/tqllm/flashnext-abliterated`,
 hardlinked shards; served alias unchanged), `uap-strata-server`
 (**live**). Mutual Conflicts wired via drop-ins both directions.
 

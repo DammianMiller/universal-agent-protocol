@@ -249,7 +249,7 @@ def contain_to_workdir(path: str, workdir: str):
     """Snap a garbled in-workdir path back onto `workdir`. Returns
     (new_path, changed, reason). Two garble classes, both handled:
 
-      * mangled absolute PREFIX / workdir name (/home/cogtek -> /home/cogtec,
+      * mangled absolute PREFIX / workdir name (/home/cogtec -> /home/cogtk,
         octopus_invaders -> octus_invaders) — anchored by a fuzzy match of the
         workdir-name component;
       * mangled SUBDIR name in the suffix (space-shooter -> space-shootr) —

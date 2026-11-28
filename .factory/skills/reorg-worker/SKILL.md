@@ -40,7 +40,7 @@ None.
 
 ### 4. Verify Build
 ```bash
-cd /home/cogtek/dev/miller-tech/universal-agent-protocol
+cd ~/dev/miller-tech/universal-agent-protocol
 npm run build
 npm test
 ```

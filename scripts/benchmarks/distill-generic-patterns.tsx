@@ -144,7 +144,7 @@ export function getGenericContext(category: string): string {
 `;
 
 writeFileSync(
-  '/home/cogtek/dev/miller-tech/universal-agent-protocol/src/memory/generic-uap-patterns.ts',
+  'src/memory/generic-uap-patterns.ts',
   typescriptCode
 );
 console.log('\n✅ Saved to: src/memory/generic-uap-patterns.ts');

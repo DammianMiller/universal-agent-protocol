@@ -12,7 +12,7 @@ Recent UAP memories (auto-mirrored — do not hand-edit; refresh with `uap memor
   - (goal, i8) Swift 1.5 IQ3_S A/B trial LIVE since 2026-10-17: uap-strata-server.service runs strata-swift-iq3_s.json (Swift-1.5-Qwen3.8-Flash-Next-GSQ-RC
   - (goal, i8) opencode+qwen loop/stop uplift shipped on feature/362-loop-steer-uplift (commit 803cf937, tag v2.34.0, PR #856): ERROR-LOOP moved to tail-us
   - (goal, i8) Loop-steer uplift shipped on feature/362-loop-steer-uplift (commit 84da6cfe, tag v2.33.0): proxy LOCKSTEP_CLASS_FIXES known-fix table + trai
-  - (goal, i8) DECISION 2026-10-14: strata service on /home/cogtek/dev/strata updated 282 commits to engine 0.1.44.1 (rollback: engine/strata-0.1.43.1-keep
+  - (goal, i8) DECISION 2026-10-14: strata service on ~/dev/strata updated 282 commits to engine 0.1.44.1 (rollback: engine/strata-0.1.43.1-keep
   - (goal, i8) PR #855 (v2.32.2, master 98c30456) removed the changelog + EVOLUTION.md and distilled all docs to present state: version lives ONLY in packa
   - (goal, i8) Residuals round shipped: PR #853 merged (v2.32.1, master 8cf535c4). All three named residuals closed: UAP_SANDBOX_ALLOW entries get the same
   - (goal, i8) The known-debt ledger is CLEARED: PR #852 merged (v2.32.0, master e67f27bb) — all 16 items resolved: six execSync shell injections in uap-om

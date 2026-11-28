@@ -2,7 +2,7 @@
  * Tool-call path normalization for deliver's agentic executor.
  *
  * Small/local quants garble file paths in write_file/read_file calls — a mangled
- * absolute PREFIX (/home/cogtek→/home/cogtec, octopus_invaders→octus_invaders) or
+ * absolute PREFIX (/home/cogtec→/home/cogtk, octopus_invaders→octus_invaders) or
  * a mangled SUBDIR (space-shooter→space-shootr) — so the write lands nowhere or
  * escapes the project. The UAP Anthropic proxy fixes this for Claude Code via
  * tools/agents/scripts/toolcall_path_normalizer.py, but deliver's agentic path

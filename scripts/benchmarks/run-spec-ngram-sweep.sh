@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-LLAMA_BIN="${LLAMA_BIN:-/home/cogtek/llama.cpp/.worktrees/001-llama-spec-rollback-fix/build-cuda/bin/llama-server}"
-LLAMA_MODEL="${LLAMA_MODEL:-/home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf}"
+LLAMA_BIN="${LLAMA_BIN:-$HOME/llama.cpp/.worktrees/001-llama-spec-rollback-fix/build-cuda/bin/llama-server}"
+LLAMA_MODEL="${LLAMA_MODEL:-$HOME/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf}"
 MODEL_ID="${MODEL_ID:-qwen3.5-a3b-iq4xs}"
 RUNS="${RUNS:-4}"
 MAX_TOKENS="${MAX_TOKENS:-256}"
@@ -62,7 +62,7 @@ function start_candidate() {
     --draft-max "$draft_max" \
     --draft-min "$draft_min" \
     --draft-p-min "$draft_p_min" \
-    --log-file /home/cogtek/llama.cpp/llama-server.log >/dev/null
+    --log-file $HOME/llama.cpp/llama-server.log >/dev/null
 
   wait_ready
 }

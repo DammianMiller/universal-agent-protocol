@@ -4,7 +4,7 @@
 **Abbreviation**: Fable-3D
 
 **Provenance**: "the Fable three.js prompt", operator-supplied 2026-11-14
-(transcribed from `/home/cogtek/Downloads/threeJS-prompt.jpeg`). Applies to any
+(transcribed from `~/Downloads/threeJS-prompt.jpeg`). Applies to any
 Three.js / WebGL creative build — games, motion videos, product demos,
 walkable spaces. The router injects this pattern when the task names 3D scene
 work, Three.js, or one of those four deliverable kinds.
