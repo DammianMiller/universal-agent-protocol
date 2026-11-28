@@ -72,9 +72,16 @@ describe('read-log writer hook', () => {
     const wirings = src.match(/post-tool-use-read\.sh/g) ?? [];
     // 1 copy-list entry + 1 hooks-status entry + 1 per platform settings writer.
     expect(wirings.length).toBeGreaterThanOrEqual(6);
-    for (const dir of ['.claude', '.factory', '.cursor']) {
+    for (const dir of ['.claude', '.cursor']) {
       expect(src).toContain(`${dir}/hooks/post-tool-use-read.sh`);
     }
+    // The Factory writer builds its commands through hookCmd() — the binding
+    // carries a ${FACTORY_PROJECT_DIR:-<abs project>} fallback because droid's
+    // SessionEnd context drops that variable (measured 2026-11-28: 11/11
+    // SessionEnd executions resolved the bare "$FACTORY_PROJECT_DIR"/... to
+    // /.factory/hooks/session-end.sh, file not found) — so the wiring is the
+    // hook NAME inside that writer, not a contiguous '.factory/hooks/' literal.
+    expect(src).toContain(`hookCmd('post-tool-use-read.sh')`);
   });
 
   it('cannot forge extra log records from a crafted Grep pattern', () => {
