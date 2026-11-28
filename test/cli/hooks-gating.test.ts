@@ -155,3 +155,47 @@ describe('factory hook binding survives a FACTORY_PROJECT_DIR-less context', () 
     expect(String(r.stderr)).not.toContain('not found');
   });
 });
+
+describe('AGENTS.md render-verification seam', () => {
+  let proj: string;
+  beforeEach(() => {
+    proj = mkdtempSync(join(tmpdir(), 'uap-rvs-'));
+  });
+  afterEach(() => {
+    rmSync(proj, { recursive: true, force: true });
+  });
+
+  /**
+   * Measured 2026-11-28 (voxel-pagoda-basalt-inkling-1, session 42fc66db):
+   * with no render-verification guidance in the scaffold, the client
+   * improvised `google-chrome --headless --screenshot --virtual-time-budget=N`
+   * to prove its three.js artifact — 7 consecutive failed captures (5
+   * killed-with-no-file, 1 blank frame under --enable-unsafe-swiftshader,
+   * 1 fluke success), 90s each, because that path hangs while a RAF loop is
+   * live. The scaffold must hand clients the working seam instead.
+   */
+  it('tells clients to prove rendered deliverables via uap verify, not raw chrome screenshots', async () => {
+    await hooksCommand('install', { target: 'codex', projectDir: proj });
+    const md = readFileSync(join(proj, 'AGENTS.md'), 'utf-8');
+    expect(md).toContain('## Artifact Verification');
+    expect(md).toContain('`uap verify`');
+    expect(md).toContain('google-chrome --headless --screenshot');
+    expect(md).toMatch(/requestAnimationFrame/);
+  });
+
+  it('keeps the init.ts AGENTS.md twin in sync with the hooks.ts template', () => {
+    // init.ts duplicates the AGENTS.md template; drift between the two
+    // writers means `uap init` scaffolds projects without the seam that
+    // `uap hooks install` writes (and vice versa).
+    const root = process.cwd();
+    const hooksSrc = readFileSync(join(root, 'src/cli/hooks.ts'), 'utf-8');
+    const initSrc = readFileSync(join(root, 'src/cli/init.ts'), 'utf-8');
+    for (const line of [
+      '## Artifact Verification (rendered deliverables)',
+      'Never verify a render with `google-chrome --headless --screenshot',
+    ]) {
+      expect(hooksSrc).toContain(line);
+      expect(initSrc).toContain(line);
+    }
+  });
+});
