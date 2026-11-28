@@ -1,0 +1,69 @@
+{
+    "_profile": "deepseek41",
+    "_description": "DeepSeek-V4.1-Flash-1017 — DeepSeek's 552B-backbone multimodal MoE reasoner, the deepseek41 fleet family's first arm (added 2026-11-27, round 12; the basalt arm uap-deepseek41-server is the family's only arm: Strata retired DeepSeek outright in 0.2.21 — strata_control/retired.py refuses its configs — and llama.cpp's streaming port runs this model at 5.1 tok/s on this card class, so basalt is the only maintained fast local path). The model's class is the point: Terminal-Bench 2.1 90.6 / DeepSWE v1.1 74.2 / HLE-with-tools 63.9 / Codeforces 3471 at reasoning effort 100 — the strongest reasoner either fleet serves locally. Architecture: a Causal Encoder-Decoder (20 causal-encoder + 20 decoder layers; prefill activates 8B params, decode 16B), 384 routed experts x top-6 + 1 shared per MoE layer, CSA2 sparse attention (static Full/Reindex/Reuse modes, a hierarchical sparse indexer, FP4 main KV), 920 bytes/position fp8 KV, a 1M model window, native DeepSeek-ViT vision (trained from scratch, 2D-RoPE + pixel-unshuffle), the DSpark speculative drafter, and a 196B Engram conditional-memory lookup (110 GB at IQ4_NL, read by row from the pack file — 48 rows per token, never RAM- or VRAM-resident). MIT license.",
+    "_engine": "BASALT ARM (uap-deepseek41-server, installed 2026-11-27): Basalt 0.5.7 (deepseek41 support since 0.3.0), the published UD-IQ1_M pack — jesdga DeepSeek-V4.1-Flash-1017-UD-IQ1_M.basalt, 260 GB (259,973,824,987 bytes, sha256 1cd706a3 verified at download; Unsloth Dynamic V3.1 backbone ~149 GiB resident + the 110 GB IQ4_NL Engram in-file + BF16 vision projector + DSpark Q8 drafter + tokenizer, self-contained), kv fp8, max-context 524288, vision dynamic, port 8080, pack on the 4TB at /run/media/dammian/9100PRO-4TB-1/models/basalt/ beside the hy4 pack. Memory map: ONLY the backbone is resident — the RAM tier pins ~140 GiB of routed experts and computes them on the CPU (9950X3D, full AVX-512), the main card holds the dense weights + the fp8 KV (~0.46 GiB at the 524288 ceiling) + the 2.4 GiB DSpark drafter (32 experts/stage) + expert homes/slots sized to stay through a prompt; with 183 GB RAM beside the fleet the coldest ~5-8 GiB of experts stay in the file (LRU tail, read whole into the pinned ring on miss while the CPU computes the resident ones). Tuner arm key deepseek41, ABSENT from parallel.env = level 1 (no --parallel, one full-window rail); NO PIN by decision — the hy4flash level-1 pin is a hy4 mmq-prefill crash mitigation (600K+ prompts) that does not transfer, and no deepseek41 issue is known in 0.5.7.",
+    "model": "DeepSeek-V4.1-Flash-1017 UD-IQ1_M",
+    "_model_comment": "FINALIZED at the 2026-11-27 install smoke from the LIVE /v1/models read: 'DeepSeek-V4.1-Flash-1017 UD-IQ1_M' — the quant tag rides the wire id exactly as the hy4 precedent predicted. basalt validates the model field, so every request must carry exactly this id; the proxy's /v1/models lists exactly it. The rails suite drift-checks this link against the live arm (test/model-profiles-deepseek41-rails.test.ts, arm-gated; the live /props model_alias matches this constant, so the gated tests run whenever this arm serves :8080). Droid customModels and the opencode fleet entry carry the same id — updated together at the smoke.",
+    "max_tokens": 65536,
+    "_max_tokens_comment": "The ADVERTISED output cap (mirrors the backends.json client_caps), NOT a measured engine clamp. The vendor card recommends max_tokens >= 256K for full-length reasoning at the 1M window; the engine-family precedent (inkling2 measured its answer-room clamp at 32768 on this engine; hy4's ladder is UNMEASURED) says the honest value needs a clamp measurement on THIS arm before trusting anything above ~32k. The smoke only ever sent max_tokens 4096, so the ladder stays UNMEASURED; 65536 is what clients advertise until that ladder runs. Re-measure before raising.",
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "_sampling_comment": "Live flag-read at the smoke (/props default_generation_settings): the engine's own defaults on this arm are temperature 1.0, top_p 1.0, n_predict -1. DeepSeek's card recommends temperature 1.0 with top_p 0.95 or 1.0; this profile carries the MEASURED arm default (1.0/1.0), not the vendor-transcribed 0.95. This family has never been tool-call-tuned on this box; re-tune with `uap tune` before deviating.",
+    "stop_sequences": [],
+    "_stop_sequences_comment": "CONFIRMED EMPTY at the 2026-11-27 smoke: every measured turn ended finish=stop with no explicit markers (echo, struct and vision turns all ended stop; tool turns end tool_calls) — the pack's own chat template (deepseek41 encoder, /props chat_template) owns EOS under it. Carrying another family's marker would be transcription, not measurement.",
+    "timeout_ms": 300000,
+    "context_window": 262144,
+    "_context_window_comment": "THIS IS A PER-SESSION CAP, AND IT IS OPT-IN BY PROFILE HEADER (the family doctrine: a client that sends no x-uap-model-profile header gets the whole rail; factory/droid custom models cannot send it, so their listings carry maxContextLimit client-side at this cap). The arm runs level 1 = ONE 524288 rail, so the per-rail servable is the whole pool; the cap sits at half of it — the inkling2 single-rail morning-posture doctrine: a session at cap leaves >= 2x headroom for the elastic caches and the prompt workspaces. Admission arithmetic is the same operator-accepted overcommit class as inkling2/qwen38.",
+    "optimize_for_tool_calls": true,
+    "mode_switch_buffer_tokens": 500,
+    "enable_thinking": true,
+    "_thinking_comment": "Native thinking, continuously controllable: reasoning_effort takes an integer 1-100 on this family (the pack maps low/high/max to 50/75/100; 'none' is the echo-gate setting — the smoke's echo gate ran effort none and returned clean plain content). The engine's chat_template_caps confirm supports_reasoning_effort and supports_preserve_reasoning on the wire. The reasoning field's exact shape at effort > 0 (server-side answer-room vs an on-wire reasoning field) stays UNVERIFIED — the smoke never ran an effort > 0 turn with a reasoning-field probe. The budget gotcha holds either way: the thinking phase CONSUMES the completion budget, so a starved cap returns EMPTY content with finish=length (echo gates run effort none or a generous budget). thinking-disable knobs stay off for this family.",
+    "dynamic_temperature": {
+        "enabled": true,
+        "decay": 0.5,
+        "floor": 0.2,
+        "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
+    },
+    "tool_call_batching": {
+        "enabled": true,
+        "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+        "_comment": "Carried from the engine-family default: the suffix was MEASURED on the inkling basalt arm (sequential emission without it, parallel with it, 2026-11-25). THIS arm's own multi-tool emission behavior is UNMEASURED — the install smoke verified a native single tool call (get_weather/Paris) and /props advertises supports_parallel_tool_calls, but no multi-tool turn has been measured; re-measure before removing the suffix."
+    },
+    "concurrency": {
+        "max_parallel_requests": 1,
+        "_comment": "Level 1 (UAP_PARALLEL_DEEPSEEK41 absent from parallel.env = no --parallel): ONE rail, one request decodes at a time — a second concurrent client queues at the proxy. Upstream's own batch table for this model shows --parallel is a LOSS at scale even on two cards (-11% at 4 slots, -31% at 8, rows reaching wider expert unions on the 8-row cap), so the tuner must measure here before raising the level; PROXY_CONCURRENCY_LIMIT/UAP_MODEL_SLOTS follow this field.",
+        "kv_capacity_shared": true,
+        "_kv_shared_comment": "One arm, one pool: at level 1 the whole 524288-cell window is shared, not sliced — a session addresses the full pool."
+    },
+    "server_optimization": {
+        "kv_dtype": "fp8",
+        "_kv_dtype_comment": "kv fp8 — the model's own reference rounding (920 B/position). fp16 keeps unrounded values at 3,200 B/position, ~3.5x the memory, for an unmeasured quality delta; the community single-5090 row ran kv fp16, this arm runs the native fp8 default.",
+        "prefill_chunk": 16384,
+        "max_context": 524288,
+        "kv_capacity": 524288,
+        "_capacity_comment": "The arm's full shared window at level 1 (config basalt-deepseek41.json: max-context 524288; live /props n_ctx read 524288 at the smoke). Context is nearly free on this model: 920 B/position makes the whole pool ~0.46 GiB (a 1M context would be ~0.92 GiB; the model window is 1,048,576, halved here to the fleet's deep-context doctrine — two 262144 rails IF the tuner ever raises to level 2). The prompt-cache + per-slot checkpoint blocks (~3 MB each) are page-locked at start; caches grow with position into the memory the tier leaves free, and the engine refuses a max-context whose caches need more than half the free memory.",
+        "parallel_rails": 1,
+        "speculative_decoding": {
+            "enabled": true,
+            "type": "dspark",
+            "draft_model": "in-pack DSpark Q8 drafter (the pack's dspark/gguf side file)",
+            "draft_max": 3,
+            "_comment": "DSpark semi-autoregressive block drafting, on by default at the pack's window 3 (each drafter stage keeps its 32 most routed experts, 2.4 GiB VRAM; --spec 0 turns it off). Drafts are verified — output is the model's own. Where it pays, per upstream's own two-card UD-IQ1_M measurement: code +33% (82.6 vs 62.2 plain), structured +21%, long prose at temperature 1 about even. The community single-5090 row measured accept 62.5% prose / 71.6% conv / 99.9% struct, draft len 1.18-2.00. THIS arm's acceptance is UNMEASURED — the smoke did not probe it; fill on a dedicated acceptance run."
+        },
+        "_comment": "The flags the arm actually runs with: config basalt-deepseek41.json (gpu 0, kv fp8, max-context 524288, vision dynamic, port 8080), the unit Env carries the cuda-libs redist path, ExecStart wrapped by basalt-autotune-serve.sh with arm key deepseek41 (level 1, no pin)."
+    },
+    "measured": {
+        "_arm_comment": "MEASURED LIVE at the 2026-11-27 install smoke (two runs, consistent within 8%): decode classes at 256 tokens / temp 0.7 / short prompts — conv 50.8, prose 41.3, struct 31.5 tok/s; prefill ~3050 tok/s to first token on the ~30K-word filler read (TTFT 9.84s); echo gate (thinking off) PASS 0.7s; native single tool call PASS ~2.0s; vision three-blue-discs PASS 2.0s COLD (no hy4-style 17s first-image staging — the in-pack projector loads with the backbone). BELOW the PR #268 anchor (decode 87.4, prefill 2477@16K / 3223@64K): that box ran 247 GB RAM at zero spill; this box runs 183 GB with a ~50 GB live desktop background (~9 GiB available at serve), so a colder expert tail rides the file. Prefill landed inside the expected 2500-3200 band; decode landed 42-51 vs the estimated 60-85 — the honest number for THIS posture, and slimming the desktop background or growing RAM is the lever if the gap matters. Null fields are the measurements the smoke did not take: DSpark acceptance, prefix-cache hit rate, sustained load, and the output-clamp ladder (see _max_tokens_comment).",
+        "decode_tokens_per_second": 50.8,
+        "decode_at_prompt_tokens": 30,
+        "ttft_seconds": 9.84,
+        "speculative_acceptance": null,
+        "prefix_cache_hit_rate": null,
+        "sustained_load": null
+    },
+    "routing": {
+        "endpoint": "http://127.0.0.1:4000/v1",
+        "_comment": "Route through the anthropic-proxy, NOT the engine port directly — the proxy applies the tool/finalize guardrails and, via this profile, the per-session context window that clients size their history to. Clients select this profile with the header 'x-uap-model-profile: deepseek41' (or a uap_model_profile body param); the profile map resolves the wire id below here for clients that cannot send the header."
+    },
+    "_vision_comment": "PASS at the 2026-11-27 smoke: the three-blue-discs probe answered '3 circles, blue, circular' in 2.0s COLD — no first-image staging cost on this arm (the in-pack BF16 projector loads with the backbone; /props modalities.vision true). The encoder borrows the main card's room from the tier's copies beside the homes exactly as profiled; a picture's decoded pixels take a few hundred MiB of ordinary memory while its request reads, freed after. The model is NATIVELY multimodal (DeepSeek-ViT, 2D-RoPE, 3x3 pixel-unshuffle; vision trained in from the start, not an adapter)."
+}
