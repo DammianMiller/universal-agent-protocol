@@ -130,6 +130,8 @@
     "scripts/validate-build.sh",
     "scripts/maintenance",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "!**/__pycache__/**",
+    "!**/*.pyc"
   ]
 }
